@@ -36,10 +36,6 @@ _Avoid_: Run command, confirmation prompt, job
 A proposal to install one provider's credentials from a controller machine into a host account, requiring explicit approval for the named provider and destination.
 _Avoid_: Credential forwarding, secret sync, setup
 
-**Initialization request**:
-A controller-prepared proposal to register a project with its host and add the project-owned files needed to use Sand-King, requiring explicit approval before either change occurs.
-_Avoid_: Open project, setup, launch request
-
 **Worker job**:
 The execution and review of one issue within a harness run.
 _Avoid_: Harness run, controller task
