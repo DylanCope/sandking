@@ -12,6 +12,26 @@ _Avoid_: Sandking, universal harness, control plane
 The interactive agent through which a person directs work across projects. A controller may connect from a different machine than the project.
 _Avoid_: Architect, client agent, master agent
 
+**Cockpit**:
+The local visual surface through which a person finds Projects, Harnesses, Controller sessions, Wayfinder efforts, and Harness runs. It is served wherever Sand-King is launched and does not replace the Controller.
+_Avoid_: Dashboard, control plane, hosted UI
+
+**Controller session**:
+A provider-backed conversation with a Controller, associated with exactly one work context. A person starts a new Controller session deliberately when they want a clean model context.
+_Avoid_: Chat, agent session, Harness run
+
+**Work context**:
+The durable subject of a Controller session, such as a Project, Wayfinder effort, decision ticket, Harness workspace, or Harness run review. It remains independently identifiable when Controller sessions end or move between machines.
+_Avoid_: Chat thread, conversation state, workspace
+
+**Controller handoff**:
+A provider-neutral summary of a work context that lets a new Controller session continue when an exact provider-session restore is unavailable or fails.
+_Avoid_: Transcript, session backup, context dump
+
+**Controller session transport**:
+A provider-specific, best-effort transfer of a Controller session between Controller machines. Failure falls back explicitly to a Controller handoff rather than being presented as exact continuity.
+_Avoid_: Credential transfer, guaranteed session sync
+
 **Host**:
 The Sand-King presence in the environment where a project and its development tools reside. It retains project execution state independently of any controller.
 _Avoid_: Remote host, server, controller host
