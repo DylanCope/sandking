@@ -72,3 +72,17 @@ test("an exhausted worker cycle exits for a safe command restart", async () => {
     /if \(completedBranches\.length === 0\) \{[\s\S]*?continue;/,
   );
 });
+
+test("only spec-approved issue branches reach the merge phase", async () => {
+  const main = await readFile(".sandcastle/main.mts", "utf8");
+  const reviewPrompt = await readFile(".sandcastle/review-prompt.md", "utf8");
+  const mergePrompt = await readFile(".sandcastle/merge-prompt.md", "utf8");
+
+  assert.match(main, /approved: z\.boolean\(\)/);
+  assert.match(main, /reviewResult\.review\.approved/);
+  assert.match(main, /hasCommits: false, reviewFindings/);
+  assert.match(reviewPrompt, /Fetch the issue and every parent requirement/);
+  assert.match(reviewPrompt, /public acceptance seam/);
+  assert.match(reviewPrompt, /review-verdicts\/issue-\{\{TASK_ID\}\}\.json/);
+  assert.match(mergePrompt, /Do not close an issue merely because its branch merged/);
+});

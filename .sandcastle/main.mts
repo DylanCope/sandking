@@ -41,6 +41,11 @@ const planSchema = z.object({
   ),
 });
 
+const reviewSchema = z.object({
+  approved: z.boolean(),
+  findings: z.array(z.string()),
+});
+
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
@@ -93,7 +98,7 @@ const runIssueAgent = async (
       });
 
       try {
-        return await sandbox.run({
+        const runResult = await sandbox.run({
           ...runSettings,
           name: role,
           maxIterations: role === "implementer" ? 100 : 1,
@@ -109,8 +114,24 @@ const runIssueAgent = async (
                   ISSUE_TITLE: issue.title,
                   BRANCH: issue.branch,
                 }
-              : { BRANCH: issue.branch },
+              : { BRANCH: issue.branch, TASK_ID: issue.id },
         });
+        if (role === "implementer") {
+          return { runResult };
+        }
+
+        const verdictResult = await sandbox.exec(
+          `node .sandcastle/read-review-verdict.mjs ${issue.id}`,
+        );
+        if (verdictResult.exitCode !== 0) {
+          throw new Error(
+            `Issue #${issue.id} reviewer did not produce a valid verdict: ${verdictResult.stderr}`,
+          );
+        }
+        return {
+          runResult,
+          review: reviewSchema.parse(JSON.parse(verdictResult.stdout)),
+        };
       } finally {
         await sandbox.close();
       }
@@ -184,7 +205,19 @@ const main = async () => {
       // Check git rather than only the latest run result. A prior process may
       // have committed before losing its network connection or being killed.
       if (branchHasCommits(issue.branch)) {
-        await runIssueAgent(issue, "reviewer");
+        const reviewResult = (await runIssueAgent(issue, "reviewer")) as {
+          review: z.infer<typeof reviewSchema>;
+        };
+        if (!reviewResult.review.approved) {
+          const reviewFindings = reviewResult.review.findings;
+          console.error(
+            `  ✗ ${issue.id} (${issue.branch}) failed specification review:`,
+          );
+          for (const finding of reviewFindings) {
+            console.error(`    - ${finding}`);
+          }
+          return { hasCommits: false, reviewFindings };
+        }
       }
 
       return { hasCommits: branchHasCommits(issue.branch) };
