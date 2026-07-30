@@ -1,6 +1,6 @@
 const variants = [
   { key: "A", name: "Guided conversation", render: renderConversation },
-  { key: "B", name: "Operations cockpit", render: renderCockpit },
+  { key: "B", name: "Selected hybrid cockpit", render: renderCockpit },
   { key: "C", name: "Runbook timeline", render: renderTimeline },
 ];
 
@@ -32,12 +32,14 @@ function renderConversation() {
 
 function renderCockpit() {
   return `<section class="cockpit shell">
-    <aside><div class="brand">SAND—KING</div><button class="primary">＋ Open Project</button><p class="nav-title">PROJECTS</p><a class="active">token-maxxing <i>live</i></a><a>sandking</a><a>course-platform</a><p class="nav-title">HOSTS</p><a>devbox <i>online</i></a><a>laptop <i>local</i></a></aside>
+    <aside><div class="brand">SAND—KING</div><a class="active">⌁ Home</a><a>▣ Projects</a><a>◇ Harnesses</a><a>⌁ Hosts</a><p class="nav-title">RECENT PROJECTS</p><a>token-maxxing <i>live</i></a><a>sandking</a><p class="nav-title">CONTROLLER SESSIONS</p><a class="session-active">Wayfinder · recovery</a><a>General Project chat</a><a>Release investigation</a><button class="primary">＋ New session</button></aside>
     <div class="workspace">
-      <header><div><p class="eyebrow">${state.location}</p><h1>${state.project}</h1></div><button>Open in Claude Code</button></header>
-      <div class="metrics"><article><small>HOST</small><strong>Healthy</strong><span>v0.1.4 · SSH</span></article><article><small>PINNED HARNESS</small><strong>sandcastle</strong><span>8fe1c4a · clean</span></article><article><small>ACTIVE RUN</small><strong>Approval needed</strong><span>prepared 2m ago</span></article></div>
-      <div class="split"><article class="runs"><h2>Harness runs</h2><div class="run selected"><span class="pulse"></span><div><b>Define recovery contract</b><p>${state.run} · launch prepared</p></div><em>Review →</em></div><div class="run"><span class="done">✓</span><div><b>Define persistent state</b><p>completed · 42m · 3 commits</p></div><em>Result →</em></div><div class="run"><span class="done">✓</span><div><b>Research credential portability</b><p>completed · 18m · documentation</p></div><em>Result →</em></div></article>
-      <article class="approval"><p class="eyebrow">LAUNCH REQUEST</p><h2>Define recovery contract</h2><p>The Host will start the pinned Harness against the first eligible backlog item.</p><ul><li>Durable after disconnect</li><li>Observable by another Controller</li><li>Cancellation retained by Host</li></ul><div class="warning">GitHub and Project write access requested</div><button class="launch">Approve launch</button><button class="quiet full">Inspect request</button></article></div>
+      <header><div><p class="eyebrow">PROJECT / ${state.location}</p><h1>${state.project} <small>› WAYFINDER EFFORT</small></h1></div><button>Open externally in Claude Code</button></header>
+      <div class="effort-tabs"><b>Controller Chat</b><b class="selected">Wayfinder efforts <i>2</i></b><b>Harness runs <i>1</i></b><b>Settings</b></div>
+      <div class="effort-heading"><div><p class="eyebrow">CHART THE RECOVERY CONTRACT</p><h2>Make recovery behavior implementation-ready</h2></div><a>Open canonical map ↗</a></div>
+      <div class="workbench"><article class="terminal"><div class="terminal-bar"><span>Claude Code · ticket-focused session</span><span>● synced &nbsp; ↗</span></div><div class="terminal-body"><p class="prompt">❯ Start the next unblocked decision.</p><p class="claude"><b>Claude</b> I’ve claimed <u>Define recovery fallback behavior</u>. The Host can retain the latest verified provider-session bundle and a portable Controller handoff.</p><p class="claude">When exact restore fails, should Sand-King automatically continue from the handoff after warning you, or stop?</p><p class="prompt active">❯ Automatically fall back, but clearly tell me what happened.<i></i></p></div></article>
+      <article class="tickets"><div class="ticket-head"><h2>Decision tickets</h2><button>＋</button></div><p class="section-label">FRONTIER</p><div class="ticket selected"><span class="pulse"></span><div><b>Define recovery fallback behavior</b><p>Grilling · claimed in this session</p></div><em>↗</em></div><div class="ticket"><span>○</span><div><b>Choose cockpit delivery stack</b><p>Grilling · start</p></div><button>Start</button></div><p class="section-label">BLOCKED</p><div class="ticket disabled"><span>⊘</span><div><b>Validate recovery criteria</b><p>Blocked by 2 decisions</p></div><em>↗</em></div><p class="section-label">RESOLVED</p><div class="ticket disabled"><span class="done">✓</span><div><b>Define persistent state</b><p>Resolution recorded on GitHub</p></div><em>↗</em></div></article></div>
+      <div class="bottom-cards"><article><small>ACTIVE HARNESS RUN</small><b>Define recovery contract</b><span>${state.run} · awaiting approval</span><a>Open dedicated run view →</a></article><article><small>PINNED HARNESS</small><b>sandcastle@8fe1c4a</b><span>Healthy · 3 linked Projects</span><a>Open Harness workspace →</a></article></div>
     </div>
   </section>`;
 }
