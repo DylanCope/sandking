@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prototype:controller-journey": "node prototypes/controller-journey/server.mjs",
     "sandcastle": "tsx .sandcastle/main.mts",
     "typecheck": "tsc --noEmit",
     "test": "node --test .sandcastle/*.test.mjs"
