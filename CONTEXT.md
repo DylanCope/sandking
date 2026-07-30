@@ -68,6 +68,18 @@ _Avoid_: Run orchestrator, Sandcastle adapter
 A Harness-defined description of work within a Harness run, carried in a generic Sand-King envelope for observation. Its type, status, hierarchy, and meaning belong to the Harness.
 _Avoid_: Worker job, Host task
 
+**Ticket set**:
+One Planning-journey-owned GitHub issue graph beneath a single top-level delivery issue, prepared for independent Harness execution from a pinned Specification or approved Ticketing brief.
+_Avoid_: Backlog, ticket plan, implementation plan
+
+**Ticketing brief**:
+The approved source contract distilled from an ordinary Controller conversation when a Ticket set is not derived from a Specification.
+_Avoid_: Ad hoc prompt, chat summary, mini-spec
+
+**Ticket-set amendment**:
+A revisioned, reviewed proposal to change the structure or meaning of a published Ticket set.
+_Avoid_: Ticket edit, backlog rewrite, graph patch
+
 **Launch request**:
 A controller-prepared proposal for starting a harness run, presented to a person for explicit approval before delegated work begins.
 _Avoid_: Run command, confirmation prompt, job
