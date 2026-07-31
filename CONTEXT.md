@@ -24,6 +24,10 @@ _Avoid_: Workspace, repository, checkout
 The Host's record of a Project at a particular location, including which Harness it uses. Moving or replacing the Project at that location is resolved by the person and Controller rather than inferred by Sand-King.
 _Avoid_: Project manifest, project identity file
 
+**Specification**:
+A private, revisioned Sand-King document describing the intended outcomes, boundaries, acceptance criteria, and testing seams for one bounded change to a Project.
+_Avoid_: Project specification, master specification, repository specification
+
 **Harness**:
 A named, independently identifiable body of tooling that can be linked to one or more Project registrations and used to run Workers. A Harness may be reused or forked independently of any Project.
 _Avoid_: Project harness, harness template
