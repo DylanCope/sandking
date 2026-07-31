@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "sandcastle": "tsx .sandcastle/main.mts",
+    "sandking": "tsx src/cli.mts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test .sandcastle/*.test.mjs"
+    "test": "node --test .sandcastle/*.test.mjs && npm exec -- tsx --test test/*.test.mts"
   },
   "dependencies": {
     "zod": "^4.4.3"
