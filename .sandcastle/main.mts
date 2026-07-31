@@ -22,6 +22,7 @@ import {
   createGitRepository,
 } from "./delivery-adapters.mjs";
 import { completeIssueThroughPullRequest } from "./issue-delivery.mjs";
+import { runPullRequestReview } from "./pr-review-runner.mjs";
 import {
   createCodexSandboxSettings,
   createRunSettings,
@@ -144,21 +145,25 @@ const runPullRequestReviewer = async (
     label: `Pull request #${pullRequest.number} reviewer`,
     attempts: PHASE_ATTEMPTS,
     initialDelayMs: RETRY_DELAY_MS,
-    operation: () => sandcastle.run({
-      ...runSettings,
-      hooks,
-      sandbox: codexDocker(),
-      name: `pr-${pullRequest.number}-reviewer`,
-      maxIterations: 1,
-      agent: sandcastle.codex("gpt-5.4"),
-      promptFile: "./.sandcastle/pr-review-prompt.md",
-      promptArgs: {
-        PR_NUMBER: String(pullRequest.number),
-        TASK_ID: issue.id,
+    operation: () => runPullRequestReview({
+      issue,
+      pullRequest,
+      createSandbox: sandcastle.createSandbox,
+      sandboxOptions: {
+        sandbox: codexDocker(),
+        hooks,
+        copyToWorktree,
       },
-      output: sandcastle.Output.object({ tag: "review", schema: reviewSchema }),
+      runOptions: {
+        ...runSettings,
+        name: `pr-${pullRequest.number}-reviewer`,
+        maxIterations: 1,
+        agent: sandcastle.codex("gpt-5.4"),
+        promptFile: "./.sandcastle/pr-review-prompt.md",
+        output: sandcastle.Output.object({ tag: "review", schema: reviewSchema }),
+      },
     }),
-  }).then((result) => result.output);
+  });
 
 // ---------------------------------------------------------------------------
 // Main loop
@@ -254,7 +259,7 @@ const main = async () => {
 
   if (deliveryFailed) {
     process.exitCode = 1;
-    break;
+    return;
   }
   }
 
