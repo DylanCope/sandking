@@ -1,17 +1,9 @@
-// Parallel Planner with Review — four-phase orchestration loop
+// Sandcastle issue delivery loop
 //
-// This template drives a multi-phase workflow:
-//   Phase 1 (Plan):             An opus agent analyzes open issues, builds a
-//                               dependency graph, and outputs a <plan> JSON
-//                               listing unblocked issues with branch names.
-//   Phase 2 (Execute + Review): For each issue, a sandbox is created via
-//                               createSandbox(). The implementer runs first
-//                               (100 iterations). If it produces commits, a
-//                               reviewer runs in the same sandbox on the same
-//                               branch (1 iteration). All issue pipelines run
-//                               concurrently via Promise.allSettled().
-//   Phase 3 (Merge):            A single agent merges all completed branches
-//                               into the current branch.
+// A planner selects unblocked issues. Each issue starts from synchronized main,
+// is implemented on its canonical issue branch, pushed, opened as a PR, and
+// reviewed by a separate process. Only an approved, checked, confirmed merge
+// closes the issue. Eligible parent issues are then closed recursively.
 //
 // The outer loop repeats up to MAX_ITERATIONS times so that newly unblocked
 // issues are picked up after each round of merges.
@@ -25,6 +17,11 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
+import {
+  createGitHubDelivery,
+  createGitRepository,
+} from "./delivery-adapters.mjs";
+import { completeIssueThroughPullRequest } from "./issue-delivery.mjs";
 import {
   createCodexSandboxSettings,
   createRunSettings,
@@ -71,20 +68,21 @@ const copyToWorktree = ["node_modules"];
 const targetBranch = execFileSync("git", ["branch", "--show-current"], {
   encoding: "utf8",
 }).trim();
+if (targetBranch !== "main") {
+  throw new Error(
+    `Sandcastle must start from main; current branch is ${targetBranch}.`,
+  );
+}
 
-const branchHasCommits = (branch: string) =>
-  Number(
-    execFileSync("git", ["rev-list", "--count", `${targetBranch}..${branch}`], {
-      encoding: "utf8",
-    }).trim(),
-  ) > 0;
+const repository = createGitRepository();
+const github = createGitHubDelivery();
 
-const runIssueAgent = async (
+const runIssueWorker = async (
   issue: z.infer<typeof planSchema>["issues"][number],
-  role: "implementer" | "reviewer",
+  findings: string[] = [],
 ) =>
   retryOperation({
-    label: `Issue #${issue.id} ${role}`,
+    label: `Issue #${issue.id} implementer`,
     attempts: PHASE_ATTEMPTS,
     initialDelayMs: RETRY_DELAY_MS,
     operation: async () => {
@@ -98,45 +96,51 @@ const runIssueAgent = async (
       });
 
       try {
-        const runResult = await sandbox.run({
+        return await sandbox.run({
           ...runSettings,
-          name: role,
-          maxIterations: role === "implementer" ? 100 : 1,
+          name: "implementer",
+          maxIterations: 100,
           agent: sandcastle.codex("gpt-5.4"),
-          promptFile:
-            role === "implementer"
-              ? "./.sandcastle/implement-prompt.md"
-              : "./.sandcastle/review-prompt.md",
-          promptArgs:
-            role === "implementer"
-              ? {
-                  TASK_ID: issue.id,
-                  ISSUE_TITLE: issue.title,
-                  BRANCH: issue.branch,
-                }
-              : { BRANCH: issue.branch, TASK_ID: issue.id },
+          promptFile: "./.sandcastle/implement-prompt.md",
+          promptArgs: {
+            TASK_ID: issue.id,
+            ISSUE_TITLE: issue.title,
+            BRANCH: issue.branch,
+            REVIEW_FINDINGS:
+              findings.length > 0
+                ? findings.map((finding) => `- ${finding}`).join("\n")
+                : "- None; this is the initial implementation pass.",
+          },
         });
-        if (role === "implementer") {
-          return { runResult };
-        }
-
-        const verdictResult = await sandbox.exec(
-          `node .sandcastle/read-review-verdict.mjs ${issue.id}`,
-        );
-        if (verdictResult.exitCode !== 0) {
-          throw new Error(
-            `Issue #${issue.id} reviewer did not produce a valid verdict: ${verdictResult.stderr}`,
-          );
-        }
-        return {
-          runResult,
-          review: reviewSchema.parse(JSON.parse(verdictResult.stdout)),
-        };
       } finally {
         await sandbox.close();
       }
     },
   });
+
+const runPullRequestReviewer = async (
+  issue: z.infer<typeof planSchema>["issues"][number],
+  pullRequest: { number: number },
+) =>
+  retryOperation({
+    label: `Pull request #${pullRequest.number} reviewer`,
+    attempts: PHASE_ATTEMPTS,
+    initialDelayMs: RETRY_DELAY_MS,
+    operation: () => sandcastle.run({
+      ...runSettings,
+      hooks,
+      sandbox: codexDocker(),
+      name: `pr-${pullRequest.number}-reviewer`,
+      maxIterations: 1,
+      agent: sandcastle.codex("gpt-5.4"),
+      promptFile: "./.sandcastle/pr-review-prompt.md",
+      promptArgs: {
+        PR_NUMBER: String(pullRequest.number),
+        TASK_ID: issue.id,
+      },
+      output: sandcastle.Output.object({ tag: "review", schema: reviewSchema }),
+    }),
+  }).then((result) => result.output);
 
 // ---------------------------------------------------------------------------
 // Main loop
@@ -144,7 +148,7 @@ const runIssueAgent = async (
 
 const main = async () => {
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
-  console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
+    console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
 
   // -------------------------------------------------------------------------
   // Phase 1: Plan
@@ -181,124 +185,43 @@ const main = async () => {
     break;
   }
 
-  console.log(
-    `Planning complete. ${issues.length} issue(s) to work in parallel:`,
-  );
+  console.log(`Planning complete. ${issues.length} issue(s) to deliver:`);
   for (const issue of issues) {
     console.log(`  ${issue.id}: ${issue.title} → ${issue.branch}`);
   }
 
-  // -------------------------------------------------------------------------
-  // Phase 2: Execute + Review
-  //
-  // For each issue, create a sandbox via createSandbox() so the implementer
-  // and reviewer share the same sandbox instance per branch. The implementer
-  // runs first; if it produces commits, the reviewer runs in the same sandbox.
-  //
-  // Promise.allSettled means one failing pipeline doesn't cancel the others.
-  // -------------------------------------------------------------------------
-
-  const settled = await Promise.allSettled(
-    issues.map(async (issue) => {
-      await runIssueAgent(issue, "implementer");
-
-      // Check git rather than only the latest run result. A prior process may
-      // have committed before losing its network connection or being killed.
-      if (branchHasCommits(issue.branch)) {
-        const reviewResult = (await runIssueAgent(issue, "reviewer")) as {
-          review: z.infer<typeof reviewSchema>;
-        };
-        if (!reviewResult.review.approved) {
-          const reviewFindings = reviewResult.review.findings;
-          console.error(
-            `  ✗ ${issue.id} (${issue.branch}) failed specification review:`,
-          );
-          for (const finding of reviewFindings) {
-            console.error(`    - ${finding}`);
-          }
-          return { hasCommits: false, reviewFindings };
-        }
-      }
-
-      return { hasCommits: branchHasCommits(issue.branch) };
-    }),
-  );
-
-  // Log any agents that threw (network error, sandbox crash, etc.).
-  for (const [i, outcome] of settled.entries()) {
-    if (outcome.status === "rejected") {
-      console.error(
-        `  ✗ ${issues[i]!.id} (${issues[i]!.branch}) failed: ${outcome.reason}`,
+  let deliveryFailed = false;
+  for (const issue of issues) {
+    try {
+      const result = await completeIssueThroughPullRequest({
+        issue,
+        repository,
+        github,
+        worker: {
+          implement: ({
+            branch,
+            findings = [],
+          }: {
+            branch: string;
+            findings?: string[];
+          }) => runIssueWorker({ ...issue, branch }, findings),
+        },
+        reviewer: {
+          evaluatePullRequest: ({ pullRequest }: { pullRequest: { number: number } }) =>
+            runPullRequestReviewer(issue, pullRequest),
+        },
+      });
+      console.log(
+        `  ✓ Issue #${issue.id} merged through ${result.pullRequest.url}`,
       );
+    } catch (error) {
+      deliveryFailed = true;
+      console.error(`  ✗ Issue #${issue.id} delivery failed:`, error);
+      break;
     }
   }
 
-  // Only pass branches that actually produced commits to the merge phase.
-  // An agent that ran successfully but made no commits has nothing to merge.
-  const hadFailures = settled.some((outcome) => outcome.status === "rejected");
-  const completedIssues = settled
-    .map((outcome, i) => ({ outcome, issue: issues[i]! }))
-    .filter(
-      (entry) =>
-        entry.outcome.status === "fulfilled" &&
-        entry.outcome.value.hasCommits,
-    )
-    .map((entry) => entry.issue);
-
-  const completedBranches = completedIssues.map((i) => i.branch);
-
-  console.log(
-    `\nExecution complete. ${completedBranches.length} branch(es) with commits:`,
-  );
-  for (const branch of completedBranches) {
-    console.log(`  ${branch}`);
-  }
-
-  if (completedBranches.length === 0) {
-    console.log("No commits produced. Nothing to merge.");
-    if (hadFailures) {
-      console.error(
-        "Some issue pipelines failed after all retries. Progress remains in their worktrees; rerun the same npm command to resume.",
-      );
-      process.exitCode = 1;
-    }
-    break;
-  }
-
-  // -------------------------------------------------------------------------
-  // Phase 3: Merge
-  //
-  // One agent merges all completed branches into the current branch,
-  // resolving any conflicts and running tests to confirm everything works.
-  //
-  // The {{BRANCHES}} and {{ISSUES}} prompt arguments are lists that the agent
-  // uses to know which branches to merge and which issues to close.
-  // -------------------------------------------------------------------------
-  await retryOperation({
-    label: "Merger",
-    attempts: PHASE_ATTEMPTS,
-    initialDelayMs: RETRY_DELAY_MS,
-    operation: () => sandcastle.run({
-      ...runSettings,
-      hooks,
-      sandbox: codexDocker(),
-      name: "merger",
-      maxIterations: 1,
-      agent: sandcastle.codex("gpt-5.4"),
-      promptFile: "./.sandcastle/merge-prompt.md",
-      promptArgs: {
-        BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
-        ISSUES: completedIssues.map((i) => `- ${i.id}: ${i.title}`).join("\n"),
-      },
-    }),
-  });
-
-  console.log("\nBranches merged.");
-
-  if (hadFailures) {
-    console.error(
-      "Some issue pipelines failed after all retries. Successful branches were merged; rerun the same npm command to resume the others.",
-    );
+  if (deliveryFailed) {
     process.exitCode = 1;
     break;
   }

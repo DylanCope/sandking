@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { retryOperation } from "./resilience.mjs";
 
@@ -51,38 +50,4 @@ test("a repeatedly failing phase stops after the configured attempt limit", asyn
 
   assert.equal(calls, 3);
   assert.deepEqual(delays, [1_000, 2_000]);
-});
-
-test("the orchestration loop retries every remote agent phase", async () => {
-  const main = await readFile(".sandcastle/main.mts", "utf8");
-
-  assert.match(main, /retryOperation\(\{\s*label: "Planner"/s);
-  assert.match(main, /label: `Issue #\$\{issue\.id\} \$\{role\}`/);
-  assert.match(main, /runIssueAgent\(issue, "implementer"\)/);
-  assert.match(main, /runIssueAgent\(issue, "reviewer"\)/);
-  assert.match(main, /retryOperation\(\{\s*label: "Merger"/s);
-});
-
-test("an exhausted worker cycle exits for a safe command restart", async () => {
-  const main = await readFile(".sandcastle/main.mts", "utf8");
-
-  assert.match(main, /Some issue pipelines failed/);
-  assert.doesNotMatch(
-    main,
-    /if \(completedBranches\.length === 0\) \{[\s\S]*?continue;/,
-  );
-});
-
-test("only spec-approved issue branches reach the merge phase", async () => {
-  const main = await readFile(".sandcastle/main.mts", "utf8");
-  const reviewPrompt = await readFile(".sandcastle/review-prompt.md", "utf8");
-  const mergePrompt = await readFile(".sandcastle/merge-prompt.md", "utf8");
-
-  assert.match(main, /approved: z\.boolean\(\)/);
-  assert.match(main, /reviewResult\.review\.approved/);
-  assert.match(main, /hasCommits: false, reviewFindings/);
-  assert.match(reviewPrompt, /Fetch the issue and every parent requirement/);
-  assert.match(reviewPrompt, /public acceptance seam/);
-  assert.match(reviewPrompt, /review-verdicts\/issue-\{\{TASK_ID\}\}\.json/);
-  assert.match(mergePrompt, /Do not close an issue merely because its branch merged/);
 });

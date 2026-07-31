@@ -8,6 +8,12 @@ Only work on the issue specified.
 
 Work on branch {{BRANCH}}. Make commits and run tests.
 
+# PULL REQUEST REVIEW FINDINGS
+
+{{REVIEW_FINDINGS}}
+
+On a change-request pass, address every finding without weakening the issue requirements or tests. Commit the corrections to the same issue branch; the harness will push the revised head for independent re-review.
+
 # CONTEXT
 
 Here are the last 10 commits:
