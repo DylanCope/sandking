@@ -21,11 +21,19 @@ type StartSessionResponse = {
   idempotentReplay: boolean;
 };
 
+type StartSessionRequest = {
+  projectRegistration: string;
+  provider: string;
+};
+
+type IdempotencyRecord = StartSessionRequest &
+  Omit<StartSessionResponse, "idempotentReplay">;
+
 type PersistedState = {
   runtimeId: string;
   revision: number;
   controllerSessions: RuntimeSession[];
-  idempotency: Record<string, Omit<StartSessionResponse, "idempotentReplay">>;
+  idempotency: Record<string, IdempotencyRecord>;
 };
 
 type AuditEntry = {
@@ -157,10 +165,25 @@ async function createPersistentRuntime(runtimeRoot: string) {
     }) {
       const replay = persistedState.idempotency[idempotencyKey];
       if (replay) {
+        if (
+          replay.projectRegistration !== projectRegistration ||
+          replay.provider !== provider
+        ) {
+          return {
+            status: 409,
+            body: {
+              error: "idempotency_conflict",
+              message: "Reusing an idempotency-key requires the same controller-session start request.",
+              revision: persistedState.revision,
+            },
+          };
+        }
+
         return {
           status: 200,
           body: {
-            ...replay,
+            controllerSession: replay.controllerSession,
+            revision: replay.revision,
             idempotentReplay: true,
           },
         };
@@ -193,6 +216,8 @@ async function createPersistentRuntime(runtimeRoot: string) {
       } satisfies StartSessionResponse;
       persistedState.idempotency[idempotencyKey] = {
         controllerSession,
+        projectRegistration,
+        provider,
         revision: persistedState.revision,
       };
       await writeState(statePath, persistedState);
@@ -397,13 +422,32 @@ function renderCockpit({
 async function readState(statePath: string): Promise<PersistedState | null> {
   try {
     const raw = await readFile(statePath, "utf8");
-    return JSON.parse(raw) as PersistedState;
+    return normalizePersistedState(JSON.parse(raw) as PersistedState);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return null;
     }
     throw error;
   }
+}
+
+function normalizePersistedState(state: PersistedState): PersistedState {
+  const idempotency = Object.fromEntries(
+    Object.entries(state.idempotency).map(([key, value]) => [
+      key,
+      {
+        ...value,
+        projectRegistration:
+          value.projectRegistration ?? value.controllerSession.projectRegistration,
+        provider: value.provider ?? value.controllerSession.provider,
+      },
+    ]),
+  );
+
+  return {
+    ...state,
+    idempotency,
+  };
 }
 
 async function writeState(statePath: string, state: PersistedState) {

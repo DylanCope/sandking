@@ -99,6 +99,26 @@ test("launching Sand-King serves a loopback Cockpit and an isolated local Contro
     idempotentReplay: true,
   });
 
+  const replayMismatch = await fetch(`${cli.cockpitUrl}api/controller-sessions`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${cli.sessionToken}`,
+      "content-type": "application/json",
+      "idempotency-key": "start-2",
+      "if-match": "1",
+    },
+    body: JSON.stringify({
+      projectRegistration: "other-project",
+      provider: "other-provider",
+    }),
+  });
+  assert.equal(replayMismatch.status, 409);
+  assert.deepEqual(await replayMismatch.json(), {
+    error: "idempotency_conflict",
+    message: "Reusing an idempotency-key requires the same controller-session start request.",
+    revision: 2,
+  });
+
   const staleRevision = await fetch(`${cli.cockpitUrl}api/controller-sessions`, {
     method: "POST",
     headers: {
