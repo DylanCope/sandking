@@ -3,7 +3,7 @@ import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { launchCli } from "./test-helpers.mts";
+import { launchCli, loadCockpit } from "./test-helpers.mts";
 
 test("launching Sand-King serves a loopback Cockpit and an isolated local Controller runtime", async (t) => {
   const runtimeRoot = await mkdtemp(join(tmpdir(), "sandking-runtime-"));
@@ -12,11 +12,15 @@ test("launching Sand-King serves a loopback Cockpit and an isolated local Contro
     await cli.stop();
   });
 
-  const cockpit = await fetch(cli.cockpitUrl);
-  assert.equal(cockpit.status, 200);
-  const html = await cockpit.text();
+  const cockpit = await loadCockpit(cli.cockpitUrl);
+  const { html } = cockpit;
   assert.match(html, /Sand-King Cockpit/);
   assert.match(html, new RegExp(`content="${cli.sessionToken}"`));
+  await cockpit.waitFor(
+    () => cockpit.elements.runtimeSnapshot.textContent.includes('"revision": 0'),
+    "expected the Cockpit to load the runtime snapshot on launch",
+  );
+  assert.match(cockpit.elements.runtimeStatus.textContent, /Runtime revision 0/);
 
   const unauthorized = await fetch(`${cli.cockpitUrl}api/runtime`);
   assert.equal(unauthorized.status, 401);
@@ -25,14 +29,7 @@ test("launching Sand-King serves a loopback Cockpit and an isolated local Contro
     message: "Provide the local Controller session token from the Cockpit.",
   });
 
-  const runtime = await fetch(`${cli.cockpitUrl}api/runtime`, {
-    headers: {
-      authorization: `Bearer ${cli.sessionToken}`,
-    },
-  });
-  assert.equal(runtime.status, 200);
-
-  const snapshot = await runtime.json();
+  const snapshot = JSON.parse(cockpit.elements.runtimeSnapshot.textContent);
   assert.equal(snapshot.runtime.listenAddress, "127.0.0.1");
   assert.equal(snapshot.runtime.loopbackOnly, true);
   assert.equal(snapshot.runtime.revision, 0);
@@ -44,43 +41,61 @@ test("launching Sand-King serves a loopback Cockpit and an isolated local Contro
   assert.doesNotMatch(JSON.stringify(snapshot), /secret-token-forbidden/);
   assert.doesNotMatch(JSON.stringify(snapshot), new RegExp(cli.sessionToken));
 
-  const start = await fetch(`${cli.cockpitUrl}api/controller-sessions`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${cli.sessionToken}`,
-      "content-type": "application/json",
-      "idempotency-key": "start-1",
-      "if-match": "0",
-    },
-    body: JSON.stringify({
-      projectRegistration: "local-sandbox",
-      provider: "claude-code",
-    }),
-  });
-  assert.equal(start.status, 201);
-  const started = await start.json();
+  cockpit.elements.projectRegistration.value = "local-sandbox";
+  cockpit.elements.provider.value = "claude-code";
+  await cockpit.elements.sessionForm.dispatch("submit");
+  await cockpit.waitFor(
+    () => cockpit.elements.sessionResult.textContent.includes('"revision": 1'),
+    "expected the Cockpit to render the started controller session",
+  );
+  const started = JSON.parse(cockpit.elements.sessionResult.textContent);
   assert.equal(started.idempotentReplay, false);
   assert.equal(started.controllerSession.projectRegistration, "local-sandbox");
   assert.equal(started.controllerSession.provider, "claude-code");
   assert.equal(started.controllerSession.runtime, "local");
   assert.equal(started.revision, 1);
+  await cockpit.waitFor(
+    () => cockpit.elements.runtimeSnapshot.textContent.includes('"revision": 1'),
+    "expected the Cockpit to refresh the runtime snapshot after session start",
+  );
+  const refreshedSnapshot = JSON.parse(cockpit.elements.runtimeSnapshot.textContent);
+  assert.equal(refreshedSnapshot.runtime.revision, 1);
+  assert.equal(refreshedSnapshot.controller.sessions.length, 1);
 
   const replay = await fetch(`${cli.cockpitUrl}api/controller-sessions`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${cli.sessionToken}`,
       "content-type": "application/json",
-      "idempotency-key": "start-1",
-      "if-match": "0",
+      "idempotency-key": "start-2",
+      "if-match": "1",
     },
     body: JSON.stringify({
       projectRegistration: "local-sandbox",
       provider: "claude-code",
     }),
   });
-  assert.equal(replay.status, 200);
-  assert.deepEqual(await replay.json(), {
-    ...started,
+  assert.equal(replay.status, 201);
+  const replayStarted = await replay.json();
+  assert.equal(replayStarted.idempotentReplay, false);
+  assert.equal(replayStarted.revision, 2);
+
+  const replayRepeat = await fetch(`${cli.cockpitUrl}api/controller-sessions`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${cli.sessionToken}`,
+      "content-type": "application/json",
+      "idempotency-key": "start-2",
+      "if-match": "1",
+    },
+    body: JSON.stringify({
+      projectRegistration: "local-sandbox",
+      provider: "claude-code",
+    }),
+  });
+  assert.equal(replayRepeat.status, 200);
+  assert.deepEqual(await replayRepeat.json(), {
+    ...replayStarted,
     idempotentReplay: true,
   });
 
@@ -89,8 +104,8 @@ test("launching Sand-King serves a loopback Cockpit and an isolated local Contro
     headers: {
       authorization: `Bearer ${cli.sessionToken}`,
       "content-type": "application/json",
-      "idempotency-key": "start-2",
-      "if-match": "0",
+      "idempotency-key": "start-3",
+      "if-match": "1",
     },
     body: JSON.stringify({
       projectRegistration: "local-sandbox",
@@ -101,7 +116,7 @@ test("launching Sand-King serves a loopback Cockpit and an isolated local Contro
   assert.deepEqual(await staleRevision.json(), {
     error: "revision_conflict",
     message: "Refresh the runtime snapshot and retry with the current revision.",
-    revision: 1,
+    revision: 2,
   });
 
   const runtimeFiles = await readdir(runtimeRoot);

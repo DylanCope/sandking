@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
+import vm from "node:vm";
 
 export async function launchCli({ runtimeRoot }: { runtimeRoot: string }) {
   const child = spawn(join(process.cwd(), "node_modules", ".bin", "tsx"), ["src/cli.mts", "--json"], {
@@ -73,6 +74,107 @@ export async function launchCli({ runtimeRoot }: { runtimeRoot: string }) {
       await new Promise<void>((resolve) => {
         child.once("exit", () => resolve());
       });
+    },
+  };
+}
+
+type Listener = (event: { preventDefault(): void; target: FakeElement }) => unknown;
+
+class FakeElement {
+  readonly listeners = new Map<string, Listener[]>();
+  textContent = "";
+  value = "";
+
+  constructor(readonly id: string) {}
+
+  addEventListener(type: string, listener: Listener) {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  async dispatch(type: string) {
+    const listeners = this.listeners.get(type) ?? [];
+    for (const listener of listeners) {
+      await listener({
+        preventDefault() {},
+        target: this,
+      });
+    }
+  }
+}
+
+export async function loadCockpit(cockpitUrl: string) {
+  const response = await fetch(cockpitUrl);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const scriptMatch = html.match(/<script type="module">([\s\S]*?)<\/script>/);
+  assert.ok(scriptMatch, "expected the Cockpit HTML to include a module script");
+  const sessionToken = html.match(/<meta name="sandking-session" content="([^"]+)"/)?.[1];
+  assert.ok(sessionToken, "expected the Cockpit HTML to publish a session token");
+
+  const elements = new Map<string, FakeElement>();
+  const getElement = (id: string) => {
+    let element = elements.get(id);
+    if (!element) {
+      element = new FakeElement(id);
+      elements.set(id, element);
+    }
+    return element;
+  };
+
+  const context = vm.createContext({
+    console,
+    window: {},
+    document: {
+      getElementById(id: string) {
+        return getElement(id);
+      },
+      querySelector(selector: string) {
+        if (selector === 'meta[name="sandking-session"]') {
+          return {
+            getAttribute(name: string) {
+              return name === "content" ? sessionToken : null;
+            },
+          };
+        }
+        return null;
+      },
+    },
+    fetch(input: string | URL, init?: RequestInit) {
+      const url = new URL(typeof input === "string" ? input : input.toString(), cockpitUrl);
+      return fetch(url, init);
+    },
+    URL,
+    setTimeout,
+    clearTimeout,
+  });
+  Object.assign(context.window as object, context);
+
+  await vm.runInContext(scriptMatch[1], context);
+
+  return {
+    html,
+    sessionToken,
+    elements: {
+      runtimeStatus: getElement("runtime-status"),
+      runtimeSnapshot: getElement("runtime-snapshot"),
+      refreshRuntime: getElement("refresh-runtime"),
+      sessionForm: getElement("controller-session-form"),
+      projectRegistration: getElement("project-registration"),
+      provider: getElement("provider"),
+      sessionStatus: getElement("controller-session-status"),
+      sessionResult: getElement("controller-session-result"),
+    },
+    async waitFor(predicate: () => boolean, message: string) {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        if (predicate()) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error(message);
     },
   };
 }

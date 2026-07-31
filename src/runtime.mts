@@ -305,7 +305,91 @@ function renderCockpit({
       <h1>Sand-King Cockpit</h1>
       <p>Controller runtime: local loopback</p>
       <p>Runtime root: ${escapeHtml(runtimeRoot)}</p>
+      <p id="runtime-status">Loading runtime snapshot...</p>
+      <button id="refresh-runtime" type="button">Refresh runtime</button>
+      <pre id="runtime-snapshot" aria-live="polite"></pre>
+      <form id="controller-session-form">
+        <label>
+          Project registration
+          <input id="project-registration" name="projectRegistration" value="local-sandbox" />
+        </label>
+        <label>
+          Provider
+          <input id="provider" name="provider" value="claude-code" />
+        </label>
+        <button id="start-controller-session" type="submit">Start controller session</button>
+      </form>
+      <p id="controller-session-status"></p>
+      <pre id="controller-session-result" aria-live="polite"></pre>
     </main>
+    <script type="module">
+      const sessionToken = document.querySelector('meta[name="sandking-session"]')?.getAttribute('content');
+      const runtimeStatus = document.getElementById('runtime-status');
+      const runtimeSnapshot = document.getElementById('runtime-snapshot');
+      const refreshRuntimeButton = document.getElementById('refresh-runtime');
+      const sessionForm = document.getElementById('controller-session-form');
+      const projectRegistrationInput = document.getElementById('project-registration');
+      const providerInput = document.getElementById('provider');
+      const sessionStatus = document.getElementById('controller-session-status');
+      const sessionResult = document.getElementById('controller-session-result');
+      const state = {
+        revision: null,
+        startAttempts: 0,
+      };
+
+      async function loadRuntimeSnapshot() {
+        runtimeStatus.textContent = 'Loading runtime snapshot...';
+        const response = await fetch('/api/runtime', {
+          headers: {
+            authorization: 'Bearer ' + sessionToken,
+          },
+        });
+        const snapshot = await response.json();
+        runtimeSnapshot.textContent = JSON.stringify(snapshot, null, 2);
+        if (!response.ok) {
+          runtimeStatus.textContent = snapshot.message ?? 'Failed to load runtime snapshot.';
+          return;
+        }
+        state.revision = snapshot.runtime.revision;
+        runtimeStatus.textContent = 'Runtime revision ' + snapshot.runtime.revision;
+      }
+
+      async function startControllerSession(event) {
+        event.preventDefault();
+        if (state.revision === null) {
+          await loadRuntimeSnapshot();
+        }
+
+        sessionStatus.textContent = 'Starting controller session...';
+        state.startAttempts += 1;
+        const response = await fetch('/api/controller-sessions', {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer ' + sessionToken,
+            'content-type': 'application/json',
+            'idempotency-key': 'cockpit-start-' + state.startAttempts,
+            'if-match': String(state.revision),
+          },
+          body: JSON.stringify({
+            projectRegistration: projectRegistrationInput.value,
+            provider: providerInput.value,
+          }),
+        });
+        const result = await response.json();
+        sessionResult.textContent = JSON.stringify(result, null, 2);
+        sessionStatus.textContent = response.ok
+          ? 'Controller session ready.'
+          : result.message ?? 'Failed to start controller session.';
+        if (response.ok && typeof result.revision === 'number') {
+          state.revision = result.revision;
+          await loadRuntimeSnapshot();
+        }
+      }
+
+      refreshRuntimeButton.addEventListener('click', loadRuntimeSnapshot);
+      sessionForm.addEventListener('submit', startControllerSession);
+      void loadRuntimeSnapshot();
+    </script>
   </body>
 </html>`;
 }
