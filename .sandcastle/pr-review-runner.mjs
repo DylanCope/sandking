@@ -4,6 +4,7 @@ export async function runPullRequestReview({
   createSandbox,
   sandboxOptions,
   runOptions,
+  parseReview,
 }) {
   const sandbox = await createSandbox({
     ...sandboxOptions,
@@ -20,8 +21,24 @@ export async function runPullRequestReview({
         TASK_ID: issue.id,
       },
     });
-    return result.output;
+    return parseReview(extractReviewVerdict(result.stdout));
   } finally {
     await sandbox.close();
+  }
+}
+
+export function extractReviewVerdict(stdout) {
+  const matches = [...stdout.matchAll(/<review>\s*([\s\S]*?)\s*<\/review>/g)];
+  const rawVerdict = matches.at(-1)?.[1];
+  if (!rawVerdict) {
+    throw new Error("Pull request reviewer did not emit a <review> verdict.");
+  }
+
+  try {
+    return JSON.parse(rawVerdict);
+  } catch (cause) {
+    throw new Error("Pull request reviewer emitted invalid JSON in <review>.", {
+      cause,
+    });
   }
 }

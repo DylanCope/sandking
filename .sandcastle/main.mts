@@ -160,8 +160,8 @@ const runPullRequestReviewer = async (
         maxIterations: 1,
         agent: sandcastle.codex("gpt-5.4"),
         promptFile: "./.sandcastle/pr-review-prompt.md",
-        output: sandcastle.Output.object({ tag: "review", schema: reviewSchema }),
       },
+      parseReview: (value: unknown) => reviewSchema.parse(value),
     }),
   });
 
