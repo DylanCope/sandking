@@ -27,6 +27,11 @@ import {
   createRunSettings,
 } from "./sandbox-settings.mjs";
 import { retryOperation } from "./resilience.mjs";
+import {
+  createParentScope,
+  parseRunScope,
+  selectScopedIssues,
+} from "./run-scope.mjs";
 
 // The planner emits its plan as JSON inside <plan> tags; Output.object extracts
 // and validates it against this schema. We use Zod here, but any Standard
@@ -76,6 +81,19 @@ if (targetBranch !== "main") {
 
 const repository = createGitRepository();
 const github = createGitHubDelivery();
+const scopeOptions = parseRunScope(process.argv.slice(2));
+const parentScope = scopeOptions
+  ? await createParentScope({
+      parentIssueId: scopeOptions.parentIssueId,
+      github,
+    })
+  : null;
+
+if (parentScope) {
+  console.log(
+    `Harness run scoped to ${parentScope.issueIds.size} descendant issue(s) of #${parentScope.parentIssueId}.`,
+  );
+}
 
 const runIssueWorker = async (
   issue: z.infer<typeof planSchema>["issues"][number],
@@ -148,6 +166,13 @@ const runPullRequestReviewer = async (
 
 const main = async () => {
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
+    if (parentScope && await parentScope.isComplete()) {
+      console.log(
+        `Parent issue #${parentScope.parentIssueId} is complete. Scoped Harness run finished.`,
+      );
+      break;
+    }
+
     console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
 
   // -------------------------------------------------------------------------
@@ -177,11 +202,17 @@ const main = async () => {
     }),
   });
 
-  const issues: z.infer<typeof planSchema>["issues"] = plan.output.issues;
+  const issues: z.infer<typeof planSchema>["issues"] = selectScopedIssues(
+    plan.output.issues,
+    parentScope,
+  );
 
   if (issues.length === 0) {
-    // No unblocked work — either everything is done or everything is blocked.
-    console.log("No unblocked issues to work on. Exiting.");
+    console.log(
+      parentScope
+        ? `No unblocked descendants of #${parentScope.parentIssueId} are ready. Exiting.`
+        : "No unblocked issues to work on. Exiting.",
+    );
     break;
   }
 

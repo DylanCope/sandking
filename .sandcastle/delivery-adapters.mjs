@@ -85,6 +85,23 @@ export function createGitHubDelivery() {
   };
 
   return {
+    async getIssue(issueId) {
+      const issue = JSON.parse(
+        run("gh", [
+          "issue",
+          "view",
+          String(issueId),
+          "--json",
+          "number,title,state",
+        ]),
+      );
+      return {
+        id: String(issue.number),
+        title: issue.title,
+        state: issue.state.toLowerCase(),
+      };
+    },
+
     async findOpenPullRequest({ issue }) {
       const branch = `sandcastle/issue-${issue.id}`;
       const matches = JSON.parse(

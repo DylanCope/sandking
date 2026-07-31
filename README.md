@@ -31,3 +31,12 @@ implementation work:
 ```bash
 npm run sandcastle
 ```
+
+Scope a run to one parent issue and all of its descendants:
+
+```bash
+npm run sandcastle -- --parent 25
+```
+
+The scoped run ignores eligible tickets outside that issue tree and stops once
+GitHub reports the parent issue closed.
