@@ -10,8 +10,8 @@
     "normalizationDifference": "one terminal LF",
     "exactContentEquivalentAfterApprovedExportNormalization": true
   },
-  "generatedFromCommit": "b7653ab546a372e306391519d783c1be536a9441",
-  "recordedAt": "2026-08-01T18:00:30.588Z",
+  "generatedFromCommit": "7e2fe37bdeaaaae0f1a6e2151cc434a1afb1745c",
+  "recordedAt": "2026-08-01T18:01:31.562Z",
   "scenario": "planning-spine/projects-an-optional-journey",
   "packagedPublicSeam": {
     "command": "sandking",
@@ -20,8 +20,8 @@
     "tarballSha256": "e320c61ed1205a8acefc1d379032620001e9134c39322c783b788dc1145614ca"
   },
   "runtime": {
-    "runtimeId": "runtime-caa886748ada8b5956f3a8e3",
-    "hostId": "host-72a9b561447374ac11ad6930"
+    "runtimeId": "runtime-1a6ff3676e3c95c7671174b2",
+    "hostId": "host-d2c53893462638eaa51f1059"
   },
   "projectionProvenance": {
     "adapter": {
@@ -61,20 +61,20 @@
     "allMutationControlsDisabled": true
   },
   "focusedSession": {
-    "sessionId": "controller-session-c22523bf4e936b8f52675411",
+    "sessionId": "controller-session-e0d5ba74ffbb59062858564c",
     "workContextId": "work-context-speccing-optional-planning",
     "canonicalReference": "github:fixture:issue:116",
     "providerId": "conformance-controller-v1",
     "providerAdapterId": "conformance-controller-adapter-v1",
-    "providerSessionId": "conformance-provider-session-49a0e26a42c2fa1788a92157",
-    "terminalStreamId": "controller-terminal-5474e32d10d308d463f2d133",
+    "providerSessionId": "conformance-provider-session-6b8aa09ec0d14fc0fb7445ac",
+    "terminalStreamId": "controller-terminal-6d7b398c1dcbb01ecfe1bc27",
     "ptyRuntimeOwned": true,
     "providerObservedTty": true,
     "writableAttachment": true,
     "competingWritableAttachmentRejectedAs": "terminal_write_attachment_conflict",
     "inspectedSelectedContext": true,
     "retainedLifecycle": {
-      "providerSessionId": "conformance-provider-session-49a0e26a42c2fa1788a92157",
+      "providerSessionId": "conformance-provider-session-6b8aa09ec0d14fc0fb7445ac",
       "providerAdapterId": "conformance-controller-adapter-v1",
       "terminalKind": "pty",
       "ptyRuntimeOwned": true,
@@ -85,7 +85,7 @@
     "authorizationClass": "planning_stage_status",
     "expectedRevision": 1,
     "resultingRevision": 2,
-    "auditId": "audit-86d1febd68e1e4939fa0c4ba",
+    "auditId": "audit-daca14f6887f28413a396847",
     "replayReturnedSameAudit": true,
     "replayIdempotent": true,
     "ordinaryWorkBlocked": false
@@ -119,12 +119,12 @@
   ],
   "auditReferences": [
     {
-      "auditId": "audit-f5e6f680ea085921014b3c17",
+      "auditId": "audit-c23269a82cd12a82e7bc57a0",
       "action": "controller.session.start",
       "outcome": "accepted",
       "details": {
-        "sessionId": "controller-session-c22523bf4e936b8f52675411",
-        "providerSessionId": "conformance-provider-session-49a0e26a42c2fa1788a92157",
+        "sessionId": "controller-session-e0d5ba74ffbb59062858564c",
+        "providerSessionId": "conformance-provider-session-6b8aa09ec0d14fc0fb7445ac",
         "providerId": "conformance-controller-v1",
         "providerAdapterId": "conformance-controller-adapter-v1",
         "adapterProtocol": "1.0.0",
@@ -135,18 +135,18 @@
         ],
         "workContextId": "work-context-speccing-optional-planning",
         "canonicalReference": "github:fixture:issue:116",
-        "streamId": "controller-terminal-5474e32d10d308d463f2d133",
+        "streamId": "controller-terminal-6d7b398c1dcbb01ecfe1bc27",
         "ptyRuntimeOwned": true,
         "terminalKind": "pty"
       }
     },
     {
-      "auditId": "audit-4d3739c66efac5146ae11a8f",
+      "auditId": "audit-878310db1a4edec2b85915da",
       "action": "planning.session.open",
       "outcome": "accepted",
       "details": {
         "authorizationClass": "planning_focused_session",
-        "idempotencyKeyHash": "sha256:bf9d18c9e160bfec79b69e4308b5868362adb3f699e1f19eee9a5a324fccf4a0",
+        "idempotencyKeyHash": "sha256:447c7af146050e3759cbe6d0cc4912a7136fab969efe9cbdaea300b711a89dca",
         "expectedRevision": 0,
         "actualRevision": 0,
         "workContextId": "work-context-speccing-optional-planning",
@@ -155,46 +155,46 @@
         "skillInvocation": false,
         "projectFileWrite": false,
         "resultingRevision": 1,
-        "sessionId": "controller-session-c22523bf4e936b8f52675411",
-        "providerSessionId": "conformance-provider-session-49a0e26a42c2fa1788a92157",
+        "sessionId": "controller-session-e0d5ba74ffbb59062858564c",
+        "providerSessionId": "conformance-provider-session-6b8aa09ec0d14fc0fb7445ac",
         "providerAdapterId": "conformance-controller-adapter-v1",
-        "streamId": "controller-terminal-5474e32d10d308d463f2d133",
+        "streamId": "controller-terminal-6d7b398c1dcbb01ecfe1bc27",
         "ptyRuntimeOwned": true
       }
     },
     {
-      "auditId": "audit-921e1bd2f5e61c4c8388d39c",
+      "auditId": "audit-9015c903fcd1b2259ca8af46",
       "action": "controller.terminal.attach",
       "outcome": "accepted",
       "details": {
-        "sessionId": "controller-session-c22523bf4e936b8f52675411",
-        "providerSessionId": "conformance-provider-session-49a0e26a42c2fa1788a92157",
-        "streamId": "controller-terminal-5474e32d10d308d463f2d133",
+        "sessionId": "controller-session-e0d5ba74ffbb59062858564c",
+        "providerSessionId": "conformance-provider-session-6b8aa09ec0d14fc0fb7445ac",
+        "streamId": "controller-terminal-6d7b398c1dcbb01ecfe1bc27",
         "mode": "read-write",
         "exclusive": true,
         "outputCursor": 0
       }
     },
     {
-      "auditId": "audit-85fa08932d24dd0c76850c55",
+      "auditId": "audit-08efa6ddcd503ebabeca357c",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-c22523bf4e936b8f52675411",
-        "providerSessionId": "conformance-provider-session-49a0e26a42c2fa1788a92157",
-        "streamId": "controller-terminal-5474e32d10d308d463f2d133",
+        "sessionId": "controller-session-e0d5ba74ffbb59062858564c",
+        "providerSessionId": "conformance-provider-session-6b8aa09ec0d14fc0fb7445ac",
+        "streamId": "controller-terminal-6d7b398c1dcbb01ecfe1bc27",
         "sequence": 0,
         "byteLength": 8,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-86d1febd68e1e4939fa0c4ba",
+      "auditId": "audit-daca14f6887f28413a396847",
       "action": "planning.stage.not-used",
       "outcome": "accepted",
       "details": {
         "authorizationClass": "planning_stage_status",
-        "idempotencyKeyHash": "sha256:ec57629c93c66724e62c8dedc67d4e18ca9bffe8ba1d4d4acb79ce7f82427af0",
+        "idempotencyKeyHash": "sha256:fa123140686caa63f7fb06ec2ab9395e95bcc6429f618cc1d7ada88c951e1f1c",
         "expectedRevision": 1,
         "actualRevision": 1,
         "journeyId": "journey-fixture-optional-planning",
@@ -208,12 +208,12 @@
       }
     },
     {
-      "auditId": "audit-41c2817e0506c00008fe3472",
+      "auditId": "audit-dbf8c87c0e623efe2da41f7f",
       "action": "planning.stage.not-used",
       "outcome": "observed",
       "details": {
         "authorizationClass": "planning_stage_status",
-        "idempotencyKeyHash": "sha256:ec57629c93c66724e62c8dedc67d4e18ca9bffe8ba1d4d4acb79ce7f82427af0",
+        "idempotencyKeyHash": "sha256:fa123140686caa63f7fb06ec2ab9395e95bcc6429f618cc1d7ada88c951e1f1c",
         "expectedRevision": 1,
         "actualRevision": 2,
         "journeyId": "journey-fixture-optional-planning",
@@ -223,16 +223,16 @@
         "skillInvocation": false,
         "projectFileWrite": false,
         "idempotentReplay": true,
-        "originalAuditId": "audit-86d1febd68e1e4939fa0c4ba"
+        "originalAuditId": "audit-daca14f6887f28413a396847"
       }
     },
     {
-      "auditId": "audit-c992cc8dbb6eaee5dc6d311a",
+      "auditId": "audit-0b048b65b46b1a0dd71a55a7",
       "action": "planning.stage.not-used",
       "outcome": "rejected",
       "details": {
         "authorizationClass": "planning_stage_status",
-        "idempotencyKeyHash": "sha256:ec57629c93c66724e62c8dedc67d4e18ca9bffe8ba1d4d4acb79ce7f82427af0",
+        "idempotencyKeyHash": "sha256:fa123140686caa63f7fb06ec2ab9395e95bcc6429f618cc1d7ada88c951e1f1c",
         "expectedRevision": 1,
         "actualRevision": 1,
         "journeyId": "journey-fixture-optional-planning",
@@ -245,7 +245,7 @@
       }
     },
     {
-      "auditId": "audit-b4ef722dadf364cf84f70e6d",
+      "auditId": "audit-a8a863c6af4dcd106155173d",
       "action": "planning.stage.not-used",
       "outcome": "rejected",
       "details": {
@@ -263,7 +263,7 @@
       }
     },
     {
-      "auditId": "audit-5bd52ea0b813fd1e0b403211",
+      "auditId": "audit-489b727353afbc6266db0d56",
       "action": "planning.stage.not-used",
       "outcome": "rejected",
       "details": {
@@ -282,7 +282,7 @@
       }
     },
     {
-      "auditId": "audit-8aa6bae74dbf1fcbdbdcf08c",
+      "auditId": "audit-7eee09adbf824d4be843156a",
       "action": "planning.stage.not-used",
       "outcome": "rejected",
       "details": {
