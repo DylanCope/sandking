@@ -12,6 +12,10 @@ const browserProtocol = Object.freeze({
     optional: [],
   },
   schemaDigest: "sha256:1b60e5fc485e113a347571df6fe73dffc621aaee413a0a96bb6331f0cc2d6913",
+  framing: {
+    maxControlMessageBytes: 32_768,
+    maxOpaqueStreamChunkBytes: 16_384,
+  },
 });
 
 const app = document.getElementById("app");
@@ -65,12 +69,43 @@ socket.addEventListener("message", (event) => {
     return;
   }
 
+  const runtimeRequired = Array.isArray(message?.capabilities?.required)
+    ? message.capabilities.required
+    : [];
+  const runtimeOptional = Array.isArray(message?.capabilities?.optional)
+    ? message.capabilities.optional
+    : [];
+  const negotiated = Array.isArray(message?.negotiatedCapabilities)
+    ? message.negotiatedCapabilities
+    : [];
+  const browserKnown = new Set([
+    ...browserProtocol.capabilities.required,
+    ...browserProtocol.capabilities.optional,
+  ]);
+  const runtimeAdvertised = new Set([...runtimeRequired, ...runtimeOptional]);
+  const capabilitiesCompatible = runtimeRequired.every((capability) =>
+    browserKnown.has(capability))
+    && browserProtocol.capabilities.required.every((capability) =>
+      negotiated.includes(capability))
+    && negotiated.every((capability) =>
+      browserKnown.has(capability) && runtimeAdvertised.has(capability));
+  const framingCompatible = Number.isSafeInteger(message?.framing?.maxControlMessageBytes)
+    && message.framing.maxControlMessageBytes > 0
+    && message.framing.maxControlMessageBytes <= browserProtocol.framing.maxControlMessageBytes
+    && Number.isSafeInteger(message?.framing?.maxOpaqueStreamChunkBytes)
+    && message.framing.maxOpaqueStreamChunkBytes > 0
+    && message.framing.maxOpaqueStreamChunkBytes
+      <= browserProtocol.framing.maxOpaqueStreamChunkBytes;
+
   if (
     message?.type !== "runtime.hello-ack"
     || message.protocol?.major !== browserProtocol.protocol.major
     || message.identity !== browserProtocol.expectedPeerIdentity
     || message.peerIdentity !== browserProtocol.identity
     || message.schemaDigest !== browserProtocol.schemaDigest
+    || !capabilitiesCompatible
+    || !framingCompatible
+    || message.viewModel?.kind !== "cockpit.connection"
   ) {
     requireReload("browser_runtime_handshake_mismatch");
     return;

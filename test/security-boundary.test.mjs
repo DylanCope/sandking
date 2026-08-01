@@ -172,13 +172,15 @@ test("bootstrap-token redemption is atomic and the plaintext token is never reta
     ]);
     assert.deepEqual(responses.map((response) => response.status).sort(), [302, 410]);
 
+    const invalidTokenUrl = new URL(launch.bootstrapUrl);
+    invalidTokenUrl.searchParams.set("token", "0".repeat(64));
+    assert.equal((await request({ url: invalidTokenUrl.href })).status, 410);
+
     const tokenFiles = await readdir(join(dataDir, "bootstrap-tokens"));
-    const retained = await Promise.all(tokenFiles.map(async (file) =>
-      readFile(join(dataDir, "bootstrap-tokens", file), "utf8")));
+    assert.deepEqual(tokenFiles, [], "redemption and invalid probes must not retain claims");
     const persistedState = [
       await readFile(join(dataDir, "runtime-state.json"), "utf8"),
       await readFile(join(dataDir, "audit.jsonl"), "utf8"),
-      ...retained,
     ].join("\n");
     assert.doesNotMatch(persistedState, new RegExp(plaintextToken));
   } finally {

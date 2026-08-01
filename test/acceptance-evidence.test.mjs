@@ -52,6 +52,7 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
   assert.equal(evidence.browserNegotiation.identity, "cockpit");
   assert.equal(evidence.browserNegotiation.runtimeIdentity, "controller-runtime");
   assert.equal(evidence.browserNegotiation.mismatchReloadRequired, true);
+  assert.equal(evidence.browserNegotiation.capabilityMismatchReloadRequired, true);
   assert.deepEqual(evidence.typedMismatchEvidence.host, [
     "host_protocol_major_mismatch",
     "host_identity_mismatch",
@@ -60,6 +61,9 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
   ]);
   assert.deepEqual(evidence.typedMismatchEvidence.browser, [
     "browser_protocol_major_mismatch",
+    "browser_capability_unsupported",
+    "browser_runtime_handshake_mismatch",
+    "browser_opaque_frame_invalid",
   ]);
   assert.equal(evidence.typedMismatchEvidence.acceptedStatePreserved, true);
   assert.equal(evidence.typedMismatchEvidence.mutationOccurred, false);

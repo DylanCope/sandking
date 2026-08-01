@@ -3,7 +3,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { open, readFile, rm } from "node:fs/promises";
+import { readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
@@ -14,14 +14,16 @@ import {
   MAX_BROWSER_OPAQUE_CHUNK_BYTES,
   BrowserProtocolError,
   browserCapabilities,
+  decodeBrowserOpaqueFrame,
   parseBrowserControl,
+  runtimeOptionalBrowserCapabilities,
+  runtimeRequiredBrowserCapabilities,
   serializeRuntimeControl,
 } from "./browser-protocol.mjs";
 import {
   appendPrivateJsonLine,
   ensurePrivateDirectory,
   hasErrorCode,
-  PRIVATE_FILE_MODE,
   readJson,
   removePrivateFile,
   writePrivateJson,
@@ -147,31 +149,36 @@ const consumeBootstrapToken = async (token) => {
   }
   const tokenId = createHash("sha256").update(token).digest("hex");
   const tokenPath = join(tokenDirectory, `${tokenId}.json`);
-  const claimPath = join(tokenDirectory, `${tokenId}.claim`);
-  let claim;
+  const claimPath = join(
+    tokenDirectory,
+    `${tokenId}.${randomBytes(8).toString("hex")}.claim`,
+  );
   try {
-    claim = await open(claimPath, "wx", PRIVATE_FILE_MODE);
-    await claim.writeFile(`${process.pid}\n`, "utf8");
+    // Renaming the token itself is the atomic compare-and-consume operation.
+    // Concurrent or fabricated claims have no source file to rename and leave
+    // no durable marker behind.
+    await rename(tokenPath, claimPath);
   } catch (error) {
-    if (hasErrorCode(error, "EEXIST")) {
+    if (hasErrorCode(error, "ENOENT")) {
       return null;
     }
     throw error;
-  } finally {
-    await claim?.close();
   }
 
-  const tokenState = await readJson(tokenPath, null);
-  await removePrivateFile(tokenPath);
-  if (
-    !tokenState
-    || typeof tokenState !== "object"
-    || tokenState.runtimeId !== state.runtimeId
-    || Number(tokenState.expiresAt) <= Date.now()
-  ) {
-    return null;
+  try {
+    const tokenState = await readJson(claimPath, null);
+    if (
+      !tokenState
+      || typeof tokenState !== "object"
+      || tokenState.runtimeId !== state.runtimeId
+      || Number(tokenState.expiresAt) <= Date.now()
+    ) {
+      return null;
+    }
+    return tokenState;
+  } finally {
+    await removePrivateFile(claimPath);
   }
-  return tokenState;
 };
 
 const createSession = async () => {
@@ -373,50 +380,93 @@ const rejectBrowserProtocol = (socket, code, reloadRequired) => {
 
 /** @param {WebSocket} socket @param {{csrfToken: string, auditId: string}} session */
 const handleBrowserConnection = (socket, session) => {
-  let negotiated = false;
+  /** @type {"awaiting-hello" | "negotiated" | "rejected"} */
+  let phase = "awaiting-hello";
   const handshakeTimeout = setTimeout(() => {
+    phase = "rejected";
     rejectBrowserProtocol(socket, "browser_hello_timeout", true);
   }, 3_000);
 
-  socket.once("message", async (data, isBinary) => {
-    clearTimeout(handshakeTimeout);
+  /** @param {import("ws").RawData} data */
+  const toBuffer = (data) => Array.isArray(data)
+    ? Buffer.concat(data)
+    : Buffer.isBuffer(data)
+      ? data
+      : Buffer.from(new Uint8Array(data));
+
+  /** @param {import("ws").RawData} data */
+  const parseControlFrame = (data) => {
+    const controlData = toBuffer(data);
+    if (controlData.byteLength > MAX_BROWSER_CONTROL_BYTES) {
+      throw new BrowserProtocolError("browser_control_frame_invalid");
+    }
+    let json;
     try {
-      const controlData = Array.isArray(data)
-        ? Buffer.concat(data)
-        : Buffer.isBuffer(data)
-          ? data
-          : Buffer.from(new Uint8Array(data));
-      if (isBinary || controlData.byteLength > MAX_BROWSER_CONTROL_BYTES) {
+      json = JSON.parse(controlData.toString());
+    } catch {
+      throw new BrowserProtocolError("browser_control_json_invalid");
+    }
+    return parseBrowserControl(json);
+  };
+
+  /** @param {import("ws").RawData} data @param {boolean} isBinary */
+  const processMessage = async (data, isBinary) => {
+    if (phase === "rejected") {
+      return;
+    }
+    const wasAwaitingHello = phase === "awaiting-hello";
+    if (wasAwaitingHello) {
+      clearTimeout(handshakeTimeout);
+    }
+
+    try {
+      if (phase === "negotiated") {
+        if (isBinary) {
+          const opaque = decodeBrowserOpaqueFrame(toBuffer(data));
+          await recordAudit("browser.opaque.receive", "observed", {
+            streamId: opaque.streamId,
+            sequence: opaque.sequence,
+            eof: opaque.eof,
+            byteLength: opaque.data.byteLength,
+          });
+          return;
+        }
+        const control = parseControlFrame(data);
+        if (control.type !== "browser.ping") {
+          throw new BrowserProtocolError("browser_control_unexpected_message");
+        }
+        socket.send(serializeRuntimeControl({
+          type: "runtime.pong",
+          requestId: control.requestId,
+        }));
+        return;
+      }
+
+      if (isBinary) {
         throw new BrowserProtocolError("browser_control_frame_invalid");
       }
-      let json;
-      try {
-        json = JSON.parse(controlData.toString());
-      } catch {
-        throw new BrowserProtocolError("browser_control_json_invalid");
+      const hello = parseControlFrame(data);
+      if (hello.type !== "browser.hello") {
+        throw new BrowserProtocolError("browser_hello_required");
       }
-      const hello = parseBrowserControl(json);
       if (hello.protocol.major !== BROWSER_PROTOCOL_VERSION.major) {
-        rejectBrowserProtocol(socket, "browser_protocol_major_mismatch", true);
-        await recordAudit("browser.negotiate", "rejected", {
-          code: "browser_protocol_major_mismatch",
-        });
-        return;
+        throw new BrowserProtocolError("browser_protocol_major_mismatch");
       }
       if (hello.schemaDigest !== BROWSER_SCHEMA_DIGEST) {
-        rejectBrowserProtocol(socket, "browser_schema_mismatch", true);
-        await recordAudit("browser.negotiate", "rejected", { code: "browser_schema_mismatch" });
-        return;
+        throw new BrowserProtocolError("browser_schema_mismatch");
       }
       const unsupported = hello.capabilities.required.filter(
         (capability) => !browserCapabilities.includes(capability),
       );
-      if (unsupported.length > 0) {
-        rejectBrowserProtocol(socket, "browser_capability_unsupported", true);
-        await recordAudit("browser.negotiate", "rejected", {
-          code: "browser_capability_unsupported",
-        });
-        return;
+      const browserOffered = new Set([
+        ...hello.capabilities.required,
+        ...hello.capabilities.optional,
+      ]);
+      const missingRuntimeRequired = runtimeRequiredBrowserCapabilities.filter(
+        (capability) => !browserOffered.has(capability),
+      );
+      if (unsupported.length > 0 || missingRuntimeRequired.length > 0) {
+        throw new BrowserProtocolError("browser_capability_unsupported");
       }
 
       const currentCursor = state.host.observationCursor ?? "host:origin";
@@ -428,21 +478,27 @@ const handleBrowserConnection = (socket, session) => {
       const negotiatedCapabilities = browserCapabilities.filter((capability) =>
         [...hello.capabilities.required, ...hello.capabilities.optional].includes(capability));
 
-      socket.send(serializeRuntimeControl({
+      const acknowledgement = serializeRuntimeControl({
         type: "runtime.hello-ack",
         protocol: BROWSER_PROTOCOL_VERSION,
         release: releaseVersion,
         identity: "controller-runtime",
         peerIdentity: "cockpit",
         capabilities: {
-          required: ["cockpit.structured-control.v1", "cockpit.resynchronization.v1"],
-          optional: ["cockpit.opaque-stream.v1"],
+          required: [...runtimeRequiredBrowserCapabilities],
+          optional: [...runtimeOptionalBrowserCapabilities],
         },
         negotiatedCapabilities,
         schemaDigest: BROWSER_SCHEMA_DIGEST,
         framing: {
-          maxControlMessageBytes: MAX_BROWSER_CONTROL_BYTES,
-          maxOpaqueStreamChunkBytes: MAX_BROWSER_OPAQUE_CHUNK_BYTES,
+          maxControlMessageBytes: Math.min(
+            MAX_BROWSER_CONTROL_BYTES,
+            hello.framing.maxControlMessageBytes,
+          ),
+          maxOpaqueStreamChunkBytes: Math.min(
+            MAX_BROWSER_OPAQUE_CHUNK_BYTES,
+            hello.framing.maxOpaqueStreamChunkBytes,
+          ),
         },
         observation,
         session: { csrfToken: session.csrfToken },
@@ -466,29 +522,32 @@ const handleBrowserConnection = (socket, session) => {
             observationCursor: state.host.observationCursor,
           },
         },
-      }));
-      negotiated = true;
+      });
       await recordAudit("browser.negotiate", "accepted", {
         runtimeId: state.runtimeId,
         hostIdentity: state.host.identity,
         observationMode: observation.mode,
         sessionAuditId: session.auditId,
       });
+      phase = "negotiated";
+      socket.send(acknowledgement);
     } catch (error) {
       const code = error instanceof BrowserProtocolError
         ? error.code
         : "browser_protocol_invalid";
-      rejectBrowserProtocol(socket, code, true);
-      await recordAudit("browser.negotiate", "rejected", { code });
+      phase = "rejected";
+      rejectBrowserProtocol(socket, code, wasAwaitingHello);
+      await recordAudit(
+        wasAwaitingHello ? "browser.negotiate" : "browser.frame",
+        "rejected",
+        { code },
+      );
     }
-  });
+  };
 
-  socket.on("message", (_data, _isBinary) => {
-    if (!negotiated) {
-      return;
-    }
-    // Slice 1 has no browser-authorized mutations. Subsequent structured
-    // operations arrive in later tickets; opaque frames remain binary-only.
+  let processing = Promise.resolve();
+  socket.on("message", (data, isBinary) => {
+    processing = processing.then(() => processMessage(data, isBinary));
   });
 };
 

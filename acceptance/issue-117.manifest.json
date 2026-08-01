@@ -44,6 +44,11 @@
       "host_capability_unsupported",
       "host_protocol_invalid_frame"
     ],
-    "typedBrowserFailures": ["browser_protocol_major_mismatch"]
+    "typedBrowserFailures": [
+      "browser_protocol_major_mismatch",
+      "browser_capability_unsupported",
+      "browser_runtime_handshake_mismatch",
+      "browser_opaque_frame_invalid"
+    ]
   }
 }

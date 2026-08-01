@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -74,6 +74,22 @@ test("a stale launch lock is recovered only after its owner is dead", async () =
   try {
     const launch = await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]);
     assert.equal(launch.runtime.reused, false);
+  } finally {
+    await stopAndRemove(dataDir);
+  }
+});
+
+test("a partial stale launch lock left before its owner was recorded is recovered", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-partial-lock-"));
+  const lockPath = join(dataDir, "runtime.lock");
+  await writeFile(lockPath, "{\"pid\":", { mode: 0o600 });
+  const staleTimestamp = new Date(Date.now() - 5_000);
+  await utimes(lockPath, staleTimestamp, staleTimestamp);
+
+  try {
+    const launch = await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]);
+    assert.equal(launch.runtime.reused, false);
+    assert.equal(launch.runtime.identity, "controller-runtime");
   } finally {
     await stopAndRemove(dataDir);
   }

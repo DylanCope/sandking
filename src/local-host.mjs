@@ -27,13 +27,10 @@ const parseArgs = (argv) => {
 
 const { mode } = parseArgs(process.argv.slice(2));
 
-/** @param {unknown} payload */
-const writeMalformedControlFrame = (payload) => {
-  const body = Buffer.from(String(payload), "utf8");
-  const header = Buffer.alloc(5);
-  header.writeUInt32BE(body.length + 1, 0);
-  header.writeUInt8(1, 4);
-  process.stdout.write(Buffer.concat([header, body]));
+const writeMalformedFrame = () => {
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(MAX_FRAME_BYTES + 1, 0);
+  process.stdout.write(header);
 };
 
 /**
@@ -86,7 +83,7 @@ const main = async () => {
   }
 
   if (mode === "malformed-frame") {
-    writeMalformedControlFrame("{malformed-json");
+    writeMalformedFrame();
     return;
   }
 

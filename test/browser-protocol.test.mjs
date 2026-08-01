@@ -9,6 +9,7 @@ import WebSocket from "ws";
 import {
   BROWSER_PROTOCOL_VERSION,
   BROWSER_SCHEMA_DIGEST,
+  MAX_BROWSER_OPAQUE_CHUNK_BYTES,
   BrowserProtocolError,
   browserCapabilities,
   decodeBrowserOpaqueFrame,
@@ -69,6 +70,10 @@ const browserHello = (overrides = {}) => ({
       optional: [],
     },
     schemaDigest: BROWSER_SCHEMA_DIGEST,
+    framing: {
+      maxControlMessageBytes: 32_768,
+      maxOpaqueStreamChunkBytes: MAX_BROWSER_OPAQUE_CHUNK_BYTES,
+    },
     observationCursor: overrides.cursor ?? null,
   },
 });
@@ -76,8 +81,23 @@ const browserHello = (overrides = {}) => ({
 /** @param {WebSocket} socket */
 const nextControl = async (socket) => {
   const data = await new Promise((resolve, reject) => {
-    socket.once("message", resolve);
-    socket.once("error", reject);
+    const timeout = setTimeout(() => {
+      socket.off("message", onMessage);
+      socket.off("error", onError);
+      reject(new Error("runtime_control_timeout"));
+    }, 2_000);
+    const onMessage = (message) => {
+      clearTimeout(timeout);
+      socket.off("error", onError);
+      resolve(message);
+    };
+    const onError = (error) => {
+      clearTimeout(timeout);
+      socket.off("message", onMessage);
+      reject(error);
+    };
+    socket.once("message", onMessage);
+    socket.once("error", onError);
   });
   const parsed = runtimeControlEnvelopeSchema.parse(JSON.parse(data.toString()));
   return parsed.message;
@@ -128,7 +148,54 @@ test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and 
   }
 });
 
-test("browser/runtime major mismatch returns a typed explicit reload requirement", async () => {
+test("negotiated WebSockets enforce typed control separately from bounded opaque frames", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-browser-channels-"));
+
+  try {
+    const runtime = await launch(dataDir);
+    const cookie = await exchangeBootstrap(runtime.bootstrapUrl);
+    const socket = await connect(runtime.runtime.port, cookie);
+    socket.send(JSON.stringify(browserHello()));
+    assert.equal((await nextControl(socket)).type, "runtime.hello-ack");
+
+    socket.send(encodeBrowserOpaqueFrame({
+      streamId: "terminal-1",
+      sequence: 0,
+      eof: false,
+      data: Buffer.from([0, 255, 17]),
+    }));
+    socket.send(JSON.stringify({
+      channel: "control",
+      message: { type: "browser.ping", requestId: "browser-request-1" },
+    }));
+    assert.deepEqual(await nextControl(socket), {
+      type: "runtime.pong",
+      requestId: "browser-request-1",
+    });
+
+    const oversizedOpaqueFrame = Buffer.concat([
+      Buffer.from([1, 0, 0, 0, 1, 0]),
+      Buffer.from("x"),
+      Buffer.alloc(MAX_BROWSER_OPAQUE_CHUNK_BYTES + 1),
+    ]);
+    socket.send(oversizedOpaqueFrame);
+    assert.deepEqual(await nextControl(socket), {
+      type: "runtime.protocol-error",
+      code: "browser_opaque_frame_invalid",
+      retryable: true,
+      reloadRequired: false,
+    });
+    socket.close();
+  } finally {
+    await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
+      cwd: tmpdir(),
+      env: process.env,
+    }).catch(() => undefined);
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("browser/runtime version and required-capability mismatches require an explicit reload", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-browser-mismatch-"));
 
   try {
@@ -144,6 +211,30 @@ test("browser/runtime major mismatch returns a typed explicit reload requirement
       reloadRequired: true,
     });
     socket.close();
+
+    const capabilitySocket = await connect(runtime.runtime.port, cookie);
+    capabilitySocket.send(JSON.stringify(browserHello({
+      required: [...browserCapabilities, "cockpit.future-required"],
+    })));
+    assert.deepEqual(await nextControl(capabilitySocket), {
+      type: "runtime.protocol-error",
+      code: "browser_capability_unsupported",
+      retryable: true,
+      reloadRequired: true,
+    });
+    capabilitySocket.close();
+
+    const missingRuntimeCapabilitySocket = await connect(runtime.runtime.port, cookie);
+    missingRuntimeCapabilitySocket.send(JSON.stringify(browserHello({
+      required: ["cockpit.structured-control.v1"],
+    })));
+    assert.deepEqual(await nextControl(missingRuntimeCapabilitySocket), {
+      type: "runtime.protocol-error",
+      code: "browser_capability_unsupported",
+      retryable: true,
+      reloadRequired: true,
+    });
+    missingRuntimeCapabilitySocket.close();
   } finally {
     await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
       cwd: tmpdir(),

@@ -74,9 +74,28 @@ export const pidIsRunning = (pid) => {
 
 const defaultDataDir = () => join(homedir(), ".sandking");
 
+/** @param {string} lockPath */
+const inspectLaunchLock = async (lockPath) => {
+  try {
+    return {
+      owner: await readJson(lockPath, null),
+      recentlyIncomplete: false,
+    };
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+    const lockStat = await stat(lockPath).catch(() => null);
+    return {
+      owner: null,
+      recentlyIncomplete: Boolean(lockStat && Date.now() - lockStat.mtimeMs < 1_000),
+    };
+  }
+};
+
 /** @param {string} lockPath @param {string} lockId */
 const releaseOwnedLock = async (lockPath, lockId) => {
-  const current = await readJson(lockPath, null);
+  const { owner: current } = await inspectLaunchLock(lockPath);
   if (current && typeof current === "object" && current.lockId === lockId) {
     await removePrivateFile(lockPath);
   }
@@ -134,7 +153,12 @@ const withLaunchLock = async (dataDir, operation) => {
         throw error;
       }
 
-      const owner = await readJson(lockPath, null);
+      const inspectedOwner = await inspectLaunchLock(lockPath);
+      if (inspectedOwner.recentlyIncomplete) {
+        await delay(25);
+        continue;
+      }
+      const owner = inspectedOwner.owner;
       const ownerPid = owner && typeof owner === "object" && "pid" in owner
         ? Number(owner.pid)
         : Number.NaN;
@@ -144,13 +168,14 @@ const withLaunchLock = async (dataDir, operation) => {
           recoveryHandle = await open(recoveryPath, "wx", PRIVATE_FILE_MODE);
           await recoveryHandle.writeFile(`${JSON.stringify({ pid: process.pid })}\n`, "utf8");
           await recoveryHandle.sync();
-          const confirmedOwner = await readJson(lockPath, null);
+          const confirmedInspection = await inspectLaunchLock(lockPath);
+          const confirmedOwner = confirmedInspection.owner;
           const confirmedPid = confirmedOwner
             && typeof confirmedOwner === "object"
             && "pid" in confirmedOwner
             ? Number(confirmedOwner.pid)
             : Number.NaN;
-          if (!pidIsRunning(confirmedPid)) {
+          if (!confirmedInspection.recentlyIncomplete && !pidIsRunning(confirmedPid)) {
             await removePrivateFile(lockPath);
           }
         } catch (recoveryError) {

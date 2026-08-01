@@ -10,6 +10,13 @@ export const browserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
   "cockpit.resynchronization.v1",
 ]);
+export const runtimeRequiredBrowserCapabilities = Object.freeze([
+  "cockpit.structured-control.v1",
+  "cockpit.resynchronization.v1",
+]);
+export const runtimeOptionalBrowserCapabilities = Object.freeze([
+  "cockpit.opaque-stream.v1",
+]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
   .update("sandking-browser-runtime-schema-v1")
   .digest("hex")}`;
@@ -20,6 +27,10 @@ const capabilitySetSchema = z.object({
   required: z.array(identifierSchema).max(32),
   optional: z.array(identifierSchema).max(32),
 }).strict();
+const browserFramingSchema = z.object({
+  maxControlMessageBytes: z.number().int().positive().max(MAX_BROWSER_CONTROL_BYTES),
+  maxOpaqueStreamChunkBytes: z.number().int().positive().max(MAX_BROWSER_OPAQUE_CHUNK_BYTES),
+}).strict();
 
 export const browserHelloSchema = z.object({
   type: z.literal("browser.hello"),
@@ -29,12 +40,18 @@ export const browserHelloSchema = z.object({
   expectedPeerIdentity: z.literal("controller-runtime"),
   capabilities: capabilitySetSchema,
   schemaDigest: digestSchema,
+  framing: browserFramingSchema,
   observationCursor: z.string().max(256).nullable(),
+}).strict();
+
+const browserPingSchema = z.object({
+  type: z.literal("browser.ping"),
+  requestId: identifierSchema,
 }).strict();
 
 const browserControlEnvelopeSchema = z.object({
   channel: z.literal("control"),
-  message: browserHelloSchema,
+  message: z.discriminatedUnion("type", [browserHelloSchema, browserPingSchema]),
 }).strict();
 
 export const runtimeHelloAckSchema = z.object({
@@ -46,10 +63,7 @@ export const runtimeHelloAckSchema = z.object({
   capabilities: capabilitySetSchema,
   negotiatedCapabilities: z.array(identifierSchema).max(32),
   schemaDigest: digestSchema,
-  framing: z.object({
-    maxControlMessageBytes: z.number().int().positive(),
-    maxOpaqueStreamChunkBytes: z.number().int().positive(),
-  }).strict(),
+  framing: browserFramingSchema,
   observation: z.object({
     mode: z.enum(["snapshot", "resume", "resynchronize"]),
     cursor: z.string().min(1).max(256),
@@ -90,9 +104,18 @@ export const browserProtocolErrorSchema = z.object({
   reloadRequired: z.boolean(),
 }).strict();
 
+const runtimePongSchema = z.object({
+  type: z.literal("runtime.pong"),
+  requestId: identifierSchema,
+}).strict();
+
 export const runtimeControlEnvelopeSchema = z.object({
   channel: z.literal("control"),
-  message: z.discriminatedUnion("type", [runtimeHelloAckSchema, browserProtocolErrorSchema]),
+  message: z.discriminatedUnion("type", [
+    runtimeHelloAckSchema,
+    browserProtocolErrorSchema,
+    runtimePongSchema,
+  ]),
 }).strict();
 
 export class BrowserProtocolError extends Error {

@@ -54,7 +54,8 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
     hostileOrigin = await startHostileOrigin(launch.runtime.port);
 
     try {
-      const page = await browser.newPage();
+      const browserContext = await browser.newContext();
+      const page = await browserContext.newPage();
       const sentFrames = [];
       const receivedFrames = [];
       page.on("websocket", (socket) => {
@@ -85,6 +86,10 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         "cockpit.opaque-stream.v1",
         "cockpit.resynchronization.v1",
       ]);
+      assert.deepEqual(hello.message.framing, {
+        maxControlMessageBytes: 32_768,
+        maxOpaqueStreamChunkBytes: 16_384,
+      });
       assert.equal(hello.message.observationCursor, null);
 
       const acknowledgement = JSON.parse(
@@ -113,6 +118,46 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         () => document.documentElement.dataset.observationMode === "resume",
         { timeout: 10_000 },
       );
+
+      const capabilityMismatchPage = await browserContext.newPage();
+      const capabilityMismatchAcknowledgement = structuredClone(acknowledgement);
+      capabilityMismatchAcknowledgement.message.negotiatedCapabilities =
+        capabilityMismatchAcknowledgement.message.negotiatedCapabilities.filter(
+          (capability) => capability !== "cockpit.opaque-stream.v1",
+        );
+      await capabilityMismatchPage.addInitScript((runtimeAcknowledgement) => {
+        class RuntimeMismatchSocket extends EventTarget {
+          constructor() {
+            super();
+            this.binaryType = "blob";
+            setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+          }
+
+          send() {
+            setTimeout(() => this.dispatchEvent(new MessageEvent("message", {
+              data: JSON.stringify(runtimeAcknowledgement),
+            })), 0);
+          }
+        }
+        Object.defineProperty(window, "WebSocket", {
+          configurable: true,
+          value: RuntimeMismatchSocket,
+        });
+      }, capabilityMismatchAcknowledgement);
+      await capabilityMismatchPage.goto(`http://127.0.0.1:${launch.runtime.port}/`, {
+        waitUntil: "domcontentloaded",
+      });
+      await capabilityMismatchPage.waitForTimeout(250);
+      assert.deepEqual(await capabilityMismatchPage.evaluate(() => ({
+        reloadRequired: document.documentElement.dataset.reloadRequired,
+        protocolError: document.documentElement.dataset.protocolError,
+        text: document.querySelector("#app")?.textContent,
+      })), {
+        reloadRequired: "true",
+        protocolError: "browser_runtime_handshake_mismatch",
+        text: "Cockpit update required. Reload to reconnect safely.",
+      });
+      await capabilityMismatchPage.close();
 
       await page.route("**/cockpit.js", async (route) => {
         const response = await route.fetch();
@@ -179,6 +224,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
             initialObservationMode: "snapshot",
             reloadObservationMode: "resume",
             mismatchReloadRequired: true,
+            capabilityMismatchReloadRequired: true,
           },
           auditReferences: auditEntries.map((entry) => ({
             auditId: entry.auditId,

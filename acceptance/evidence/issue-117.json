@@ -7,7 +7,7 @@
     "issue": 116,
     "bodySha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23"
   },
-  "recordedAt": "2026-08-01T12:16:18.878Z",
+  "recordedAt": "2026-08-01T12:44:00.704Z",
   "software": {
     "sandking": "0.1.0",
     "node": "v22.23.2",
@@ -23,7 +23,7 @@
   },
   "runtime": {
     "identity": "controller-runtime",
-    "reference": "runtime-709de759c802aa1ed9e34040",
+    "reference": "runtime-0eb46f5c0d74cb7ec29d22ed",
     "browserReloadReusedRuntime": true
   },
   "host": {
@@ -75,46 +75,47 @@
     },
     "initialObservationMode": "snapshot",
     "reloadObservationMode": "resume",
-    "mismatchReloadRequired": true
+    "mismatchReloadRequired": true,
+    "capabilityMismatchReloadRequired": true
   },
   "auditReferences": [
     {
-      "auditId": "audit-0578e8c842fa36f431dacf36",
+      "auditId": "audit-51fe54d349960740c8c58d41",
       "action": "host.negotiate",
       "outcome": "accepted"
     },
     {
-      "auditId": "audit-730cd07dadff6cad18f6222a",
+      "auditId": "audit-b0ea97e0cd2894bc57878774",
       "action": "browser.session.create",
       "outcome": "accepted"
     },
     {
-      "auditId": "audit-0885d168a2dbe252246bd24e",
+      "auditId": "audit-a9202f658b18e29590051a81",
       "action": "browser.negotiate",
       "outcome": "accepted"
     },
     {
-      "auditId": "audit-051fc2438a1404eb11602272",
+      "auditId": "audit-b3018cec878438aa5d4ca4da",
       "action": "browser.session.end",
       "outcome": "rejected"
     },
     {
-      "auditId": "audit-434a6f8a872fcdc5fa69fa69",
+      "auditId": "audit-de8fd0dea275196b0d26fed9",
       "action": "browser.negotiate",
       "outcome": "accepted"
     },
     {
-      "auditId": "audit-ca265893af5cd427644897de",
+      "auditId": "audit-39f2314bcfa39274594956c8",
       "action": "browser.negotiate",
       "outcome": "rejected"
     },
     {
-      "auditId": "audit-3b20197b38923bfe02405765",
+      "auditId": "audit-d8400ee373c75884cddfc0d3",
       "action": "websocket.upgrade",
       "outcome": "rejected"
     },
     {
-      "auditId": "audit-7ec0a4285132b04e0e4c1ce9",
+      "auditId": "audit-fc738a176cb5e7d2cb62aca3",
       "action": "http.request",
       "outcome": "rejected"
     }
@@ -151,7 +152,10 @@
       "host_protocol_invalid_frame"
     ],
     "browser": [
-      "browser_protocol_major_mismatch"
+      "browser_protocol_major_mismatch",
+      "browser_capability_unsupported",
+      "browser_runtime_handshake_mismatch",
+      "browser_opaque_frame_invalid"
     ],
     "acceptedStatePreserved": true,
     "mutationOccurred": false
