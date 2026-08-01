@@ -92,19 +92,14 @@ export function createGitHubDelivery() {
           "view",
           String(issueId),
           "--json",
-          "number,title,body,state",
+          "number,title,state",
         ]),
       );
       return {
         id: String(issue.number),
         title: issue.title,
-        body: issue.body,
         state: issue.state.toLowerCase(),
       };
-    },
-
-    async getIssueDetails(issueId) {
-      return this.getIssue(issueId);
     },
 
     async findOpenPullRequest({ issue }) {

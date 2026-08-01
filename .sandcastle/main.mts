@@ -21,7 +21,6 @@ import {
   createGitHubDelivery,
   createGitRepository,
 } from "./delivery-adapters.mjs";
-import { createImplementPromptArgs } from "./issue-context.mjs";
 import { completeIssueThroughPullRequest } from "./issue-delivery.mjs";
 import { runPullRequestReview } from "./pr-review-runner.mjs";
 import {
@@ -116,8 +115,6 @@ const runIssueWorker = async (
       });
 
       try {
-        const promptArgs = await createImplementPromptArgs({ issue, github });
-
         return await sandbox.run({
           ...runSettings,
           name: "implementer",
@@ -125,7 +122,8 @@ const runIssueWorker = async (
           agent: sandcastle.codex("gpt-5.4"),
           promptFile: "./.sandcastle/implement-prompt.md",
           promptArgs: {
-            ...promptArgs,
+            TASK_ID: issue.id,
+            ISSUE_TITLE: issue.title,
             BRANCH: issue.branch,
             REVIEW_FINDINGS:
               findings.length > 0
