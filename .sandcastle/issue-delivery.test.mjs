@@ -173,7 +173,7 @@ test("a pushed issue branch becomes a main-targeted pull request reviewed by an 
 
 test("requested PR changes are implemented, pushed, and independently re-reviewed", async () => {
   const repository = createFakeRepository("main-review-base");
-  const github = createFakeGitHub();
+  const github = createFakeGitHub({ pullRequestDiffs: ["initial diff", "fixed diff"] });
   const worker = {
     async implement({ branch, findings, issue }) {
       repository.commit(
@@ -213,6 +213,98 @@ test("requested PR changes are implemented, pushed, and independently re-reviewe
     { approved: false, findings: ["Exercise the public Cockpit seam"] },
     { approved: true, findings: [] },
   ]);
+});
+
+test("a productive review loop may use all ten review attempts", async () => {
+  const repository = createFakeRepository("main-long-review-base");
+  const github = createFakeGitHub({
+    pullRequestDiffs: Array.from({ length: 10 }, (_, index) => `diff ${index + 1}`),
+  });
+  let reviewAttempt = 0;
+
+  const result = await deliverIssueThroughPullRequest({
+    issue: { id: "117", title: "Build the runtime skeleton" },
+    repository,
+    github,
+    worker: {
+      async implement({ branch, findings, issue }) {
+        repository.commit(
+          branch,
+          findings?.[0] ?? `initial implementation for ${issue.id}`,
+        );
+      },
+    },
+    reviewer: {
+      async evaluatePullRequest() {
+        reviewAttempt += 1;
+        return reviewAttempt === 10
+          ? { approved: true, findings: [] }
+          : { approved: false, findings: [`Resolve review ${reviewAttempt}`] };
+      },
+    },
+  });
+
+  assert.equal(reviewAttempt, 10);
+  assert.equal(result.review.approved, true);
+});
+
+test("an empty PR is returned to the worker without consuming a review", async () => {
+  const repository = createFakeRepository("main-empty-pr-base");
+  const github = createFakeGitHub({ pullRequestDiffs: ["", "real diff"] });
+  let workerCalls = 0;
+  let reviewerCalls = 0;
+
+  await deliverIssueThroughPullRequest({
+    issue: { id: "118", title: "Add runtime observability" },
+    repository,
+    github,
+    worker: {
+      async implement({ branch }) {
+        workerCalls += 1;
+        repository.commit(branch, `implementation ${workerCalls}`);
+      },
+    },
+    reviewer: {
+      async evaluatePullRequest() {
+        reviewerCalls += 1;
+        return { approved: true, findings: [] };
+      },
+    },
+  });
+
+  assert.equal(workerCalls, 2);
+  assert.equal(reviewerCalls, 1);
+});
+
+test("an unchanged rejected PR stops after three worker attempts without wasting reviews", async () => {
+  const repository = createFakeRepository("main-stalled-pr-base");
+  const github = createFakeGitHub({ pullRequestDiffs: ["unchanged diff"] });
+  let workerCalls = 0;
+  let reviewerCalls = 0;
+
+  await assert.rejects(
+    deliverIssueThroughPullRequest({
+      issue: { id: "119", title: "Expose runtime status" },
+      repository,
+      github,
+      worker: {
+        async implement({ branch }) {
+          workerCalls += 1;
+          repository.commit(branch, `worker attempt ${workerCalls}`);
+        },
+      },
+      reviewer: {
+        async evaluatePullRequest() {
+          reviewerCalls += 1;
+          return { approved: false, findings: ["Expose the status seam"] };
+        },
+      },
+    }),
+    /unchanged after 3 worker attempts/,
+  );
+
+  assert.equal(reviewerCalls, 1);
+  assert.equal(workerCalls, 4);
 });
 
 test("a rerun resumes an existing open issue PR instead of creating a new branch or PR", async () => {
@@ -305,11 +397,13 @@ function createFakeGitHub({
   closedIssues = [],
   openPullRequest = null,
   checksPassed = true,
+  pullRequestDiffs = ["substantive diff"],
 } = {}) {
   const pullRequests = new Map();
   const issues = new Map(
     closedIssues.map((issueId) => [issueId, { state: "closed" }]),
   );
+  let diffRead = 0;
 
   return {
     async findOpenPullRequest() {
@@ -341,6 +435,11 @@ function createFakeGitHub({
     },
     async submitPullRequestReview({ pullRequest, review }) {
       pullRequests.get(pullRequest.number).reviews.push(structuredClone(review));
+    },
+    async getPullRequestDiff() {
+      const diff = pullRequestDiffs[Math.min(diffRead, pullRequestDiffs.length - 1)];
+      diffRead += 1;
+      return diff;
     },
     async waitForPullRequestChecks() {
       return { passed: checksPassed };

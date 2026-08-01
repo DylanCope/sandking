@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { runPullRequestReview } from "./pr-review-runner.mjs";
+
+test("review instructions triage all existing PR feedback in one exhaustive pass", async () => {
+  const prompt = await readFile(
+    new URL("./pr-review-prompt.md", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(prompt, /repos\/\{owner\}\/\{repo\}\/pulls\/\{pull_number\}\/comments/);
+  assert.match(prompt, /applicable to the current diff/i);
+  assert.match(prompt, /resolved or stale/i);
+  assert.match(prompt, /out of scope or incorrect/i);
+  assert.match(prompt, /all applicable blocking findings/i);
+});
 
 test("PR review runs in the issue worktree without changing the root branch", async () => {
   const root = { branch: "main" };
