@@ -2,14 +2,27 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
+  HOST_SCHEMA_DIGEST,
   MAX_BULK_CHUNK_BYTES,
   MAX_FRAME_BYTES,
   ProtocolError,
+  hostCapabilities,
+  protocolVersion,
   readFrame,
   readProtocolFrame,
+  releaseVersion,
   writeBulkFrame,
   writeFrame,
 } from "../src/protocol.mjs";
+
+/** @param {unknown} payload */
+const encodeControlFrame = (payload) => {
+  const body = Buffer.from(JSON.stringify(payload), "utf8");
+  const header = Buffer.alloc(5);
+  header.writeUInt32BE(body.length + 1, 0);
+  header.writeUInt8(1, 4);
+  return Buffer.concat([header, body]);
+};
 
 test("framed control reads preserve following frames and validate their schema", async () => {
   const stream = new PassThrough();
@@ -23,6 +36,57 @@ test("framed control reads preserve following frames and validate their schema",
     () => writeFrame(stream, { type: "not-a-protocol-message" }),
     (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
   );
+});
+
+test("same-major control frames ignore additive optional fields", async () => {
+  const stream = new PassThrough();
+  const futureSameMajorProtocol = {
+    major: protocolVersion.major,
+    minor: protocolVersion.minor + 1,
+    patch: 0,
+    version: `${protocolVersion.major}.${protocolVersion.minor + 1}.0`,
+  };
+  const acknowledgement = {
+    type: "hello-ack",
+    protocol: { ...futureSameMajorProtocol, optionalRevisionLabel: "future-compatible" },
+    release: releaseVersion,
+    identity: "local-host",
+    peerIdentity: "controller-runtime",
+    capabilities: {
+      required: ["sandking.control.slice-1"],
+      optional: ["sandking.bulk-stream.v1"],
+      optionalCapabilityMetadata: "future-compatible",
+    },
+    negotiatedCapabilities: [...hostCapabilities],
+    schemaDigest: HOST_SCHEMA_DIGEST,
+    framing: {
+      maxFrameBytes: MAX_FRAME_BYTES,
+      maxBulkChunkBytes: MAX_BULK_CHUNK_BYTES,
+      optionalWindowBytes: 4_096,
+    },
+    observationCursor: "host:origin",
+    optionalHostMetadata: { build: "future-compatible" },
+  };
+  stream.end(encodeControlFrame(acknowledgement));
+
+  assert.deepEqual(await readFrame(stream), {
+    type: "hello-ack",
+    protocol: futureSameMajorProtocol,
+    release: releaseVersion,
+    identity: "local-host",
+    peerIdentity: "controller-runtime",
+    capabilities: {
+      required: ["sandking.control.slice-1"],
+      optional: ["sandking.bulk-stream.v1"],
+    },
+    negotiatedCapabilities: [...hostCapabilities],
+    schemaDigest: HOST_SCHEMA_DIGEST,
+    framing: {
+      maxFrameBytes: MAX_FRAME_BYTES,
+      maxBulkChunkBytes: MAX_BULK_CHUNK_BYTES,
+    },
+    observationCursor: "host:origin",
+  });
 });
 
 test("framing rejects oversized and malformed frames before buffering their bodies", async () => {

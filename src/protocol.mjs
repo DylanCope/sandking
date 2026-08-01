@@ -28,12 +28,14 @@ export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
+// Known fields remain validated, while additive same-major fields are ignored
+// until a negotiated capability makes them part of this implementation.
 export const versionSchema = z.object({
   major: z.number().int().nonnegative(),
   minor: z.number().int().nonnegative(),
   patch: z.number().int().nonnegative(),
   version: z.string().regex(/^\d+\.\d+\.\d+$/),
-}).strict().refine(
+}).strip().refine(
   (version) => version.version === `${version.major}.${version.minor}.${version.patch}`,
   { message: "semantic version fields must agree" },
 );
@@ -41,12 +43,12 @@ export const versionSchema = z.object({
 export const capabilitySetSchema = z.object({
   required: z.array(identifierSchema).max(32),
   optional: z.array(identifierSchema).max(32),
-}).strict();
+}).strip();
 
 export const framingSchema = z.object({
   maxFrameBytes: z.number().int().min(256).max(MAX_FRAME_BYTES),
   maxBulkChunkBytes: z.number().int().min(1).max(MAX_BULK_CHUNK_BYTES),
-}).strict();
+}).strip();
 
 const helloSchema = z.object({
   type: z.literal("hello"),
@@ -58,7 +60,7 @@ const helloSchema = z.object({
   schemaDigest: digestSchema,
   framing: framingSchema,
   observationCursor: z.string().max(256).nullable(),
-}).strict();
+}).strip();
 
 const helloAckSchema = z.object({
   type: z.literal("hello-ack"),
@@ -71,23 +73,23 @@ const helloAckSchema = z.object({
   schemaDigest: digestSchema,
   framing: framingSchema,
   observationCursor: z.string().max(256).nullable(),
-}).strict();
+}).strip();
 
 const protocolErrorSchema = z.object({
   type: z.literal("protocol-error"),
   code: identifierSchema,
   retryable: z.boolean(),
-}).strict();
+}).strip();
 
 const pingSchema = z.object({
   type: z.literal("ping"),
   requestId: identifierSchema,
-}).strict();
+}).strip();
 
 const pongSchema = z.object({
   type: z.literal("pong"),
   requestId: identifierSchema,
-}).strict();
+}).strip();
 
 export const controlMessageSchema = z.discriminatedUnion("type", [
   helloSchema,

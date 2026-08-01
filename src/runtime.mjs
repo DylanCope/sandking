@@ -23,6 +23,106 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 const LOCK_TIMEOUT_MS = 5_000;
 const daemonPath = fileURLToPath(new URL("./runtime-daemon.mjs", import.meta.url));
 
+/**
+ * @typedef {{
+ *   type: "host_negotiation_failure" | "runtime_startup_failure",
+ *   code: string,
+ *   retryable: boolean,
+ *   explanation: string,
+ *   retryGuidance: string,
+ * }} StartupDiagnosis
+ */
+
+/** @type {Readonly<Record<string, Omit<StartupDiagnosis, "code">>>} */
+const startupDiagnosisDetails = Object.freeze({
+  host_protocol_error: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The local Host returned an unexpected negotiation response.",
+    retryGuidance: "Restart the local Host with a compatible Sand-King release, then retry the launch.",
+  },
+  host_protocol_major_mismatch: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The Controller and local Host use incompatible protocol major versions.",
+    retryGuidance: "Install matching Sand-King Controller and Host releases, then retry the launch.",
+  },
+  host_identity_mismatch: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The local Host reported an unexpected identity.",
+    retryGuidance: "Verify the local Host installation and expected identity, then retry the launch.",
+  },
+  host_capability_unsupported: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The Controller and local Host could not agree on required capabilities.",
+    retryGuidance: "Install compatible Sand-King Controller and Host releases, then retry the launch.",
+  },
+  host_schema_mismatch: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The Controller and local Host use incompatible control schemas.",
+    retryGuidance: "Install matching Sand-King Controller and Host releases, then retry the launch.",
+  },
+  host_framing_invalid: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The local Host proposed unsupported framing limits.",
+    retryGuidance: "Restart the local Host with a compatible Sand-King release, then retry the launch.",
+  },
+  host_protocol_invalid_frame: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The local Host sent malformed framed protocol data during negotiation.",
+    retryGuidance: "Restart or update the local Host, then retry the launch.",
+  },
+  host_unavailable: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The local Host became unavailable during negotiation.",
+    retryGuidance: "Restart the local Host, then retry the launch.",
+  },
+  runtime_start_timeout: {
+    type: "runtime_startup_failure",
+    retryable: true,
+    explanation: "The Controller runtime did not become ready before the startup deadline.",
+    retryGuidance: "Check the local Host installation and retry the launch.",
+  },
+  runtime_start_failed: {
+    type: "runtime_startup_failure",
+    retryable: true,
+    explanation: "The Controller runtime could not start safely.",
+    retryGuidance: "Check the local Sand-King installation and retry the launch.",
+  },
+});
+
+/** @param {string} code @returns {StartupDiagnosis} */
+const startupDiagnosisForCode = (code) => {
+  const sanitizedCode = Object.hasOwn(startupDiagnosisDetails, code)
+    ? code
+    : "runtime_start_failed";
+  return {
+    code: sanitizedCode,
+    ...startupDiagnosisDetails[sanitizedCode],
+  };
+};
+
+export class RuntimeStartupError extends Error {
+  /** @param {string} code */
+  constructor(code) {
+    const diagnosis = startupDiagnosisForCode(code);
+    super(diagnosis.code);
+    this.name = "RuntimeStartupError";
+    this.diagnosis = diagnosis;
+  }
+}
+
+/** @param {unknown} error */
+const asRuntimeStartupError = (error) => error instanceof RuntimeStartupError
+  ? error
+  : new RuntimeStartupError(error instanceof Error ? error.message : "runtime_start_failed");
+
 const runtimeStateSchema = z.object({
   pid: z.number().int().positive(),
   runtimeId: z.string().min(1).max(128),
@@ -281,7 +381,7 @@ const waitForStartup = async (dataDir, child, startupTimeoutMs) => {
   while (Date.now() < deadline) {
     const errorState = await readJson(errorPath, null);
     if (errorState && typeof errorState === "object" && "code" in errorState) {
-      throw new Error(String(errorState.code));
+      throw new RuntimeStartupError(String(errorState.code));
     }
 
     const rawState = await readJson(statePath, null);
@@ -295,7 +395,7 @@ const waitForStartup = async (dataDir, child, startupTimeoutMs) => {
     if (exitCode !== null) {
       await delay(25);
       const finalError = await readJson(errorPath, null);
-      throw new Error(
+      throw new RuntimeStartupError(
         finalError && typeof finalError === "object" && "code" in finalError
           ? String(finalError.code)
           : "runtime_start_failed",
@@ -304,7 +404,7 @@ const waitForStartup = async (dataDir, child, startupTimeoutMs) => {
     await delay(50);
   }
 
-  throw new Error("runtime_start_timeout");
+  throw new RuntimeStartupError("runtime_start_timeout");
 };
 
 /**
@@ -337,16 +437,17 @@ const spawnRuntime = async (dataDir, options) => {
     await removePrivateFile(errorPath);
     return runtimeState;
   } catch (error) {
+    const startupError = asRuntimeStartupError(error);
     if (typeof child.pid === "number") {
       await terminateProcessTree(child.pid);
     }
     await writePrivateJson(join(dataDir, "last-startup-error.json"), {
-      code: error instanceof Error ? error.message : "runtime_start_failed",
+      ...startupError.diagnosis,
       recordedAt: new Date().toISOString(),
     });
     await removePrivateFile(statePath);
     await removePrivateFile(errorPath);
-    throw error;
+    throw startupError;
   }
 };
 

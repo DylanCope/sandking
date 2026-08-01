@@ -18,6 +18,20 @@ const runCli = async (args, options = {}) => {
   return JSON.parse(stdout);
 };
 
+/** @param {string[]} args */
+const runFailingCli = async (args) => {
+  try {
+    await execFileAsync(process.execPath, [cliPath, ...args], {
+      cwd: tmpdir(),
+      env: process.env,
+    });
+    assert.fail("expected the command to fail");
+  } catch (error) {
+    assert.ok(error && typeof error === "object");
+    return /** @type {{stdout: string, stderr: string}} */ (error);
+  }
+};
+
 const stopAndRemove = async (dataDir) => {
   await runCli(["stop", "--data-dir", dataDir, "--json"]).catch(() => undefined);
   await rm(dataDir, { recursive: true, force: true });
@@ -145,24 +159,39 @@ test("startup timeout terminates the detached runtime and Host process group", a
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-timeout-runtime-"));
 
   try {
-    await assert.rejects(
-      runCli([
-        "launch",
-        "--data-dir",
-        dataDir,
-        "--host-mode",
-        "hang-before-ack",
-        "--startup-timeout-ms",
-        "300",
-        "--json",
-        "--no-open",
-      ]),
-      /runtime_start_timeout/,
-    );
+    const failure = await runFailingCli([
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--host-mode",
+      "hang-before-ack",
+      "--startup-timeout-ms",
+      "300",
+      "--json",
+      "--no-open",
+    ]);
+    assert.equal(failure.stderr, "");
+    const publicOutcome = JSON.parse(failure.stdout);
+    assert.deepEqual(publicOutcome, {
+      ok: false,
+      diagnosis: {
+        type: "runtime_startup_failure",
+        code: "runtime_start_timeout",
+        retryable: true,
+        explanation: "The Controller runtime did not become ready before the startup deadline.",
+        retryGuidance: "Check the local Host installation and retry the launch.",
+      },
+    });
     const { stdout: processes } = await execFileAsync("ps", ["-eo", "args="]);
     assert.doesNotMatch(processes, new RegExp(`runtime-daemon\\.mjs --data-dir ${dataDir}`));
-    const failure = JSON.parse(await readFile(join(dataDir, "last-startup-error.json"), "utf8"));
-    assert.equal(failure.code, "runtime_start_timeout");
+    const retained = JSON.parse(
+      await readFile(join(dataDir, "last-startup-error.json"), "utf8"),
+    );
+    assert.deepEqual(
+      { ...retained, recordedAt: "<timestamp>" },
+      { ...publicOutcome.diagnosis, recordedAt: "<timestamp>" },
+    );
+    assert.match(retained.recordedAt, /^\d{4}-\d{2}-\d{2}T/);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

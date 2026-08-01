@@ -2,7 +2,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { launchRuntime, stopRuntime } from "./runtime.mjs";
+import { RuntimeStartupError, launchRuntime, stopRuntime } from "./runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -83,6 +83,21 @@ const main = async () => {
 };
 
 main().catch((error) => {
+  if (error instanceof RuntimeStartupError) {
+    if (process.argv.slice(2).includes("--json")) {
+      process.stdout.write(`${JSON.stringify({
+        ok: false,
+        diagnosis: error.diagnosis,
+      })}\n`);
+    } else {
+      process.stderr.write(
+        `${error.diagnosis.code}: ${error.diagnosis.explanation}\n`
+        + `Retry: ${error.diagnosis.retryGuidance}\n`,
+      );
+    }
+    process.exitCode = 1;
+    return;
+  }
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });
