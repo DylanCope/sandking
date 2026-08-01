@@ -1,6 +1,7 @@
 export async function runPullRequestReview({
   issue,
   pullRequest,
+  reviewLedger,
   createSandbox,
   sandboxOptions,
   runOptions,
@@ -19,6 +20,7 @@ export async function runPullRequestReview({
         BRANCH: issue.branch,
         PR_NUMBER: String(pullRequest.number),
         TASK_ID: issue.id,
+        REVIEW_LEDGER: JSON.stringify(reviewLedger ?? [], null, 2),
       },
     });
     return parseReview(extractReviewVerdict(result.stdout));

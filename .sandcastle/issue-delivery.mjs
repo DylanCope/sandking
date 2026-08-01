@@ -1,6 +1,19 @@
 const MAX_REVIEW_ATTEMPTS = 10;
 const MAX_CONSECUTIVE_NO_PROGRESS_ATTEMPTS = 3;
 
+function blockingFindingMessages(review) {
+  if (review?.blockingFindings) {
+    return review.blockingFindings.map((finding) => [
+      finding.summary,
+      `Requirement: ${finding.requirement}`,
+      `Evidence: ${finding.evidence}`,
+      `Material impact: ${finding.materialImpact}`,
+      `Cannot defer: ${finding.cannotDefer}`,
+    ].join("\n"));
+  }
+  return review?.findings ?? [];
+}
+
 export async function produceIssueBranch({ issue, repository, worker }) {
   const branch = `sandcastle/issue-${issue.id}`;
   const baseCommit = await repository.synchronizeMain();
@@ -30,8 +43,14 @@ export async function deliverIssueThroughPullRequest({
   if (existingPullRequest) {
     branchResult.headCommit = await repository.pushBranch(branchResult.branch);
   }
-  let review;
-  let reviewAttempt = 0;
+  const reviewLedger = await github.getReviewLedger?.({ pullRequest }) ?? [];
+  let review = reviewLedger.at(-1);
+  let reviewAttempt = reviewLedger.length;
+  if (reviewAttempt >= MAX_REVIEW_ATTEMPTS) {
+    throw new Error(
+      `Pull request for issue #${issue.id} has used all ${MAX_REVIEW_ATTEMPTS} review attempts.`,
+    );
+  }
   let consecutiveEmptyDiffs = 0;
   let consecutiveUnchangedDiffs = 0;
   let lastReviewedDiff;
@@ -67,7 +86,7 @@ export async function deliverIssueThroughPullRequest({
       await worker.implement({
         branch: branchResult.branch,
         findings: [
-          ...review.findings,
+          ...blockingFindingMessages(review),
           "The pull request diff is unchanged. Make a substantive code change that addresses the review findings.",
         ],
         issue,
@@ -80,8 +99,13 @@ export async function deliverIssueThroughPullRequest({
     consecutiveUnchangedDiffs = 0;
     lastReviewedDiff = diff;
     reviewAttempt += 1;
-    review = await reviewer.evaluatePullRequest({ pullRequest, issue });
+    review = await reviewer.evaluatePullRequest({
+      pullRequest,
+      issue,
+      reviewLedger: structuredClone(reviewLedger),
+    });
     await github.submitPullRequestReview({ pullRequest, review });
+    reviewLedger.push(structuredClone(review));
     if (review.approved) {
       break;
     }
@@ -91,7 +115,7 @@ export async function deliverIssueThroughPullRequest({
 
     await worker.implement({
       branch: branchResult.branch,
-      findings: review.findings,
+      findings: blockingFindingMessages(review),
       issue,
       pullRequest,
     });
@@ -122,6 +146,14 @@ export async function completeIssueThroughPullRequest(options) {
     issueId: options.issue.id,
     pullRequest,
   });
+  for (const followUp of delivery.review.followUps ?? []) {
+    await options.github.createFollowUpIssue({
+      sourceIssueId: options.issue.id,
+      sourcePullRequest: pullRequest.url,
+      ...followUp,
+      labels: ["ready-for-agent"],
+    });
+  }
   await completeEligibleParents({
     completedIssueId: options.issue.id,
     github: options.github,

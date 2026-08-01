@@ -67,6 +67,49 @@ test("an issue closes only after its approved PR passes checks and is confirmed 
   });
 });
 
+test("an approved delivery publishes actionable follow-ups after merge without blocking completion", async () => {
+  const repository = createFakeRepository("main-follow-up-base");
+  const github = createFakeGitHub();
+  let workerCalls = 0;
+
+  const result = await completeIssueThroughPullRequest({
+    issue: { id: "41", title: "Launch the secure Cockpit" },
+    repository,
+    github,
+    worker: {
+      async implement({ branch }) {
+        workerCalls += 1;
+        repository.commit(branch, "complete the secure Cockpit");
+      },
+    },
+    reviewer: {
+      async evaluatePullRequest() {
+        return {
+          approved: true,
+          blockingFindings: [],
+          followUps: [{
+            title: "Split runtime lifecycle responsibilities",
+            body: "Extract lifecycle coordination behind a stable interface.\n\nAcceptance criteria:\n- Runtime behavior remains unchanged.\n- Existing acceptance scenarios pass.",
+            sourceFinding: "The runtime module owns unrelated responsibilities.",
+          }],
+          resolvedFindings: [],
+        };
+      },
+    },
+  });
+
+  assert.equal(result.pullRequest.state, "merged");
+  assert.equal(workerCalls, 1);
+  assert.deepEqual(github.inspectFollowUps(), [{
+    sourceIssueId: "41",
+    sourcePullRequest: "https://github.test/pull/101",
+    title: "Split runtime lifecycle responsibilities",
+    body: "Extract lifecycle coordination behind a stable interface.\n\nAcceptance criteria:\n- Runtime behavior remains unchanged.\n- Existing acceptance scenarios pass.",
+    sourceFinding: "The runtime module owns unrelated responsibilities.",
+    labels: ["ready-for-agent"],
+  }]);
+});
+
 test("a failed PR check leaves the issue and PR open", async () => {
   const repository = createFakeRepository("main-check-base");
   const github = createFakeGitHub({ checksPassed: false });
@@ -215,6 +258,50 @@ test("requested PR changes are implemented, pushed, and independently re-reviewe
   ]);
 });
 
+test("each reviewer receives the complete verdict ledger from earlier attempts", async () => {
+  const repository = createFakeRepository("main-ledger-base");
+  const github = createFakeGitHub({ pullRequestDiffs: ["initial", "corrected"] });
+  const ledgers = [];
+  const firstReview = {
+    approved: false,
+    blockingFindings: [{
+      summary: "Runtime reuse can create competitors",
+      requirement: "Issue acceptance: reuse one runtime",
+      evidence: "Two live listeners were reproduced.",
+      materialImpact: "Core lifecycle invariant is broken.",
+      cannotDefer: "Merging would establish unsafe launch behavior.",
+    }],
+    followUps: [],
+    resolvedFindings: [],
+  };
+
+  await deliverIssueThroughPullRequest({
+    issue: { id: "42", title: "Reuse the runtime" },
+    repository,
+    github,
+    worker: {
+      async implement({ branch, findings }) {
+        repository.commit(branch, findings?.[0] ?? "initial runtime reuse");
+      },
+    },
+    reviewer: {
+      async evaluatePullRequest({ reviewLedger }) {
+        ledgers.push(structuredClone(reviewLedger));
+        return ledgers.length === 1
+          ? firstReview
+          : {
+              approved: true,
+              blockingFindings: [],
+              followUps: [],
+              resolvedFindings: ["Runtime reuse can create competitors"],
+            };
+      },
+    },
+  });
+
+  assert.deepEqual(ledgers, [[], [firstReview]]);
+});
+
 test("a productive review loop may use all ten review attempts", async () => {
   const repository = createFakeRepository("main-long-review-base");
   const github = createFakeGitHub({
@@ -246,6 +333,52 @@ test("a productive review loop may use all ten review attempts", async () => {
 
   assert.equal(reviewAttempt, 10);
   assert.equal(result.review.approved, true);
+});
+
+test("a resumed delivery preserves the review-attempt budget from its ledger", async () => {
+  const repository = createFakeRepository("main-budget-base", {
+    "sandcastle/issue-120": ["existing implementation"],
+  });
+  const priorReview = {
+    approved: false,
+    blockingFindings: [{
+      summary: "Unresolved blocker",
+      requirement: "Required behavior",
+      evidence: "Observed failure",
+      materialImpact: "Unsafe merge",
+      cannotDefer: "Required in this issue",
+    }],
+    followUps: [],
+    resolvedFindings: [],
+  };
+  const github = createFakeGitHub({
+    openPullRequest: {
+      number: 77,
+      base: "main",
+      head: "sandcastle/issue-120",
+      url: "https://github.test/pull/77",
+    },
+    reviewLedger: Array.from({ length: 10 }, () => priorReview),
+  });
+  let reviewerCalls = 0;
+
+  await assert.rejects(
+    deliverIssueThroughPullRequest({
+      issue: { id: "120", title: "Exhausted review budget" },
+      repository,
+      github,
+      worker: { async implement() {} },
+      reviewer: {
+        async evaluatePullRequest() {
+          reviewerCalls += 1;
+          return priorReview;
+        },
+      },
+    }),
+    /used all 10 review attempts/,
+  );
+
+  assert.equal(reviewerCalls, 0);
 });
 
 test("an empty PR is returned to the worker without consuming a review", async () => {
@@ -398,12 +531,14 @@ function createFakeGitHub({
   openPullRequest = null,
   checksPassed = true,
   pullRequestDiffs = ["substantive diff"],
+  reviewLedger = [],
 } = {}) {
   const pullRequests = new Map();
   const issues = new Map(
     closedIssues.map((issueId) => [issueId, { state: "closed" }]),
   );
   let diffRead = 0;
+  const followUps = [];
 
   return {
     async findOpenPullRequest() {
@@ -441,6 +576,9 @@ function createFakeGitHub({
       diffRead += 1;
       return diff;
     },
+    async getReviewLedger() {
+      return structuredClone(reviewLedger);
+    },
     async waitForPullRequestChecks() {
       return { passed: checksPassed };
     },
@@ -463,6 +601,9 @@ function createFakeGitHub({
         completionPullRequest: pullRequest.url,
       });
     },
+    async createFollowUpIssue(followUp) {
+      followUps.push(structuredClone(followUp));
+    },
     async getParentIssue(issueId) {
       return parents[issueId] ? { id: parents[issueId] } : null;
     },
@@ -484,6 +625,9 @@ function createFakeGitHub({
     },
     inspectCreatedPullRequestCount() {
       return [...pullRequests.keys()].filter((number) => number === 101).length;
+    },
+    inspectFollowUps() {
+      return structuredClone(followUps);
     },
   };
 }

@@ -33,6 +33,15 @@ test("the planner prompt gets candidates from the metadata filter", async () => 
   assert.doesNotMatch(prompt, /fewest or weakest dependencies/);
 });
 
+test("the planner reports unusually broad implementation tickets before delivery", async () => {
+  const prompt = await readFile(".sandcastle/plan-prompt.md", "utf8");
+
+  assert.match(prompt, /independently reviewable boundaries/i);
+  assert.match(prompt, /sizeWarning/);
+  assert.match(prompt, /advisory/i);
+  assert.match(prompt, /do not omit/i);
+});
+
 function issue(
   number,
   {

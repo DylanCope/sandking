@@ -16,6 +16,21 @@ test("review instructions triage all existing PR feedback in one exhaustive pass
   assert.match(prompt, /all applicable blocking findings/i);
 });
 
+test("review instructions separate material blockers from non-blocking follow-ups", async () => {
+  const prompt = await readFile(
+    new URL("./pr-review-prompt.md", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(prompt, /blockingFindings/);
+  assert.match(prompt, /followUps/);
+  assert.match(prompt, /resolvedFindings/);
+  assert.match(prompt, /exact requirement/i);
+  assert.match(prompt, /material impact/i);
+  assert.match(prompt, /cannot reasonably be deferred/i);
+  assert.match(prompt, /maintainability.*non-blocking/i);
+});
+
 test("PR review runs in the issue worktree without changing the root branch", async () => {
   const root = { branch: "main" };
   const reviewWorktree = { branch: null, closed: false };
@@ -24,12 +39,19 @@ test("PR review runs in the issue worktree without changing the root branch", as
   const result = await runPullRequestReview({
     issue: { id: "26", branch: "sandcastle/issue-26" },
     pullRequest: { number: 103 },
+    reviewLedger: [{
+      approved: false,
+      blockingFindings: [{ summary: "Connect the public Cockpit" }],
+      followUps: [],
+      resolvedFindings: [],
+    }],
     createSandbox: async ({ branch }) => {
       reviewWorktree.branch = branch;
       return {
         async run(options) {
           assert.equal(options.promptArgs.PR_NUMBER, "103");
           assert.equal(options.promptArgs.BRANCH, "sandcastle/issue-26");
+          assert.match(options.promptArgs.REVIEW_LEDGER, /Connect the public Cockpit/);
           return {
             stdout: `Review complete.\n<review>\n${JSON.stringify(verdict)}\n</review>`,
           };

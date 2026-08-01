@@ -40,14 +40,41 @@ import {
 // https://standardschema.dev.
 const planSchema = z.object({
   issues: z.array(
-    z.object({ id: z.string(), title: z.string(), branch: z.string() }),
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      branch: z.string(),
+      sizeWarning: z.string().optional(),
+    }),
   ),
+});
+
+const blockingFindingSchema = z.object({
+  summary: z.string().min(1),
+  requirement: z.string().min(1),
+  evidence: z.string().min(1),
+  materialImpact: z.string().min(1),
+  cannotDefer: z.string().min(1),
+});
+
+const followUpSchema = z.object({
+  title: z.string().min(1),
+  body: z.string().refine(
+    (body) => /acceptance criteria/i.test(body),
+    "A ready-for-agent follow-up must contain acceptance criteria.",
+  ),
+  sourceFinding: z.string().min(1),
 });
 
 const reviewSchema = z.object({
   approved: z.boolean(),
-  findings: z.array(z.string()),
-});
+  blockingFindings: z.array(blockingFindingSchema),
+  followUps: z.array(followUpSchema),
+  resolvedFindings: z.array(z.string()),
+}).refine(
+  (review) => review.approved === (review.blockingFindings.length === 0),
+  "A review is approved exactly when it has no blocking findings.",
+);
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -140,6 +167,7 @@ const runIssueWorker = async (
 const runPullRequestReviewer = async (
   issue: z.infer<typeof planSchema>["issues"][number],
   pullRequest: { number: number },
+  reviewLedger: z.infer<typeof reviewSchema>[],
 ) =>
   retryOperation({
     label: `Pull request #${pullRequest.number} reviewer`,
@@ -148,6 +176,7 @@ const runPullRequestReviewer = async (
     operation: () => runPullRequestReview({
       issue,
       pullRequest,
+      reviewLedger,
       createSandbox: sandcastle.createSandbox,
       sandboxOptions: {
         sandbox: codexDocker(),
@@ -224,6 +253,9 @@ const main = async () => {
   console.log(`Planning complete. ${issues.length} issue(s) to deliver:`);
   for (const issue of issues) {
     console.log(`  ${issue.id}: ${issue.title} → ${issue.branch}`);
+    if (issue.sizeWarning) {
+      console.warn(`    ⚠ Ticket-size warning: ${issue.sizeWarning}`);
+    }
   }
 
   let deliveryFailed = false;
@@ -243,8 +275,13 @@ const main = async () => {
           }) => runIssueWorker({ ...issue, branch }, findings),
         },
         reviewer: {
-          evaluatePullRequest: ({ pullRequest }: { pullRequest: { number: number } }) =>
-            runPullRequestReviewer(issue, pullRequest),
+          evaluatePullRequest: ({
+            pullRequest,
+            reviewLedger,
+          }: {
+            pullRequest: { number: number };
+            reviewLedger: z.infer<typeof reviewSchema>[];
+          }) => runPullRequestReviewer(issue, pullRequest, reviewLedger),
         },
       });
       console.log(
