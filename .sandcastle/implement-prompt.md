@@ -8,6 +8,24 @@ Only work on the issue specified.
 
 Work on branch {{BRANCH}}. Make commits and run tests.
 
+# ISSUE MATERIAL
+
+The harness injected the current issue body and parent requirement chain below.
+Use it to stay scoped to this one ticket, and verify live GitHub state with `gh`
+when you need freshness beyond this snapshot.
+
+<issue-body>
+
+{{ISSUE_BODY}}
+
+</issue-body>
+
+<parent-requirements>
+
+{{PARENT_ISSUES}}
+
+</parent-requirements>
+
 # PULL REQUEST REVIEW FINDINGS
 
 {{REVIEW_FINDINGS}}
