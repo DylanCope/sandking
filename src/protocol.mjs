@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import {
+  harnessRegistrationSchema,
+  projectRegistrationSchema,
+} from "./project-registration.mjs";
 
 const FRAME_HEADER_BYTES = 4;
 const CONTROL_CHANNEL = 1;
@@ -20,9 +24,11 @@ export const releaseVersion = "0.1.0";
 export const hostCapabilities = Object.freeze([
   "sandking.control.slice-1",
   "sandking.bulk-stream.v1",
+  "sandking.project-registration.v1",
+  "sandking.conformance-harness-registration.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-audited-identity-mutation")
+  .update("sandking-host-control-schema-v1-with-project-and-conformance-harness-registration")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -173,6 +179,151 @@ const hostIdentityFailureSchema = z.object({
   auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
 }).strip();
 
+const projectPathSchema = z.string().max(4_096);
+const projectInspectSchema = z.object({
+  type: z.literal("project.inspect"),
+  requestId: identifierSchema,
+  path: projectPathSchema,
+}).strip();
+const projectInspectResultSchema = z.object({
+  type: z.literal("project.inspect.result"),
+  requestId: identifierSchema,
+  code: z.enum(["project_unregistered", "project_registered"]),
+  actualRevision: z.number().int().nonnegative(),
+  project: projectRegistrationSchema.nullable(),
+}).strip();
+const projectRegisterSchema = z.object({
+  type: z.literal("project.register"),
+  requestId: identifierSchema,
+  path: projectPathSchema,
+  configuration: z.unknown(),
+  authorizationClass: z.literal("host_local_project_registration"),
+  idempotencyKey: z.string().max(256),
+  expectedRevision: z.number().int().nonnegative(),
+}).strip();
+const projectRegisterResultSchema = z.object({
+  type: z.literal("project.register.result"),
+  requestId: identifierSchema,
+  code: z.enum(["project_registered", "project_registration_reused"]),
+  authorizationClass: z.literal("host_local_project_registration"),
+  idempotencyKeyHash: digestSchema,
+  expectedRevision: z.number().int().nonnegative(),
+  revision: z.number().int().positive(),
+  idempotentReplay: z.boolean(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  project: projectRegistrationSchema,
+}).strip();
+const harnessConformanceInspectSchema = z.object({
+  type: z.literal("harness.conformance.inspect"),
+  requestId: identifierSchema,
+}).strip();
+const harnessConformanceInspectResultSchema = z.object({
+  type: z.literal("harness.conformance.inspect.result"),
+  requestId: identifierSchema,
+  code: z.enum([
+    "conformance_harness_unregistered",
+    "conformance_harness_registered",
+  ]),
+  actualRevision: z.number().int().nonnegative(),
+  harness: harnessRegistrationSchema.nullable(),
+}).strip();
+const harnessConformanceRegisterSchema = z.object({
+  type: z.literal("harness.conformance.register"),
+  requestId: identifierSchema,
+  name: z.string().max(120),
+  authorizationClass: z.literal("host_local_harness_registration"),
+  idempotencyKey: z.string().max(256),
+  expectedRevision: z.number().int().nonnegative(),
+}).strip();
+const harnessConformanceRegisterResultSchema = z.object({
+  type: z.literal("harness.conformance.register.result"),
+  requestId: identifierSchema,
+  code: z.enum([
+    "conformance_harness_registered",
+    "conformance_harness_registration_reused",
+  ]),
+  authorizationClass: z.literal("host_local_harness_registration"),
+  idempotencyKeyHash: digestSchema,
+  expectedRevision: z.number().int().nonnegative(),
+  revision: z.number().int().positive(),
+  idempotentReplay: z.boolean(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  harness: harnessRegistrationSchema,
+}).strip();
+const projectHarnessPinSchema = z.object({
+  type: z.literal("project.harness.pin"),
+  requestId: identifierSchema,
+  projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
+  harnessId: z.string().regex(/^harness-[a-f0-9]{24}$/),
+  immutableRevision: z.string().max(64),
+  boundedConfiguration: z.unknown(),
+  authorizationClass: z.literal("host_local_project_configuration"),
+  idempotencyKey: z.string().max(256),
+  expectedRevision: z.number().int().nonnegative(),
+}).strip();
+const projectHarnessPinResultSchema = z.object({
+  type: z.literal("project.harness.pin.result"),
+  requestId: identifierSchema,
+  code: z.enum(["project_harness_pinned", "project_harness_pin_reused"]),
+  authorizationClass: z.literal("host_local_project_configuration"),
+  idempotencyKeyHash: digestSchema,
+  expectedRevision: z.number().int().nonnegative(),
+  revision: z.number().int().positive(),
+  idempotentReplay: z.boolean(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  project: projectRegistrationSchema,
+  harness: harnessRegistrationSchema,
+}).strip();
+const projectOperationFailureSchema = z.object({
+  type: z.literal("project.operation.failure"),
+  requestId: identifierSchema,
+  operation: z.enum([
+    "project.inspect",
+    "project.register",
+    "harness.conformance.register",
+    "project.harness.pin",
+  ]),
+  code: z.enum([
+    "mutation_contract_invalid",
+    "idempotency_key_conflict",
+    "mutation_revision_conflict",
+    "bounded_configuration_invalid",
+    "project_configuration_conflict",
+    "project_path_invalid",
+    "project_path_missing",
+    "project_path_moved",
+    "project_path_replaced",
+    "project_path_conflict",
+    "project_path_tombstoned",
+    "project_not_found",
+    "harness_not_found",
+    "harness_pin_missing",
+    "harness_pin_invalid",
+    "harness_workspace_invalid",
+  ]),
+  retryable: z.boolean(),
+  authorizationClass: z.enum([
+    "host_local_project_registration",
+    "host_local_harness_registration",
+    "host_local_project_configuration",
+  ]).nullable(),
+  idempotencyKeyHash: digestSchema.nullable(),
+  expectedRevision: z.number().int().nonnegative().nullable(),
+  actualRevision: z.number().int().nonnegative(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  resolution: z.object({
+    summary: identifierSchema,
+    actions: z.array(identifierSchema).min(1).max(4),
+  }).strip(),
+  prohibitedSideEffects: z.object({
+    directoryScan: z.literal(false),
+    projectFileWrite: z.literal(false),
+    harnessWorkspaceWrite: z.literal(false),
+    harnessPinWrite: z.literal(false),
+    approvalRequest: z.literal(false),
+  }).strip(),
+}).strip();
+
 export const controlMessageSchema = z.discriminatedUnion("type", [
   helloSchema,
   helloAckSchema,
@@ -182,6 +333,17 @@ export const controlMessageSchema = z.discriminatedUnion("type", [
   hostIdentityAcceptSchema,
   hostIdentityResultSchema,
   hostIdentityFailureSchema,
+  projectInspectSchema,
+  projectInspectResultSchema,
+  projectRegisterSchema,
+  projectRegisterResultSchema,
+  harnessConformanceInspectSchema,
+  harnessConformanceInspectResultSchema,
+  harnessConformanceRegisterSchema,
+  harnessConformanceRegisterResultSchema,
+  projectHarnessPinSchema,
+  projectHarnessPinResultSchema,
+  projectOperationFailureSchema,
 ]);
 
 export class ProtocolError extends Error {

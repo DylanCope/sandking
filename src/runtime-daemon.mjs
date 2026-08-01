@@ -32,6 +32,9 @@ import {
 } from "./private-state.mjs";
 import { createPlanningSpine } from "./planning-spine.mjs";
 import {
+  projectPreparationProjection,
+} from "./project-registration.mjs";
+import {
   HOST_SCHEMA_DIGEST,
   MAX_BULK_CHUNK_BYTES,
   MAX_FRAME_BYTES,
@@ -126,12 +129,15 @@ let httpServer;
 let websocketServer;
 /** @type {Awaited<ReturnType<typeof createPlanningSpine>> | undefined} */
 let planningSpine;
+let currentProjectPreparation = projectPreparationProjection();
 /** @type {Awaited<ReturnType<typeof createControllerSessionManager>> | undefined} */
 let controllerSessions;
 /** @type {any} */
 let state;
 let shuttingDown = false;
 let startupCommitted = false;
+let hostOperationQueue = Promise.resolve();
+let projectPreparationQueue = Promise.resolve();
 
 const cockpitCsp = [
   "default-src 'self'",
@@ -213,6 +219,7 @@ const readMutationHeaders = (request) => {
   const idempotencyKey = typeof rawIdempotencyKey === "string" ? rawIdempotencyKey : "";
   const expectedRevision = Number(request.headers["x-sandking-expected-revision"]);
   return {
+    idempotencyKey,
     idempotencyKeyHash: idempotencyKey.length > 0 && idempotencyKey.length <= 256
       ? hashIdempotencyKey(idempotencyKey)
       : null,
@@ -787,6 +794,279 @@ const launchHost = async (runtimeId) => {
   }
 };
 
+/** @template T @param {() => Promise<T>} operation */
+const withProjectPreparationLock = (operation) => {
+  const current = projectPreparationQueue.catch(() => undefined).then(operation);
+  projectPreparationQueue = current.then(() => undefined, () => undefined);
+  return current;
+};
+
+/** @param {any} message */
+const requestHostOperation = (message) => {
+  const current = hostOperationQueue.catch(() => undefined).then(async () => {
+    if (!hostProcess || !hostProcess.stdin.writable || !hostProcess.stdout.readable) {
+      throw new Error("host_unavailable");
+    }
+    writeFrame(hostProcess.stdin, message);
+    const response = await readFrame(hostProcess.stdout);
+    if (!("requestId" in response) || response.requestId !== message.requestId) {
+      throw new Error("host_protocol_error");
+    }
+    return response;
+  });
+  hostOperationQueue = current.then(() => undefined, () => undefined);
+  return current;
+};
+
+/** @param {string} key @param {string} operation */
+const derivedHostIdempotencyKey = (key, operation) => createHash("sha256")
+  .update(`${operation}\0${key}`)
+  .digest("hex");
+
+/** @param {any} outcome */
+const projectMutationSummary = (outcome) => outcome ? {
+  code: outcome.code,
+  authorizationClass: outcome.authorizationClass,
+  expectedRevision: outcome.expectedRevision,
+  revision: outcome.revision,
+  idempotentReplay: outcome.idempotentReplay,
+  auditId: outcome.auditId,
+} : null;
+
+const projectFailureStatus = Object.freeze({
+  project_path_invalid: 400,
+  bounded_configuration_invalid: 400,
+  mutation_contract_invalid: 400,
+  project_not_found: 404,
+  harness_not_found: 404,
+  project_path_missing: 409,
+  project_path_moved: 409,
+  project_path_replaced: 409,
+  project_path_conflict: 409,
+  project_path_tombstoned: 409,
+  project_configuration_conflict: 409,
+  harness_pin_missing: 409,
+  harness_pin_invalid: 409,
+  harness_workspace_invalid: 409,
+  idempotency_key_conflict: 409,
+  mutation_revision_conflict: 409,
+});
+
+/**
+ * @param {string} code
+ * @param {number} expectedRevision
+ * @param {number} actualRevision
+ * @param {string | null} idempotencyKeyHash
+ * @param {string[]} actions
+ */
+const runtimeProjectFailure = async (
+  code,
+  expectedRevision,
+  actualRevision,
+  idempotencyKeyHash,
+  actions,
+) => {
+  const auditId = await recordAudit("project.prepare", "rejected", {
+    code,
+    authorizationClass: "host_local_project_preparation",
+    idempotencyKeyHash,
+    expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+    actualRevision,
+    directoryScanPerformed: false,
+    projectFileWrite: false,
+    harnessWorkspaceWrite: false,
+  });
+  return {
+    type: "project_preparation_failure",
+    code,
+    retryable: code !== "bounded_configuration_invalid"
+      && code !== "project_configuration_conflict",
+    authorizationClass: "host_local_project_preparation",
+    expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+    actualRevision,
+    auditId,
+    resolution: { summary: code, actions },
+    prohibitedSideEffects: {
+      directoryScan: false,
+      projectFileWrite: false,
+      harnessPinWrite: false,
+      approvalRequest: false,
+    },
+  };
+};
+
+/**
+ * @param {{path: unknown, configuration: unknown, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number}} request
+ */
+const prepareExplicitProject = (request) => withProjectPreparationLock(async () => {
+  if (
+    typeof request.idempotencyKey !== "string"
+    || request.idempotencyKey.length === 0
+    || request.idempotencyKey.length > 256
+    || !Number.isSafeInteger(request.expectedRevision)
+    || request.expectedRevision < 0
+  ) {
+    return {
+      status: 400,
+      body: await runtimeProjectFailure(
+        "mutation_contract_invalid",
+        request.expectedRevision,
+        0,
+        request.idempotencyKeyHash,
+        ["retry_with_valid_mutation_contract"],
+      ),
+    };
+  }
+
+  /** @param {string} label */
+  const requestId = (label) => `${label}-${randomBytes(8).toString("hex")}`;
+  const inspection = await requestHostOperation({
+    type: "project.inspect",
+    requestId: requestId("project-inspect"),
+    path: typeof request.path === "string" ? request.path : "",
+  });
+  if (inspection.type === "project.operation.failure") {
+    return {
+      status: projectFailureStatus[inspection.code] ?? 409,
+      body: inspection,
+    };
+  }
+  if (inspection.type !== "project.inspect.result") {
+    throw new Error("host_protocol_error");
+  }
+
+  const inspectedProject = inspection.project;
+  const projectRegistration = await requestHostOperation({
+    type: "project.register",
+    requestId: requestId("project-register"),
+    path: typeof request.path === "string" ? request.path : "",
+    configuration: request.configuration,
+    authorizationClass: "host_local_project_registration",
+    idempotencyKey: derivedHostIdempotencyKey(
+      request.idempotencyKey,
+      "project.register",
+    ),
+    expectedRevision: request.expectedRevision,
+  });
+  if (projectRegistration.type === "project.operation.failure") {
+    return {
+      status: projectFailureStatus[projectRegistration.code] ?? 409,
+      body: projectRegistration,
+    };
+  }
+  if (projectRegistration.type !== "project.register.result") {
+    throw new Error("host_protocol_error");
+  }
+  // An idempotent registration replay returns its original revisioned outcome;
+  // the preceding inspection remains the current canonical Project snapshot.
+  let project = inspectedProject ?? projectRegistration.project;
+
+  const harnessInspection = await requestHostOperation({
+    type: "harness.conformance.inspect",
+    requestId: requestId("harness-inspect"),
+  });
+  if (harnessInspection.type !== "harness.conformance.inspect.result") {
+    throw new Error("host_protocol_error");
+  }
+  let harness = harnessInspection.harness;
+  let harnessRegistration = null;
+  if (!harness) {
+    harnessRegistration = await requestHostOperation({
+      type: "harness.conformance.register",
+      requestId: requestId("harness-register"),
+      name: "Sand-King Conformance Harness",
+      authorizationClass: "host_local_harness_registration",
+      idempotencyKey: derivedHostIdempotencyKey(
+        request.idempotencyKey,
+        "harness.conformance.register",
+      ),
+      expectedRevision: 0,
+    });
+    if (harnessRegistration.type === "project.operation.failure") {
+      return {
+        status: projectFailureStatus[harnessRegistration.code] ?? 409,
+        body: harnessRegistration,
+      };
+    }
+    if (harnessRegistration.type !== "harness.conformance.register.result") {
+      throw new Error("host_protocol_error");
+    }
+    harness = harnessRegistration.harness;
+  }
+
+  let pin = null;
+  if (
+    !project.harness
+    || project.harness.harnessId !== harness.harnessId
+    || project.harness.pinnedRevision !== harness.immutableRevision
+  ) {
+    pin = await requestHostOperation({
+      type: "project.harness.pin",
+      requestId: requestId("project-pin"),
+      projectId: project.projectId,
+      harnessId: harness.harnessId,
+      immutableRevision: harness.immutableRevision,
+      boundedConfiguration: {
+        adapterProtocol: "1.0.0",
+        launchProfile: "delegated-work",
+      },
+      authorizationClass: "host_local_project_configuration",
+      idempotencyKey: derivedHostIdempotencyKey(
+        request.idempotencyKey,
+        "project.harness.pin",
+      ),
+      expectedRevision: project.revision,
+    });
+    if (pin.type === "project.operation.failure") {
+      return { status: projectFailureStatus[pin.code] ?? 409, body: pin };
+    }
+    if (pin.type !== "project.harness.pin.result") {
+      throw new Error("host_protocol_error");
+    }
+    project = pin.project;
+  }
+
+  currentProjectPreparation = projectPreparationProjection(project);
+  const preparationAuditId = await recordAudit("project.prepare", "observed", {
+    authorizationClass: "host_local_project_preparation",
+    idempotencyKeyHash: request.idempotencyKeyHash,
+    expectedRevision: request.expectedRevision,
+    resultingRevision: project.revision,
+    projectId: project.projectId,
+    harnessId: project.harness?.harnessId ?? null,
+    pinnedRevision: project.harness?.pinnedRevision ?? null,
+    checksReady: project.readiness.checks === "ready",
+    configurationReady: project.readiness.configuration === "ready",
+    launchRequestReady: project.readiness.launchRequest === "ready",
+    directoryScanPerformed: false,
+    projectFileWrite: false,
+    separateApprovalRequired: false,
+  });
+  return {
+    status: 200,
+    body: {
+      type: "project_preparation_result",
+      code: "project_ready",
+      authorizationClass: "host_local_project_preparation",
+      expectedRevision: request.expectedRevision,
+      revision: project.revision,
+      auditId: preparationAuditId,
+      project: currentProjectPreparation.current,
+      mutations: {
+        projectRegistration: projectMutationSummary(projectRegistration),
+        harnessRegistration: projectMutationSummary(harnessRegistration),
+        harnessPin: projectMutationSummary(pin),
+      },
+      prohibitedSideEffects: {
+        directoryScan: false,
+        projectFileWrite: false,
+        trackedSandKingFileWrite: false,
+        approvalRequest: false,
+      },
+    },
+  };
+});
+
 /** @param {WebSocket} socket @param {string} code @param {boolean} reloadRequired */
 const rejectBrowserProtocol = (socket, code, reloadRequired) => {
   if (socket.readyState !== WebSocket.OPEN) {
@@ -1226,6 +1506,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
             framing: state.host.framing,
             observationCursor: state.host.observationCursor,
           },
+          projectPreparation: currentProjectPreparation,
           planning: await planningSpine?.project(),
         },
       });
@@ -1383,6 +1664,38 @@ const main = async () => {
             return;
           }
           sendJson(response, 401, { code: "session_required" });
+          return;
+        }
+
+        if (request.method === "POST" && request.url === "/projects/open") {
+          const body = await readJsonBody(request);
+          const record = body && typeof body === "object" ? body : {};
+          const {
+            idempotencyKey,
+            idempotencyKeyHash,
+            expectedRevision,
+          } = readMutationHeaders(request);
+          const authorizationAccepted = exactOriginAccepted(request)
+            && request.headers["x-sandking-csrf"] === activeSession.csrfToken;
+          if (!authorizationAccepted) {
+            const failure = await runtimeProjectFailure(
+              "authorization_failed",
+              expectedRevision,
+              0,
+              idempotencyKeyHash,
+              ["retry_from_authenticated_cockpit"],
+            );
+            sendJson(response, 403, failure);
+            return;
+          }
+          const outcome = await prepareExplicitProject({
+            path: "path" in record ? record.path : null,
+            configuration: "configuration" in record ? record.configuration : null,
+            idempotencyKey,
+            idempotencyKeyHash,
+            expectedRevision,
+          });
+          sendJson(response, outcome.status, outcome.body);
           return;
         }
 
