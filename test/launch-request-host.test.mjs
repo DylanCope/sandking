@@ -222,7 +222,15 @@ test("the framed Host durably prepares and decides one immutable Launch request"
     );
     const adapterPath = join(harnessState.harnesses[0].workspacePath, "run.mjs");
     const adapterSource = await readFile(adapterPath, "utf8");
-    await writeFile(adapterPath, `${adapterSource}\n// material workspace drift\n`);
+    await execFileAsync("git", [
+      "-C", harnessState.harnesses[0].workspacePath,
+      "update-index", "--assume-unchanged", "--", "run.mjs",
+    ]);
+    await writeFile(adapterPath, `${adapterSource}\n// hidden material workspace drift\n`);
+    assert.equal((await execFileAsync("git", [
+      "-C", harnessState.harnesses[0].workspacePath,
+      "status", "--porcelain",
+    ])).stdout, "");
     writeFrame(child.stdin, {
       ...decisionRequest,
       requestId: "decide-framed-launch-after-drift",

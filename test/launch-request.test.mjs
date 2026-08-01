@@ -457,6 +457,49 @@ test("the pinned conformance Harness negotiates a side-effect-free preparation s
     assert.equal((await execFileAsync("git", [
       "-C", context.harnessWorkspacePath, "status", "--porcelain",
     ])).stdout, "");
+
+    const manager = await createLaunchRequestManager({
+      dataDir,
+      hostId,
+      recordAudit,
+      loadLaunchContext: registry.loadLaunchContext,
+      prepareHarness: prepareConformanceHarnessLaunch,
+      now: () => new Date("2026-08-01T12:00:00.000Z"),
+    });
+    const prepared = await manager.prepare({
+      requestId: "prepare-launch-before-hidden-workspace-drift",
+      projectId: pinned.project.projectId,
+      parameters: { issueNumber: 119, targetBranch: "sandcastle/issue-119" },
+      controllerId,
+      controllerSessionId,
+      authorizationClass: "focused_controller_launch",
+      idempotencyKey: "prepare-launch-before-hidden-workspace-drift",
+      expectedRevision: 0,
+      expiresInSeconds: 300,
+    });
+    const adapterPath = join(context.harnessWorkspacePath, "run.mjs");
+    const adapterSource = await readFile(adapterPath, "utf8");
+    await execFileAsync("git", [
+      "-C", context.harnessWorkspacePath,
+      "update-index", "--assume-unchanged", "--", "run.mjs",
+    ]);
+    await writeFile(adapterPath, `${adapterSource}\n// hidden material adapter drift\n`);
+    assert.equal((await execFileAsync("git", [
+      "-C", context.harnessWorkspacePath, "status", "--porcelain",
+    ])).stdout, "");
+
+    const hiddenDriftDecision = await manager.decide({
+      requestId: "decide-launch-after-hidden-workspace-drift",
+      launchRequestId: prepared.launchRequest.launchRequestId,
+      decision: "approved",
+      controllerId,
+      controllerSessionId,
+      authorizationClass: "focused_controller_launch",
+      idempotencyKey: "decide-launch-after-hidden-workspace-drift",
+      expectedRevision: 1,
+    });
+    assert.equal(hiddenDriftDecision.code, "launch_request_materially_changed");
+    assert.equal(hiddenDriftDecision.current.status, "expired");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

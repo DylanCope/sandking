@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
@@ -205,8 +206,31 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
   }
   const adapterPath = join(workspacePath, "run.mjs");
   const environment = { LANG: "C.UTF-8" };
+  /** @param {...string} args */
+  const git = async (...args) => (await execFileAsync("git", ["-C", workspacePath, ...args], {
+    env: environment,
+    timeout: 3_000,
+    maxBuffer: 32_768,
+  })).stdout.trim();
+  const assertPinnedAdapterBytes = async () => {
+    const [{ stdout: pinnedAdapterSource }, workspaceAdapterSource] = await Promise.all([
+      execFileAsync("git", [
+        "-C", workspacePath,
+        "show", `${pinnedRevision}:run.mjs`,
+      ], {
+        env: environment,
+        timeout: 3_000,
+        maxBuffer: 32_768,
+      }),
+      readFile(adapterPath, "utf8"),
+    ]);
+    if (workspaceAdapterSource !== pinnedAdapterSource) {
+      throw new Error("harness_workspace_invalid");
+    }
+  };
   /** @param {string[]} args */
   const invoke = async (args) => {
+    await assertPinnedAdapterBytes();
     const { stdout } = await execFileAsync(process.execPath, [adapterPath, ...args], {
       cwd: workspacePath,
       env: environment,
@@ -219,12 +243,6 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
       throw new Error("harness_adapter_protocol_invalid");
     }
   };
-  /** @param {...string} args */
-  const git = async (...args) => (await execFileAsync("git", ["-C", workspacePath, ...args], {
-    env: environment,
-    timeout: 3_000,
-    maxBuffer: 32_768,
-  })).stdout.trim();
   const observedRevision = await git("rev-parse", "HEAD");
   const statusBefore = await git("status", "--porcelain");
   if (observedRevision !== pinnedRevision || statusBefore !== "") {
@@ -243,6 +261,7 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
   if (statusAfter !== statusBefore) {
     throw new Error("harness_preparation_side_effect_detected");
   }
+  await assertPinnedAdapterBytes();
   const { type, ...result } = prepared;
   void type;
   return harnessPreparationSchema.parse(result);
