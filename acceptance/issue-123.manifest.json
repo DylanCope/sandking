@@ -18,13 +18,14 @@
         "#22 thin Planning spine and invariant decisions",
         "#23 fail-closed canonical authority decisions"
       ],
-      "environment": "npm-packed Sand-King; npm-pinned real headless Chromium; deterministic GitHub fixture adapter and conformance Controller provider; user-space Node processes",
-      "transport": "packaged CLI -> real Controller runtime and local Host; typed same-origin WebSocket projection -> served Cockpit; typed same-origin HTTP mutations -> runtime-owned Planning state",
+      "environment": "npm-packed Sand-King; npm-pinned real headless Chromium; deterministic GitHub fixture adapter; negotiated conformance Controller provider subprocess in a runtime-owned PTY; user-space Node processes",
+      "transport": "packaged CLI -> real Controller runtime and local Host; typed same-origin WebSocket projection -> served Cockpit; typed same-origin HTTP mutations -> runtime-owned Planning state; exclusive opaque WebSocket attachment -> runtime-owned provider PTY",
       "initialState": "no Planning state; one fresh deterministic GitHub projection; one unavailable deterministic projection; protected Project fixture outside runtime state",
       "actions": [
         "load explicitly labelled conformance fixture projections",
         "render the built-in Wayfinding, Speccing, and Ticketing Journey Rail",
-        "select a work context and open an independently identified focused conformance Controller session",
+        "select a work context and open an independently identified focused conformance Controller session through the provider-adapter boundary",
+        "attach the Cockpit to the runtime-owned provider PTY and ask the Controller to inspect the selected work context",
         "mark an optional stage Not used",
         "replay the identical mutation",
         "reject changed idempotency use, stale revision, unavailable projection, and missing authorization",
@@ -34,6 +35,9 @@
       "canonicalStateInvariants": [
         "fixture provenance remains explicit",
         "work context and Controller session identities remain independent",
+        "provider and provider-session identities are negotiated and independently retained",
+        "the Controller runtime owns the PTY and permits one exclusive writable attachment",
+        "interactive Controller output names the selected canonical work context",
         "one accepted Not-used revision is retained outside the Project",
         "identical replay references the original audit",
         "stale canonical projection remains visibly stale and mutation-disabled",

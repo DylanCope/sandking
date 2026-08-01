@@ -51,8 +51,10 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
       const context = await browser.newContext();
       const page = await context.newPage();
       const receivedFrames = [];
+      const sentFrames = [];
       const planningRequests = [];
       page.on("websocket", (socket) => {
+        socket.on("framesent", (event) => sentFrames.push(String(event.payload)));
         socket.on("framereceived", (event) => receivedFrames.push(String(event.payload)));
       });
       page.on("request", (request) => {
@@ -132,7 +134,74 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
         await focusedSession.getAttribute("data-provider-id"),
         "conformance-controller-v1",
       );
+      assert.equal(
+        await focusedSession.getAttribute("data-provider-adapter-id"),
+        "conformance-controller-adapter-v1",
+      );
+      assert.equal(await focusedSession.getAttribute("data-pty-runtime-owned"), "true");
+      assert.match(
+        await focusedSession.getAttribute("data-provider-session-id"),
+        /^conformance-provider-session-[a-f0-9]{24}$/,
+      );
+      assert.match(
+        await focusedSession.getAttribute("data-terminal-stream-id"),
+        /^controller-terminal-[a-f0-9]{24}$/,
+      );
+      await page.waitForSelector(
+        "#focused-controller-session[data-terminal-attachment='read-write']",
+      );
       assert.match(await focusedSession.textContent(), /focused conformance Controller session/i);
+
+      const secondAttachmentOutcome = await page.evaluate((parameters) =>
+        new Promise((resolve, reject) => {
+          const competing = new WebSocket(`ws://${location.host}/ws`);
+          const timeout = setTimeout(() => {
+            competing.close();
+            reject(new Error("competing_terminal_attachment_timeout"));
+          }, 5_000);
+          competing.addEventListener("open", () => competing.send(JSON.stringify(parameters.hello)));
+          competing.addEventListener("message", (event) => {
+            if (typeof event.data !== "string") {
+              return;
+            }
+            const message = JSON.parse(event.data).message;
+            if (message.type === "runtime.hello-ack") {
+              competing.send(JSON.stringify({
+                channel: "control",
+                message: {
+                  type: "browser.terminal.attach",
+                  sessionId: parameters.sessionId,
+                  streamId: parameters.streamId,
+                  attachmentId: parameters.attachmentId,
+                  mode: "read-write",
+                  outputCursor: 0,
+                },
+              }));
+            } else if (message.type === "runtime.protocol-error") {
+              clearTimeout(timeout);
+              competing.close();
+              resolve(message.code);
+            }
+          });
+          competing.addEventListener("error", reject);
+        }), {
+        hello: JSON.parse(sentFrames.find((frame) => frame.includes("browser.hello"))),
+        sessionId,
+        streamId: await focusedSession.getAttribute("data-terminal-stream-id"),
+        attachmentId: await focusedSession.getAttribute("data-terminal-attachment-id"),
+      });
+      assert.equal(secondAttachmentOutcome, "terminal_write_attachment_conflict");
+
+      await page.locator("#controller-terminal-input").fill("inspect");
+      await page.locator("#send-controller-input").click();
+      await page.waitForFunction(() => document.querySelector("#controller-terminal-output")
+        ?.textContent?.includes(
+          "Inspected github:fixture:issue:116 for work-context-speccing-optional-planning",
+        ));
+      const controllerOutput = await page.locator("#controller-terminal-output").textContent();
+      assert.match(controllerOutput, /Conformance Controller ready/);
+      assert.match(controllerOutput, /Provider terminal: stdin TTY=true; stdout TTY=true/);
+      assert.match(controllerOutput, /Focused work context: work-context-speccing-optional-planning/);
 
       const notUsedButton = freshJourney.locator(
         "[data-stage-id='ticketing'] button[data-action='not-used']",
@@ -237,6 +306,8 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
       const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line));
       const planningAudits = audits.filter((entry) => entry.action.startsWith("planning."));
+      const planningSessionAudits = audits.filter((entry) =>
+        entry.action.startsWith("planning.") || entry.action.startsWith("controller."));
       const acceptedSessionAudit = planningAudits.find((entry) =>
         entry.action === "planning.session.open" && entry.outcome === "accepted");
       const acceptedNotUsedAudit = planningAudits.find((entry) =>
@@ -244,6 +315,20 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
       assert.equal(acceptedSessionAudit.details.workContextId,
         "work-context-speccing-optional-planning");
       assert.equal(acceptedSessionAudit.details.sessionId, sessionId);
+      assert.match(acceptedSessionAudit.details.providerSessionId,
+        /^conformance-provider-session-[a-f0-9]{24}$/);
+      assert.equal(acceptedSessionAudit.details.ptyRuntimeOwned, true);
+      assert.ok(planningSessionAudits.some((entry) =>
+        entry.action === "controller.session.start"
+        && entry.outcome === "accepted"
+        && entry.details.sessionId === sessionId
+        && entry.details.providerAdapterId === "conformance-controller-adapter-v1"
+        && entry.details.ptyRuntimeOwned === true));
+      assert.ok(planningSessionAudits.some((entry) =>
+        entry.action === "controller.terminal.input"
+        && entry.outcome === "observed"
+        && entry.details.sessionId === sessionId
+        && entry.details.byteLength > 0));
       assert.equal(acceptedNotUsedAudit.details.resultingRevision, 2);
       assert.equal(acceptedNotUsedAudit.details.fixtureProjectionWrite, true);
       assert.match(acceptedNotUsedAudit.details.idempotencyKeyHash,
@@ -257,7 +342,31 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
       assert.deepEqual(projectFilesAfter, ["README.md"]);
       const privateStateFiles = await readdir(dataDir);
       assert.ok(privateStateFiles.includes("planning-state.json"));
+      assert.ok(privateStateFiles.includes("controller-sessions.json"));
       assert.equal(privateStateFiles.some((file) => /queue/i.test(file)), false);
+      const retainedControllerState = JSON.parse(
+        await readFile(join(dataDir, "controller-sessions.json"), "utf8"),
+      );
+      const retainedControllerSession = retainedControllerState.sessions.find(
+        (session) => session.sessionId === sessionId,
+      );
+      assert.ok(retainedControllerSession);
+      assert.equal(retainedControllerSession.providerId, "conformance-controller-v1");
+      assert.equal(
+        retainedControllerSession.providerAdapterId,
+        "conformance-controller-adapter-v1",
+      );
+      assert.equal(retainedControllerSession.workContextId,
+        "work-context-speccing-optional-planning");
+      assert.deepEqual({
+        kind: retainedControllerSession.terminal.kind,
+        runtimeOwned: retainedControllerSession.terminal.runtimeOwned,
+        status: retainedControllerSession.terminal.status,
+      }, {
+        kind: "pty",
+        runtimeOwned: true,
+        status: "running",
+      });
 
       const observation = {
         scenario: "planning-spine/projects-an-optional-journey",
@@ -282,6 +391,26 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
           workContextId: "work-context-speccing-optional-planning",
           canonicalReference: "github:fixture:issue:116",
           providerId: "conformance-controller-v1",
+          providerAdapterId: await focusedSession.getAttribute("data-provider-adapter-id"),
+          providerSessionId: await focusedSession.getAttribute("data-provider-session-id"),
+          terminalStreamId: await focusedSession.getAttribute("data-terminal-stream-id"),
+          ptyRuntimeOwned:
+            await focusedSession.getAttribute("data-pty-runtime-owned") === "true",
+          providerObservedTty:
+            controllerOutput.includes("Provider terminal: stdin TTY=true; stdout TTY=true"),
+          writableAttachment:
+            await focusedSession.getAttribute("data-terminal-attachment") === "read-write",
+          competingWritableAttachmentRejectedAs: secondAttachmentOutcome,
+          inspectedSelectedContext: controllerOutput.includes(
+            "Inspected github:fixture:issue:116 for work-context-speccing-optional-planning",
+          ),
+          retainedLifecycle: {
+            providerSessionId: retainedControllerSession.providerSessionId,
+            providerAdapterId: retainedControllerSession.providerAdapterId,
+            terminalKind: retainedControllerSession.terminal.kind,
+            ptyRuntimeOwned: retainedControllerSession.terminal.runtimeOwned,
+            status: retainedControllerSession.terminal.status,
+          },
         },
         notUsedMutation: {
           authorizationClass: replay.body.authorizationClass,
@@ -307,7 +436,7 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
           unauthorized: { status: unauthorized.status, code: unauthorized.body.code },
         },
         scopeExclusions: acknowledgement.viewModel.planning.excludedCapabilities,
-        auditReferences: planningAudits.map((entry) => ({
+        auditReferences: planningSessionAudits.map((entry) => ({
           auditId: entry.auditId,
           action: entry.action,
           outcome: entry.outcome,
@@ -324,6 +453,7 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
           idempotencyKeyAbsentFromAudit: !JSON.stringify(planningAudits).includes(idempotencyKey),
           planningStateOutsideProject:
             privateStateFiles.includes("planning-state.json")
+            && privateStateFiles.includes("controller-sessions.json")
             && projectFilesAfter.length === 1
             && projectFilesAfter[0] === "README.md",
         },

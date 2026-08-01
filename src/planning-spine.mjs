@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
 import { readJson, writePrivateJson } from "./private-state.mjs";
@@ -194,6 +194,25 @@ const focusedSessionSchema = z.object({
     providerId: z.literal("conformance-controller-v1"),
     kind: z.literal("conformance"),
     fixture: z.literal(true),
+    adapterId: z.literal("conformance-controller-adapter-v1"),
+    adapterProtocol: z.string().regex(/^1\.[0-9]+\.[0-9]+$/),
+    capabilities: z.tuple([
+      z.literal("controller.session.start"),
+      z.literal("controller.session.interactive"),
+      z.literal("controller.session.terminate"),
+    ]),
+    providerSessionId: z.string()
+      .regex(/^conformance-provider-session-[a-f0-9]{24}$/),
+  }).strict(),
+  terminal: z.object({
+    streamId: z.string().regex(/^controller-terminal-[a-f0-9]{24}$/),
+    kind: z.literal("pty"),
+    runtimeOwned: z.literal(true),
+    state: z.literal("running"),
+    writableAttachment: z.object({
+      attachmentId: z.string().regex(/^terminal-attachment-[a-f0-9]{24}$/),
+      mode: z.literal("exclusive"),
+    }).strict(),
   }).strict(),
   workContext: workContextSchema,
 }).strict();
@@ -232,7 +251,7 @@ const outcomeRecord = (responseSchema) => z.object({
   response: responseSchema,
 }).strict();
 const planningStateSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   sessionRevisions: z.record(identifierSchema, z.number().int().positive()),
   sessions: z.array(focusedSessionSchema).max(128),
   sessionOutcomes: z.array(outcomeRecord(focusedSessionResultSchema)).max(128),
@@ -249,7 +268,7 @@ const planningStateSchema = z.object({
 const planningStatePath = (dataDir) => join(dataDir, "planning-state.json");
 /** @returns {PlanningState} */
 const initialState = () => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   sessionRevisions: {},
   sessions: [],
   sessionOutcomes: [],
@@ -260,6 +279,23 @@ const initialState = () => ({
 /** @param {string} dataDir */
 const readState = async (dataDir) => {
   const raw = await readJson(planningStatePath(dataDir), initialState());
+  if (raw && typeof raw === "object" && "schemaVersion" in raw && raw.schemaVersion === 1) {
+    const legacy = z.object({
+      schemaVersion: z.literal(1),
+      stageOverrides: planningStateSchema.shape.stageOverrides,
+      stageOutcomes: planningStateSchema.shape.stageOutcomes,
+    }).passthrough().safeParse(raw);
+    if (!legacy.success) {
+      throw new Error("planning_state_invalid");
+    }
+    const migrated = {
+      ...initialState(),
+      stageOverrides: legacy.data.stageOverrides,
+      stageOutcomes: legacy.data.stageOutcomes,
+    };
+    await writePrivateJson(planningStatePath(dataDir), migrated);
+    return planningStateSchema.parse(migrated);
+  }
   const parsed = planningStateSchema.safeParse(raw);
   if (!parsed.success) {
     throw new Error("planning_state_invalid");
@@ -328,7 +364,12 @@ const planningFailure = (
 });
 
 /**
- * @param {{dataDir: string, recordAudit: (action: string, outcome: "accepted" | "rejected" | "observed", details?: Record<string, unknown>) => Promise<string>}} options
+ * @param {{
+ *   dataDir: string,
+ *   recordAudit: (action: string, outcome: "accepted" | "rejected" | "observed", details?: Record<string, unknown>) => Promise<string>,
+ *   startControllerSession?: (workContext: z.infer<typeof workContextSchema>) => Promise<unknown>,
+ *   terminateControllerSession?: (sessionId: string) => Promise<void>,
+ * }} options
  */
 export const createPlanningSpine = async (options) => {
   const fixtureProjection = initialProjection();
@@ -479,44 +520,73 @@ export const createPlanningSpine = async (options) => {
       };
     }
 
-    const resultingRevision = actualRevision + 1;
-    const session = focusedSessionSchema.parse({
-      sessionId: `controller-session-${randomBytes(12).toString("hex")}`,
-      focused: true,
-      provider: {
-        providerId: "conformance-controller-v1",
-        kind: "conformance",
-        fixture: true,
-      },
-      workContext: structuredClone(workContextMatch.workContext),
-    });
-    const auditId = await options.recordAudit(action, "accepted", {
-      ...auditBase,
-      resultingRevision,
-      sessionId: session.sessionId,
-    });
-    const response = focusedSessionResultSchema.parse({
-      type: "mutation_result",
-      code: "focused_controller_session_opened",
-      authorizationClass,
-      expectedRevision: request.expectedRevision,
-      revision: resultingRevision,
-      idempotentReplay: false,
-      auditId,
-      session,
-      prohibitedSideEffects: prohibitedSideEffects(),
-    });
-    state.sessionRevisions[request.workContextId] = resultingRevision;
-    state.sessions.push(session);
-    state.sessionOutcomes.push({
-      idempotencyKeyHash: request.idempotencyKeyHash,
-      requestFingerprint: fingerprint,
-      response,
-    });
-    state.sessions = state.sessions.slice(-128);
-    state.sessionOutcomes = state.sessionOutcomes.slice(-128);
-    await writePrivateJson(planningStatePath(options.dataDir), state);
-    return { status: 201, body: response };
+    let session;
+    try {
+      if (!options.startControllerSession) {
+        throw new Error("controller_session_runtime_unavailable");
+      }
+      session = focusedSessionSchema.parse(
+        await options.startControllerSession(structuredClone(workContextMatch.workContext)),
+      );
+    } catch (error) {
+      const auditId = await options.recordAudit(action, "rejected", {
+        ...auditBase,
+        code: "controller_session_start_failed",
+        providerFailureCode: error instanceof Error
+          && /^[a-z0-9_]+$/.test(error.message)
+          ? error.message
+          : "controller_session_start_failed",
+      });
+      return {
+        status: 503,
+        body: planningFailure(
+          "controller_session_start_failed",
+          authorizationClass,
+          request.expectedRevision,
+          actualRevision,
+          auditId,
+          true,
+        ),
+      };
+    }
+
+    try {
+      const resultingRevision = actualRevision + 1;
+      const auditId = await options.recordAudit(action, "accepted", {
+        ...auditBase,
+        resultingRevision,
+        sessionId: session.sessionId,
+        providerSessionId: session.provider.providerSessionId,
+        providerAdapterId: session.provider.adapterId,
+        streamId: session.terminal.streamId,
+        ptyRuntimeOwned: session.terminal.runtimeOwned,
+      });
+      const response = focusedSessionResultSchema.parse({
+        type: "mutation_result",
+        code: "focused_controller_session_opened",
+        authorizationClass,
+        expectedRevision: request.expectedRevision,
+        revision: resultingRevision,
+        idempotentReplay: false,
+        auditId,
+        session,
+        prohibitedSideEffects: prohibitedSideEffects(),
+      });
+      state.sessionRevisions[request.workContextId] = resultingRevision;
+      state.sessions.push(session);
+      state.sessionOutcomes.push({
+        idempotencyKeyHash: request.idempotencyKeyHash,
+        requestFingerprint: fingerprint,
+        response,
+      });
+      state.sessions = state.sessions.slice(-128);
+      state.sessionOutcomes = state.sessionOutcomes.slice(-128);
+      await writePrivateJson(planningStatePath(options.dataDir), state);
+      return { status: 201, body: response };
+    } catch (error) {
+      await options.terminateControllerSession?.(session.sessionId).catch(() => undefined);
+      throw error;
+    }
   });
 
   /**

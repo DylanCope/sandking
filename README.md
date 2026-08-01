@@ -88,17 +88,23 @@ retries; opaque stream bytes remain on a separate bounded binary channel.
 The Cockpit also projects a thin optional Planning journey. Its Journey Rail
 shows the built-in Wayfinding, Speccing, and Ticketing stages from data labelled
 `Conformance fixture data — not live GitHub`. Selecting fixture-backed work
-opens an independently identified focused conformance Controller session. A
-person may mark an optional stage **Not used** without blocking ordinary work.
-That mutation is browser-session-authorized, revisioned, idempotent, typed, and
-audited; only a hashed idempotency key is retained. An unavailable claimed
-GitHub projection remains visibly stale, disables its controls in the Cockpit,
-and is rejected again by the runtime without queuing a write.
+opens an independently identified focused conformance Controller session. The
+runtime negotiates with the packaged conformance provider adapter, launches its
+provider command in a runtime-owned PTY, and gives the Cockpit one exclusive
+writable attachment over the opaque WebSocket channel. The deterministic
+Controller can inspect the selected canonical work context through that real
+interactive boundary. A person may mark an optional stage **Not used** without
+blocking ordinary work. That mutation is browser-session-authorized,
+revisioned, idempotent, typed, and audited; only a hashed idempotency key is
+retained. An unavailable claimed GitHub projection remains visibly stale,
+disables its controls in the Cockpit, and is rejected again by the runtime
+without queuing a write.
 
-Planning fixture mutation and session state stays in the private runtime data
-directory, outside Projects. This thin spine does not implement skill-owned
-reasoning, private Specifications, Ticket-set publication, complete optional or
-out-of-order behavior, or downstream **Needs review**.
+Planning fixture mutation, provider-session metadata, and PTY lifecycle records
+stay in the private runtime data directory, outside Projects. This thin spine
+does not implement skill-owned reasoning, private Specifications, Ticket-set
+publication, complete optional or out-of-order behavior, or downstream **Needs
+review**.
 
 Run the executable issue-117 acceptance manifest, including its npm-pinned real
 Chromium gate, with:

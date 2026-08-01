@@ -15,11 +15,13 @@ import {
   BrowserProtocolError,
   browserCapabilities,
   decodeBrowserOpaqueFrame,
+  encodeBrowserOpaqueFrame,
   parseBrowserControl,
   runtimeOptionalBrowserCapabilities,
   runtimeRequiredBrowserCapabilities,
   serializeRuntimeControl,
 } from "./browser-protocol.mjs";
+import { createControllerSessionManager, ControllerSessionError } from "./controller-sessions.mjs";
 import {
   appendPrivateJsonLine,
   ensurePrivateDirectory,
@@ -124,6 +126,8 @@ let httpServer;
 let websocketServer;
 /** @type {Awaited<ReturnType<typeof createPlanningSpine>> | undefined} */
 let planningSpine;
+/** @type {Awaited<ReturnType<typeof createControllerSessionManager>> | undefined} */
+let controllerSessions;
 /** @type {any} */
 let state;
 let shuttingDown = false;
@@ -616,6 +620,7 @@ const shutdown = async () => {
     }
     httpServer.close(() => resolve(undefined));
   });
+  await controllerSessions?.shutdown();
   if (hostProcess) {
     await stopChild(hostProcess);
   }
@@ -1015,6 +1020,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
   authenticatedSockets.add(socket);
   sessionSockets.set(sessionId, authenticatedSockets);
   socket.once("close", () => {
+    controllerSessions?.detach(socket);
     authenticatedSockets.delete(socket);
     if (authenticatedSockets.size === 0) {
       sessionSockets.delete(sessionId);
@@ -1072,6 +1078,19 @@ const handleBrowserConnection = (socket, sessionId, session) => {
       if (phase === "negotiated") {
         if (isBinary) {
           const opaque = decodeBrowserOpaqueFrame(toBuffer(data));
+          try {
+            await controllerSessions?.write({
+              socket,
+              streamId: opaque.streamId,
+              sequence: opaque.sequence,
+              eof: opaque.eof,
+              data: opaque.data,
+            });
+          } catch (error) {
+            throw new BrowserProtocolError(error instanceof ControllerSessionError
+              ? error.code
+              : "controller_terminal_input_failed");
+          }
           await recordAudit("browser.opaque.receive", "observed", {
             streamId: opaque.streamId,
             sequence: opaque.sequence,
@@ -1081,14 +1100,50 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           return;
         }
         const control = parseControlFrame(data);
-        if (control.type !== "browser.ping") {
-          throw new BrowserProtocolError("browser_control_unexpected_message");
+        if (control.type === "browser.ping") {
+          socket.send(serializeRuntimeControl({
+            type: "runtime.pong",
+            requestId: control.requestId,
+          }));
+          return;
         }
-        socket.send(serializeRuntimeControl({
-          type: "runtime.pong",
-          requestId: control.requestId,
-        }));
-        return;
+        if (control.type === "browser.terminal.attach") {
+          try {
+            const attached = await controllerSessions?.attach({
+              socket,
+              sessionId: control.sessionId,
+              streamId: control.streamId,
+              attachmentId: control.attachmentId,
+              outputCursor: control.outputCursor,
+              onOutput: (target, frame) => {
+                if (target.readyState === WebSocket.OPEN) {
+                  target.send(encodeBrowserOpaqueFrame(frame), { binary: true });
+                }
+              },
+            });
+            if (!attached) {
+              throw new ControllerSessionError("controller_terminal_unavailable");
+            }
+            socket.send(serializeRuntimeControl({
+              type: "runtime.terminal-attached",
+              sessionId: control.sessionId,
+              streamId: control.streamId,
+              attachmentId: control.attachmentId,
+              mode: "read-write",
+              exclusive: true,
+              outputCursor: control.outputCursor,
+            }));
+            for (const frame of attached.frames) {
+              socket.send(encodeBrowserOpaqueFrame(frame), { binary: true });
+            }
+            return;
+          } catch (error) {
+            throw new BrowserProtocolError(error instanceof ControllerSessionError
+              ? error.code
+              : "controller_terminal_attach_failed");
+          }
+        }
+        throw new BrowserProtocolError("browser_control_unexpected_message");
       }
 
       if (isBinary) {
@@ -1212,9 +1267,15 @@ const main = async () => {
     const runtimeId = `runtime-${randomBytes(12).toString("hex")}`;
     const negotiation = await launchHost(runtimeId);
     const host = negotiation.host;
+    controllerSessions = await createControllerSessionManager({
+      dataDir: args.dataDir,
+      recordAudit,
+    });
     planningSpine = await createPlanningSpine({
       dataDir: args.dataDir,
       recordAudit,
+      startControllerSession: controllerSessions.start,
+      terminateControllerSession: controllerSessions.terminate,
     });
     const negotiationAuditId = await recordAudit("host.negotiate", "accepted", {
       controllerIdentity: "controller-runtime",
@@ -1445,7 +1506,7 @@ const main = async () => {
       revision: args.lifecycleRevision,
       port: address.port,
       readinessToken: randomBytes(24).toString("hex"),
-      compatibilityKey: "runtime-v2-planning-spine",
+      compatibilityKey: "runtime-v3-controller-terminal",
       version: releaseVersion,
       identity: "controller-runtime",
       host: {

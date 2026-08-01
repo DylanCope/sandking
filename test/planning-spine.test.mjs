@@ -76,9 +76,45 @@ test("opening fixture-backed Planning work creates one focused conformance Contr
     expectedRevision: 0,
     workContextId: "work-context-speccing-optional-planning",
   };
+  const startedWorkContexts = [];
+  const startControllerSession = async (workContext) => {
+    startedWorkContexts.push(workContext);
+    return {
+      sessionId: `controller-session-${"1".repeat(24)}`,
+      focused: true,
+      provider: {
+        providerId: "conformance-controller-v1",
+        kind: "conformance",
+        fixture: true,
+        adapterId: "conformance-controller-adapter-v1",
+        adapterProtocol: "1.0.0",
+        capabilities: [
+          "controller.session.start",
+          "controller.session.interactive",
+          "controller.session.terminate",
+        ],
+        providerSessionId: `conformance-provider-session-${"2".repeat(24)}`,
+      },
+      terminal: {
+        streamId: `controller-terminal-${"3".repeat(24)}`,
+        kind: "pty",
+        runtimeOwned: true,
+        state: "running",
+        writableAttachment: {
+          attachmentId: `terminal-attachment-${"4".repeat(24)}`,
+          mode: "exclusive",
+        },
+      },
+      workContext,
+    };
+  };
 
   try {
-    const planning = await createPlanningSpine({ dataDir, recordAudit });
+    const planning = await createPlanningSpine({
+      dataDir,
+      recordAudit,
+      startControllerSession,
+    });
     const opened = await planning.openFocusedSession(contract);
     assert.equal(opened.status, 201);
     assert.deepEqual(opened.body, {
@@ -96,6 +132,24 @@ test("opening fixture-backed Planning work creates one focused conformance Contr
           providerId: "conformance-controller-v1",
           kind: "conformance",
           fixture: true,
+          adapterId: "conformance-controller-adapter-v1",
+          adapterProtocol: "1.0.0",
+          capabilities: [
+            "controller.session.start",
+            "controller.session.interactive",
+            "controller.session.terminate",
+          ],
+          providerSessionId: `conformance-provider-session-${"2".repeat(24)}`,
+        },
+        terminal: {
+          streamId: `controller-terminal-${"3".repeat(24)}`,
+          kind: "pty",
+          runtimeOwned: true,
+          state: "running",
+          writableAttachment: {
+            attachmentId: `terminal-attachment-${"4".repeat(24)}`,
+            mode: "exclusive",
+          },
         },
         workContext: {
           workContextId: "work-context-speccing-optional-planning",
@@ -112,6 +166,7 @@ test("opening fixture-backed Planning work creates one focused conformance Contr
     });
     assert.match(opened.body.session.sessionId, /^controller-session-[a-f0-9]{24}$/);
     assert.match(opened.body.auditId, /^audit-/);
+    assert.deepEqual(startedWorkContexts, [opened.body.session.workContext]);
 
     const replay = await planning.openFocusedSession(contract);
     assert.equal(replay.status, 200);

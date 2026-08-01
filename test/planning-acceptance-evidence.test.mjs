@@ -92,6 +92,35 @@ test("retained issue 123 evidence proves the optional Planning path and mutation
   assert.notEqual(evidence.focusedSession.sessionId, evidence.focusedSession.workContextId);
   assert.equal(evidence.focusedSession.canonicalReference, "github:fixture:issue:116");
   assert.equal(evidence.focusedSession.providerId, "conformance-controller-v1");
+  assert.equal(
+    evidence.focusedSession.providerAdapterId,
+    "conformance-controller-adapter-v1",
+  );
+  assert.match(evidence.focusedSession.providerSessionId,
+    /^conformance-provider-session-[a-f0-9]{24}$/);
+  assert.match(evidence.focusedSession.terminalStreamId,
+    /^controller-terminal-[a-f0-9]{24}$/);
+  assert.equal(evidence.focusedSession.ptyRuntimeOwned, true);
+  assert.equal(evidence.focusedSession.providerObservedTty, true);
+  assert.equal(evidence.focusedSession.writableAttachment, true);
+  assert.equal(
+    evidence.focusedSession.competingWritableAttachmentRejectedAs,
+    "terminal_write_attachment_conflict",
+  );
+  assert.equal(evidence.focusedSession.inspectedSelectedContext, true);
+  assert.deepEqual({
+    providerSessionId: evidence.focusedSession.retainedLifecycle.providerSessionId,
+    providerAdapterId: evidence.focusedSession.retainedLifecycle.providerAdapterId,
+    terminalKind: evidence.focusedSession.retainedLifecycle.terminalKind,
+    ptyRuntimeOwned: evidence.focusedSession.retainedLifecycle.ptyRuntimeOwned,
+    status: evidence.focusedSession.retainedLifecycle.status,
+  }, {
+    providerSessionId: evidence.focusedSession.providerSessionId,
+    providerAdapterId: "conformance-controller-adapter-v1",
+    terminalKind: "pty",
+    ptyRuntimeOwned: true,
+    status: "running",
+  });
 
   assert.deepEqual({
     authorizationClass: evidence.notUsedMutation.authorizationClass,
@@ -129,6 +158,22 @@ test("retained issue 123 evidence proves the optional Planning path and mutation
   assert.equal(acceptedSession.details.authorizationClass, "planning_focused_session");
   assert.equal(acceptedSession.details.workContextId, evidence.focusedSession.workContextId);
   assert.equal(acceptedSession.details.sessionId, evidence.focusedSession.sessionId);
+  assert.equal(acceptedSession.details.providerSessionId,
+    evidence.focusedSession.providerSessionId);
+  assert.equal(acceptedSession.details.ptyRuntimeOwned, true);
+  const controllerStart = evidence.auditReferences.find((entry) =>
+    entry.action === "controller.session.start" && entry.outcome === "accepted");
+  assert.equal(controllerStart.details.sessionId, evidence.focusedSession.sessionId);
+  assert.equal(controllerStart.details.providerSessionId,
+    evidence.focusedSession.providerSessionId);
+  assert.equal(controllerStart.details.providerAdapterId,
+    "conformance-controller-adapter-v1");
+  assert.equal(controllerStart.details.ptyRuntimeOwned, true);
+  const controllerInput = evidence.auditReferences.find((entry) =>
+    entry.action === "controller.terminal.input" && entry.outcome === "observed");
+  assert.equal(controllerInput.details.sessionId, evidence.focusedSession.sessionId);
+  assert.equal(controllerInput.details.contentRetained, false);
+  assert.ok(controllerInput.details.byteLength > 0);
   const acceptedNotUsed = evidence.auditReferences.find((entry) =>
     entry.auditId === evidence.notUsedMutation.auditId);
   assert.equal(acceptedNotUsed.action, "planning.stage.not-used");
@@ -159,7 +204,9 @@ test("retained issue 123 evidence proves the optional Planning path and mutation
     assert.ok(evidence.auditReferences.some((entry) =>
       entry.outcome === "rejected" && entry.details.code === code));
   }
-  assert.ok(evidence.auditReferences.every((entry) =>
+  assert.ok(evidence.auditReferences
+    .filter((entry) => entry.action.startsWith("planning."))
+    .every((entry) =>
     entry.details.githubWrite === false
     && entry.details.queuedWrite === false
     && entry.details.skillInvocation === false
