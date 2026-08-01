@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import test from "node:test";
+
+const execFileAsync = promisify(execFile);
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 
 const manifest = JSON.parse(await readFile(
   new URL("../acceptance/issue-123.manifest.json", import.meta.url),
@@ -31,6 +37,40 @@ test("issue 123 acceptance manifest drives the named packaged browser scenario",
   assert.ok(manifest.verification.commands.flat().includes(
     "test/planning-spine.browser.test.mjs",
   ));
+});
+
+test("retained issue 123 evidence identifies the demonstrated product-path revision", async () => {
+  const { stdout: resolvedCommit } = await execFileAsync(
+    "git",
+    ["rev-parse", "--verify", `${evidence.generatedFromCommit}^{commit}`],
+    { cwd: repositoryRoot },
+  );
+  assert.equal(resolvedCommit.trim(), evidence.generatedFromCommit);
+
+  const { stdout: productPathChanges } = await execFileAsync(
+    "git",
+    [
+      "diff",
+      "--name-only",
+      `${evidence.generatedFromCommit}..HEAD`,
+      "--",
+      "README.md",
+      "package.json",
+      "package-lock.json",
+      "src",
+      "acceptance/issue-123.manifest.json",
+      "test/browser-protocol.test.mjs",
+      "test/planning-spine.test.mjs",
+      "test/planning-spine.browser.test.mjs",
+      "test/run-issue-123-acceptance.mjs",
+    ],
+    { cwd: repositoryRoot },
+  );
+  assert.equal(
+    productPathChanges.trim(),
+    "",
+    `retained evidence predates demonstrated product-path changes:\n${productPathChanges}`,
+  );
 });
 
 test("retained issue 123 evidence proves the optional Planning path and mutation invariants", () => {
