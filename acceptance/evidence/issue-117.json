@@ -11,8 +11,8 @@
     "normalizationDifference": "one terminal LF",
     "exactContentEquivalentAfterApprovedExportNormalization": true
   },
-  "generatedFromCommit": "12b8435a89dbd6b975a731d5ac3f6e83d3612c6f",
-  "recordedAt": "2026-08-01T13:43:52.368Z",
+  "generatedFromCommit": "7224a5d67e1e4c259bba977c473be088e93cacb1",
+  "recordedAt": "2026-08-01T13:47:23.402Z",
   "software": {
     "sandking": "0.1.0",
     "node": "v22.23.2",
@@ -26,7 +26,7 @@
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "989cc08126566dcbb7d7d5eabe7350561559e38f4914fefd216ccacd395f9b6d"
+    "tarballSha256": "00d2e67b8bfdf2413f323b96881cf78b3c322e613f02842a8fca4af559ee9f23"
   },
   "listener": {
     "address": "127.0.0.1",
@@ -34,7 +34,7 @@
   },
   "runtime": {
     "identity": "controller-runtime",
-    "reference": "runtime-17f1da6ab916481788824983",
+    "reference": "runtime-68d3da621df16585202178cb",
     "browserReloadReusedRuntime": true
   },
   "host": {
@@ -91,7 +91,7 @@
   },
   "auditReferences": [
     {
-      "auditId": "audit-752d3191efbe611aa8c087fb",
+      "auditId": "audit-552331d38d2ebcd61cabad19",
       "action": "host.negotiate",
       "outcome": "accepted",
       "details": {
@@ -110,69 +110,69 @@
       }
     },
     {
-      "auditId": "audit-e9a3871378f1dd004470edb1",
+      "auditId": "audit-ad53e04943f91f2a65bcbe8c",
       "action": "browser.session.create",
       "outcome": "accepted",
       "details": {
-        "runtimeId": "runtime-17f1da6ab916481788824983",
+        "runtimeId": "runtime-68d3da621df16585202178cb",
         "authorizationClass": "bootstrap_token",
-        "idempotencyKeyHash": "sha256:42b263a0e1e95e0df34bb6860b33008d0fcfa2378ef325ed76b858b4e831a970",
+        "idempotencyKeyHash": "sha256:467bff845098d9c94f19099f3c471c52abf91d69affc972a8a5b08245b39b81b",
         "expectedRevision": 0,
         "actualRevision": 0,
         "resultingRevision": 1
       }
     },
     {
-      "auditId": "audit-47c1500f7ddeecc2b25ee0b6",
+      "auditId": "audit-8fc30d294f229e1743d8ea0e",
       "action": "browser.negotiate",
       "outcome": "accepted",
       "details": {
-        "runtimeId": "runtime-17f1da6ab916481788824983",
+        "runtimeId": "runtime-68d3da621df16585202178cb",
         "hostIdentity": "local-host",
         "observationMode": "snapshot",
-        "sessionAuditId": "audit-e9a3871378f1dd004470edb1"
+        "sessionAuditId": "audit-ad53e04943f91f2a65bcbe8c"
       }
     },
     {
-      "auditId": "audit-bd5515e53a56ac00088f8d66",
+      "auditId": "audit-6991842b93984346fa94ce31",
       "action": "browser.session.create",
       "outcome": "observed",
       "details": {
         "authorizationClass": "bootstrap_token",
-        "idempotencyKeyHash": "sha256:42b263a0e1e95e0df34bb6860b33008d0fcfa2378ef325ed76b858b4e831a970",
+        "idempotencyKeyHash": "sha256:467bff845098d9c94f19099f3c471c52abf91d69affc972a8a5b08245b39b81b",
         "expectedRevision": 0,
         "actualRevision": 0,
         "resultingRevision": 1,
         "idempotentReplay": true,
-        "originalAuditId": "audit-e9a3871378f1dd004470edb1"
+        "originalAuditId": "audit-ad53e04943f91f2a65bcbe8c"
       }
     },
     {
-      "auditId": "audit-3009891d4acb8d1c8dd5bb13",
+      "auditId": "audit-8bfdab4577c1eda7da80cce7",
       "action": "browser.session.create",
       "outcome": "rejected",
       "details": {
         "code": "mutation_revision_conflict",
         "authorizationClass": "bootstrap_token",
-        "idempotencyKeyHash": "sha256:42b263a0e1e95e0df34bb6860b33008d0fcfa2378ef325ed76b858b4e831a970",
+        "idempotencyKeyHash": "sha256:467bff845098d9c94f19099f3c471c52abf91d69affc972a8a5b08245b39b81b",
         "expectedRevision": 1,
         "actualRevision": 1
       }
     },
     {
-      "auditId": "audit-39629579bc05fa2b7e8063e6",
+      "auditId": "audit-ec1df68bdc1703f47f2c1d63",
       "action": "browser.session.create",
       "outcome": "rejected",
       "details": {
         "code": "bootstrap_token_expired",
         "authorizationClass": "bootstrap_token",
-        "idempotencyKeyHash": "sha256:473f4f7590a855139b42a967aadbb05021d6a572c5ffd8c52d8c10bf23b1519e",
+        "idempotencyKeyHash": "sha256:c320a7c241a47623e026ef890022887b8745899ba948f8c352647af1f72215e0",
         "expectedRevision": 0,
         "actualRevision": 0
       }
     },
     {
-      "auditId": "audit-e1c2f260918e00b8498d9629",
+      "auditId": "audit-c3cc5aed50d5c8243e78cc55",
       "action": "browser.session.end",
       "outcome": "rejected",
       "details": {
@@ -184,18 +184,18 @@
       }
     },
     {
-      "auditId": "audit-b06e232b5900781d6262d19f",
+      "auditId": "audit-8f1a18fb068dcbb7ca649a28",
       "action": "browser.negotiate",
       "outcome": "accepted",
       "details": {
-        "runtimeId": "runtime-17f1da6ab916481788824983",
+        "runtimeId": "runtime-68d3da621df16585202178cb",
         "hostIdentity": "local-host",
         "observationMode": "resume",
-        "sessionAuditId": "audit-e9a3871378f1dd004470edb1"
+        "sessionAuditId": "audit-ad53e04943f91f2a65bcbe8c"
       }
     },
     {
-      "auditId": "audit-7dd94e00f9f450ff32d6b29d",
+      "auditId": "audit-0c9dd4aa744537d7d430ebfc",
       "action": "browser.negotiate",
       "outcome": "rejected",
       "details": {
@@ -203,7 +203,7 @@
       }
     },
     {
-      "auditId": "audit-a660a58bb3920f8d5a22fbe4",
+      "auditId": "audit-c4d9fd3445609f0f35038a6b",
       "action": "browser.negotiate",
       "outcome": "rejected",
       "details": {
@@ -211,29 +211,29 @@
       }
     },
     {
-      "auditId": "audit-248dcb59c4f27e1707d86663",
+      "auditId": "audit-6ff0aaf1be22132138773b6c",
       "action": "browser.negotiate",
       "outcome": "accepted",
       "details": {
-        "runtimeId": "runtime-17f1da6ab916481788824983",
+        "runtimeId": "runtime-68d3da621df16585202178cb",
         "hostIdentity": "local-host",
         "observationMode": "snapshot",
-        "sessionAuditId": "audit-e9a3871378f1dd004470edb1"
+        "sessionAuditId": "audit-ad53e04943f91f2a65bcbe8c"
       }
     },
     {
-      "auditId": "audit-c8ef6b0f069ef9ab4e24654e",
+      "auditId": "audit-b1ca5d200096d3c4b267f439",
       "action": "browser.negotiate",
       "outcome": "accepted",
       "details": {
-        "runtimeId": "runtime-17f1da6ab916481788824983",
+        "runtimeId": "runtime-68d3da621df16585202178cb",
         "hostIdentity": "local-host",
         "observationMode": "snapshot",
-        "sessionAuditId": "audit-e9a3871378f1dd004470edb1"
+        "sessionAuditId": "audit-ad53e04943f91f2a65bcbe8c"
       }
     },
     {
-      "auditId": "audit-1ce8da01d7068763e308ec94",
+      "auditId": "audit-d99ebf3d3f89a53e18bf4756",
       "action": "browser.frame",
       "outcome": "rejected",
       "details": {
@@ -241,7 +241,7 @@
       }
     },
     {
-      "auditId": "audit-94c0cb4643ee8b23965fa850",
+      "auditId": "audit-1f5468748abda5d5bba54a0e",
       "action": "websocket.upgrade",
       "outcome": "rejected",
       "details": {
@@ -249,7 +249,7 @@
       }
     },
     {
-      "auditId": "audit-b920b47f00430c996701cff5",
+      "auditId": "audit-36d554a938b70dd952abcadf",
       "action": "http.request",
       "outcome": "rejected",
       "details": {
@@ -257,11 +257,11 @@
       }
     },
     {
-      "auditId": "audit-f2ef90b8222f6ba93060392f",
+      "auditId": "audit-9900c0d17467eca9ef23dc28",
       "action": "browser.session.end",
       "outcome": "accepted",
       "details": {
-        "sessionAuditId": "audit-e9a3871378f1dd004470edb1",
+        "sessionAuditId": "audit-ad53e04943f91f2a65bcbe8c",
         "authorizationClass": "runtime_browser_session",
         "idempotencyKeyHash": "sha256:03d3c53b1a6a5e127ad133ed2864a14e05994325a8a7106e1837716b329a6673",
         "expectedRevision": 1,
@@ -270,7 +270,7 @@
       }
     },
     {
-      "auditId": "audit-f74f007987d2e1a5331fc4fa",
+      "auditId": "audit-a1f00b62ee68f7c827184f88",
       "action": "browser.session.end",
       "outcome": "observed",
       "details": {
@@ -280,11 +280,11 @@
         "actualRevision": 1,
         "resultingRevision": 2,
         "idempotentReplay": true,
-        "originalAuditId": "audit-f2ef90b8222f6ba93060392f"
+        "originalAuditId": "audit-9900c0d17467eca9ef23dc28"
       }
     },
     {
-      "auditId": "audit-5216fc30ab5a27d98d6b84a8",
+      "auditId": "audit-c545f157a90cba41e3d7f4e7",
       "action": "browser.session.end",
       "outcome": "rejected",
       "details": {
@@ -309,7 +309,7 @@
     "authorizationClass": "runtime_browser_session",
     "initialRevision": 1,
     "resultingRevision": 2,
-    "auditId": "audit-f2ef90b8222f6ba93060392f",
+    "auditId": "audit-9900c0d17467eca9ef23dc28",
     "replayStatus": 200,
     "replayReturnedSameAudit": true,
     "staleStatus": 409,
@@ -422,7 +422,7 @@
           "retryable": true,
           "explanation": "The local Host rejected the Controller protocol major version as incompatible.",
           "retryGuidance": "Install matching Sand-King Controller and Host releases, then retry the launch.",
-          "auditId": "audit-47408dacf7edf0230cfbe18d"
+          "auditId": "audit-10ee4c4f531fcfcd01940752"
         },
         "acceptedState": {
           "beforeSha256": "d4383fc33176254b2abac7cb3c14bcaae5701681537db3d69adf740b1feb1b9c",
@@ -433,7 +433,7 @@
         "mutationOccurred": false,
         "auditReferences": [
           {
-            "auditId": "audit-47408dacf7edf0230cfbe18d",
+            "auditId": "audit-10ee4c4f531fcfcd01940752",
             "action": "host.negotiate",
             "outcome": "rejected",
             "details": {
@@ -444,12 +444,12 @@
             }
           },
           {
-            "auditId": "audit-fd38ee2cbf07231bf654bbf8",
+            "auditId": "audit-036d50d65326dba7dc1c05d3",
             "action": "runtime.start",
             "outcome": "rejected",
             "details": {
               "code": "controller_protocol_major_mismatch",
-              "negotiationAuditId": "audit-47408dacf7edf0230cfbe18d"
+              "negotiationAuditId": "audit-10ee4c4f531fcfcd01940752"
             }
           }
         ]
@@ -463,7 +463,7 @@
           "retryable": true,
           "explanation": "The local Host rejected a required Controller capability.",
           "retryGuidance": "Install compatible Sand-King Controller and Host releases, then retry the launch.",
-          "auditId": "audit-55f7be461efb7e2321b888d3"
+          "auditId": "audit-6cf9ac33719353fb9ea460fb"
         },
         "acceptedState": {
           "beforeSha256": "d4383fc33176254b2abac7cb3c14bcaae5701681537db3d69adf740b1feb1b9c",
@@ -474,7 +474,7 @@
         "mutationOccurred": false,
         "auditReferences": [
           {
-            "auditId": "audit-55f7be461efb7e2321b888d3",
+            "auditId": "audit-6cf9ac33719353fb9ea460fb",
             "action": "host.negotiate",
             "outcome": "rejected",
             "details": {
@@ -485,12 +485,12 @@
             }
           },
           {
-            "auditId": "audit-c9c26b15208c0e5cdea9f7b1",
+            "auditId": "audit-48c057434ae44b1776d29047",
             "action": "runtime.start",
             "outcome": "rejected",
             "details": {
               "code": "controller_capability_unsupported",
-              "negotiationAuditId": "audit-55f7be461efb7e2321b888d3"
+              "negotiationAuditId": "audit-6cf9ac33719353fb9ea460fb"
             }
           }
         ]
@@ -504,7 +504,7 @@
           "retryable": true,
           "explanation": "The local Host rejected the Controller control schema as incompatible.",
           "retryGuidance": "Install matching Sand-King Controller and Host releases, then retry the launch.",
-          "auditId": "audit-12d195d2689c2f10374dc007"
+          "auditId": "audit-7db9002b96cef54e30e2ae79"
         },
         "acceptedState": {
           "beforeSha256": "d4383fc33176254b2abac7cb3c14bcaae5701681537db3d69adf740b1feb1b9c",
@@ -515,7 +515,7 @@
         "mutationOccurred": false,
         "auditReferences": [
           {
-            "auditId": "audit-12d195d2689c2f10374dc007",
+            "auditId": "audit-7db9002b96cef54e30e2ae79",
             "action": "host.negotiate",
             "outcome": "rejected",
             "details": {
@@ -526,12 +526,12 @@
             }
           },
           {
-            "auditId": "audit-0dd15191bf4619cb98548627",
+            "auditId": "audit-76bd64bef347caba5f91c413",
             "action": "runtime.start",
             "outcome": "rejected",
             "details": {
               "code": "controller_schema_mismatch",
-              "negotiationAuditId": "audit-12d195d2689c2f10374dc007"
+              "negotiationAuditId": "audit-7db9002b96cef54e30e2ae79"
             }
           }
         ]
@@ -545,7 +545,7 @@
           "retryable": true,
           "explanation": "The Controller and local Host use incompatible protocol major versions.",
           "retryGuidance": "Install matching Sand-King Controller and Host releases, then retry the launch.",
-          "auditId": "audit-4c51ee3a7095faa90cf59470"
+          "auditId": "audit-c3f369fddc6e356bbb0df9dc"
         },
         "acceptedState": {
           "beforeSha256": "d4383fc33176254b2abac7cb3c14bcaae5701681537db3d69adf740b1feb1b9c",
@@ -556,7 +556,7 @@
         "mutationOccurred": false,
         "auditReferences": [
           {
-            "auditId": "audit-4c51ee3a7095faa90cf59470",
+            "auditId": "audit-c3f369fddc6e356bbb0df9dc",
             "action": "host.negotiate",
             "outcome": "rejected",
             "details": {
@@ -567,12 +567,12 @@
             }
           },
           {
-            "auditId": "audit-005070a5d07f727c0291f708",
+            "auditId": "audit-bcaf8e2061339fec0b91baa2",
             "action": "runtime.start",
             "outcome": "rejected",
             "details": {
               "code": "host_protocol_major_mismatch",
-              "negotiationAuditId": "audit-4c51ee3a7095faa90cf59470"
+              "negotiationAuditId": "audit-c3f369fddc6e356bbb0df9dc"
             }
           }
         ]
@@ -586,7 +586,7 @@
           "retryable": true,
           "explanation": "The local Host reported an unexpected identity.",
           "retryGuidance": "Verify the local Host installation and expected identity, then retry the launch.",
-          "auditId": "audit-6cdfa9a8f168c7ecf51b5e3e"
+          "auditId": "audit-937db7963608e921d0d2d9a2"
         },
         "acceptedState": {
           "beforeSha256": "d4383fc33176254b2abac7cb3c14bcaae5701681537db3d69adf740b1feb1b9c",
@@ -597,7 +597,7 @@
         "mutationOccurred": false,
         "auditReferences": [
           {
-            "auditId": "audit-6cdfa9a8f168c7ecf51b5e3e",
+            "auditId": "audit-937db7963608e921d0d2d9a2",
             "action": "host.negotiate",
             "outcome": "rejected",
             "details": {
@@ -608,12 +608,12 @@
             }
           },
           {
-            "auditId": "audit-2615f4516d51b18e3988f7ec",
+            "auditId": "audit-20197cdb85e01241e447c0c6",
             "action": "runtime.start",
             "outcome": "rejected",
             "details": {
               "code": "host_identity_mismatch",
-              "negotiationAuditId": "audit-6cdfa9a8f168c7ecf51b5e3e"
+              "negotiationAuditId": "audit-937db7963608e921d0d2d9a2"
             }
           }
         ]
@@ -627,7 +627,7 @@
           "retryable": true,
           "explanation": "The Controller and local Host could not agree on required capabilities.",
           "retryGuidance": "Install compatible Sand-King Controller and Host releases, then retry the launch.",
-          "auditId": "audit-075cea25be4d2c47f63c87c7"
+          "auditId": "audit-e679ec01b398fef467f3155b"
         },
         "acceptedState": {
           "beforeSha256": "d4383fc33176254b2abac7cb3c14bcaae5701681537db3d69adf740b1feb1b9c",
@@ -638,7 +638,7 @@
         "mutationOccurred": false,
         "auditReferences": [
           {
-            "auditId": "audit-075cea25be4d2c47f63c87c7",
+            "auditId": "audit-e679ec01b398fef467f3155b",
             "action": "host.negotiate",
             "outcome": "rejected",
             "details": {
@@ -649,12 +649,12 @@
             }
           },
           {
-            "auditId": "audit-34404184e97f64fde142c360",
+            "auditId": "audit-9f70cf8051f28dc303b8c026",
             "action": "runtime.start",
             "outcome": "rejected",
             "details": {
               "code": "host_capability_unsupported",
-              "negotiationAuditId": "audit-075cea25be4d2c47f63c87c7"
+              "negotiationAuditId": "audit-e679ec01b398fef467f3155b"
             }
           }
         ]
@@ -668,7 +668,7 @@
           "retryable": true,
           "explanation": "The local Host sent malformed framed protocol data during negotiation.",
           "retryGuidance": "Restart or update the local Host, then retry the launch.",
-          "auditId": "audit-8cce8076727ac2abe5106dd8"
+          "auditId": "audit-ead058cb425c6dc32d72a2e3"
         },
         "acceptedState": {
           "beforeSha256": "d4383fc33176254b2abac7cb3c14bcaae5701681537db3d69adf740b1feb1b9c",
@@ -679,7 +679,7 @@
         "mutationOccurred": false,
         "auditReferences": [
           {
-            "auditId": "audit-8cce8076727ac2abe5106dd8",
+            "auditId": "audit-ead058cb425c6dc32d72a2e3",
             "action": "host.negotiate",
             "outcome": "rejected",
             "details": {
@@ -690,12 +690,12 @@
             }
           },
           {
-            "auditId": "audit-69decefbb587da01fb050162",
+            "auditId": "audit-b0e8012f7e17bfd181354483",
             "action": "runtime.start",
             "outcome": "rejected",
             "details": {
               "code": "host_protocol_invalid_frame",
-              "negotiationAuditId": "audit-8cce8076727ac2abe5106dd8"
+              "negotiationAuditId": "audit-ead058cb425c6dc32d72a2e3"
             }
           }
         ]
@@ -727,7 +727,7 @@
     "mode": "secret-probe",
     "observedHostIdentity": "local-host",
     "controllerSecretForwarded": false,
-    "negotiationAuditId": "audit-09d5284e961ab0315a78d219"
+    "negotiationAuditId": "audit-4b0218add6783570ff3a7c8b"
   },
   "verificationCommands": [
     [
