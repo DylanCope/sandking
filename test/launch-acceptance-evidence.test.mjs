@@ -82,6 +82,9 @@ test("issue 119 manifest drives the focused immutable Launch approval scenario",
   assert.ok(manifest.verification.typedControllerSessionFailures.includes(
     "mutation_revision_conflict",
   ));
+  assert.ok(manifest.verification.typedControllerSessionFailures.includes(
+    "provider_adapter_failed",
+  ));
 });
 
 test("retained issue 119 evidence identifies the unchanged demonstrated revision", async () => {
@@ -223,6 +226,26 @@ test("retained issue 119 evidence proves authorization, idempotency, and termina
   assert.match(evidence.sessionCreation.failedAttempt.auditId, /^audit-[a-f0-9]{24}$/);
   assert.match(evidence.sessionCreation.failedAttempt.replayAuditId, /^audit-[a-f0-9]{24}$/);
   assert.deepEqual({
+    code: evidence.sessionCreation.providerStartFailure.code,
+    replayCode: evidence.sessionCreation.providerStartFailure.replayCode,
+    replayIdempotent: evidence.sessionCreation.providerStartFailure.replayIdempotent,
+    replayReturnedOriginalAudit:
+      evidence.sessionCreation.providerStartFailure.replayReturnedOriginalAudit,
+    changedContentCode: evidence.sessionCreation.providerStartFailure.changedContentCode,
+    noSessionCreated: evidence.sessionCreation.providerStartFailure.noSessionCreated,
+  }, {
+    code: "provider_adapter_failed",
+    replayCode: "provider_adapter_failed",
+    replayIdempotent: true,
+    replayReturnedOriginalAudit: true,
+    changedContentCode: "idempotency_key_conflict",
+    noSessionCreated: true,
+  });
+  assert.match(evidence.sessionCreation.providerStartFailure.auditId,
+    /^audit-[a-f0-9]{24}$/);
+  assert.match(evidence.sessionCreation.providerStartFailure.replayAuditId,
+    /^audit-[a-f0-9]{24}$/);
+  assert.deepEqual({
     code: evidence.invalidPreparation.code,
     issueNumber: evidence.invalidPreparation.issueNumber,
     retainedHostOutcome: evidence.invalidPreparation.retainedHostOutcome,
@@ -239,6 +262,25 @@ test("retained issue 119 evidence proves authorization, idempotency, and termina
   });
   assert.match(evidence.invalidPreparation.auditId, /^audit-[a-f0-9]{24}$/);
   assert.match(evidence.invalidPreparation.replayAuditId, /^audit-[a-f0-9]{24}$/);
+  assert.deepEqual({
+    code: evidence.overlongPreparation.code,
+    issueDigitCount: evidence.overlongPreparation.issueDigitCount,
+    branchLength: evidence.overlongPreparation.branchLength,
+    retainedHostOutcome: evidence.overlongPreparation.retainedHostOutcome,
+    replayIdempotent: evidence.overlongPreparation.replayIdempotent,
+    replayReturnedOriginalAudit: evidence.overlongPreparation.replayReturnedOriginalAudit,
+    delegatedWorkStarted: evidence.overlongPreparation.delegatedWorkStarted,
+  }, {
+    code: "bounded_configuration_invalid",
+    issueDigitCount: 400,
+    branchLength: 417,
+    retainedHostOutcome: true,
+    replayIdempotent: true,
+    replayReturnedOriginalAudit: true,
+    delegatedWorkStarted: false,
+  });
+  assert.match(evidence.overlongPreparation.auditId, /^audit-[a-f0-9]{24}$/);
+  assert.match(evidence.overlongPreparation.replayAuditId, /^audit-[a-f0-9]{24}$/);
   assert.deepEqual({
     kind: evidence.materialDeviation.kind,
     code: evidence.materialDeviation.code,

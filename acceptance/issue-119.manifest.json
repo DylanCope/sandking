@@ -24,10 +24,10 @@
       "transport": "served Cockpit navigation and opaque terminal attachment -> capability-negotiated provider subprocess and persistent typed provider control socket -> real Controller runtime -> versioned framed stdio local Host -> Host-private immutable Launch-request state",
       "initialState": "one prepared Project with an independently Git-versioned pinned conformance Harness; no Launch request, Harness run, or approval",
       "actions": [
-        "bind a failed Project-focused Controller session-open idempotency key, replay its original typed outcome, reject changed content, then prove a concurrent successful retry returns one canonical PTY-backed session",
+        "make the packaged conformance provider process unavailable, bind the resulting failed Project-focused Controller session-open key to its typed audited outcome, replay that outcome after recovery, reject changed content, then prove a concurrent successful retry returns one canonical PTY-backed session",
         "inspect the selected Project work context in the Controller conversation",
         "negotiate and invoke side-effect-free preparation from the exact pinned Harness adapter revision",
-        "submit and replay out-of-range bounded Launch configuration through the provider and framed Host seam and retain its typed idempotent failure",
+        "submit and replay numeric-limit and 400-digit overlong Launch configuration through the provider, Controller-runtime, and framed Host seam and retain each typed idempotent failure",
         "present Host, Project, Harness pin, bounded parameters, capabilities, authorization, expiry, preconditions, identity, and revision in a sanitized Controller preview",
         "prove silence, unrelated conversation, browser POST, wrong session, and stale revision cannot approve",
         "approve the exact request identity and expected revision in the owning Controller conversation",
@@ -96,7 +96,8 @@
       "mutation_contract_invalid",
       "project_not_found",
       "idempotency_key_conflict",
-      "mutation_revision_conflict"
+      "mutation_revision_conflict",
+      "provider_adapter_failed"
     ]
   }
 }

@@ -1260,13 +1260,57 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
     });
     return { status, body };
   }
-  const session = await controllerSessions?.start({
-    workContextId: project.projectId,
-    kind: "project",
-    canonicalReference: `sandking:project:${project.projectId}`,
-  });
-  if (!session) {
-    throw new Error("controller_session_unavailable");
+  let session;
+  try {
+    session = await controllerSessions?.start({
+      workContextId: project.projectId,
+      kind: "project",
+      canonicalReference: `sandking:project:${project.projectId}`,
+    });
+    if (!session) {
+      throw new ControllerSessionError("controller_session_unavailable");
+    }
+  } catch (error) {
+    const code = error instanceof ControllerSessionError
+      ? error.code
+      : "controller_session_start_failed";
+    const auditId = await recordAudit("project.session.open", "rejected", {
+      code,
+      authorizationClass,
+      idempotencyKeyHash: request.idempotencyKeyHash,
+      expectedRevision: request.expectedRevision,
+      actualRevision: project.revision,
+      projectId: project.projectId,
+      controllerSessionCreated: false,
+      launchRequestPrepared: false,
+      approvalRecorded: false,
+      harnessRunStarted: false,
+      projectFileWrite: false,
+    });
+    const status = 503;
+    const body = {
+      ...mutationFailure(
+        code,
+        authorizationClass,
+        request.expectedRevision,
+        project.revision,
+        auditId,
+      ),
+      idempotentReplay: false,
+      prohibitedSideEffects: {
+        controllerSessionCreated: false,
+        launchRequestPrepared: false,
+        approvalRecorded: false,
+        harnessRunStarted: false,
+        projectFileWrite: false,
+      },
+    };
+    projectSessionOutcomes.set(request.idempotencyKeyHash, {
+      fingerprint,
+      status,
+      response: body,
+    });
+    return { status, body };
   }
   const auditId = await recordAudit("project.session.open", "accepted", {
     authorizationClass,

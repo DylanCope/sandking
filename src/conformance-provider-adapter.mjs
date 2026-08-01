@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
 
@@ -273,14 +274,22 @@ const run = async (argv) => {
       }
       return;
     }
-    const prepareMatch = /^prepare ([1-9][0-9]*) (sandcastle\/issue-[1-9][0-9]*)$/.exec(line);
+    const prepareMatch = /^prepare ([1-9][0-9]{0,4095}) (sandcastle\/issue-[1-9][0-9]{0,4095})$/
+      .exec(line);
     if (prepareMatch) {
-      const issueNumber = Number(prepareMatch[1]);
+      const issueDigits = prepareMatch[1];
+      const parsedIssueNumber = Number(issueDigits);
+      const issueNumber = Number.isSafeInteger(parsedIssueNumber)
+        ? parsedIssueNumber
+        : issueDigits;
       const targetBranch = prepareMatch[2];
+      const inputDigest = createHash("sha256")
+        .update(`${issueDigits}\0${targetBranch}`)
+        .digest("hex");
       const outcome = await control.request("launch-request.prepare", {
         parameters: { issueNumber, targetBranch },
         expiresInSeconds: 300,
-        idempotencyKey: `provider:${sessionId}:prepare:${issueNumber}:${targetBranch}`,
+        idempotencyKey: `provider:${sessionId}:prepare:${inputDigest}`,
       });
       if (outcome?.type !== "launch.request.prepare.result") {
         process.stdout.write(

@@ -24,6 +24,7 @@ test("a project-focused conformance Controller invokes typed Launch operations",
   const projectId = `project-${"2".repeat(24)}`;
   const harnessId = `harness-${"3".repeat(24)}`;
   const pinnedRevision = "4".repeat(40);
+  const overlongIssueNumber = "9".repeat(400);
   const recordAudit = async (action, outcome, details) => {
     const auditId = `audit-${String(audits.length + 1).padStart(24, "0")}`;
     audits.push({ auditId, action, outcome, details });
@@ -42,6 +43,13 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       };
     }
     if (request.operation === "launch-request.prepare") {
+      if (request.input.parameters.issueNumber === overlongIssueNumber) {
+        return {
+          type: "launch.request.prepare.failure",
+          code: "bounded_configuration_invalid",
+          idempotentReplay: false,
+        };
+      }
       return {
         type: "launch.request.prepare.result",
         code: "launch_request_prepared",
@@ -142,6 +150,10 @@ test("a project-focused conformance Controller invokes typed Launch operations",
     await enter("inspect");
     await waitFor(() => output.join("").includes(`Project identity: ${projectId} (revision 2)`));
     await waitFor(() => readOnlyOutput.join("").includes(`Project identity: ${projectId}`));
+    await enter(`prepare ${overlongIssueNumber} sandcastle/issue-${overlongIssueNumber}`);
+    await waitFor(() => output.join("").includes(
+      "Launch preparation failed safely: bounded_configuration_invalid",
+    ));
     await enter("prepare 119 sandcastle/issue-119");
     await waitFor(() => output.join("").includes(`Launch request: ${launchRequestId} (revision 1)`));
     const previewOutput = output.join("");
@@ -177,6 +189,7 @@ test("a project-focused conformance Controller invokes typed Launch operations",
     assert.deepEqual(operations.map((operation) => operation.operation), [
       "work-context.inspect",
       "launch-request.prepare",
+      "launch-request.prepare",
       "launch-request.decide",
     ]);
     assert.ok(operations.every((operation) =>
@@ -184,16 +197,21 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       && operation.providerSessionId === session.provider.providerSessionId
       && operation.workContext.projectId === undefined
       && operation.workContext.workContextId === projectId));
-    assert.deepEqual(operations[1].input, {
+    assert.deepEqual(operations[1].input.parameters, {
+      issueNumber: overlongIssueNumber,
+      targetBranch: `sandcastle/issue-${overlongIssueNumber}`,
+    });
+    assert.ok(operations[1].input.idempotencyKey.length <= 256);
+    assert.deepEqual(operations[2].input, {
       parameters: { issueNumber: 119, targetBranch: "sandcastle/issue-119" },
       expiresInSeconds: 300,
-      idempotencyKey: operations[1].input.idempotencyKey,
+      idempotencyKey: operations[2].input.idempotencyKey,
     });
-    assert.deepEqual(operations[2].input, {
+    assert.deepEqual(operations[3].input, {
       launchRequestId,
       decision: "approved",
       expectedRevision: 1,
-      idempotencyKey: operations[2].input.idempotencyKey,
+      idempotencyKey: operations[3].input.idempotencyKey,
     });
     assert.ok(audits.some((entry) =>
       entry.action === "controller.provider.operation"

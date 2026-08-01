@@ -36,6 +36,15 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
   const projectFileBefore = sha256(await readFile(projectFile));
   const secretFileBefore = sha256(await readFile(secretFile));
   const installed = await installCurrentPackage(root);
+  const installedProviderAdapter = join(
+    root,
+    "installed-package",
+    "node_modules",
+    "sandking",
+    "src",
+    "conformance-provider-adapter.mjs",
+  );
+  const unavailableProviderAdapter = `${installedProviderAdapter}.unavailable`;
   const productEnvironment = {
     ...process.env,
     HOME: userHome,
@@ -104,6 +113,30 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
           projectId,
         },
       );
+      await rename(installedProviderAdapter, unavailableProviderAdapter);
+      let providerStartFailure;
+      try {
+        providerStartFailure = await sessionOpen("provider-start-failure", 2);
+      } finally {
+        await rename(unavailableProviderAdapter, installedProviderAdapter);
+      }
+      assert.equal(providerStartFailure.status, 503);
+      assert.equal(providerStartFailure.body.code, "provider_adapter_failed");
+      assert.equal(providerStartFailure.body.idempotentReplay, false);
+      assert.equal(providerStartFailure.body.actualRevision, 2);
+      assert.equal(
+        providerStartFailure.body.prohibitedSideEffects.controllerSessionCreated,
+        false,
+      );
+      const providerStartFailureReplay = await sessionOpen("provider-start-failure", 2);
+      assert.equal(providerStartFailureReplay.status, 503);
+      assert.equal(providerStartFailureReplay.body.code, "provider_adapter_failed");
+      assert.equal(providerStartFailureReplay.body.idempotentReplay, true);
+      assert.equal(providerStartFailureReplay.body.auditId, providerStartFailure.body.auditId);
+      const providerStartFailureChanged = await sessionOpen("provider-start-failure", 1);
+      assert.equal(providerStartFailureChanged.status, 409);
+      assert.equal(providerStartFailureChanged.body.code, "idempotency_key_conflict");
+      assert.equal(providerStartFailureChanged.body.idempotentReplay, false);
       const failedSessionOpen = await sessionOpen("failed-project-session-open", 1);
       assert.equal(failedSessionOpen.status, 409);
       assert.equal(failedSessionOpen.body.code, "mutation_revision_conflict");
@@ -280,6 +313,35 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
       assert.equal(invalidPreparationState.preparationOutcomes[0]
         .response.prohibitedSideEffects.delegatedWorkStarted, false);
 
+      const overlongIssueNumber = "9".repeat(400);
+      await enter(
+        `prepare ${overlongIssueNumber} sandcastle/issue-${overlongIssueNumber}`,
+      );
+      await page.waitForFunction(() => {
+        const output = document.querySelector("#project-controller-terminal-output")
+          ?.textContent ?? "";
+        return output.split(
+          "Launch preparation failed safely: bounded_configuration_invalid",
+        ).length >= 4;
+      });
+      await enter(
+        `prepare ${overlongIssueNumber} sandcastle/issue-${overlongIssueNumber}`,
+      );
+      await page.waitForFunction(() => {
+        const output = document.querySelector("#project-controller-terminal-output")
+          ?.textContent ?? "";
+        return output.split(
+          "Launch preparation failed safely: bounded_configuration_invalid",
+        ).length >= 5;
+      });
+      const overlongPreparationState = JSON.parse(await readFile(launchStatePath, "utf8"));
+      assert.equal(overlongPreparationState.launchRequests.length, 0);
+      assert.equal(overlongPreparationState.preparationOutcomes.length, 2);
+      assert.equal(overlongPreparationState.preparationOutcomes[1].response.code,
+        "bounded_configuration_invalid");
+      assert.equal(overlongPreparationState.preparationOutcomes[1]
+        .response.prohibitedSideEffects.delegatedWorkStarted, false);
+
       await enter("prepare 119 sandcastle/issue-119");
       await page.waitForFunction(() => document.querySelector(
         "#project-controller-terminal-output",
@@ -415,6 +477,18 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
         entry.action === "launch.request.prepare"
         && entry.outcome === "observed"
         && entry.details.originalAuditId === invalidPreparationAudit?.auditId);
+      const overlongPreparationAudit = launchAudits.find((entry) =>
+        entry.auditId === overlongPreparationState.preparationOutcomes[1].response.auditId);
+      const overlongPreparationReplayAudit = launchAudits.find((entry) =>
+        entry.action === "launch.request.prepare"
+        && entry.outcome === "observed"
+        && entry.details.originalAuditId === overlongPreparationAudit?.auditId);
+      const providerStartFailureAudit = audits.find((entry) =>
+        entry.auditId === providerStartFailure.body.auditId);
+      const providerStartFailureReplayAudit = audits.find((entry) =>
+        entry.action === "project.session.open"
+        && entry.outcome === "observed"
+        && entry.details.originalAuditId === providerStartFailure.body.auditId);
       const failedSessionOpenAudit = audits.find((entry) =>
         entry.auditId === failedSessionOpen.body.auditId);
       const failedSessionOpenReplayAudit = audits.find((entry) =>
@@ -427,6 +501,10 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
       assert.equal(replayAudit.details.originalAuditId, approvalAudit.auditId);
       assert.equal(invalidPreparationAudit.details.code, "bounded_configuration_invalid");
       assert.equal(invalidPreparationReplayAudit.details.idempotentReplay, true);
+      assert.equal(overlongPreparationAudit.details.code, "bounded_configuration_invalid");
+      assert.equal(overlongPreparationReplayAudit.details.idempotentReplay, true);
+      assert.equal(providerStartFailureAudit.details.code, "provider_adapter_failed");
+      assert.equal(providerStartFailureReplayAudit.details.idempotentReplay, true);
       assert.equal(failedSessionOpenAudit.details.code, "mutation_revision_conflict");
       assert.equal(failedSessionOpenReplayAudit.details.idempotentReplay, true);
       assert.deepEqual({
@@ -545,6 +623,18 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
             auditId: failedSessionOpen.body.auditId,
             replayAuditId: failedSessionOpenReplayAudit.auditId,
           },
+          providerStartFailure: {
+            code: providerStartFailure.body.code,
+            replayCode: providerStartFailureReplay.body.code,
+            replayIdempotent: providerStartFailureReplay.body.idempotentReplay,
+            replayReturnedOriginalAudit:
+              providerStartFailureReplay.body.auditId === providerStartFailure.body.auditId,
+            changedContentCode: providerStartFailureChanged.body.code,
+            noSessionCreated:
+              providerStartFailure.body.prohibitedSideEffects.controllerSessionCreated === false,
+            auditId: providerStartFailure.body.auditId,
+            replayAuditId: providerStartFailureReplayAudit.auditId,
+          },
         },
         invalidPreparation: {
           code: invalidPreparationState.preparationOutcomes[0].response.code,
@@ -558,6 +648,20 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
             .response.prohibitedSideEffects.delegatedWorkStarted,
           auditId: invalidPreparationAudit.auditId,
           replayAuditId: invalidPreparationReplayAudit.auditId,
+        },
+        overlongPreparation: {
+          code: overlongPreparationState.preparationOutcomes[1].response.code,
+          issueDigitCount: overlongIssueNumber.length,
+          branchLength: `sandcastle/issue-${overlongIssueNumber}`.length,
+          retainedHostOutcome: true,
+          replayIdempotent: true,
+          replayReturnedOriginalAudit:
+            overlongPreparationReplayAudit.details.originalAuditId
+              === overlongPreparationAudit.auditId,
+          delegatedWorkStarted: overlongPreparationState.preparationOutcomes[1]
+            .response.prohibitedSideEffects.delegatedWorkStarted,
+          auditId: overlongPreparationAudit.auditId,
+          replayAuditId: overlongPreparationReplayAudit.auditId,
         },
         materialDeviation: {
           kind: "project_path_replaced",
