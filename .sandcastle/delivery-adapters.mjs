@@ -156,6 +156,10 @@ export function createGitHubDelivery() {
       ]);
     },
 
+    async getPullRequestDiff({ pullRequest }) {
+      return run("gh", ["pr", "diff", String(pullRequest.number), "--patch"]);
+    },
+
     async waitForPullRequestChecks({ pullRequest }) {
       const result = runResult("gh", [
         "pr",

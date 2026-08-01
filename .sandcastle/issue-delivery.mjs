@@ -1,3 +1,6 @@
+const MAX_REVIEW_ATTEMPTS = 10;
+const MAX_CONSECUTIVE_NO_PROGRESS_ATTEMPTS = 3;
+
 export async function produceIssueBranch({ issue, repository, worker }) {
   const branch = `sandcastle/issue-${issue.id}`;
   const baseCommit = await repository.synchronizeMain();
@@ -28,13 +31,61 @@ export async function deliverIssueThroughPullRequest({
     branchResult.headCommit = await repository.pushBranch(branchResult.branch);
   }
   let review;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  let reviewAttempt = 0;
+  let consecutiveEmptyDiffs = 0;
+  let consecutiveUnchangedDiffs = 0;
+  let lastReviewedDiff;
+  while (reviewAttempt < MAX_REVIEW_ATTEMPTS) {
+    const diff = await github.getPullRequestDiff({ pullRequest });
+    if (diff.trim().length === 0) {
+      consecutiveEmptyDiffs += 1;
+      if (consecutiveEmptyDiffs >= MAX_CONSECUTIVE_NO_PROGRESS_ATTEMPTS) {
+        throw new Error(
+          `Pull request for issue #${issue.id} remained empty after ${consecutiveEmptyDiffs} worker attempts.`,
+        );
+      }
+      await worker.implement({
+        branch: branchResult.branch,
+        findings: [
+          "The pull request has no code changes. Implement the issue before requesting another review.",
+        ],
+        issue,
+        pullRequest,
+      });
+      branchResult.headCommit = await repository.pushBranch(branchResult.branch);
+      continue;
+    }
+
+    consecutiveEmptyDiffs = 0;
+    if (diff === lastReviewedDiff) {
+      consecutiveUnchangedDiffs += 1;
+      if (consecutiveUnchangedDiffs >= MAX_CONSECUTIVE_NO_PROGRESS_ATTEMPTS) {
+        throw new Error(
+          `Pull request for issue #${issue.id} remained unchanged after ${consecutiveUnchangedDiffs} worker attempts.`,
+        );
+      }
+      await worker.implement({
+        branch: branchResult.branch,
+        findings: [
+          ...review.findings,
+          "The pull request diff is unchanged. Make a substantive code change that addresses the review findings.",
+        ],
+        issue,
+        pullRequest,
+      });
+      branchResult.headCommit = await repository.pushBranch(branchResult.branch);
+      continue;
+    }
+
+    consecutiveUnchangedDiffs = 0;
+    lastReviewedDiff = diff;
+    reviewAttempt += 1;
     review = await reviewer.evaluatePullRequest({ pullRequest, issue });
     await github.submitPullRequestReview({ pullRequest, review });
     if (review.approved) {
       break;
     }
-    if (attempt === 3) {
+    if (reviewAttempt === MAX_REVIEW_ATTEMPTS) {
       throw new Error(`Pull request for issue #${issue.id} was not approved.`);
     }
 
