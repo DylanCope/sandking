@@ -1279,6 +1279,17 @@ export const createProjectRegistry = async (options) => {
     if (!project) {
       throw new Error("project_not_found");
     }
+    const location = await resolveProjectLocation(
+      projectState,
+      project.canonicalPath,
+      options.dataDir,
+    );
+    if (location.kind !== "registered") {
+      throw new Error(location.kind === "failure" ? location.code : "launch_precondition_invalid");
+    }
+    if (!location.project || location.project.projectId !== project.projectId) {
+      throw new Error("launch_precondition_invalid");
+    }
     if (!project.harness) {
       throw new Error("harness_pin_missing");
     }

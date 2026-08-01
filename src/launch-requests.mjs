@@ -19,10 +19,12 @@ const launchRequestIdSchema = z.string().regex(/^launch-request-[a-f0-9]{24}$/);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const capabilitySchema = z.enum(["github.issues.read", "project.git.read"]);
 
-export const launchParametersSchema = z.object({
+export const boundedLaunchParametersSchema = z.object({
   issueNumber: z.number().int().positive().max(999_999_999),
   targetBranch: z.string().min(1).max(128).regex(/^sandcastle\/issue-[1-9][0-9]*$/),
-}).strict().refine(
+}).strict();
+
+export const launchParametersSchema = boundedLaunchParametersSchema.refine(
   (parameters) => parameters.targetBranch === `sandcastle/issue-${parameters.issueNumber}`,
   { message: "the conformance branch must bind the selected issue" },
 );
@@ -545,6 +547,7 @@ export const createLaunchRequestManager = async (options) => {
       projectRevision: context.project.revision,
       harnessId: context.harness.harnessId,
       harnessPinnedRevision: context.harness.immutableRevision,
+      parameters: structuredClone(parameters.data),
       controllerId: owner.data.controllerId,
       controllerSessionId: owner.data.controllerSessionId,
       adapterId: harnessPreparation.adapterId,
@@ -627,6 +630,7 @@ export const createLaunchRequestManager = async (options) => {
         ? request.decision
         : null,
       currentStatus: launchRequest?.status ?? null,
+      parameters: launchRequest ? structuredClone(launchRequest.parameters) : null,
       sanitizedSummary: launchRequest ? launchRequest.preview.summary : null,
       harnessRunStarted: false,
       browserApprovalAccepted: false,
@@ -703,6 +707,7 @@ export const createLaunchRequestManager = async (options) => {
         controllerId: request.controllerId,
         controllerSessionId: request.controllerSessionId,
         decision: request.decision,
+        parameters: launchRequest ? structuredClone(launchRequest.parameters) : null,
         harnessRunStarted: false,
         executionOutcome: "not_started",
         outcomeReference: null,
@@ -794,6 +799,7 @@ export const createLaunchRequestManager = async (options) => {
         expiredAt: decidedAt,
         expiresAt: launchRequest.expiresAt,
         decision: "expired",
+        parameters: structuredClone(launchRequest.parameters),
         executionOutcome: "not_started",
         outcomeReference: null,
       });
@@ -850,6 +856,7 @@ export const createLaunchRequestManager = async (options) => {
         resultingRevision: launchRequest.revision,
         expiredAt: decidedAt,
         decision: "expired",
+        parameters: structuredClone(launchRequest.parameters),
         executionOutcome: "not_started",
         outcomeReference: null,
       });
@@ -882,6 +889,7 @@ export const createLaunchRequestManager = async (options) => {
       expiresAt: launchRequest.expiresAt,
       decidedAt,
       decision: request.decision,
+      parameters: structuredClone(launchRequest.parameters),
       decisionId,
       dangerousMode: false,
       harnessRunStarted: false,

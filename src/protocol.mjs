@@ -4,7 +4,10 @@ import {
   harnessRegistrationSchema,
   projectRegistrationSchema,
 } from "./project-registration.mjs";
-import { launchParametersSchema, launchRequestSchema } from "./launch-requests.mjs";
+import {
+  boundedLaunchParametersSchema,
+  launchRequestSchema,
+} from "./launch-requests.mjs";
 
 const FRAME_HEADER_BYTES = 4;
 const CONTROL_CHANNEL = 1;
@@ -331,7 +334,7 @@ const launchRequestPrepareSchema = z.object({
   type: z.literal("launch.request.prepare"),
   requestId: identifierSchema,
   projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
-  parameters: launchParametersSchema,
+  parameters: boundedLaunchParametersSchema,
   controllerId: runtimeIdSchema,
   controllerSessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
   authorizationClass: launchAuthorizationClassSchema,

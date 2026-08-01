@@ -138,6 +138,7 @@ let shuttingDown = false;
 let startupCommitted = false;
 let hostOperationQueue = Promise.resolve();
 let projectPreparationQueue = Promise.resolve();
+let projectSessionMutationQueue = Promise.resolve();
 /** @type {Map<string, {fingerprint: string, response: any}>} */
 const projectSessionOutcomes = new Map();
 
@@ -803,6 +804,13 @@ const withProjectPreparationLock = (operation) => {
   return current;
 };
 
+/** @template T @param {() => Promise<T>} operation */
+const withProjectSessionMutationLock = (operation) => {
+  const current = projectSessionMutationQueue.catch(() => undefined).then(operation);
+  projectSessionMutationQueue = current.then(() => undefined, () => undefined);
+  return current;
+};
+
 /** @param {any} message */
 const requestHostOperation = (message) => {
   const current = hostOperationQueue.catch(() => undefined).then(async () => {
@@ -1131,7 +1139,7 @@ const handleProviderOperation = async (request) => {
 /**
  * @param {{authorizationAccepted: boolean, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number, projectId: string}} request
  */
-const openProjectControllerSession = async (request) => {
+const openProjectControllerSession = (request) => withProjectSessionMutationLock(async () => {
   const authorizationClass = "project_focused_session";
   const project = currentProjectPreparation.current;
   const fingerprint = hashIdempotencyKey(JSON.stringify({
@@ -1263,7 +1271,7 @@ const openProjectControllerSession = async (request) => {
   };
   projectSessionOutcomes.set(request.idempotencyKeyHash, { fingerprint, response });
   return { status: 201, body: response };
-};
+});
 
 /** @param {WebSocket} socket @param {string} code @param {boolean} reloadRequired */
 const rejectBrowserProtocol = (socket, code, reloadRequired) => {

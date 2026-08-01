@@ -312,6 +312,7 @@ test("only the owning focused Controller decides the exact revision idempotently
       session: approvalAudit.details.controllerSessionId,
       expectedRevision: approvalAudit.details.expectedRevision,
       resultingRevision: approvalAudit.details.resultingRevision,
+      parameters: approvalAudit.details.parameters,
       decision: approvalAudit.details.decision,
       executionOutcome: approvalAudit.details.executionOutcome,
       outcomeReference: approvalAudit.details.outcomeReference,
@@ -326,6 +327,7 @@ test("only the owning focused Controller decides the exact revision idempotently
       session: controllerSessionId,
       expectedRevision: 1,
       resultingRevision: 2,
+      parameters: { issueNumber: 119, targetBranch: "sandcastle/issue-119" },
       decision: "approved",
       executionOutcome: "not_started",
       outcomeReference: null,
@@ -605,14 +607,20 @@ test("expiry, rejection, and material change are terminal and require a new Laun
     assert.ok(audits.some((entry) =>
       entry.action === "launch.request.expire"
       && entry.details.launchRequestId === expiring.launchRequestId
+      && JSON.stringify(entry.details.parameters)
+        === JSON.stringify(expiring.parameters)
       && entry.details.executionOutcome === "not_started"));
     assert.ok(audits.some((entry) =>
       entry.action === "launch.request.expire"
-      && entry.details.code === "launch_request_materially_changed"));
+      && entry.details.code === "launch_request_materially_changed"
+      && JSON.stringify(entry.details.parameters)
+        === JSON.stringify(changed.parameters)));
     assert.ok(audits.some((entry) =>
       entry.action === "launch.request.decision"
       && entry.outcome === "accepted"
-      && entry.details.decision === "rejected"));
+      && entry.details.decision === "rejected"
+      && JSON.stringify(entry.details.parameters)
+        === JSON.stringify(rejectable.parameters)));
     if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
       await writeFile(
         join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "launch-terminal-contract.json"),

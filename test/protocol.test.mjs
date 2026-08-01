@@ -104,6 +104,16 @@ test("Launch preparation and decision are capability-negotiated typed Host opera
   };
 
   writeFrame(stream, prepare);
+  const semanticallyInvalidPrepare = {
+    ...prepare,
+    requestId: "prepare-launch-bounded-configuration-invalid",
+    parameters: {
+      issueNumber: 119,
+      targetBranch: "sandcastle/issue-120",
+    },
+    idempotencyKey: "prepare-launch-bounded-configuration-invalid",
+  };
+  writeFrame(stream, semanticallyInvalidPrepare);
   writeFrame(stream, decision);
   writeFrame(stream, {
     ...decision,
@@ -112,6 +122,7 @@ test("Launch preparation and decision are capability-negotiated typed Host opera
     expectedRevision: 0,
   });
   assert.deepEqual(await readFrame(stream), prepare);
+  assert.deepEqual(await readFrame(stream), semanticallyInvalidPrepare);
   assert.deepEqual(await readFrame(stream), decision);
   assert.equal((await readFrame(stream)).expectedRevision, 0);
   assert.throws(

@@ -24,25 +24,28 @@
       "transport": "served Cockpit navigation and opaque terminal attachment -> capability-negotiated provider subprocess and persistent typed provider control socket -> real Controller runtime -> versioned framed stdio local Host -> Host-private immutable Launch-request state",
       "initialState": "one prepared Project with an independently Git-versioned pinned conformance Harness; no Launch request, Harness run, or approval",
       "actions": [
-        "open one Project-focused Controller session from the Cockpit",
+        "open one Project-focused Controller session from the Cockpit and prove a concurrent identical retry returns that one canonical PTY-backed session",
         "inspect the selected Project work context in the Controller conversation",
         "negotiate and invoke side-effect-free preparation from the exact pinned Harness adapter revision",
+        "submit semantically invalid bounded Launch configuration through the provider and framed Host seam and retain its typed failure",
         "present Host, Project, Harness pin, bounded parameters, capabilities, authorization, expiry, preconditions, identity, and revision in a sanitized Controller preview",
         "prove silence, unrelated conversation, browser POST, wrong session, and stale revision cannot approve",
         "approve the exact request identity and expected revision in the owning Controller conversation",
         "replay the identical decision and reject changed idempotency content",
-        "prove rejection, expiry, and material change are terminal and a changed proposal receives a new identity",
+        "prove rejection, expiry, Project replacement, and other material change are terminal and a changed proposal receives a new identity",
         "disconnect the browser while the runtime-owned PTY remains running",
-        "reject a second writer while permitting a read-only secondary view"
+        "reject a second writer, permit a read-only secondary view, and revoke write authority when an attachment becomes read-only"
       ],
       "expectedTypedOutcome": "launch_request_approved at revision 2 with execution status not_started",
       "canonicalStateInvariants": [
         "the Launch request freezes Host, Project revision, Harness identity and pin, bounded secret-free parameters, supplied capabilities, authorization class, expiry, preconditions, owner, and revision",
         "proposal facts and sanitized preview remain immutable while the decision advances the aggregate revision once",
         "only the exact owning Controller and Controller session can decide the request",
+        "concurrent identical focused-session creation retries return one session identity and one original audit outcome",
         "identical decision replay returns the original decision and audit while changed key content conflicts",
         "stale outcomes return the current revision and sanitized summary",
-        "rejected, expired, materially changed, and already decided requests are terminal",
+        "rejected, expired, Project-replaced, materially changed, and already decided requests are terminal",
+        "approved, rejected, and expired request audits retain the bounded sanitized parameters",
         "approval never starts a Harness run in this issue slice",
         "the provider PTY is runtime-owned and survives browser disconnection with one writer and read-only observers"
       ],

@@ -156,6 +156,24 @@ test("a project-focused conformance Controller invokes typed Launch operations",
     await waitFor(() => output.join("").includes(
       `Launch request ${launchRequestId} approved at revision 2.`,
     ));
+    const downgraded = await manager.attach({
+      socket,
+      sessionId: session.sessionId,
+      streamId: session.terminal.streamId,
+      attachmentId: session.terminal.writableAttachment.attachmentId,
+      mode: "read-only",
+      outputCursor: 0,
+      onOutput: (_socket, frame) => output.push(frame.data.toString("utf8")),
+    });
+    assert.equal(downgraded.mode, "read-only");
+    assert.equal(downgraded.exclusive, false);
+    await assert.rejects(manager.write({
+      socket,
+      streamId: session.terminal.streamId,
+      sequence: inputSequence,
+      eof: false,
+      data: Buffer.from("approve after read-only downgrade\n", "utf8"),
+    }), (error) => error.code === "terminal_write_attachment_required");
     assert.deepEqual(operations.map((operation) => operation.operation), [
       "work-context.inspect",
       "launch-request.prepare",

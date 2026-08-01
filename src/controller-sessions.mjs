@@ -771,6 +771,10 @@ export const createControllerSessionManager = async (options) => {
       session.readOnlySockets.delete(request.socket);
       session.outputHandlers.delete(request.socket);
     } else {
+      if (session.writableSocket === request.socket) {
+        session.writableSocket = null;
+        session.onOutput = null;
+      }
       session.readOnlySockets.add(request.socket);
       session.outputHandlers.set(request.socket, request.onOutput);
     }

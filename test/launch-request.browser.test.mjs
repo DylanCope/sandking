@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -18,6 +18,7 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
   const executionDirectory = join(root, "outside-checkout");
   const userHome = join(root, "user-home");
   const projectPath = join(root, "selected-project");
+  const movedProjectPath = join(root, "reviewed-project");
   const projectFile = join(projectPath, "README.md");
   const secretFile = join(projectPath, "secret.fixture");
   const secretFixture = "launch-browser-secret-must-not-appear";
@@ -78,6 +79,40 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
       assert.match(projectId, /^project-[a-f0-9]{24}$/);
       assert.match(harnessId, /^harness-[a-f0-9]{24}$/);
       assert.match(harnessPin, /^[a-f0-9]{40}$/);
+
+      const runtimeAcknowledgement = JSON.parse(
+        receivedFrames.find((frame) => frame.includes("runtime.hello-ack")),
+      ).message;
+      const concurrentSessionOpens = await page.evaluate(async (parameters) => {
+        const responses = await Promise.all(Array.from({ length: 2 }, () =>
+          fetch("/projects/sessions/open", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-sandking-csrf": parameters.csrf,
+              "x-sandking-idempotency-key": "concurrent-project-session-open",
+              "x-sandking-expected-revision": "2",
+            },
+            body: JSON.stringify({ projectId: parameters.projectId }),
+          })));
+        return Promise.all(responses.map(async (response) => ({
+          status: response.status,
+          body: await response.json(),
+        })));
+      }, { csrf: runtimeAcknowledgement.session.csrfToken, projectId });
+      assert.deepEqual(concurrentSessionOpens.map((outcome) => outcome.status).sort(), [200, 201]);
+      assert.equal(concurrentSessionOpens.filter((outcome) =>
+        outcome.body.idempotentReplay === false).length, 1);
+      assert.equal(concurrentSessionOpens.filter((outcome) =>
+        outcome.body.idempotentReplay === true).length, 1);
+      assert.equal(new Set(concurrentSessionOpens.map((outcome) =>
+        outcome.body.session.sessionId)).size, 1);
+      assert.equal(new Set(concurrentSessionOpens.map((outcome) =>
+        outcome.body.auditId)).size, 1);
+      assert.equal(JSON.parse(await readFile(
+        join(dataDir, "controller-sessions.json"),
+        "utf8",
+      )).sessions.length, 1);
 
       await page.locator("#open-project-controller").click();
       await page.waitForSelector(
@@ -183,6 +218,20 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
       )?.textContent?.includes("did not recognize that request"));
       await assert.rejects(readFile(launchStatePath, "utf8"));
 
+      await enter("prepare 119 sandcastle/issue-120");
+      await page.waitForFunction(() => document.querySelector(
+        "#project-controller-terminal-output",
+      )?.textContent?.includes(
+        "Launch preparation failed safely: bounded_configuration_invalid",
+      ));
+      const invalidPreparationState = JSON.parse(await readFile(launchStatePath, "utf8"));
+      assert.equal(invalidPreparationState.launchRequests.length, 0);
+      assert.equal(invalidPreparationState.preparationOutcomes.length, 1);
+      assert.equal(invalidPreparationState.preparationOutcomes[0].response.code,
+        "bounded_configuration_invalid");
+      assert.equal(invalidPreparationState.preparationOutcomes[0]
+        .response.prohibitedSideEffects.delegatedWorkStarted, false);
+
       await enter("prepare 119 sandcastle/issue-119");
       await page.waitForFunction(() => document.querySelector(
         "#project-controller-terminal-output",
@@ -245,9 +294,7 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
       assert.equal(pendingRequest.capturedPreconditions.projectRevision, 2);
       assert.equal(pendingRequest.capturedPreconditions.harnessPinnedRevision, harnessPin);
 
-      const acknowledgement = JSON.parse(
-        receivedFrames.find((frame) => frame.includes("runtime.hello-ack")),
-      ).message;
+      const acknowledgement = runtimeAcknowledgement;
       const prohibitedBrowserApproval = await page.evaluate(async (parameters) => {
         const denied = await fetch("/launch-requests/decision", {
           method: "POST",
@@ -326,6 +373,7 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
         controller: approvalAudit.details.controllerId,
         session: approvalAudit.details.controllerSessionId,
         revision: approvalAudit.details.resultingRevision,
+        parameters: approvalAudit.details.parameters,
         decision: approvalAudit.details.decision,
         executionOutcome: approvalAudit.details.executionOutcome,
         outcomeReference: approvalAudit.details.outcomeReference,
@@ -337,6 +385,7 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
         controller: launch.runtime.runtimeId,
         session: sessionId,
         revision: 2,
+        parameters: { issueNumber: 119, targetBranch: "sandcastle/issue-119" },
         decision: "approved",
         executionOutcome: "not_started",
         outcomeReference: null,
@@ -354,6 +403,38 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
       assert.deepEqual((await readdir(projectPath)).sort(), projectFilesBefore);
       assert.equal(sha256(await readFile(projectFile)), projectFileBefore);
       assert.equal(sha256(await readFile(secretFile)), secretFileBefore);
+
+      await enter("prepare 120 sandcastle/issue-120");
+      await page.waitForFunction(() => document.querySelector(
+        "#project-controller-terminal-output",
+      )?.textContent?.includes("Parameters: issue #120; branch sandcastle/issue-120"));
+      const replacementCandidateState = JSON.parse(await readFile(launchStatePath, "utf8"));
+      const replacementCandidate = replacementCandidateState.launchRequests.find((candidate) =>
+        candidate.parameters.issueNumber === 120);
+      assert.equal(replacementCandidate.status, "pending");
+      await rename(projectPath, movedProjectPath);
+      await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
+      await writeFile(join(projectPath, "README.md"), "replacement Project content\n");
+      await enter(`approve ${replacementCandidate.launchRequestId} 1`);
+      await page.waitForFunction((requestId) => document.querySelector(
+        "#project-controller-terminal-output",
+      )?.textContent?.includes(
+        `Launch decision failed safely: launch_request_materially_changed; current revision 2 (expired)`,
+      ), replacementCandidate.launchRequestId);
+      const afterReplacement = JSON.parse(await readFile(launchStatePath, "utf8"))
+        .launchRequests.find((candidate) =>
+          candidate.launchRequestId === replacementCandidate.launchRequestId);
+      assert.equal(afterReplacement.status, "expired");
+      assert.equal(afterReplacement.revision, 2);
+      const replacementAudits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line));
+      const replacementExpiryAudit = replacementAudits.find((entry) =>
+        entry.action === "launch.request.expire"
+        && entry.details.code === "launch_request_materially_changed"
+        && entry.details.launchRequestId === replacementCandidate.launchRequestId);
+      assert.ok(replacementExpiryAudit);
+      await rm(projectPath, { recursive: true, force: true });
+      await rename(movedProjectPath, projectPath);
 
       await context.close();
       const retainedSessions = JSON.parse(
@@ -380,6 +461,30 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
         },
         launchRequest: approved,
         preview: pendingRequest.preview,
+        sessionCreation: {
+          concurrentStatuses: concurrentSessionOpens.map((outcome) => outcome.status).sort(),
+          canonicalSessionId: concurrentSessionOpens[0].body.session.sessionId,
+          freshOutcomes: concurrentSessionOpens.filter((outcome) =>
+            outcome.body.idempotentReplay === false).length,
+          replayOutcomes: concurrentSessionOpens.filter((outcome) =>
+            outcome.body.idempotentReplay === true).length,
+          oneOriginalAudit: new Set(concurrentSessionOpens.map((outcome) =>
+            outcome.body.auditId)).size === 1,
+        },
+        invalidPreparation: {
+          code: invalidPreparationState.preparationOutcomes[0].response.code,
+          retainedHostOutcome: true,
+          delegatedWorkStarted: invalidPreparationState.preparationOutcomes[0]
+            .response.prohibitedSideEffects.delegatedWorkStarted,
+        },
+        materialDeviation: {
+          kind: "project_path_replaced",
+          launchRequestId: replacementCandidate.launchRequestId,
+          code: replacementExpiryAudit.details.code,
+          status: afterReplacement.status,
+          revision: afterReplacement.revision,
+          auditId: replacementExpiryAudit.auditId,
+        },
         decision: {
           code: "launch_request_approved",
           auditId: approvalAudit.auditId,
@@ -395,7 +500,7 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
           competingWritableRejectedAs: competingWriter.code,
           secondaryView: { mode: readOnlyView.mode, exclusive: readOnlyView.exclusive },
         },
-        auditReferences: audits.filter((entry) =>
+        auditReferences: replacementAudits.filter((entry) =>
           entry.action.startsWith("launch.request")
           || entry.action.startsWith("controller.")),
         prohibitedSideEffectAssertions: {
