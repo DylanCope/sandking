@@ -22,8 +22,39 @@ export const hostCapabilities = Object.freeze([
   "sandking.bulk-stream.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1")
+  .update("sandking-host-control-schema-v1-with-sanitized-diagnostics")
   .digest("hex")}`;
+
+const protocolErrorDetails = Object.freeze({
+  controller_identity_invalid: {
+    explanation: "The Host rejected the Controller identity.",
+    retryGuidance: "Verify the Controller and Host installation identities, then retry.",
+  },
+  controller_protocol_major_mismatch: {
+    explanation: "The Host rejected an incompatible Controller protocol major version.",
+    retryGuidance: "Install matching Sand-King Controller and Host releases, then retry.",
+  },
+  controller_capability_unsupported: {
+    explanation: "The Host rejected a required Controller capability.",
+    retryGuidance: "Install compatible Sand-King Controller and Host releases, then retry.",
+  },
+  controller_schema_mismatch: {
+    explanation: "The Host rejected an incompatible Controller control schema.",
+    retryGuidance: "Install matching Sand-King Controller and Host releases, then retry.",
+  },
+  host_protocol_unexpected_message: {
+    explanation: "The Host received an unexpected framed control message.",
+    retryGuidance: "Restart both components with compatible releases, then retry.",
+  },
+});
+
+/** @param {keyof typeof protocolErrorDetails} code */
+export const protocolErrorForCode = (code) => ({
+  type: "protocol-error",
+  code,
+  retryable: true,
+  ...protocolErrorDetails[code],
+});
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -79,6 +110,8 @@ const protocolErrorSchema = z.object({
   type: z.literal("protocol-error"),
   code: identifierSchema,
   retryable: z.boolean(),
+  explanation: z.string().min(1).max(512),
+  retryGuidance: z.string().min(1).max(512),
 }).strip();
 
 const pingSchema = z.object({

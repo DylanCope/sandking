@@ -135,7 +135,20 @@ test("bootstrap URLs exchange once into a session and same-origin WebSockets req
     assert.match(hostRejected, /host_mismatch/);
 
     const replay = await request({ url: launch.bootstrapUrl });
-    assert.equal(replay.status, 410);
+    assert.equal(replay.status, 302);
+    assert.equal(replay.headers.get("set-cookie")?.split(";")[0], cookie);
+
+    const staleBootstrap = new URL(launch.bootstrapUrl);
+    staleBootstrap.searchParams.set("expectedRevision", "1");
+    const staleResponse = await request({ url: staleBootstrap.href });
+    assert.equal(staleResponse.status, 409);
+    assert.deepEqual(await staleResponse.json(), {
+      type: "mutation_failure",
+      code: "mutation_revision_conflict",
+      retryable: true,
+      expectedRevision: 1,
+      actualRevision: 1,
+    });
 
     const rejected = await openWebSocketHandshake({
       port: launch.runtime.port,
@@ -170,7 +183,11 @@ test("bootstrap-token redemption is atomic and the plaintext token is never reta
       request({ url: launch.bootstrapUrl }),
       request({ url: launch.bootstrapUrl }),
     ]);
-    assert.deepEqual(responses.map((response) => response.status).sort(), [302, 410]);
+    assert.deepEqual(responses.map((response) => response.status).sort(), [302, 302]);
+    assert.equal(
+      responses[0].headers.get("set-cookie")?.split(";")[0],
+      responses[1].headers.get("set-cookie")?.split(";")[0],
+    );
 
     const invalidTokenUrl = new URL(launch.bootstrapUrl);
     invalidTokenUrl.searchParams.set("token", "0".repeat(64));
@@ -183,6 +200,78 @@ test("bootstrap-token redemption is atomic and the plaintext token is never reta
       await readFile(join(dataDir, "audit.jsonl"), "utf8"),
     ].join("\n");
     assert.doesNotMatch(persistedState, new RegExp(plaintextToken));
+    const idempotencyKey = new URL(launch.bootstrapUrl).searchParams.get("idempotencyKey");
+    assert.ok(idempotencyKey);
+    assert.doesNotMatch(persistedState, new RegExp(idempotencyKey));
+  } finally {
+    await runCli(["stop", "--data-dir", dataDir, "--json"]).catch(() => undefined);
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("expired bootstrap tokens return a typed retryable outcome without creating a session", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-token-expiry-"));
+
+  try {
+    const launch = await runCli([
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--bootstrap-ttl-ms",
+      "25",
+      "--json",
+      "--no-open",
+    ]);
+    assert.equal(launch.bootstrap.ttlMs, 25);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    const expired = await request({ url: launch.bootstrapUrl });
+    assert.equal(expired.status, 410);
+    assert.deepEqual(await expired.json(), {
+      type: "mutation_failure",
+      code: "bootstrap_token_expired",
+      retryable: true,
+      expectedRevision: 0,
+      actualRevision: 0,
+    });
+
+    const redeemedLaunch = await runCli([
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--bootstrap-ttl-ms",
+      "50",
+      "--json",
+      "--no-open",
+    ]);
+    assert.equal((await request({ url: redeemedLaunch.bootstrapUrl })).status, 302);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    const expiredReplay = await request({ url: redeemedLaunch.bootstrapUrl });
+    assert.equal(expiredReplay.status, 410);
+    assert.deepEqual(await expiredReplay.json(), {
+      type: "mutation_failure",
+      code: "bootstrap_token_expired",
+      retryable: true,
+      expectedRevision: 0,
+      actualRevision: 1,
+    });
+
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const rejection = audits.find((entry) =>
+      entry.action === "browser.session.create"
+      && entry.details.code === "bootstrap_token_expired");
+    assert.ok(rejection);
+    assert.deepEqual({
+      authorizationClass: rejection.details.authorizationClass,
+      expectedRevision: rejection.details.expectedRevision,
+      actualRevision: rejection.details.actualRevision,
+    }, {
+      authorizationClass: "bootstrap_token",
+      expectedRevision: 0,
+      actualRevision: 0,
+    });
+    assert.match(rejection.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
   } finally {
     await runCli(["stop", "--data-dir", dataDir, "--json"]).catch(() => undefined);
     await rm(dataDir, { recursive: true, force: true });

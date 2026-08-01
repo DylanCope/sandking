@@ -62,7 +62,16 @@ test("concurrent launches reuse one ready runtime and retain full Host negotiati
       maxFrameBytes: 65_536,
       maxBulkChunkBytes: 16_384,
     });
-    assert.match(first.bootstrapUrl, /^http:\/\/127\.0\.0\.1:\d+\/bootstrap\?token=[a-f0-9]{64}$/);
+    assert.match(
+      first.bootstrapUrl,
+      /^http:\/\/127\.0\.0\.1:\d+\/bootstrap\?token=[a-f0-9]{64}&idempotencyKey=[a-f0-9]{64}&expectedRevision=0$/,
+    );
+    assert.deepEqual(first.bootstrap, {
+      ttlMs: 60_000,
+      expectedRevision: 0,
+      expiresAt: first.bootstrap.expiresAt,
+    });
+    assert.match(first.bootstrap.expiresAt, /^\d{4}-\d{2}-\d{2}T/);
 
     const state = JSON.parse(await readFile(join(dataDir, "runtime-state.json"), "utf8"));
     assert.equal(state.host.identity, "local-host");

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -8,6 +9,8 @@ import test from "node:test";
 
 const execFileAsync = promisify(execFile);
 const cliPath = join(process.cwd(), "src", "cli.mjs");
+/** @param {Buffer | string} value */
+const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 /** @param {string[]} args */
 const runFailingCli = async (args) => {
@@ -24,6 +27,27 @@ const runFailingCli = async (args) => {
 };
 
 const failureCases = [
+  ["controller-incompatible-major", {
+    type: "host_negotiation_failure",
+    code: "controller_protocol_major_mismatch",
+    retryable: true,
+    explanation: "The local Host rejected the Controller protocol major version as incompatible.",
+    retryGuidance: "Install matching Sand-King Controller and Host releases, then retry the launch.",
+  }],
+  ["controller-unknown-required-capability", {
+    type: "host_negotiation_failure",
+    code: "controller_capability_unsupported",
+    retryable: true,
+    explanation: "The local Host rejected a required Controller capability.",
+    retryGuidance: "Install compatible Sand-King Controller and Host releases, then retry the launch.",
+  }],
+  ["controller-schema-mismatch", {
+    type: "host_negotiation_failure",
+    code: "controller_schema_mismatch",
+    retryable: true,
+    explanation: "The local Host rejected the Controller control schema as incompatible.",
+    retryGuidance: "Install matching Sand-King Controller and Host releases, then retry the launch.",
+  }],
   ["incompatible-major", {
     type: "host_negotiation_failure",
     code: "host_protocol_major_mismatch",
@@ -59,6 +83,7 @@ for (const [mode, expectedDiagnosis] of failureCases) {
     const dataDir = await mkdtemp(join(tmpdir(), "sandking-host-failure-"));
     const acceptedStatePath = join(dataDir, "accepted-state.fixture");
     await writeFile(acceptedStatePath, "preserve-me\n");
+    const acceptedStateBeforeSha256 = sha256(await readFile(acceptedStatePath));
 
     try {
       const commandFailure = await runFailingCli([
@@ -72,7 +97,12 @@ for (const [mode, expectedDiagnosis] of failureCases) {
       ]);
       assert.equal(commandFailure.stderr, "");
       const publicOutcome = JSON.parse(commandFailure.stdout);
-      assert.deepEqual(publicOutcome, { ok: false, diagnosis: expectedDiagnosis });
+      assert.equal(publicOutcome.ok, false);
+      assert.match(publicOutcome.diagnosis.auditId, /^audit-/);
+      assert.deepEqual(
+        { ...publicOutcome.diagnosis, auditId: "<audit-id>" },
+        { ...expectedDiagnosis, auditId: "<audit-id>" },
+      );
 
       assert.equal(await readFile(acceptedStatePath, "utf8"), "preserve-me\n");
       await assert.rejects(access(join(dataDir, "runtime-state.json")));
@@ -81,9 +111,47 @@ for (const [mode, expectedDiagnosis] of failureCases) {
       );
       assert.deepEqual(
         { ...retained, recordedAt: "<timestamp>" },
-        { ...expectedDiagnosis, recordedAt: "<timestamp>" },
+        { ...publicOutcome.diagnosis, recordedAt: "<timestamp>" },
       );
       assert.match(retained.recordedAt, /^\d{4}-\d{2}-\d{2}T/);
+      const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line));
+      const negotiationAudit = audits.find((entry) =>
+        entry.action === "host.negotiate" && entry.outcome === "rejected");
+      assert.equal(negotiationAudit.auditId, publicOutcome.diagnosis.auditId);
+      assert.equal(negotiationAudit.details.code, expectedDiagnosis.code);
+      assert.equal(negotiationAudit.details.mutationOccurred, false);
+      if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
+        const acceptedStateAfterSha256 = sha256(await readFile(acceptedStatePath));
+        const runtimeStatePresent = await access(join(dataDir, "runtime-state.json"))
+          .then(() => true, () => false);
+        await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, {
+          recursive: true,
+          mode: 0o700,
+        });
+        await writeFile(
+          join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, `host-${mode}.json`),
+          `${JSON.stringify({
+            kind: "host_negotiation_failure",
+            mode,
+            diagnosis: publicOutcome.diagnosis,
+            acceptedState: {
+              beforeSha256: acceptedStateBeforeSha256,
+              afterSha256: acceptedStateAfterSha256,
+              preserved: acceptedStateBeforeSha256 === acceptedStateAfterSha256,
+            },
+            runtimeStatePresent,
+            mutationOccurred: negotiationAudit.details.mutationOccurred,
+            auditReferences: audits.map((entry) => ({
+              auditId: entry.auditId,
+              action: entry.action,
+              outcome: entry.outcome,
+              details: entry.details,
+            })),
+          }, null, 2)}\n`,
+          { mode: 0o600 },
+        );
+      }
     } finally {
       await rm(dataDir, { recursive: true, force: true });
     }
@@ -111,6 +179,20 @@ test("Controller credentials are not inherited by the local Host process", async
     const launch = JSON.parse(stdout);
     assert.equal(launch.host.identity, "local-host");
     assert.doesNotMatch(stdout, new RegExp(secret));
+    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
+      await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, { recursive: true, mode: 0o700 });
+      await writeFile(
+        join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "host-credential-boundary.json"),
+        `${JSON.stringify({
+          kind: "host_credential_boundary",
+          mode: "secret-probe",
+          observedHostIdentity: launch.host.identity,
+          controllerSecretForwarded: launch.host.identity === "controller-secret-leaked",
+          negotiationAuditId: launch.audit.negotiationId,
+        }, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+    }
   } finally {
     await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
       cwd: tmpdir(),

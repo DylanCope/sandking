@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -139,6 +139,87 @@ test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and 
       reason: "cursor_unavailable",
     });
     reconnect.close();
+  } finally {
+    await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
+      cwd: tmpdir(),
+      env: process.env,
+    }).catch(() => undefined);
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("session termination declares authorization, idempotency, revision, audit, and stale outcomes", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-session-mutation-"));
+
+  try {
+    const runtime = await launch(dataDir);
+    const cookie = await exchangeBootstrap(runtime.bootstrapUrl);
+    const socket = await connect(runtime.runtime.port, cookie);
+    socket.send(JSON.stringify(browserHello()));
+    const acknowledgement = await nextControl(socket);
+    assert.equal(acknowledgement.type, "runtime.hello-ack");
+    assert.equal(acknowledgement.session.revision, 1);
+    const url = `http://127.0.0.1:${runtime.runtime.port}/session/end`;
+    const idempotencyKey = "session-end-idempotency-key-1";
+    const mutationHeaders = {
+      cookie,
+      origin: `http://127.0.0.1:${runtime.runtime.port}`,
+      "x-sandking-csrf": acknowledgement.session.csrfToken,
+      "x-sandking-idempotency-key": idempotencyKey,
+      "x-sandking-expected-revision": "1",
+    };
+
+    const first = await fetch(url, { method: "POST", headers: mutationHeaders });
+    assert.equal(first.status, 200);
+    const firstOutcome = await first.json();
+    assert.deepEqual(firstOutcome, {
+      type: "mutation_result",
+      code: "session_ended",
+      revision: 2,
+      idempotentReplay: false,
+      auditId: firstOutcome.auditId,
+    });
+    assert.match(firstOutcome.auditId, /^audit-/);
+
+    const replay = await fetch(url, { method: "POST", headers: mutationHeaders });
+    assert.equal(replay.status, 200);
+    assert.deepEqual(await replay.json(), {
+      ...firstOutcome,
+      idempotentReplay: true,
+    });
+
+    const stale = await fetch(url, {
+      method: "POST",
+      headers: {
+        ...mutationHeaders,
+        "x-sandking-idempotency-key": "session-end-idempotency-key-2",
+      },
+    });
+    assert.equal(stale.status, 409);
+    assert.deepEqual(await stale.json(), {
+      type: "mutation_failure",
+      code: "mutation_revision_conflict",
+      retryable: true,
+      expectedRevision: 1,
+      actualRevision: 2,
+    });
+
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const accepted = audits.find((entry) => entry.auditId === firstOutcome.auditId);
+    assert.deepEqual({
+      authorizationClass: accepted.details.authorizationClass,
+      expectedRevision: accepted.details.expectedRevision,
+      actualRevision: accepted.details.actualRevision,
+      resultingRevision: accepted.details.resultingRevision,
+    }, {
+      authorizationClass: "runtime_browser_session",
+      expectedRevision: 1,
+      actualRevision: 1,
+      resultingRevision: 2,
+    });
+    assert.match(accepted.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    socket.close();
   } finally {
     await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
       cwd: tmpdir(),

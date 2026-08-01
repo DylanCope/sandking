@@ -7,6 +7,7 @@ import {
   ProtocolError,
   hostCapabilities,
   protocolVersion,
+  protocolErrorForCode,
   readFrame,
   readProtocolFrame,
   releaseVersion,
@@ -34,14 +35,16 @@ const writeMalformedFrame = () => {
 };
 
 /**
- * @param {string} code
+ * @param {
+ *   | "controller_identity_invalid"
+ *   | "controller_protocol_major_mismatch"
+ *   | "controller_capability_unsupported"
+ *   | "controller_schema_mismatch"
+ *   | "host_protocol_unexpected_message"
+ * } code
  */
 const rejectHandshake = (code) => {
-  writeFrame(process.stdout, {
-    type: "protocol-error",
-    code,
-    retryable: false,
-  });
+  writeFrame(process.stdout, protocolErrorForCode(code));
 };
 
 const main = async () => {

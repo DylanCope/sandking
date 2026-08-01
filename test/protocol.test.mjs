@@ -38,6 +38,28 @@ test("framed control reads preserve following frames and validate their schema",
   );
 });
 
+test("wire-level protocol errors include sanitized explanations and retry guidance", async () => {
+  const stream = new PassThrough();
+  const diagnosis = {
+    type: "protocol-error",
+    code: "controller_protocol_major_mismatch",
+    retryable: true,
+    explanation: "The Host rejected an incompatible Controller protocol major version.",
+    retryGuidance: "Install matching Sand-King Controller and Host releases, then retry.",
+  };
+
+  writeFrame(stream, diagnosis);
+  assert.deepEqual(await readFrame(stream), diagnosis);
+  assert.throws(
+    () => writeFrame(stream, {
+      type: "protocol-error",
+      code: diagnosis.code,
+      retryable: true,
+    }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+});
+
 test("same-major control frames ignore additive optional fields", async () => {
   const stream = new PassThrough();
   const futureSameMajorProtocol = {

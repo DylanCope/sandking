@@ -18,7 +18,7 @@ import {
 import { capabilitySetSchema, framingSchema, releaseVersion, versionSchema } from "./protocol.mjs";
 
 const COMPATIBILITY_KEY = "runtime-v1";
-const BOOTSTRAP_TTL_MS = 60_000;
+export const BOOTSTRAP_TTL_MS = 60_000;
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 const LOCK_TIMEOUT_MS = 5_000;
 const daemonPath = fileURLToPath(new URL("./runtime-daemon.mjs", import.meta.url));
@@ -30,6 +30,7 @@ const daemonPath = fileURLToPath(new URL("./runtime-daemon.mjs", import.meta.url
  *   retryable: boolean,
  *   explanation: string,
  *   retryGuidance: string,
+ *   auditId?: string,
  * }} StartupDiagnosis
  */
 
@@ -83,6 +84,30 @@ const startupDiagnosisDetails = Object.freeze({
     explanation: "The local Host became unavailable during negotiation.",
     retryGuidance: "Restart the local Host, then retry the launch.",
   },
+  controller_identity_invalid: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The local Host rejected the Controller identity.",
+    retryGuidance: "Verify the Controller and Host installation identities, then retry the launch.",
+  },
+  controller_protocol_major_mismatch: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The local Host rejected the Controller protocol major version as incompatible.",
+    retryGuidance: "Install matching Sand-King Controller and Host releases, then retry the launch.",
+  },
+  controller_capability_unsupported: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The local Host rejected a required Controller capability.",
+    retryGuidance: "Install compatible Sand-King Controller and Host releases, then retry the launch.",
+  },
+  controller_schema_mismatch: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The local Host rejected the Controller control schema as incompatible.",
+    retryGuidance: "Install matching Sand-King Controller and Host releases, then retry the launch.",
+  },
   runtime_start_timeout: {
     type: "runtime_startup_failure",
     retryable: true,
@@ -97,21 +122,22 @@ const startupDiagnosisDetails = Object.freeze({
   },
 });
 
-/** @param {string} code @returns {StartupDiagnosis} */
-const startupDiagnosisForCode = (code) => {
+/** @param {string} code @param {string | undefined} auditId @returns {StartupDiagnosis} */
+const startupDiagnosisForCode = (code, auditId) => {
   const sanitizedCode = Object.hasOwn(startupDiagnosisDetails, code)
     ? code
     : "runtime_start_failed";
   return {
     code: sanitizedCode,
     ...startupDiagnosisDetails[sanitizedCode],
+    ...(auditId ? { auditId } : {}),
   };
 };
 
 export class RuntimeStartupError extends Error {
-  /** @param {string} code */
-  constructor(code) {
-    const diagnosis = startupDiagnosisForCode(code);
+  /** @param {string} code @param {string | undefined} [auditId] */
+  constructor(code, auditId) {
+    const diagnosis = startupDiagnosisForCode(code, auditId);
     super(diagnosis.code);
     this.name = "RuntimeStartupError";
     this.diagnosis = diagnosis;
@@ -297,17 +323,42 @@ const withLaunchLock = async (dataDir, operation) => {
   throw new Error("runtime_lock_timeout");
 };
 
-/** @param {string} dataDir @param {z.infer<typeof runtimeStateSchema>} state */
-const createBootstrapUrl = async (dataDir, state) => {
+/**
+ * @param {string} dataDir
+ * @param {z.infer<typeof runtimeStateSchema>} state
+ * @param {number} ttlMs
+ */
+const createBootstrap = async (dataDir, state, ttlMs) => {
   const tokenDirectory = join(dataDir, "bootstrap-tokens");
   await ensurePrivateDirectory(tokenDirectory);
   const token = randomBytes(32).toString("hex");
+  const idempotencyKey = randomBytes(32).toString("hex");
   const tokenId = createHash("sha256").update(token).digest("hex");
+  const idempotencyKeyHash = `sha256:${createHash("sha256")
+    .update(idempotencyKey)
+    .digest("hex")}`;
+  const issuedAt = Date.now();
+  const expiresAt = issuedAt + ttlMs;
   await writePrivateJson(join(tokenDirectory, `${tokenId}.json`), {
-    expiresAt: Date.now() + BOOTSTRAP_TTL_MS,
+    issuedAt,
+    expiresAt,
+    ttlMs,
     runtimeId: state.runtimeId,
+    revision: 0,
+    idempotencyKeyHash,
   });
-  return `http://127.0.0.1:${state.port}/bootstrap?token=${token}`;
+  const url = new URL(`http://127.0.0.1:${state.port}/bootstrap`);
+  url.searchParams.set("token", token);
+  url.searchParams.set("idempotencyKey", idempotencyKey);
+  url.searchParams.set("expectedRevision", "0");
+  return {
+    url: url.href,
+    metadata: {
+      ttlMs,
+      expectedRevision: 0,
+      expiresAt: new Date(expiresAt).toISOString(),
+    },
+  };
 };
 
 /** @param {z.infer<typeof runtimeStateSchema>} state */
@@ -381,7 +432,10 @@ const waitForStartup = async (dataDir, child, startupTimeoutMs) => {
   while (Date.now() < deadline) {
     const errorState = await readJson(errorPath, null);
     if (errorState && typeof errorState === "object" && "code" in errorState) {
-      throw new RuntimeStartupError(String(errorState.code));
+      throw new RuntimeStartupError(
+        String(errorState.code),
+        typeof errorState.auditId === "string" ? errorState.auditId : undefined,
+      );
     }
 
     const rawState = await readJson(statePath, null);
@@ -399,6 +453,9 @@ const waitForStartup = async (dataDir, child, startupTimeoutMs) => {
         finalError && typeof finalError === "object" && "code" in finalError
           ? String(finalError.code)
           : "runtime_start_failed",
+        finalError && typeof finalError === "object" && typeof finalError.auditId === "string"
+          ? finalError.auditId
+          : undefined,
       );
     }
     await delay(50);
@@ -455,10 +512,14 @@ const spawnRuntime = async (dataDir, options) => {
 export const resolveDataDir = (provided) => resolve(provided ?? defaultDataDir());
 
 /**
- * @param {{dataDir?: string, hostMode?: string, startupTimeoutMs?: number}} options
+ * @param {{dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number}} options
  */
 export const launchRuntime = async (options = {}) => {
   const resolvedDataDir = resolveDataDir(options.dataDir);
+  const bootstrapTtlMs = options.bootstrapTtlMs ?? BOOTSTRAP_TTL_MS;
+  if (!Number.isSafeInteger(bootstrapTtlMs) || bootstrapTtlMs < 1 || bootstrapTtlMs > BOOTSTRAP_TTL_MS) {
+    throw new Error("bootstrap_ttl_invalid");
+  }
   await ensurePrivateDirectory(resolvedDataDir);
 
   return withLaunchLock(resolvedDataDir, async () => {
@@ -491,7 +552,7 @@ export const launchRuntime = async (options = {}) => {
       runtimeState = await spawnRuntime(resolvedDataDir, options);
     }
 
-    const bootstrapUrl = await createBootstrapUrl(resolvedDataDir, runtimeState);
+    const bootstrap = await createBootstrap(resolvedDataDir, runtimeState, bootstrapTtlMs);
     return {
       runtime: {
         identity: runtimeState.identity,
@@ -504,7 +565,8 @@ export const launchRuntime = async (options = {}) => {
       host: runtimeState.host,
       protocol: runtimeState.protocol,
       audit: { negotiationId: runtimeState.negotiationAuditId },
-      bootstrapUrl,
+      bootstrapUrl: bootstrap.url,
+      bootstrap: bootstrap.metadata,
     };
   });
 };

@@ -80,3 +80,6 @@ npm run acceptance:issue-117
 The retained sanitized evidence is in
 `acceptance/evidence/issue-117.json`. Maintainers can regenerate it after a
 successful acceptance run with `npm run acceptance:issue-117:update-evidence`.
+The manifest distinguishes GitHub's exact specification-body bytes from the
+parent PRD's legacy line-terminated text export, so source provenance does not
+depend on an implicit trailing-newline convention.

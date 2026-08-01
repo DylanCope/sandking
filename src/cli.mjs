@@ -9,7 +9,7 @@ const execFileAsync = promisify(execFile);
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
   const [command = "launch", ...rest] = argv;
-  /** @type {{command: string, noOpen: boolean, json: boolean, dataDir?: string, hostMode?: string, startupTimeoutMs?: number}} */
+  /** @type {{command: string, noOpen: boolean, json: boolean, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number}} */
   const options = { command, noOpen: false, json: false };
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -29,6 +29,16 @@ const parseArgs = (argv) => {
       index += 1;
       if (!Number.isSafeInteger(options.startupTimeoutMs) || options.startupTimeoutMs < 100) {
         throw new Error("Invalid --startup-timeout-ms value.");
+      }
+    } else if (current === "--bootstrap-ttl-ms") {
+      options.bootstrapTtlMs = Number(rest[index + 1]);
+      index += 1;
+      if (
+        !Number.isSafeInteger(options.bootstrapTtlMs)
+        || options.bootstrapTtlMs < 1
+        || options.bootstrapTtlMs > 60_000
+      ) {
+        throw new Error("Invalid --bootstrap-ttl-ms value.");
       }
     } else {
       throw new Error(`Unsupported option: ${current}`);
@@ -63,6 +73,7 @@ const main = async () => {
       dataDir: options.dataDir,
       hostMode: options.hostMode,
       startupTimeoutMs: options.startupTimeoutMs,
+      bootstrapTtlMs: options.bootstrapTtlMs,
     });
     if (!options.noOpen) {
       await openBrowser(output.bootstrapUrl);

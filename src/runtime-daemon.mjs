@@ -70,8 +70,12 @@ const runtimeErrorPath = join(args.dataDir, "runtime-error.log");
 const auditPath = join(args.dataDir, "audit.jsonl");
 const sessionCookieName = "sandking_session";
 
-/** @type {Map<string, {createdAt: number, runtimeId: string, csrfToken: string, auditId: string}>} */
+/** @type {Map<string, {createdAt: number, runtimeId: string, csrfToken: string, auditId: string, revision: number}>} */
 const sessions = new Map();
+/** @type {Map<string, {createdAt: number, runtimeId: string, csrfToken: string, auditId: string, revision: number, termination: {idempotencyKeyHash: string, expectedRevision: number, auditId: string}}>} */
+const endedSessions = new Map();
+/** @type {Map<string, Promise<any>>} */
+const bootstrapExchanges = new Map();
 /** @type {import("node:child_process").ChildProcessWithoutNullStreams | undefined} */
 let hostProcess;
 /** @type {import("node:http").Server | undefined} */
@@ -142,12 +146,111 @@ const sendJson = (response, status, body) => {
   response.end(JSON.stringify(body));
 };
 
-/** @param {string} token */
-const consumeBootstrapToken = async (token) => {
-  if (!/^[a-f0-9]{64}$/.test(token)) {
-    return null;
+/** @param {string} key */
+const hashIdempotencyKey = (key) => `sha256:${createHash("sha256").update(key).digest("hex")}`;
+
+/** @param {string} code @param {number} expectedRevision @param {number} actualRevision */
+const mutationFailure = (code, expectedRevision, actualRevision) => ({
+  type: "mutation_failure",
+  code,
+  retryable: true,
+  expectedRevision,
+  actualRevision,
+});
+
+/**
+ * @param {string} token
+ * @param {string} idempotencyKey
+ * @param {number} expectedRevision
+ */
+const exchangeBootstrapToken = async (token, idempotencyKey, expectedRevision) => {
+  if (
+    !/^[a-f0-9]{64}$/.test(token)
+    || !/^[a-f0-9]{64}$/.test(idempotencyKey)
+    || !Number.isSafeInteger(expectedRevision)
+    || expectedRevision < 0
+  ) {
+    return {
+      ok: false,
+      status: 400,
+      body: mutationFailure("mutation_contract_invalid", expectedRevision, 0),
+    };
   }
   const tokenId = createHash("sha256").update(token).digest("hex");
+  const idempotencyKeyHash = hashIdempotencyKey(idempotencyKey);
+  const existingExchange = bootstrapExchanges.get(tokenId);
+  if (existingExchange) {
+    const existing = await existingExchange;
+    if (existing.idempotencyKeyHash !== idempotencyKeyHash) {
+      await recordAudit("browser.session.create", "rejected", {
+        code: "idempotency_key_conflict",
+        authorizationClass: "bootstrap_token",
+        idempotencyKeyHash,
+        expectedRevision,
+        actualRevision: existing.resultingRevision ?? 0,
+      });
+      return {
+        ok: false,
+        status: 409,
+        body: mutationFailure(
+          "idempotency_key_conflict",
+          expectedRevision,
+          existing.resultingRevision ?? 0,
+        ),
+      };
+    }
+    if (existing.expectedRevision !== expectedRevision) {
+      await recordAudit("browser.session.create", "rejected", {
+        code: "mutation_revision_conflict",
+        authorizationClass: "bootstrap_token",
+        idempotencyKeyHash,
+        expectedRevision,
+        actualRevision: existing.resultingRevision ?? 0,
+      });
+      return {
+        ok: false,
+        status: 409,
+        body: mutationFailure(
+          "mutation_revision_conflict",
+          expectedRevision,
+          existing.resultingRevision ?? 0,
+        ),
+      };
+    }
+    if (existing.ok && Number(existing.expiresAt) <= Date.now()) {
+      await recordAudit("browser.session.create", "rejected", {
+        code: "bootstrap_token_expired",
+        authorizationClass: "bootstrap_token",
+        idempotencyKeyHash,
+        expectedRevision,
+        actualRevision: existing.resultingRevision,
+      });
+      return {
+        ok: false,
+        status: 410,
+        body: mutationFailure(
+          "bootstrap_token_expired",
+          expectedRevision,
+          existing.resultingRevision,
+        ),
+      };
+    }
+    if (existing.ok) {
+      await recordAudit("browser.session.create", "observed", {
+        authorizationClass: "bootstrap_token",
+        idempotencyKeyHash,
+        expectedRevision,
+        actualRevision: 0,
+        resultingRevision: 1,
+        idempotentReplay: true,
+        originalAuditId: existing.session.auditId,
+      });
+      return { ...existing, idempotentReplay: true };
+    }
+    return existing;
+  }
+
+  const exchange = (async () => {
   const tokenPath = join(tokenDirectory, `${tokenId}.json`);
   const claimPath = join(
     tokenDirectory,
@@ -160,7 +263,15 @@ const consumeBootstrapToken = async (token) => {
     await rename(tokenPath, claimPath);
   } catch (error) {
     if (hasErrorCode(error, "ENOENT")) {
-      return null;
+      const body = mutationFailure("bootstrap_token_invalid", expectedRevision, 0);
+      await recordAudit("browser.session.create", "rejected", {
+        code: body.code,
+        authorizationClass: "bootstrap_token",
+        idempotencyKeyHash,
+        expectedRevision,
+        actualRevision: 0,
+      });
+      return { ok: false, status: 410, body, idempotencyKeyHash, expectedRevision };
     }
     throw error;
   }
@@ -171,29 +282,106 @@ const consumeBootstrapToken = async (token) => {
       !tokenState
       || typeof tokenState !== "object"
       || tokenState.runtimeId !== state.runtimeId
-      || Number(tokenState.expiresAt) <= Date.now()
+      || !/^sha256:[a-f0-9]{64}$/.test(String(tokenState.idempotencyKeyHash))
+      || !Number.isSafeInteger(tokenState.revision)
+      || tokenState.revision < 0
+      || !Number.isSafeInteger(tokenState.expiresAt)
     ) {
-      return null;
+      const invalid = {
+        ok: false,
+        status: 410,
+        body: mutationFailure("bootstrap_token_invalid", expectedRevision, 0),
+        idempotencyKeyHash,
+        expectedRevision,
+      };
+      await recordAudit("browser.session.create", "rejected", {
+        code: invalid.body.code,
+        authorizationClass: "bootstrap_token",
+        idempotencyKeyHash,
+        expectedRevision,
+        actualRevision: 0,
+      });
+      return invalid;
     }
-    return tokenState;
+    if (tokenState.idempotencyKeyHash !== idempotencyKeyHash) {
+      const body = mutationFailure("idempotency_key_conflict", expectedRevision, 0);
+      await recordAudit("browser.session.create", "rejected", {
+        code: body.code,
+        authorizationClass: "bootstrap_token",
+        idempotencyKeyHash,
+        expectedRevision,
+        actualRevision: 0,
+      });
+      return { ok: false, status: 409, body, idempotencyKeyHash, expectedRevision };
+    }
+    if (expectedRevision !== Number(tokenState.revision)) {
+      const body = mutationFailure(
+        "mutation_revision_conflict",
+        expectedRevision,
+        Number(tokenState.revision),
+      );
+      await recordAudit("browser.session.create", "rejected", {
+        code: body.code,
+        authorizationClass: "bootstrap_token",
+        idempotencyKeyHash,
+        expectedRevision,
+        actualRevision: Number(tokenState.revision),
+      });
+      return { ok: false, status: 409, body, idempotencyKeyHash, expectedRevision };
+    }
+    if (Number(tokenState.expiresAt) <= Date.now()) {
+      const body = mutationFailure("bootstrap_token_expired", expectedRevision, 0);
+      await recordAudit("browser.session.create", "rejected", {
+        code: body.code,
+        authorizationClass: "bootstrap_token",
+        idempotencyKeyHash,
+        expectedRevision,
+        actualRevision: 0,
+      });
+      return { ok: false, status: 410, body, idempotencyKeyHash, expectedRevision };
+    }
+    const session = await createSession({ idempotencyKeyHash, expectedRevision });
+    return {
+      ok: true,
+      session,
+      idempotencyKeyHash,
+      expectedRevision,
+      resultingRevision: 1,
+      idempotentReplay: false,
+      expiresAt: Number(tokenState.expiresAt),
+    };
   } finally {
     await removePrivateFile(claimPath);
   }
+  })();
+  bootstrapExchanges.set(tokenId, exchange);
+  const result = await exchange;
+  if (!result.ok) {
+    bootstrapExchanges.delete(tokenId);
+  }
+  return result;
 };
 
-const createSession = async () => {
+/** @param {{idempotencyKeyHash: string, expectedRevision: number}} contract */
+const createSession = async (contract) => {
   const sessionId = randomBytes(32).toString("hex");
   const csrfToken = randomBytes(24).toString("hex");
   const auditId = await recordAudit("browser.session.create", "accepted", {
     runtimeId: state.runtimeId,
+    authorizationClass: "bootstrap_token",
+    idempotencyKeyHash: contract.idempotencyKeyHash,
+    expectedRevision: contract.expectedRevision,
+    actualRevision: 0,
+    resultingRevision: 1,
   });
   sessions.set(sessionId, {
     createdAt: Date.now(),
     runtimeId: state.runtimeId,
     csrfToken,
     auditId,
+    revision: 1,
   });
-  return { sessionId, csrfToken, auditId };
+  return { sessionId, csrfToken, auditId, revision: 1 };
 };
 
 /** @param {unknown} error */
@@ -213,6 +401,10 @@ const sanitizedRuntimeCode = (error) => {
       "host_schema_mismatch",
       "host_framing_invalid",
       "host_unavailable",
+      "controller_identity_invalid",
+      "controller_protocol_major_mismatch",
+      "controller_capability_unsupported",
+      "controller_schema_mismatch",
     ]);
     return allowed.has(error.message) ? error.message : "runtime_start_failed";
   }
@@ -294,17 +486,31 @@ const launchHost = async () => {
   });
 
   try {
+    const controllerProtocol = args.hostMode === "controller-incompatible-major"
+      ? {
+          ...protocolVersion,
+          major: protocolVersion.major + 1,
+          version: `${protocolVersion.major + 1}.${protocolVersion.minor}.${protocolVersion.patch}`,
+        }
+      : protocolVersion;
+    const controllerRequiredCapabilities = args.hostMode === "controller-unknown-required-capability"
+      ? [...hostCapabilities, "sandking.controller.future-required"]
+      : [...hostCapabilities];
+    const controllerSchemaDigest = args.hostMode === "controller-schema-mismatch"
+      ? `sha256:${"0".repeat(64)}`
+      : HOST_SCHEMA_DIGEST;
+
     writeFrame(child.stdin, {
       type: "hello",
-      protocol: protocolVersion,
+      protocol: controllerProtocol,
       release: releaseVersion,
       identity: "controller-runtime",
       expectedPeerIdentity: "local-host",
       capabilities: {
-        required: [...hostCapabilities],
+        required: controllerRequiredCapabilities,
         optional: [],
       },
-      schemaDigest: HOST_SCHEMA_DIGEST,
+      schemaDigest: controllerSchemaDigest,
       framing: {
         maxFrameBytes: MAX_FRAME_BYTES,
         maxBulkChunkBytes: MAX_BULK_CHUNK_BYTES,
@@ -378,7 +584,7 @@ const rejectBrowserProtocol = (socket, code, reloadRequired) => {
   }), () => socket.close(1002, "protocol_mismatch"));
 };
 
-/** @param {WebSocket} socket @param {{csrfToken: string, auditId: string}} session */
+/** @param {WebSocket} socket @param {{csrfToken: string, auditId: string, revision: number}} session */
 const handleBrowserConnection = (socket, session) => {
   /** @type {"awaiting-hello" | "negotiated" | "rejected"} */
   let phase = "awaiting-hello";
@@ -501,7 +707,7 @@ const handleBrowserConnection = (socket, session) => {
           ),
         },
         observation,
-        session: { csrfToken: session.csrfToken },
+        session: { csrfToken: session.csrfToken, revision: session.revision },
         viewModel: {
           kind: "cockpit.connection",
           runtime: {
@@ -590,18 +796,19 @@ const main = async () => {
         }
 
         if (request.method === "GET" && request.url?.startsWith("/bootstrap?token=")) {
-          const token = new URL(request.url, `http://127.0.0.1:${state.port}`)
-            .searchParams.get("token");
-          const tokenState = token ? await consumeBootstrapToken(token) : null;
-          if (!tokenState) {
-            sendJson(response, 410, { code: "bootstrap_token_invalid" });
+          const bootstrapRequest = new URL(request.url, `http://127.0.0.1:${state.port}`);
+          const token = bootstrapRequest.searchParams.get("token") ?? "";
+          const idempotencyKey = bootstrapRequest.searchParams.get("idempotencyKey") ?? "";
+          const expectedRevision = Number(bootstrapRequest.searchParams.get("expectedRevision"));
+          const exchange = await exchangeBootstrapToken(token, idempotencyKey, expectedRevision);
+          if (!exchange.ok) {
+            sendJson(response, exchange.status, exchange.body);
             return;
           }
-          const session = await createSession();
           response.writeHead(302, {
             ...securityHeaders,
             location: "/",
-            "set-cookie": `${sessionCookieName}=${session.sessionId}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`,
+            "set-cookie": `${sessionCookieName}=${exchange.session.sessionId}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`,
           });
           response.end();
           return;
@@ -609,9 +816,18 @@ const main = async () => {
 
         const cookies = parseCookies(request.headers.cookie);
         const sessionId = cookies[sessionCookieName];
-        const session = sessionId ? sessions.get(sessionId) : undefined;
+        const activeSession = sessionId ? sessions.get(sessionId) : undefined;
+        const endedSession = sessionId ? endedSessions.get(sessionId) : undefined;
+        const session = activeSession ?? endedSession;
         if (!session) {
           sendJson(response, 401, { code: "session_required" });
+          return;
+        }
+        if (
+          !activeSession
+          && !(request.method === "POST" && request.url === "/session/end")
+        ) {
+          sendJson(response, 401, { code: "session_ended" });
           return;
         }
 
@@ -642,17 +858,98 @@ const main = async () => {
         }
 
         if (request.method === "POST" && request.url === "/session/end") {
+          const rawIdempotencyKey = request.headers["x-sandking-idempotency-key"];
+          const idempotencyKey = typeof rawIdempotencyKey === "string" ? rawIdempotencyKey : "";
+          const expectedRevision = Number(request.headers["x-sandking-expected-revision"]);
+          const idempotencyKeyHash = idempotencyKey.length > 0 && idempotencyKey.length <= 256
+            ? hashIdempotencyKey(idempotencyKey)
+            : null;
           if (!exactOriginAccepted(request) || request.headers["x-sandking-csrf"] !== session.csrfToken) {
-            await recordAudit("browser.session.end", "rejected", { code: "csrf_rejected" });
+            await recordAudit("browser.session.end", "rejected", {
+              code: "csrf_rejected",
+              authorizationClass: "runtime_browser_session",
+              idempotencyKeyHash,
+              expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+              actualRevision: session.revision,
+            });
             sendJson(response, 403, { code: "csrf_rejected" });
             return;
           }
-          sessions.delete(sessionId);
-          await recordAudit("browser.session.end", "accepted", {
-            sessionAuditId: session.auditId,
+          if (!idempotencyKeyHash || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+            await recordAudit("browser.session.end", "rejected", {
+              code: "mutation_contract_invalid",
+              authorizationClass: "runtime_browser_session",
+              idempotencyKeyHash,
+              expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+              actualRevision: session.revision,
+            });
+            sendJson(response, 400, mutationFailure(
+              "mutation_contract_invalid",
+              Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
+              session.revision,
+            ));
+            return;
+          }
+          if (
+            endedSession
+            && endedSession.termination.idempotencyKeyHash === idempotencyKeyHash
+            && endedSession.termination.expectedRevision === expectedRevision
+          ) {
+            await recordAudit("browser.session.end", "observed", {
+              authorizationClass: "runtime_browser_session",
+              idempotencyKeyHash,
+              expectedRevision,
+              actualRevision: 1,
+              resultingRevision: endedSession.revision,
+              idempotentReplay: true,
+              originalAuditId: endedSession.termination.auditId,
+            });
+            sendJson(response, 200, {
+              type: "mutation_result",
+              code: "session_ended",
+              revision: endedSession.revision,
+              idempotentReplay: true,
+              auditId: endedSession.termination.auditId,
+            });
+            return;
+          }
+          if (!activeSession || expectedRevision !== activeSession.revision) {
+            await recordAudit("browser.session.end", "rejected", {
+              code: "mutation_revision_conflict",
+              authorizationClass: "runtime_browser_session",
+              idempotencyKeyHash,
+              expectedRevision,
+              actualRevision: session.revision,
+            });
+            sendJson(response, 409, mutationFailure(
+              "mutation_revision_conflict",
+              expectedRevision,
+              session.revision,
+            ));
+            return;
+          }
+          const resultingRevision = activeSession.revision + 1;
+          const auditId = await recordAudit("browser.session.end", "accepted", {
+            sessionAuditId: activeSession.auditId,
+            authorizationClass: "runtime_browser_session",
+            idempotencyKeyHash,
+            expectedRevision,
+            actualRevision: activeSession.revision,
+            resultingRevision,
           });
-          response.writeHead(204, securityHeaders);
-          response.end();
+          sessions.delete(sessionId);
+          endedSessions.set(sessionId, {
+            ...activeSession,
+            revision: resultingRevision,
+            termination: { idempotencyKeyHash, expectedRevision, auditId },
+          });
+          sendJson(response, 200, {
+            type: "mutation_result",
+            code: "session_ended",
+            revision: resultingRevision,
+            idempotentReplay: false,
+            auditId,
+          });
           return;
         }
 
@@ -739,8 +1036,14 @@ const main = async () => {
     });
   } catch (error) {
     const code = sanitizedRuntimeCode(error);
-    await recordAudit("runtime.start", "rejected", { code });
-    await writePrivateJson(startupErrorPath, { code });
+    const negotiationAuditId = await recordAudit("host.negotiate", "rejected", {
+      code,
+      controllerIdentity: "controller-runtime",
+      expectedHostIdentity: "local-host",
+      mutationOccurred: false,
+    });
+    await recordAudit("runtime.start", "rejected", { code, negotiationAuditId });
+    await writePrivateJson(startupErrorPath, { code, auditId: negotiationAuditId });
     if (hostProcess) {
       await stopChild(hostProcess);
     }
