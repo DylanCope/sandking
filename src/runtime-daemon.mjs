@@ -28,6 +28,7 @@ import {
   removePrivateFile,
   writePrivateJson,
 } from "./private-state.mjs";
+import { createPlanningSpine } from "./planning-spine.mjs";
 import {
   HOST_SCHEMA_DIGEST,
   MAX_BULK_CHUNK_BYTES,
@@ -121,6 +122,8 @@ let hostProcess;
 let httpServer;
 /** @type {WebSocketServer | undefined} */
 let websocketServer;
+/** @type {Awaited<ReturnType<typeof createPlanningSpine>> | undefined} */
+let planningSpine;
 /** @type {any} */
 let state;
 let shuttingDown = false;
@@ -212,6 +215,38 @@ const readMutationHeaders = (request) => {
     expectedRevision,
   };
 };
+
+/** @param {import("node:http").IncomingMessage} request */
+const readJsonBody = async (request) => new Promise((resolve, reject) => {
+  /** @type {Buffer[]} */
+  const chunks = [];
+  let size = 0;
+  let tooLarge = false;
+  request.on("data", (chunk) => {
+    if (tooLarge) {
+      return;
+    }
+    const bytes = Buffer.from(chunk);
+    size += bytes.byteLength;
+    if (size > 8_192) {
+      tooLarge = true;
+      return;
+    }
+    chunks.push(bytes);
+  });
+  request.once("end", () => {
+    if (tooLarge) {
+      resolve(null);
+      return;
+    }
+    try {
+      resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    } catch {
+      resolve(null);
+    }
+  });
+  request.once("error", reject);
+});
 
 /**
  * Serialize mutations for one browser session. The queue entry is installed
@@ -1136,6 +1171,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
             framing: state.host.framing,
             observationCursor: state.host.observationCursor,
           },
+          planning: await planningSpine?.project(),
         },
       });
       await recordAudit("browser.negotiate", "accepted", {
@@ -1176,6 +1212,10 @@ const main = async () => {
     const runtimeId = `runtime-${randomBytes(12).toString("hex")}`;
     const negotiation = await launchHost(runtimeId);
     const host = negotiation.host;
+    planningSpine = await createPlanningSpine({
+      dataDir: args.dataDir,
+      recordAudit,
+    });
     const negotiationAuditId = await recordAudit("host.negotiate", "accepted", {
       controllerIdentity: "controller-runtime",
       controllerId: runtimeId,
@@ -1285,6 +1325,41 @@ const main = async () => {
           return;
         }
 
+        if (
+          request.method === "POST"
+          && (
+            request.url === "/planning/sessions/open"
+            || request.url === "/planning/stages/not-used"
+          )
+        ) {
+          const body = await readJsonBody(request);
+          const record = body && typeof body === "object" ? body : {};
+          const { idempotencyKeyHash, expectedRevision } = readMutationHeaders(request);
+          const authorizationAccepted = exactOriginAccepted(request)
+            && request.headers["x-sandking-csrf"] === activeSession.csrfToken;
+          const outcome = request.url === "/planning/sessions/open"
+            ? await planningSpine?.openFocusedSession({
+                authorizationAccepted,
+                idempotencyKeyHash,
+                expectedRevision,
+                workContextId: "workContextId" in record
+                  ? String(record.workContextId)
+                  : "",
+              })
+            : await planningSpine?.markStageNotUsed({
+                authorizationAccepted,
+                idempotencyKeyHash,
+                expectedRevision,
+                journeyId: "journeyId" in record ? String(record.journeyId) : "",
+                stageId: "stageId" in record ? String(record.stageId) : "",
+              });
+          if (!outcome) {
+            throw new Error("planning_spine_unavailable");
+          }
+          sendJson(response, outcome.status, outcome.body);
+          return;
+        }
+
         if (request.method === "GET" && request.url === "/") {
           response.writeHead(200, {
             ...securityHeaders,
@@ -1370,7 +1445,7 @@ const main = async () => {
       revision: args.lifecycleRevision,
       port: address.port,
       readinessToken: randomBytes(24).toString("hex"),
-      compatibilityKey: "runtime-v1",
+      compatibilityKey: "runtime-v2-planning-spine",
       version: releaseVersion,
       identity: "controller-runtime",
       host: {

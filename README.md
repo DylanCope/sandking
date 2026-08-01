@@ -85,6 +85,21 @@ WebSockets. Bootstrap and session-end rejections return typed failures linked
 to audit evidence. Explicitly ending a browser session serializes concurrent
 retries; opaque stream bytes remain on a separate bounded binary channel.
 
+The Cockpit also projects a thin optional Planning journey. Its Journey Rail
+shows the built-in Wayfinding, Speccing, and Ticketing stages from data labelled
+`Conformance fixture data — not live GitHub`. Selecting fixture-backed work
+opens an independently identified focused conformance Controller session. A
+person may mark an optional stage **Not used** without blocking ordinary work.
+That mutation is browser-session-authorized, revisioned, idempotent, typed, and
+audited; only a hashed idempotency key is retained. An unavailable claimed
+GitHub projection remains visibly stale, disables its controls in the Cockpit,
+and is rejected again by the runtime without queuing a write.
+
+Planning fixture mutation and session state stays in the private runtime data
+directory, outside Projects. This thin spine does not implement skill-owned
+reasoning, private Specifications, Ticket-set publication, complete optional or
+out-of-order behavior, or downstream **Needs review**.
+
 Run the executable issue-117 acceptance manifest, including its npm-pinned real
 Chromium gate, with:
 
@@ -98,3 +113,13 @@ successful acceptance run with `npm run acceptance:issue-117:update-evidence`.
 The manifest distinguishes GitHub's exact specification-body bytes from the
 parent PRD's legacy line-terminated text export, so source provenance does not
 depend on an implicit trailing-newline convention.
+
+Run the optional-Planning public-seam scenario with:
+
+```bash
+npm run acceptance:issue-123
+```
+
+Its retained sanitized evidence is generated with
+`npm run acceptance:issue-123:update-evidence` and stored in
+`acceptance/evidence/issue-123.json`.

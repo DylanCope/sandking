@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { planningProjectionSchema } from "./planning-spine.mjs";
 import { protocolVersion, releaseVersion, versionSchema } from "./protocol.mjs";
 
 export const BROWSER_PROTOCOL_VERSION = protocolVersion;
@@ -9,16 +10,18 @@ export const browserCapabilities = Object.freeze([
   "cockpit.structured-control.v1",
   "cockpit.opaque-stream.v1",
   "cockpit.resynchronization.v1",
+  "cockpit.planning-spine.v1",
 ]);
 export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.structured-control.v1",
   "cockpit.resynchronization.v1",
+  "cockpit.planning-spine.v1",
 ]);
 export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-durable-host-identity")
+  .update("sandking-browser-runtime-schema-v1-with-planning-spine")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -96,6 +99,7 @@ export const runtimeHelloAckSchema = z.object({
       }).strict(),
       observationCursor: z.string().max(256).nullable(),
     }).strict(),
+    planning: planningProjectionSchema,
   }).strict(),
 }).strict();
 

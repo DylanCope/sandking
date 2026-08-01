@@ -22,7 +22,7 @@ import {
 } from "./host-identity.mjs";
 import { capabilitySetSchema, framingSchema, releaseVersion, versionSchema } from "./protocol.mjs";
 
-const COMPATIBILITY_KEY = "runtime-v1";
+const COMPATIBILITY_KEY = "runtime-v2-planning-spine";
 export const BOOTSTRAP_TTL_MS = 60_000;
 export const BROWSER_SESSION_TTL_MS = 15 * 60_000;
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
