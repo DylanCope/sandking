@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { planningProjectionSchema } from "./planning-spine.mjs";
 import { protocolVersion, releaseVersion, versionSchema } from "./protocol.mjs";
 
 export const BROWSER_PROTOCOL_VERSION = protocolVersion;
@@ -9,16 +10,20 @@ export const browserCapabilities = Object.freeze([
   "cockpit.structured-control.v1",
   "cockpit.opaque-stream.v1",
   "cockpit.resynchronization.v1",
+  "cockpit.planning-spine.v1",
+  "cockpit.controller-terminal.v1",
 ]);
 export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.structured-control.v1",
   "cockpit.resynchronization.v1",
+  "cockpit.planning-spine.v1",
+  "cockpit.controller-terminal.v1",
 ]);
 export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-durable-host-identity")
+  .update("sandking-browser-runtime-schema-v1-with-planning-controller-terminal")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -49,9 +54,22 @@ const browserPingSchema = z.object({
   requestId: identifierSchema,
 }).strict();
 
+const browserTerminalAttachSchema = z.object({
+  type: z.literal("browser.terminal.attach"),
+  sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
+  streamId: z.string().regex(/^controller-terminal-[a-f0-9]{24}$/),
+  attachmentId: z.string().regex(/^terminal-attachment-[a-f0-9]{24}$/),
+  mode: z.literal("read-write"),
+  outputCursor: z.number().int().nonnegative(),
+}).strict();
+
 const browserControlEnvelopeSchema = z.object({
   channel: z.literal("control"),
-  message: z.discriminatedUnion("type", [browserHelloSchema, browserPingSchema]),
+  message: z.discriminatedUnion("type", [
+    browserHelloSchema,
+    browserPingSchema,
+    browserTerminalAttachSchema,
+  ]),
 }).strict();
 
 export const runtimeHelloAckSchema = z.object({
@@ -96,6 +114,7 @@ export const runtimeHelloAckSchema = z.object({
       }).strict(),
       observationCursor: z.string().max(256).nullable(),
     }).strict(),
+    planning: planningProjectionSchema,
   }).strict(),
 }).strict();
 
@@ -111,12 +130,23 @@ const runtimePongSchema = z.object({
   requestId: identifierSchema,
 }).strict();
 
+const runtimeTerminalAttachedSchema = z.object({
+  type: z.literal("runtime.terminal-attached"),
+  sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
+  streamId: z.string().regex(/^controller-terminal-[a-f0-9]{24}$/),
+  attachmentId: z.string().regex(/^terminal-attachment-[a-f0-9]{24}$/),
+  mode: z.literal("read-write"),
+  exclusive: z.literal(true),
+  outputCursor: z.number().int().nonnegative(),
+}).strict();
+
 export const runtimeControlEnvelopeSchema = z.object({
   channel: z.literal("control"),
   message: z.discriminatedUnion("type", [
     runtimeHelloAckSchema,
     browserProtocolErrorSchema,
     runtimePongSchema,
+    runtimeTerminalAttachedSchema,
   ]),
 }).strict();
 

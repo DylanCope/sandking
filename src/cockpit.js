@@ -8,10 +8,12 @@ const browserProtocol = Object.freeze({
       "cockpit.structured-control.v1",
       "cockpit.opaque-stream.v1",
       "cockpit.resynchronization.v1",
+      "cockpit.planning-spine.v1",
+      "cockpit.controller-terminal.v1",
     ],
     optional: [],
   },
-  schemaDigest: "sha256:3ba0a4236a6f336750e7e545b286dbcf18d28606d827f203ce98bca41b1e9d7f",
+  schemaDigest: "sha256:e80bfa3575c10ec9eb271ffe80a5bba38c672befb988141acadb68b51b18cb3e",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -23,6 +25,284 @@ const reload = document.getElementById("reload-cockpit");
 const websocketProtocol = location.protocol === "https:" ? "wss" : "ws";
 const socket = new WebSocket(`${websocketProtocol}://${location.host}/ws`);
 socket.binaryType = "arraybuffer";
+const terminalStreams = new Map();
+let runtimeNegotiated = false;
+
+const encodeOpaqueFrame = (streamId, sequence, data) => {
+  const id = new TextEncoder().encode(streamId);
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const frame = new Uint8Array(6 + id.byteLength + bytes.byteLength);
+  const view = new DataView(frame.buffer);
+  view.setUint8(0, id.byteLength);
+  view.setUint32(1, sequence);
+  view.setUint8(5, 0);
+  frame.set(id, 6);
+  frame.set(bytes, 6 + id.byteLength);
+  return frame;
+};
+
+const decodeOpaqueFrame = (value) => {
+  const frame = new Uint8Array(value);
+  if (frame.byteLength < 6) {
+    return null;
+  }
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+  const idLength = view.getUint8(0);
+  const dataOffset = 6 + idLength;
+  if (dataOffset > frame.byteLength) {
+    return null;
+  }
+  return {
+    streamId: new TextDecoder().decode(frame.subarray(6, dataOffset)),
+    sequence: view.getUint32(1),
+    eof: Boolean(view.getUint8(5) & 1),
+    data: frame.subarray(dataOffset),
+  };
+};
+
+const element = (name, attributes = {}, text = "") => {
+  const node = document.createElement(name);
+  for (const [key, value] of Object.entries(attributes)) {
+    if (key === "hidden") {
+      node.hidden = Boolean(value);
+    } else if (key === "disabled") {
+      node.disabled = Boolean(value);
+    } else {
+      node.setAttribute(key, String(value));
+    }
+  }
+  node.textContent = text;
+  return node;
+};
+
+const mutationKey = () => globalThis.crypto?.randomUUID?.()
+  ?? `planning-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const submitPlanningMutation = async (path, body, expectedRevision, csrfToken) => {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-sandking-csrf": csrfToken,
+      "x-sandking-idempotency-key": mutationKey(),
+      "x-sandking-expected-revision": String(expectedRevision),
+    },
+    body: JSON.stringify(body),
+  });
+  return { status: response.status, body: await response.json() };
+};
+
+const renderPlanning = (planning, session) => {
+  const section = element("section", {
+    id: "planning-spine",
+    "data-planning-ready": "true",
+    "data-adapter-fixture": String(planning.adapter.fixture),
+  });
+  section.append(
+    element("h2", {}, "Planning Journey Rail"),
+    element("p", { "data-projection-provenance": planning.adapter.adapterId },
+      planning.adapter.label),
+  );
+
+  const feedback = element("p", { id: "planning-feedback", role: "status" });
+  const sessionPanel = element("section", {
+    id: "focused-controller-session",
+    "data-session-state": "closed",
+    hidden: true,
+  });
+
+  for (const journey of planning.journeys) {
+    const journeyNode = element("article", {
+      "data-journey-id": journey.journeyId,
+      "data-freshness": journey.projection.freshness,
+      "data-projection-id": journey.projection.projectionId,
+      "data-projection-digest": journey.projection.projectionDigest,
+      "data-ordinary-work-blocked": String(journey.ordinaryWork.blocked),
+    });
+    journeyNode.append(element("h3", {}, journey.title));
+    if (journey.projection.freshness === "stale") {
+      journeyNode.append(element(
+        "p",
+        { role: "alert", "data-stale-code": journey.projection.refreshFailure?.code ?? "stale" },
+        "GitHub canonical projection is visibly stale; mutation is disabled and no write is queued.",
+      ));
+    }
+    journeyNode.append(element(
+      "p",
+      { "data-ordinary-work-status": journey.ordinaryWork.status },
+      "Ordinary work remains available; Planning is optional.",
+    ));
+    const rail = element("ol", { "data-journey-rail": "built-in" });
+    for (const stage of journey.stages) {
+      const stageNode = element("li", {
+        "data-stage-id": stage.stageId,
+        "data-stage-status": stage.status,
+        "data-stage-revision": String(stage.revision),
+        "data-work-context-id": stage.workContext.workContextId,
+      });
+      const status = element("span", { "data-stage-status-label": "true" }, stage.status);
+      stageNode.append(
+        element("strong", {}, stage.label),
+        document.createTextNode(" — "),
+        status,
+        element("p", {}, `Fixture artifact: ${stage.artifact.title}`),
+      );
+      const mutationEnabled = journey.projection.mutationsEnabled && stage.mutation.enabled;
+      const openSession = element("button", {
+        type: "button",
+        "data-action": "open-session",
+        "data-planning-mutation": "true",
+        disabled: !mutationEnabled,
+      }, "Open focused session");
+      openSession.addEventListener("click", async () => {
+        openSession.disabled = true;
+        const outcome = await submitPlanningMutation(
+          "/planning/sessions/open",
+          { workContextId: stage.workContext.workContextId },
+          0,
+          session.csrfToken,
+        );
+        if (outcome.body.type !== "mutation_result") {
+          feedback.textContent = `Focused session failed safely: ${outcome.body.code}`;
+          openSession.disabled = !mutationEnabled;
+          return;
+        }
+        sessionPanel.hidden = false;
+        sessionPanel.dataset.sessionState = "open";
+        sessionPanel.dataset.sessionId = outcome.body.session.sessionId;
+        sessionPanel.dataset.workContextId = outcome.body.session.workContext.workContextId;
+        sessionPanel.dataset.providerId = outcome.body.session.provider.providerId;
+        sessionPanel.dataset.providerAdapterId = outcome.body.session.provider.adapterId;
+        sessionPanel.dataset.providerSessionId = outcome.body.session.provider.providerSessionId;
+        sessionPanel.dataset.providerControlProtocol =
+          outcome.body.session.provider.readiness.controlProtocol;
+        sessionPanel.dataset.providerReadySignal =
+          outcome.body.session.provider.readiness.signal;
+        sessionPanel.dataset.providerObservedTty = String(
+          outcome.body.session.provider.readiness.providerObservedTty,
+        );
+        sessionPanel.dataset.terminalStreamId = outcome.body.session.terminal.streamId;
+        sessionPanel.dataset.terminalAttachmentId =
+          outcome.body.session.terminal.writableAttachment.attachmentId;
+        sessionPanel.dataset.ptyRuntimeOwned = String(
+          outcome.body.session.terminal.runtimeOwned,
+        );
+        sessionPanel.dataset.terminalAttachment = "attaching";
+        const terminalOutput = element("pre", {
+          id: "controller-terminal-output",
+          "data-terminal-output": outcome.body.session.terminal.streamId,
+          "aria-live": "polite",
+        });
+        const terminalInput = element("input", {
+          id: "controller-terminal-input",
+          type: "text",
+          autocomplete: "off",
+          "aria-label": "Controller terminal input",
+        });
+        const sendInput = element("button", {
+          id: "send-controller-input",
+          type: "button",
+          disabled: true,
+        }, "Send to Controller");
+        const terminalState = {
+          attachmentId: outcome.body.session.terminal.writableAttachment.attachmentId,
+          decoder: new TextDecoder(),
+          inputSequence: 0,
+          output: terminalOutput,
+          panel: sessionPanel,
+          sendInput,
+          terminalInput,
+        };
+        terminalStreams.set(outcome.body.session.terminal.streamId, terminalState);
+        const submitTerminalInput = () => {
+          if (socket.readyState !== WebSocket.OPEN || sendInput.disabled) {
+            return;
+          }
+          const input = `${terminalInput.value}\n`;
+          terminalInput.value = "";
+          socket.send(encodeOpaqueFrame(
+            outcome.body.session.terminal.streamId,
+            terminalState.inputSequence,
+            new TextEncoder().encode(input),
+          ));
+          terminalState.inputSequence += 1;
+        };
+        sendInput.addEventListener("click", submitTerminalInput);
+        terminalInput.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            submitTerminalInput();
+          }
+        });
+        sessionPanel.replaceChildren(
+          element("p", {}, "Focused conformance Controller session opened for "
+            + `${outcome.body.session.workContext.workContextId} `
+            + `(${outcome.body.session.sessionId}).`),
+          terminalOutput,
+          terminalInput,
+          sendInput,
+        );
+        socket.send(JSON.stringify({
+          channel: "control",
+          message: {
+            type: "browser.terminal.attach",
+            sessionId: outcome.body.session.sessionId,
+            streamId: outcome.body.session.terminal.streamId,
+            attachmentId: outcome.body.session.terminal.writableAttachment.attachmentId,
+            mode: "read-write",
+            outputCursor: 0,
+          },
+        }));
+        feedback.textContent = "Selected Planning work opened in an independently identified session.";
+      });
+      const notUsed = element("button", {
+        type: "button",
+        "data-action": "not-used",
+        "data-planning-mutation": "true",
+        disabled: !mutationEnabled || !stage.optional,
+      }, "Mark Not used");
+      notUsed.addEventListener("click", async () => {
+        notUsed.disabled = true;
+        const outcome = await submitPlanningMutation(
+          "/planning/stages/not-used",
+          { journeyId: journey.journeyId, stageId: stage.stageId },
+          stage.revision,
+          session.csrfToken,
+        );
+        if (outcome.body.type !== "mutation_result") {
+          feedback.textContent = `Not used failed safely: ${outcome.body.code}`;
+          notUsed.disabled = !mutationEnabled;
+          return;
+        }
+        stage.status = outcome.body.stage.status;
+        stage.revision = outcome.body.stage.revision;
+        stageNode.dataset.stageStatus = outcome.body.stage.status;
+        stageNode.dataset.stageRevision = String(outcome.body.stage.revision);
+        status.textContent = outcome.body.stage.status;
+        for (const button of stageNode.querySelectorAll("button[data-planning-mutation]")) {
+          button.disabled = true;
+        }
+        journeyNode.dataset.ordinaryWorkBlocked = String(outcome.body.ordinaryWorkBlocked);
+        feedback.textContent = "Stage marked Not used. Ordinary work remains available.";
+      });
+      stageNode.append(openSession, notUsed);
+      rail.append(stageNode);
+    }
+    journeyNode.append(rail);
+    section.append(journeyNode);
+  }
+  section.append(
+    sessionPanel,
+    feedback,
+    element(
+      "p",
+      { "data-planning-scope": "thin-spine" },
+      "This thin Planning spine does not include skill-owned reasoning, private Specifications, "
+        + "Ticket-set publication, complete optional or out-of-order behavior, or downstream Needs review.",
+    ),
+  );
+  return section;
+};
 
 const requireReload = (code) => {
   document.documentElement.dataset.reloadRequired = "true";
@@ -48,6 +328,18 @@ socket.addEventListener("message", (event) => {
   if (typeof event.data !== "string") {
     // Opaque terminal streams are binary and never parsed as structured control.
     document.documentElement.dataset.opaqueStreamReceived = "true";
+    const opaque = decodeOpaqueFrame(event.data);
+    const terminal = opaque ? terminalStreams.get(opaque.streamId) : null;
+    if (opaque && terminal) {
+      terminal.output.textContent += terminal.decoder.decode(opaque.data, {
+        stream: !opaque.eof,
+      });
+      terminal.output.dataset.outputSequence = String(opaque.sequence);
+      if (opaque.eof) {
+        terminal.panel.dataset.sessionState = "exited";
+        terminal.sendInput.disabled = true;
+      }
+    }
     return;
   }
 
@@ -66,6 +358,27 @@ socket.addEventListener("message", (event) => {
     } else {
       app.textContent = `Connection failed safely: ${message.code}`;
     }
+    return;
+  }
+
+  if (message?.type === "runtime.terminal-attached") {
+    const terminal = terminalStreams.get(message.streamId);
+    if (
+      !runtimeNegotiated
+      || !terminal
+      || terminal.attachmentId !== message.attachmentId
+      || message.mode !== "read-write"
+      || message.exclusive !== true
+    ) {
+      requireReload("runtime_terminal_attachment_mismatch");
+      return;
+    }
+    terminal.panel.dataset.terminalAttachment = "read-write";
+    terminal.sendInput.disabled = false;
+    return;
+  }
+
+  if (message?.type === "runtime.pong") {
     return;
   }
 
@@ -99,6 +412,10 @@ socket.addEventListener("message", (event) => {
   const durableIdentitiesCompatible = /^runtime-[a-f0-9]{24}$/
     .test(message?.viewModel?.runtime?.runtimeId ?? "")
     && /^host-[a-f0-9]{24}$/.test(message?.viewModel?.host?.hostId ?? "");
+  const planningCompatible = message?.viewModel?.planning?.kind === "cockpit.planning-spine"
+    && message.viewModel.planning.adapter?.fixture === true
+    && JSON.stringify(message.viewModel.planning.builtInStages)
+      === JSON.stringify(["wayfinding", "speccing", "ticketing"]);
 
   if (
     message?.type !== "runtime.hello-ack"
@@ -109,6 +426,7 @@ socket.addEventListener("message", (event) => {
     || !capabilitiesCompatible
     || !framingCompatible
     || !durableIdentitiesCompatible
+    || !planningCompatible
     || message.viewModel?.kind !== "cockpit.connection"
   ) {
     requireReload("browser_runtime_handshake_mismatch");
@@ -116,11 +434,19 @@ socket.addEventListener("message", (event) => {
   }
 
   sessionStorage.setItem("sandking.observationCursor", message.observation.cursor);
+  runtimeNegotiated = true;
   document.documentElement.dataset.observationMode = message.observation.mode;
   document.documentElement.dataset.protocolVersion = message.protocol.version;
-  app.textContent =
-    `Connected to ${message.viewModel.host.identity} with protocol ${message.protocol.version}`
-    + ` (${message.viewModel.host.hostId})`;
+  app.textContent = "";
+  app.append(
+    element(
+      "p",
+      { id: "connection-status" },
+      `Connected to ${message.viewModel.host.identity} with protocol ${message.protocol.version}`
+        + ` (${message.viewModel.host.hostId})`,
+    ),
+    renderPlanning(message.viewModel.planning, message.session),
+  );
 });
 
 socket.addEventListener("close", (event) => {

@@ -15,11 +15,13 @@ import {
   BrowserProtocolError,
   browserCapabilities,
   decodeBrowserOpaqueFrame,
+  encodeBrowserOpaqueFrame,
   parseBrowserControl,
   runtimeOptionalBrowserCapabilities,
   runtimeRequiredBrowserCapabilities,
   serializeRuntimeControl,
 } from "./browser-protocol.mjs";
+import { createControllerSessionManager, ControllerSessionError } from "./controller-sessions.mjs";
 import {
   appendPrivateJsonLine,
   ensurePrivateDirectory,
@@ -28,6 +30,7 @@ import {
   removePrivateFile,
   writePrivateJson,
 } from "./private-state.mjs";
+import { createPlanningSpine } from "./planning-spine.mjs";
 import {
   HOST_SCHEMA_DIGEST,
   MAX_BULK_CHUNK_BYTES,
@@ -121,6 +124,10 @@ let hostProcess;
 let httpServer;
 /** @type {WebSocketServer | undefined} */
 let websocketServer;
+/** @type {Awaited<ReturnType<typeof createPlanningSpine>> | undefined} */
+let planningSpine;
+/** @type {Awaited<ReturnType<typeof createControllerSessionManager>> | undefined} */
+let controllerSessions;
 /** @type {any} */
 let state;
 let shuttingDown = false;
@@ -212,6 +219,38 @@ const readMutationHeaders = (request) => {
     expectedRevision,
   };
 };
+
+/** @param {import("node:http").IncomingMessage} request */
+const readJsonBody = async (request) => new Promise((resolve, reject) => {
+  /** @type {Buffer[]} */
+  const chunks = [];
+  let size = 0;
+  let tooLarge = false;
+  request.on("data", (chunk) => {
+    if (tooLarge) {
+      return;
+    }
+    const bytes = Buffer.from(chunk);
+    size += bytes.byteLength;
+    if (size > 8_192) {
+      tooLarge = true;
+      return;
+    }
+    chunks.push(bytes);
+  });
+  request.once("end", () => {
+    if (tooLarge) {
+      resolve(null);
+      return;
+    }
+    try {
+      resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    } catch {
+      resolve(null);
+    }
+  });
+  request.once("error", reject);
+});
 
 /**
  * Serialize mutations for one browser session. The queue entry is installed
@@ -581,6 +620,7 @@ const shutdown = async () => {
     }
     httpServer.close(() => resolve(undefined));
   });
+  await controllerSessions?.shutdown();
   if (hostProcess) {
     await stopChild(hostProcess);
   }
@@ -980,6 +1020,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
   authenticatedSockets.add(socket);
   sessionSockets.set(sessionId, authenticatedSockets);
   socket.once("close", () => {
+    controllerSessions?.detach(socket);
     authenticatedSockets.delete(socket);
     if (authenticatedSockets.size === 0) {
       sessionSockets.delete(sessionId);
@@ -1037,6 +1078,19 @@ const handleBrowserConnection = (socket, sessionId, session) => {
       if (phase === "negotiated") {
         if (isBinary) {
           const opaque = decodeBrowserOpaqueFrame(toBuffer(data));
+          try {
+            await controllerSessions?.write({
+              socket,
+              streamId: opaque.streamId,
+              sequence: opaque.sequence,
+              eof: opaque.eof,
+              data: opaque.data,
+            });
+          } catch (error) {
+            throw new BrowserProtocolError(error instanceof ControllerSessionError
+              ? error.code
+              : "controller_terminal_input_failed");
+          }
           await recordAudit("browser.opaque.receive", "observed", {
             streamId: opaque.streamId,
             sequence: opaque.sequence,
@@ -1046,14 +1100,50 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           return;
         }
         const control = parseControlFrame(data);
-        if (control.type !== "browser.ping") {
-          throw new BrowserProtocolError("browser_control_unexpected_message");
+        if (control.type === "browser.ping") {
+          socket.send(serializeRuntimeControl({
+            type: "runtime.pong",
+            requestId: control.requestId,
+          }));
+          return;
         }
-        socket.send(serializeRuntimeControl({
-          type: "runtime.pong",
-          requestId: control.requestId,
-        }));
-        return;
+        if (control.type === "browser.terminal.attach") {
+          try {
+            const attached = await controllerSessions?.attach({
+              socket,
+              sessionId: control.sessionId,
+              streamId: control.streamId,
+              attachmentId: control.attachmentId,
+              outputCursor: control.outputCursor,
+              onOutput: (target, frame) => {
+                if (target.readyState === WebSocket.OPEN) {
+                  target.send(encodeBrowserOpaqueFrame(frame), { binary: true });
+                }
+              },
+            });
+            if (!attached) {
+              throw new ControllerSessionError("controller_terminal_unavailable");
+            }
+            socket.send(serializeRuntimeControl({
+              type: "runtime.terminal-attached",
+              sessionId: control.sessionId,
+              streamId: control.streamId,
+              attachmentId: control.attachmentId,
+              mode: "read-write",
+              exclusive: true,
+              outputCursor: control.outputCursor,
+            }));
+            for (const frame of attached.frames) {
+              socket.send(encodeBrowserOpaqueFrame(frame), { binary: true });
+            }
+            return;
+          } catch (error) {
+            throw new BrowserProtocolError(error instanceof ControllerSessionError
+              ? error.code
+              : "controller_terminal_attach_failed");
+          }
+        }
+        throw new BrowserProtocolError("browser_control_unexpected_message");
       }
 
       if (isBinary) {
@@ -1136,6 +1226,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
             framing: state.host.framing,
             observationCursor: state.host.observationCursor,
           },
+          planning: await planningSpine?.project(),
         },
       });
       await recordAudit("browser.negotiate", "accepted", {
@@ -1176,6 +1267,16 @@ const main = async () => {
     const runtimeId = `runtime-${randomBytes(12).toString("hex")}`;
     const negotiation = await launchHost(runtimeId);
     const host = negotiation.host;
+    controllerSessions = await createControllerSessionManager({
+      dataDir: args.dataDir,
+      recordAudit,
+    });
+    planningSpine = await createPlanningSpine({
+      dataDir: args.dataDir,
+      recordAudit,
+      startControllerSession: controllerSessions.start,
+      terminateControllerSession: controllerSessions.terminate,
+    });
     const negotiationAuditId = await recordAudit("host.negotiate", "accepted", {
       controllerIdentity: "controller-runtime",
       controllerId: runtimeId,
@@ -1285,6 +1386,41 @@ const main = async () => {
           return;
         }
 
+        if (
+          request.method === "POST"
+          && (
+            request.url === "/planning/sessions/open"
+            || request.url === "/planning/stages/not-used"
+          )
+        ) {
+          const body = await readJsonBody(request);
+          const record = body && typeof body === "object" ? body : {};
+          const { idempotencyKeyHash, expectedRevision } = readMutationHeaders(request);
+          const authorizationAccepted = exactOriginAccepted(request)
+            && request.headers["x-sandking-csrf"] === activeSession.csrfToken;
+          const outcome = request.url === "/planning/sessions/open"
+            ? await planningSpine?.openFocusedSession({
+                authorizationAccepted,
+                idempotencyKeyHash,
+                expectedRevision,
+                workContextId: "workContextId" in record
+                  ? String(record.workContextId)
+                  : "",
+              })
+            : await planningSpine?.markStageNotUsed({
+                authorizationAccepted,
+                idempotencyKeyHash,
+                expectedRevision,
+                journeyId: "journeyId" in record ? String(record.journeyId) : "",
+                stageId: "stageId" in record ? String(record.stageId) : "",
+              });
+          if (!outcome) {
+            throw new Error("planning_spine_unavailable");
+          }
+          sendJson(response, outcome.status, outcome.body);
+          return;
+        }
+
         if (request.method === "GET" && request.url === "/") {
           response.writeHead(200, {
             ...securityHeaders,
@@ -1370,7 +1506,7 @@ const main = async () => {
       revision: args.lifecycleRevision,
       port: address.port,
       readinessToken: randomBytes(24).toString("hex"),
-      compatibilityKey: "runtime-v1",
+      compatibilityKey: "runtime-v3-controller-terminal",
       version: releaseVersion,
       identity: "controller-runtime",
       host: {

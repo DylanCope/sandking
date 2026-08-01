@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 2,
+  "issue": 123,
+  "parentPrd": 125,
+  "sourceSpecification": {
+    "issue": 116,
+    "githubBodyUtf8Sha256": "34ebbde096564621b14a68d4bc64cdbd8ba9e448a42cb75c084d80c0e201308a",
+    "parentApprovedTextExportSha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23",
+    "parentApprovedHashBasis": "exact GitHub body UTF-8 plus one terminal LF"
+  },
+  "scenarios": [
+    {
+      "id": "planning-spine/projects-an-optional-journey",
+      "requirements": [
+        "#116 stories 37-44",
+        "#123 acceptance criteria",
+        "#18 optional Planning and canonical stale-state decisions",
+        "#22 thin Planning spine and invariant decisions",
+        "#23 fail-closed canonical authority decisions"
+      ],
+      "environment": "npm-packed Sand-King; npm-pinned real headless Chromium; deterministic GitHub fixture adapter; negotiated conformance Controller provider subprocess in a runtime-owned PTY; typed provider lifecycle control; user-space Node processes",
+      "transport": "packaged CLI -> real Controller runtime and local Host; typed same-origin WebSocket projection -> served Cockpit; typed same-origin HTTP mutations -> runtime-owned Planning state; strict provider.session.ready envelope -> runtime-owned local control socket; exclusive opaque WebSocket attachment -> runtime-owned provider PTY",
+      "initialState": "no Planning state; one fresh deterministic GitHub projection; one unavailable deterministic projection; protected Project fixture outside runtime state",
+      "actions": [
+        "load explicitly labelled conformance fixture projections",
+        "render the built-in Wayfinding, Speccing, and Ticketing Journey Rail",
+        "select a work context and open an independently identified focused conformance Controller session through the provider-adapter boundary",
+        "correlate typed provider readiness with the spawned PTY process without interpreting terminal output as session state",
+        "attach the Cockpit to the runtime-owned provider PTY and ask the Controller to inspect the selected work context",
+        "mark an optional stage Not used",
+        "replay the identical mutation",
+        "reject changed idempotency use, stale revision, unavailable projection, and missing authorization",
+        "verify ordinary work remains available"
+      ],
+      "expectedTypedOutcome": "planning_stage_not_used with a focused_controller_session_opened reference",
+      "canonicalStateInvariants": [
+        "fixture provenance remains explicit",
+        "work context and Controller session identities remain independent",
+        "provider and provider-session identities are negotiated and independently retained",
+        "the Cockpit reports opened only after a correlated provider.session.ready control envelope",
+        "the Controller runtime owns the PTY and permits one exclusive writable attachment",
+        "interactive Controller output names the selected canonical work context",
+        "one accepted Not-used revision is retained outside the Project",
+        "identical replay references the original audit",
+        "stale canonical projection remains visibly stale and mutation-disabled",
+        "ordinary work remains unblocked"
+      ],
+      "prohibitedSideEffects": [
+        "live GitHub write",
+        "queued replay write",
+        "skill invocation",
+        "Project file mutation",
+        "private Specification state",
+        "Ticket-set publication",
+        "complete Planning workflow semantics",
+        "sudo",
+        "system package install",
+        "shell profile mutation",
+        "service configuration"
+      ],
+      "evidence": "acceptance/evidence/issue-123.json"
+    }
+  ],
+  "verification": {
+    "commands": [
+      ["node", "--test", "test/planning-spine.test.mjs", "test/browser-protocol.test.mjs"],
+      ["node", "--test", "test/planning-spine.browser.test.mjs"]
+    ]
+  }
+}
