@@ -1,0 +1,1825 @@
+{
+  "schemaVersion": 2,
+  "scenario": "local-walking-skeleton/completes-approved-run",
+  "issue": 117,
+  "parentPrd": 125,
+  "sourceSpecification": {
+    "issue": 116,
+    "githubBodyUtf8Sha256": "34ebbde096564621b14a68d4bc64cdbd8ba9e448a42cb75c084d80c0e201308a",
+    "parentApprovedTextExportSha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23",
+    "parentApprovedHashBasis": "exact GitHub body UTF-8 plus one terminal LF",
+    "normalizationDifference": "one terminal LF",
+    "exactContentEquivalentAfterApprovedExportNormalization": true
+  },
+  "generatedFromCommit": "e51470b350e0181b8027ff33e0e7b5b77af875df",
+  "recordedAt": "2026-08-01T16:30:53.606Z",
+  "software": {
+    "sandking": "0.1.0",
+    "node": "v22.23.2",
+    "playwright": "1.62.1",
+    "chromiumBundle": "149.0.0",
+    "browser": "149.0.7827.0",
+    "hostProtocol": "1.0.0"
+  },
+  "browserVersion": "149.0.7827.0",
+  "packagedPublicSeam": {
+    "command": "sandking",
+    "installed": true,
+    "launchedOutsideCheckout": true,
+    "tarballSha256": "19ab8b57d470bef79bc3a37f7eb0c71bbef314c7aaa3a56fea6d76091c1a2066"
+  },
+  "listener": {
+    "address": "127.0.0.1",
+    "class": "loopback"
+  },
+  "runtime": {
+    "identity": "controller-runtime",
+    "reference": "runtime-7924c480e38675038463ac69",
+    "revision": 1,
+    "browserReloadReusedRuntime": true
+  },
+  "host": {
+    "identity": "local-host",
+    "reference": "host-4cf129fe832f9814a6d75d9c",
+    "release": "0.1.0",
+    "capabilities": {
+      "required": [
+        "sandking.control.slice-1"
+      ],
+      "optional": [
+        "sandking.bulk-stream.v1"
+      ]
+    },
+    "negotiatedCapabilities": [
+      "sandking.control.slice-1",
+      "sandking.bulk-stream.v1"
+    ],
+    "schemaDigest": "sha256:cc8ebbde9148f744b10f847c3619cf2d58c3d25c4a4eeabf8705b97ff066038a",
+    "framing": {
+      "maxFrameBytes": 65536,
+      "maxBulkChunkBytes": 16384
+    },
+    "observationCursor": "host:origin"
+  },
+  "hostIdentityMutationEvidence": {
+    "authorizationClass": "controller_host_identity_binding",
+    "expectedRevision": 0,
+    "actualRevision": 0,
+    "resultingRevision": 1,
+    "auditId": "audit-545569ae360654d0460d1956",
+    "launchOutcomeReferencesSameAudit": true
+  },
+  "protocol": {
+    "major": 1,
+    "minor": 0,
+    "patch": 0,
+    "version": "1.0.0"
+  },
+  "browserNegotiation": {
+    "identity": "cockpit",
+    "runtimeIdentity": "controller-runtime",
+    "protocol": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "version": "1.0.0"
+    },
+    "capabilities": [
+      "cockpit.structured-control.v1",
+      "cockpit.opaque-stream.v1",
+      "cockpit.resynchronization.v1"
+    ],
+    "schemaDigest": "sha256:3ba0a4236a6f336750e7e545b286dbcf18d28606d827f203ce98bca41b1e9d7f",
+    "framing": {
+      "maxControlMessageBytes": 32768,
+      "maxOpaqueStreamChunkBytes": 16384
+    },
+    "initialObservationMode": "snapshot",
+    "reloadObservationMode": "resume",
+    "mismatchReloadRequired": true,
+    "capabilityMismatchReloadRequired": true
+  },
+  "auditReferences": [
+    {
+      "auditId": "audit-545569ae360654d0460d1956",
+      "action": "host.identity.accept",
+      "outcome": "accepted",
+      "details": {
+        "authorizationClass": "controller_host_identity_binding",
+        "idempotencyKeyHash": "sha256:bafd18a7187856e134113e7bb1baaf1d3c23c301baddc684a61876662bb033c0",
+        "expectedRevision": 0,
+        "actualRevision": 0,
+        "hostId": "host-4cf129fe832f9814a6d75d9c",
+        "resultingRevision": 1
+      }
+    },
+    {
+      "auditId": "audit-b35f74c933152acd6e9cb2a9",
+      "action": "host.negotiate",
+      "outcome": "accepted",
+      "details": {
+        "controllerIdentity": "controller-runtime",
+        "controllerId": "runtime-7924c480e38675038463ac69",
+        "expectedHostId": "host-4cf129fe832f9814a6d75d9c",
+        "hostIdentity": "local-host",
+        "hostId": "host-4cf129fe832f9814a6d75d9c",
+        "protocolVersion": "1.0.0",
+        "capabilities": [
+          "sandking.control.slice-1",
+          "sandking.bulk-stream.v1"
+        ],
+        "schemaDigest": "sha256:cc8ebbde9148f744b10f847c3619cf2d58c3d25c4a4eeabf8705b97ff066038a",
+        "framing": {
+          "maxFrameBytes": 65536,
+          "maxBulkChunkBytes": 16384
+        },
+        "hostIdentityMutation": {
+          "authorizationClass": "controller_host_identity_binding",
+          "expectedRevision": 0,
+          "revision": 1,
+          "idempotentReplay": false,
+          "auditId": "audit-545569ae360654d0460d1956"
+        }
+      }
+    },
+    {
+      "auditId": "audit-30e0c552780f7a063532f778",
+      "action": "runtime.start",
+      "outcome": "accepted",
+      "details": {
+        "authorizationClass": "user_runtime_lifecycle",
+        "idempotencyKeyHash": "sha256:646d123162d574659f329f0894986e5599ec92eab2e26d55d69e60772b4935cb",
+        "expectedRevision": 0,
+        "actualRevision": 0,
+        "resultingRevision": 1,
+        "runtimeId": "runtime-7924c480e38675038463ac69",
+        "reused": false
+      }
+    },
+    {
+      "auditId": "audit-351084726857f103b60fea42",
+      "action": "browser.session.create",
+      "outcome": "accepted",
+      "details": {
+        "runtimeId": "runtime-7924c480e38675038463ac69",
+        "authorizationClass": "bootstrap_token",
+        "idempotencyKeyHash": "sha256:f8eda80ef9745e860a95075a0a40fcac447801ad1caa6163f246c5f1a7a109e4",
+        "expectedRevision": 0,
+        "actualRevision": 0,
+        "resultingRevision": 1
+      }
+    },
+    {
+      "auditId": "audit-cf31b4f53c14081e2bdd025c",
+      "action": "browser.negotiate",
+      "outcome": "accepted",
+      "details": {
+        "runtimeId": "runtime-7924c480e38675038463ac69",
+        "hostIdentity": "local-host",
+        "hostId": "host-4cf129fe832f9814a6d75d9c",
+        "observationMode": "snapshot",
+        "sessionAuditId": "audit-351084726857f103b60fea42"
+      }
+    },
+    {
+      "auditId": "audit-7cbb4006ea7178ffbe483c86",
+      "action": "browser.session.create",
+      "outcome": "observed",
+      "details": {
+        "authorizationClass": "bootstrap_token",
+        "idempotencyKeyHash": "sha256:f8eda80ef9745e860a95075a0a40fcac447801ad1caa6163f246c5f1a7a109e4",
+        "expectedRevision": 0,
+        "actualRevision": 0,
+        "resultingRevision": 1,
+        "idempotentReplay": true,
+        "originalAuditId": "audit-351084726857f103b60fea42"
+      }
+    },
+    {
+      "auditId": "audit-d7077061eef217e107cf5656",
+      "action": "browser.session.create",
+      "outcome": "rejected",
+      "details": {
+        "code": "mutation_revision_conflict",
+        "authorizationClass": "bootstrap_token",
+        "idempotencyKeyHash": "sha256:f8eda80ef9745e860a95075a0a40fcac447801ad1caa6163f246c5f1a7a109e4",
+        "expectedRevision": 1,
+        "actualRevision": 1
+      }
+    },
+    {
+      "auditId": "audit-06a75be62e2bd5b2c57988e5",
+      "action": "runtime.start",
+      "outcome": "accepted",
+      "details": {
+        "authorizationClass": "user_runtime_lifecycle",
+        "idempotencyKeyHash": "sha256:d052ab36ea45191fce29eed815bb128b7a97db5ac0638714de39e1205181d47d",
+        "expectedRevision": 1,
+        "actualRevision": 1,
+        "resultingRevision": 1,
+        "runtimeId": "runtime-7924c480e38675038463ac69",
+        "reused": true
+      }
+    },
+    {
+      "auditId": "audit-2e057602ddeca51a8981542d",
+      "action": "browser.session.create",
+      "outcome": "rejected",
+      "details": {
+        "code": "bootstrap_token_expired",
+        "authorizationClass": "bootstrap_token",
+        "idempotencyKeyHash": "sha256:92f15f3db46979a6e576bcf52e598223eda7e529dc4ca88abf1c225dc1bd106a",
+        "expectedRevision": 0,
+        "actualRevision": 0
+      }
+    },
+    {
+      "auditId": "audit-67c2f4572bc1bad7d65711a4",
+      "action": "browser.session.end",
+      "outcome": "rejected",
+      "details": {
+        "code": "csrf_rejected",
+        "authorizationClass": "runtime_browser_session",
+        "idempotencyKeyHash": null,
+        "expectedRevision": null,
+        "actualRevision": 1
+      }
+    },
+    {
+      "auditId": "audit-1ddb2cf19d6dfa7bc6edfb02",
+      "action": "browser.negotiate",
+      "outcome": "accepted",
+      "details": {
+        "runtimeId": "runtime-7924c480e38675038463ac69",
+        "hostIdentity": "local-host",
+        "hostId": "host-4cf129fe832f9814a6d75d9c",
+        "observationMode": "resume",
+        "sessionAuditId": "audit-351084726857f103b60fea42"
+      }
+    },
+    {
+      "auditId": "audit-c57d95a0f690245076dd7eec",
+      "action": "browser.negotiate",
+      "outcome": "rejected",
+      "details": {
+        "code": "browser_protocol_major_mismatch"
+      }
+    },
+    {
+      "auditId": "audit-3d34cab6ae24641ef3aee2e4",
+      "action": "browser.negotiate",
+      "outcome": "rejected",
+      "details": {
+        "code": "browser_capability_unsupported"
+      }
+    },
+    {
+      "auditId": "audit-67375068586813f2b116aa4e",
+      "action": "browser.negotiate",
+      "outcome": "accepted",
+      "details": {
+        "runtimeId": "runtime-7924c480e38675038463ac69",
+        "hostIdentity": "local-host",
+        "hostId": "host-4cf129fe832f9814a6d75d9c",
+        "observationMode": "snapshot",
+        "sessionAuditId": "audit-351084726857f103b60fea42"
+      }
+    },
+    {
+      "auditId": "audit-9cadeb423c8ab53f5c4a4490",
+      "action": "browser.negotiate",
+      "outcome": "accepted",
+      "details": {
+        "runtimeId": "runtime-7924c480e38675038463ac69",
+        "hostIdentity": "local-host",
+        "hostId": "host-4cf129fe832f9814a6d75d9c",
+        "observationMode": "snapshot",
+        "sessionAuditId": "audit-351084726857f103b60fea42"
+      }
+    },
+    {
+      "auditId": "audit-e81088f1d6a28b02ed28560a",
+      "action": "browser.frame",
+      "outcome": "rejected",
+      "details": {
+        "code": "browser_opaque_frame_invalid"
+      }
+    },
+    {
+      "auditId": "audit-e9c1ca7513243cce06073dd8",
+      "action": "browser.session.end",
+      "outcome": "rejected",
+      "details": {
+        "code": "session_required",
+        "authorizationClass": "runtime_browser_session",
+        "idempotencyKeyHash": null,
+        "expectedRevision": null,
+        "actualRevision": 0
+      }
+    },
+    {
+      "auditId": "audit-f8bb1ca96ad93ff797ae9e1b",
+      "action": "websocket.upgrade",
+      "outcome": "rejected",
+      "details": {
+        "code": "origin_mismatch"
+      }
+    },
+    {
+      "auditId": "audit-bde54bb05b25238f1b12d3a6",
+      "action": "http.request",
+      "outcome": "rejected",
+      "details": {
+        "code": "host_mismatch"
+      }
+    },
+    {
+      "auditId": "audit-60833734c167c17af84a6986",
+      "action": "browser.negotiate",
+      "outcome": "accepted",
+      "details": {
+        "runtimeId": "runtime-7924c480e38675038463ac69",
+        "hostIdentity": "local-host",
+        "hostId": "host-4cf129fe832f9814a6d75d9c",
+        "observationMode": "snapshot",
+        "sessionAuditId": "audit-351084726857f103b60fea42"
+      }
+    },
+    {
+      "auditId": "audit-0d7f313304e38db66c060b64",
+      "action": "browser.negotiate",
+      "outcome": "accepted",
+      "details": {
+        "runtimeId": "runtime-7924c480e38675038463ac69",
+        "hostIdentity": "local-host",
+        "hostId": "host-4cf129fe832f9814a6d75d9c",
+        "observationMode": "snapshot",
+        "sessionAuditId": "audit-351084726857f103b60fea42"
+      }
+    },
+    {
+      "auditId": "audit-d61ec618e68e162ccaa23357",
+      "action": "browser.session.end",
+      "outcome": "accepted",
+      "details": {
+        "sessionAuditId": "audit-351084726857f103b60fea42",
+        "authorizationClass": "runtime_browser_session",
+        "idempotencyKeyHash": "sha256:03d3c53b1a6a5e127ad133ed2864a14e05994325a8a7106e1837716b329a6673",
+        "expectedRevision": 1,
+        "actualRevision": 1,
+        "resultingRevision": 2
+      }
+    },
+    {
+      "auditId": "audit-e43894eef1eb510deb69fe52",
+      "action": "browser.session.end",
+      "outcome": "observed",
+      "details": {
+        "authorizationClass": "runtime_browser_session",
+        "idempotencyKeyHash": "sha256:03d3c53b1a6a5e127ad133ed2864a14e05994325a8a7106e1837716b329a6673",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "resultingRevision": 2,
+        "idempotentReplay": true,
+        "originalAuditId": "audit-d61ec618e68e162ccaa23357"
+      }
+    },
+    {
+      "auditId": "audit-29cf760194e9fdfb209fe407",
+      "action": "browser.session.end",
+      "outcome": "observed",
+      "details": {
+        "authorizationClass": "runtime_browser_session",
+        "idempotencyKeyHash": "sha256:03d3c53b1a6a5e127ad133ed2864a14e05994325a8a7106e1837716b329a6673",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "resultingRevision": 2,
+        "idempotentReplay": true,
+        "originalAuditId": "audit-d61ec618e68e162ccaa23357"
+      }
+    },
+    {
+      "auditId": "audit-dbd8f7f2c58913980f4ca013",
+      "action": "browser.session.end",
+      "outcome": "observed",
+      "details": {
+        "authorizationClass": "runtime_browser_session",
+        "idempotencyKeyHash": "sha256:03d3c53b1a6a5e127ad133ed2864a14e05994325a8a7106e1837716b329a6673",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "resultingRevision": 2,
+        "idempotentReplay": true,
+        "originalAuditId": "audit-d61ec618e68e162ccaa23357"
+      }
+    },
+    {
+      "auditId": "audit-c1c7eeca2fda53d9019869df",
+      "action": "browser.session.end",
+      "outcome": "observed",
+      "details": {
+        "authorizationClass": "runtime_browser_session",
+        "idempotencyKeyHash": "sha256:03d3c53b1a6a5e127ad133ed2864a14e05994325a8a7106e1837716b329a6673",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "resultingRevision": 2,
+        "idempotentReplay": true,
+        "originalAuditId": "audit-d61ec618e68e162ccaa23357"
+      }
+    },
+    {
+      "auditId": "audit-aa402a5ac989be2f72fccebc",
+      "action": "browser.session.end",
+      "outcome": "observed",
+      "details": {
+        "authorizationClass": "runtime_browser_session",
+        "idempotencyKeyHash": "sha256:03d3c53b1a6a5e127ad133ed2864a14e05994325a8a7106e1837716b329a6673",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "resultingRevision": 2,
+        "idempotentReplay": true,
+        "originalAuditId": "audit-d61ec618e68e162ccaa23357"
+      }
+    },
+    {
+      "auditId": "audit-8bd037a74874ad6bd56c0f8a",
+      "action": "browser.session.end",
+      "outcome": "observed",
+      "details": {
+        "authorizationClass": "runtime_browser_session",
+        "idempotencyKeyHash": "sha256:03d3c53b1a6a5e127ad133ed2864a14e05994325a8a7106e1837716b329a6673",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "resultingRevision": 2,
+        "idempotentReplay": true,
+        "originalAuditId": "audit-d61ec618e68e162ccaa23357"
+      }
+    },
+    {
+      "auditId": "audit-3d7192ef4301447922f5581c",
+      "action": "browser.session.end",
+      "outcome": "observed",
+      "details": {
+        "authorizationClass": "runtime_browser_session",
+        "idempotencyKeyHash": "sha256:03d3c53b1a6a5e127ad133ed2864a14e05994325a8a7106e1837716b329a6673",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "resultingRevision": 2,
+        "idempotentReplay": true,
+        "originalAuditId": "audit-d61ec618e68e162ccaa23357"
+      }
+    },
+    {
+      "auditId": "audit-8b4d9a4a0a593e4e04070c2a",
+      "action": "browser.session.end",
+      "outcome": "observed",
+      "details": {
+        "authorizationClass": "runtime_browser_session",
+        "idempotencyKeyHash": "sha256:03d3c53b1a6a5e127ad133ed2864a14e05994325a8a7106e1837716b329a6673",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "resultingRevision": 2,
+        "idempotentReplay": true,
+        "originalAuditId": "audit-d61ec618e68e162ccaa23357"
+      }
+    },
+    {
+      "auditId": "audit-f7172dac43163bb65e694e4e",
+      "action": "browser.session.end",
+      "outcome": "rejected",
+      "details": {
+        "code": "mutation_revision_conflict",
+        "authorizationClass": "runtime_browser_session",
+        "idempotencyKeyHash": "sha256:f0576a07673ab453c8cf0bede7d564d9d04f54ad9723fee1a4bdfad6e015fd17",
+        "expectedRevision": 1,
+        "actualRevision": 2
+      }
+    },
+    {
+      "auditId": "audit-3f29c936573227eace00cac3",
+      "action": "runtime.stop",
+      "outcome": "accepted",
+      "details": {
+        "authorizationClass": "user_runtime_lifecycle",
+        "idempotencyKeyHash": "sha256:42970dc0e2bad14fa4085dea48ec4bcb80887800eb2daadd6405fedc653a17e4",
+        "expectedRevision": 1,
+        "actualRevision": 1,
+        "resultingRevision": 2,
+        "runtimeId": "runtime-7924c480e38675038463ac69"
+      }
+    },
+    {
+      "auditId": "audit-f2e9aef14d2474c483092399",
+      "action": "runtime.stop",
+      "outcome": "observed",
+      "details": {
+        "authorizationClass": "user_runtime_lifecycle",
+        "idempotencyKeyHash": "sha256:42970dc0e2bad14fa4085dea48ec4bcb80887800eb2daadd6405fedc653a17e4",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "idempotentReplay": true,
+        "originalAuditId": "audit-3f29c936573227eace00cac3"
+      }
+    }
+  ],
+  "bootstrapMutationEvidence": {
+    "ttlMs": 25,
+    "expiredStatus": 410,
+    "expiredCode": "bootstrap_token_expired",
+    "replayStatus": 302,
+    "replayReturnedSameSession": true,
+    "staleStatus": 409,
+    "staleCode": "mutation_revision_conflict"
+  },
+  "runtimeStartEvidence": {
+    "authorizationClass": "user_runtime_lifecycle",
+    "initialRevision": 0,
+    "resultingRevision": 1,
+    "code": "runtime_started",
+    "auditId": "audit-30e0c552780f7a063532f778",
+    "idempotentReplay": false
+  },
+  "sessionMutationEvidence": {
+    "authorizationClass": "runtime_browser_session",
+    "initialRevision": 1,
+    "resultingRevision": 2,
+    "auditId": "audit-d61ec618e68e162ccaa23357",
+    "concurrentRequestCount": 8,
+    "acceptedOutcomeCount": 1,
+    "replayOutcomeCount": 7,
+    "concurrentSameAudit": true,
+    "replayStatus": 200,
+    "replayReturnedSameAudit": true,
+    "staleStatus": 409,
+    "staleCode": "mutation_revision_conflict",
+    "socketRevoked": true,
+    "socketCloseCode": 1008,
+    "socketCloseReason": "session_ended",
+    "postEndPong": false
+  },
+  "browserCredentialEvidence": {
+    "browserCookieExpires": -1,
+    "persistentCookieAttributesIssued": false
+  },
+  "runtimeStopEvidence": {
+    "authorizationClass": "user_runtime_lifecycle",
+    "initialRevision": 1,
+    "resultingRevision": 2,
+    "stoppedRuntimeId": "runtime-7924c480e38675038463ac69",
+    "auditId": "audit-3f29c936573227eace00cac3",
+    "replayReturnedSameAudit": true,
+    "lifecycleStatus": "stopped"
+  },
+  "browserMismatchEvidence": [
+    {
+      "code": "browser_protocol_major_mismatch",
+      "observedAt": "runtime_rejection"
+    },
+    {
+      "code": "browser_capability_unsupported",
+      "observedAt": "runtime_rejection"
+    },
+    {
+      "code": "browser_runtime_handshake_mismatch",
+      "observedAt": "cockpit_acknowledgement_validation"
+    },
+    {
+      "code": "browser_opaque_frame_invalid",
+      "observedAt": "runtime_frame_rejection"
+    }
+  ],
+  "prohibitedSideEffectObservations": {
+    "remoteListener": {
+      "attemptedAddresses": [
+        "172.17.0.2"
+      ],
+      "acceptedAddresses": []
+    },
+    "commandInterception": {
+      "instrumentedCommands": [
+        "sudo",
+        "apt",
+        "apt-get",
+        "dnf",
+        "yum",
+        "apk",
+        "pacman",
+        "brew",
+        "systemctl",
+        "launchctl",
+        "service"
+      ],
+      "invokedCommands": []
+    },
+    "protectedConfiguration": {
+      "beforeSha256": {
+        ".profile": "4378f5f8c155589bc148ca4213669f0b620dd18942e10450eae5779ce6c59beb",
+        ".bashrc": "4378f5f8c155589bc148ca4213669f0b620dd18942e10450eae5779ce6c59beb",
+        ".zshrc": "4378f5f8c155589bc148ca4213669f0b620dd18942e10450eae5779ce6c59beb",
+        "sandking-protected.service": "4378f5f8c155589bc148ca4213669f0b620dd18942e10450eae5779ce6c59beb",
+        "dev.sandking.protected.plist": "4378f5f8c155589bc148ca4213669f0b620dd18942e10450eae5779ce6c59beb"
+      },
+      "afterSha256": {
+        ".profile": "4378f5f8c155589bc148ca4213669f0b620dd18942e10450eae5779ce6c59beb",
+        ".bashrc": "4378f5f8c155589bc148ca4213669f0b620dd18942e10450eae5779ce6c59beb",
+        ".zshrc": "4378f5f8c155589bc148ca4213669f0b620dd18942e10450eae5779ce6c59beb",
+        "sandking-protected.service": "4378f5f8c155589bc148ca4213669f0b620dd18942e10450eae5779ce6c59beb",
+        "dev.sandking.protected.plist": "4378f5f8c155589bc148ca4213669f0b620dd18942e10450eae5779ce6c59beb"
+      }
+    },
+    "protectedFixture": {
+      "beforeSha256": "1cd263f1102656dd6b6cf1d626d1a96f9eba0406af3cb2a52560d473d4801052",
+      "afterSha256": "1cd263f1102656dd6b6cf1d626d1a96f9eba0406af3cb2a52560d473d4801052"
+    },
+    "hostEnvironmentProbe": {
+      "injectedControllerSecret": true,
+      "observedHostIdentity": "local-host",
+      "secretLeakIdentityObserved": false
+    }
+  },
+  "securityAssertions": {
+    "exactHostRejected": true,
+    "hostileOriginRejected": true,
+    "corsAbsent": true,
+    "csrfRejected": true,
+    "endedSessionSocketsRevoked": true,
+    "nonPersistentBrowserCredential": true,
+    "sanitizedBrowserModel": true,
+    "controllerSecretAbsent": true,
+    "bootstrapCredentialAbsent": true
+  },
+  "prohibitedSideEffectAssertions": {
+    "remoteListenerCreated": false,
+    "controllerCredentialForwarded": false,
+    "protectedFixtureMutated": false,
+    "sudoUsed": false,
+    "systemPackageInstalled": false,
+    "shellProfileMutated": false,
+    "serviceConfigured": false
+  },
+  "sanitizedDiagnostics": [
+    "browser_protocol_major_mismatch",
+    "browser_capability_unsupported",
+    "browser_runtime_handshake_mismatch",
+    "browser_opaque_frame_invalid",
+    "csrf_rejected",
+    "origin_mismatch",
+    "host_mismatch",
+    "bootstrap_token_expired",
+    "mutation_revision_conflict"
+  ],
+  "typedMismatchEvidence": {
+    "host": [
+      {
+        "kind": "host_negotiation_failure",
+        "mode": "controller-incompatible-major",
+        "diagnosis": {
+          "code": "controller_protocol_major_mismatch",
+          "type": "host_negotiation_failure",
+          "retryable": true,
+          "explanation": "The local Host rejected the Controller protocol major version as incompatible.",
+          "retryGuidance": "Install matching Sand-King Controller and Host releases, then retry the launch.",
+          "auditId": "audit-94ad7a85482ef20892e9149a"
+        },
+        "acceptedState": {
+          "files": [
+            "bootstrap-derivation-key",
+            "controller-host-binding.json",
+            "host-identity.json",
+            "runtime-lifecycle.json"
+          ],
+          "beforeSha256": "593816d294277f94d244bc0fee4fd459f4cc0467a3ec0651ae0b88cfaddc26bf",
+          "afterSha256": "593816d294277f94d244bc0fee4fd459f4cc0467a3ec0651ae0b88cfaddc26bf",
+          "preserved": true
+        },
+        "runtimeStatePresent": false,
+        "mutationOccurred": false,
+        "auditReferences": [
+          {
+            "auditId": "audit-9b869ee4022566d3051b9b46",
+            "action": "host.identity.accept",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "controller_host_identity_binding",
+              "idempotencyKeyHash": "sha256:6562cfbaf0de800f750daf29331051e292f5ca48c571c91458978c63f25baca4",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "hostId": "host-2e4090a99b7349a55aaabf24",
+              "resultingRevision": 1
+            }
+          },
+          {
+            "auditId": "audit-a34a5f318648b0e30a462a1b",
+            "action": "host.negotiate",
+            "outcome": "accepted",
+            "details": {
+              "controllerIdentity": "controller-runtime",
+              "controllerId": "runtime-8bf9f4c2c12a0bd459a5f569",
+              "expectedHostId": "host-2e4090a99b7349a55aaabf24",
+              "hostIdentity": "local-host",
+              "hostId": "host-2e4090a99b7349a55aaabf24",
+              "protocolVersion": "1.0.0",
+              "capabilities": [
+                "sandking.control.slice-1",
+                "sandking.bulk-stream.v1"
+              ],
+              "schemaDigest": "sha256:cc8ebbde9148f744b10f847c3619cf2d58c3d25c4a4eeabf8705b97ff066038a",
+              "framing": {
+                "maxFrameBytes": 65536,
+                "maxBulkChunkBytes": 16384
+              },
+              "hostIdentityMutation": {
+                "authorizationClass": "controller_host_identity_binding",
+                "expectedRevision": 0,
+                "revision": 1,
+                "idempotentReplay": false,
+                "auditId": "audit-9b869ee4022566d3051b9b46"
+              }
+            }
+          },
+          {
+            "auditId": "audit-1af9630d8319b46671f994e6",
+            "action": "runtime.start",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:7c0fd88ff96cf13a2bbde5149a2d7f43844e67bf45d3c92873af2db6256aca60",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "resultingRevision": 1,
+              "runtimeId": "runtime-8bf9f4c2c12a0bd459a5f569",
+              "reused": false
+            }
+          },
+          {
+            "auditId": "audit-90ab7169591f788829dbe2d8",
+            "action": "runtime.stop",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:1eecdef15c92eb76d2573534277ef1bf85646d12ab7881b76fda97df82bc7482",
+              "expectedRevision": 1,
+              "actualRevision": 1,
+              "resultingRevision": 2,
+              "runtimeId": "runtime-8bf9f4c2c12a0bd459a5f569"
+            }
+          },
+          {
+            "auditId": "audit-94ad7a85482ef20892e9149a",
+            "action": "host.negotiate",
+            "outcome": "rejected",
+            "details": {
+              "code": "controller_protocol_major_mismatch",
+              "controllerIdentity": "controller-runtime",
+              "expectedHostIdentity": "local-host",
+              "expectedHostId": "host-2e4090a99b7349a55aaabf24"
+            }
+          },
+          {
+            "auditId": "audit-3e637fa5e5d2246b3125ff8f",
+            "action": "runtime.start",
+            "outcome": "rejected",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:b63c74492eba4c335d34e8a179789e4a8da95d31cd8dff73b25a4e1deb6697ee",
+              "expectedRevision": 2,
+              "actualRevision": 2,
+              "code": "controller_protocol_major_mismatch",
+              "negotiationAuditId": "audit-94ad7a85482ef20892e9149a"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "host_negotiation_failure",
+        "mode": "controller-unknown-required-capability",
+        "diagnosis": {
+          "code": "controller_capability_unsupported",
+          "type": "host_negotiation_failure",
+          "retryable": true,
+          "explanation": "The local Host rejected a required Controller capability.",
+          "retryGuidance": "Install compatible Sand-King Controller and Host releases, then retry the launch.",
+          "auditId": "audit-33cb1275fb22e492f22e1cb0"
+        },
+        "acceptedState": {
+          "files": [
+            "bootstrap-derivation-key",
+            "controller-host-binding.json",
+            "host-identity.json",
+            "runtime-lifecycle.json"
+          ],
+          "beforeSha256": "446c8e1cd670def822cd9e35aa25fc1b736321d39ed1a8027869e8effc930479",
+          "afterSha256": "446c8e1cd670def822cd9e35aa25fc1b736321d39ed1a8027869e8effc930479",
+          "preserved": true
+        },
+        "runtimeStatePresent": false,
+        "mutationOccurred": false,
+        "auditReferences": [
+          {
+            "auditId": "audit-50019e659d0d943a0c6756c8",
+            "action": "host.identity.accept",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "controller_host_identity_binding",
+              "idempotencyKeyHash": "sha256:7e88c976b6b5c59098938f1216a5e5ca6368d5a373e70e05979c68a6da7c1bcb",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "hostId": "host-ed1a3083d348fb5d9f495eb2",
+              "resultingRevision": 1
+            }
+          },
+          {
+            "auditId": "audit-143eb54b2095d27796f4911b",
+            "action": "host.negotiate",
+            "outcome": "accepted",
+            "details": {
+              "controllerIdentity": "controller-runtime",
+              "controllerId": "runtime-1d5c3a60e941dfe250e00222",
+              "expectedHostId": "host-ed1a3083d348fb5d9f495eb2",
+              "hostIdentity": "local-host",
+              "hostId": "host-ed1a3083d348fb5d9f495eb2",
+              "protocolVersion": "1.0.0",
+              "capabilities": [
+                "sandking.control.slice-1",
+                "sandking.bulk-stream.v1"
+              ],
+              "schemaDigest": "sha256:cc8ebbde9148f744b10f847c3619cf2d58c3d25c4a4eeabf8705b97ff066038a",
+              "framing": {
+                "maxFrameBytes": 65536,
+                "maxBulkChunkBytes": 16384
+              },
+              "hostIdentityMutation": {
+                "authorizationClass": "controller_host_identity_binding",
+                "expectedRevision": 0,
+                "revision": 1,
+                "idempotentReplay": false,
+                "auditId": "audit-50019e659d0d943a0c6756c8"
+              }
+            }
+          },
+          {
+            "auditId": "audit-e3c4d04ccef98d4e318e540b",
+            "action": "runtime.start",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:2e67b3e3d4847750f9b3f789b19e465aa72f797338cf8ab791b99b4b31d66f96",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "resultingRevision": 1,
+              "runtimeId": "runtime-1d5c3a60e941dfe250e00222",
+              "reused": false
+            }
+          },
+          {
+            "auditId": "audit-d37e4dd49de0fa34b070cc9e",
+            "action": "runtime.stop",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:28acae3a2be4849877cc9312892f7bed04f7e4950624147b969adb5d89e29759",
+              "expectedRevision": 1,
+              "actualRevision": 1,
+              "resultingRevision": 2,
+              "runtimeId": "runtime-1d5c3a60e941dfe250e00222"
+            }
+          },
+          {
+            "auditId": "audit-33cb1275fb22e492f22e1cb0",
+            "action": "host.negotiate",
+            "outcome": "rejected",
+            "details": {
+              "code": "controller_capability_unsupported",
+              "controllerIdentity": "controller-runtime",
+              "expectedHostIdentity": "local-host",
+              "expectedHostId": "host-ed1a3083d348fb5d9f495eb2"
+            }
+          },
+          {
+            "auditId": "audit-2649bc5a9e95c47657736997",
+            "action": "runtime.start",
+            "outcome": "rejected",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:93e408eb2461482ade5d86bf2d1535b1e5fd10efe9f354fb4656085a374d2f2f",
+              "expectedRevision": 2,
+              "actualRevision": 2,
+              "code": "controller_capability_unsupported",
+              "negotiationAuditId": "audit-33cb1275fb22e492f22e1cb0"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "host_negotiation_failure",
+        "mode": "controller-schema-mismatch",
+        "diagnosis": {
+          "code": "controller_schema_mismatch",
+          "type": "host_negotiation_failure",
+          "retryable": true,
+          "explanation": "The local Host rejected the Controller control schema as incompatible.",
+          "retryGuidance": "Install matching Sand-King Controller and Host releases, then retry the launch.",
+          "auditId": "audit-ff8fdd96825da34432a00554"
+        },
+        "acceptedState": {
+          "files": [
+            "bootstrap-derivation-key",
+            "controller-host-binding.json",
+            "host-identity.json",
+            "runtime-lifecycle.json"
+          ],
+          "beforeSha256": "6e0580319b20e96eae1a2d8d54add61b946080e0148deae0d4ac2f7160819520",
+          "afterSha256": "6e0580319b20e96eae1a2d8d54add61b946080e0148deae0d4ac2f7160819520",
+          "preserved": true
+        },
+        "runtimeStatePresent": false,
+        "mutationOccurred": false,
+        "auditReferences": [
+          {
+            "auditId": "audit-424baf5e020ac91ddd5412e2",
+            "action": "host.identity.accept",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "controller_host_identity_binding",
+              "idempotencyKeyHash": "sha256:9613720efa0d23c877cfc24ed990c89578d7962d727a58736dcf3419ec57885c",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "hostId": "host-3340c8ba9e7d7f27bc76c82e",
+              "resultingRevision": 1
+            }
+          },
+          {
+            "auditId": "audit-cccfc5cedcc2f9946073a258",
+            "action": "host.negotiate",
+            "outcome": "accepted",
+            "details": {
+              "controllerIdentity": "controller-runtime",
+              "controllerId": "runtime-1f16cb6796fae31c999e1805",
+              "expectedHostId": "host-3340c8ba9e7d7f27bc76c82e",
+              "hostIdentity": "local-host",
+              "hostId": "host-3340c8ba9e7d7f27bc76c82e",
+              "protocolVersion": "1.0.0",
+              "capabilities": [
+                "sandking.control.slice-1",
+                "sandking.bulk-stream.v1"
+              ],
+              "schemaDigest": "sha256:cc8ebbde9148f744b10f847c3619cf2d58c3d25c4a4eeabf8705b97ff066038a",
+              "framing": {
+                "maxFrameBytes": 65536,
+                "maxBulkChunkBytes": 16384
+              },
+              "hostIdentityMutation": {
+                "authorizationClass": "controller_host_identity_binding",
+                "expectedRevision": 0,
+                "revision": 1,
+                "idempotentReplay": false,
+                "auditId": "audit-424baf5e020ac91ddd5412e2"
+              }
+            }
+          },
+          {
+            "auditId": "audit-cdc0e1af1f4b961c91635790",
+            "action": "runtime.start",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:266863a461902788cc8f76b568805a3875ca2fadede2c563c4b8488ce7801a6f",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "resultingRevision": 1,
+              "runtimeId": "runtime-1f16cb6796fae31c999e1805",
+              "reused": false
+            }
+          },
+          {
+            "auditId": "audit-815ec6544a26413b6435bab4",
+            "action": "runtime.stop",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:d1004f1145adb25957b6c27873aaaf9775584e6d7b1d1c6520d3a229797449a0",
+              "expectedRevision": 1,
+              "actualRevision": 1,
+              "resultingRevision": 2,
+              "runtimeId": "runtime-1f16cb6796fae31c999e1805"
+            }
+          },
+          {
+            "auditId": "audit-ff8fdd96825da34432a00554",
+            "action": "host.negotiate",
+            "outcome": "rejected",
+            "details": {
+              "code": "controller_schema_mismatch",
+              "controllerIdentity": "controller-runtime",
+              "expectedHostIdentity": "local-host",
+              "expectedHostId": "host-3340c8ba9e7d7f27bc76c82e"
+            }
+          },
+          {
+            "auditId": "audit-c45c56bde6663eb8e7aaef15",
+            "action": "runtime.start",
+            "outcome": "rejected",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:12cd73107dae755c8fdb811136600e9959734208f544a0931fe5036056584080",
+              "expectedRevision": 2,
+              "actualRevision": 2,
+              "code": "controller_schema_mismatch",
+              "negotiationAuditId": "audit-ff8fdd96825da34432a00554"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "host_negotiation_failure",
+        "mode": "accepted-host-identity-replacement",
+        "diagnosis": {
+          "code": "controller_host_identity_mismatch",
+          "type": "host_negotiation_failure",
+          "retryable": true,
+          "explanation": "The local Host rejected the expected durable Host identity.",
+          "retryGuidance": "Verify or explicitly adopt the intended local Host identity, then retry the launch.",
+          "auditId": "audit-8d409e4fe652368c6c9ad563"
+        },
+        "acceptedState": {
+          "files": [
+            "bootstrap-derivation-key",
+            "controller-host-binding.json",
+            "host-identity.json",
+            "runtime-lifecycle.json"
+          ],
+          "beforeSha256": "0f3590ab95e8e1ec110bf5adf143cd7f734bf4cfde4f88e46dd310188ff31e9b",
+          "afterSha256": "0f3590ab95e8e1ec110bf5adf143cd7f734bf4cfde4f88e46dd310188ff31e9b",
+          "preserved": true
+        },
+        "runtimeStatePresent": false,
+        "mutationOccurred": false,
+        "auditReferences": [
+          {
+            "auditId": "audit-adc4341343f360540fe33515",
+            "action": "host.identity.accept",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "controller_host_identity_binding",
+              "idempotencyKeyHash": "sha256:e66b30565087257ecdce352c82ae8f583887dd4788c878988c98195356340747",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "hostId": "host-7d3da99f652cba50c838a03d",
+              "resultingRevision": 1
+            }
+          },
+          {
+            "auditId": "audit-a34b217b6b49c848ab4f6ed8",
+            "action": "host.negotiate",
+            "outcome": "accepted",
+            "details": {
+              "controllerIdentity": "controller-runtime",
+              "controllerId": "runtime-ac922a2f9c1bdb07fd947249",
+              "expectedHostId": "host-7d3da99f652cba50c838a03d",
+              "hostIdentity": "local-host",
+              "hostId": "host-7d3da99f652cba50c838a03d",
+              "protocolVersion": "1.0.0",
+              "capabilities": [
+                "sandking.control.slice-1",
+                "sandking.bulk-stream.v1"
+              ],
+              "schemaDigest": "sha256:cc8ebbde9148f744b10f847c3619cf2d58c3d25c4a4eeabf8705b97ff066038a",
+              "framing": {
+                "maxFrameBytes": 65536,
+                "maxBulkChunkBytes": 16384
+              },
+              "hostIdentityMutation": {
+                "authorizationClass": "controller_host_identity_binding",
+                "expectedRevision": 0,
+                "revision": 1,
+                "idempotentReplay": false,
+                "auditId": "audit-adc4341343f360540fe33515"
+              }
+            }
+          },
+          {
+            "auditId": "audit-acbc8db1d13de984efe25129",
+            "action": "runtime.start",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:05a57e5bca9436520232731cca9698c9236e3a715f964c889d65376630b1c978",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "resultingRevision": 1,
+              "runtimeId": "runtime-ac922a2f9c1bdb07fd947249",
+              "reused": false
+            }
+          },
+          {
+            "auditId": "audit-a499325a493314a5971ef25d",
+            "action": "runtime.stop",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:64b7abff1fe5cea8abbdcdea4aa092eee9912da9ae2bb48dc5fbb37effff37b8",
+              "expectedRevision": 1,
+              "actualRevision": 1,
+              "resultingRevision": 2,
+              "runtimeId": "runtime-ac922a2f9c1bdb07fd947249"
+            }
+          },
+          {
+            "auditId": "audit-8d409e4fe652368c6c9ad563",
+            "action": "host.negotiate",
+            "outcome": "rejected",
+            "details": {
+              "code": "controller_host_identity_mismatch",
+              "controllerIdentity": "controller-runtime",
+              "expectedHostIdentity": "local-host",
+              "expectedHostId": "host-7d3da99f652cba50c838a03d"
+            }
+          },
+          {
+            "auditId": "audit-4e425f7a8459e90ef02464b9",
+            "action": "runtime.start",
+            "outcome": "rejected",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:82d87b30e4aad7fbbfcf2cf264f7142a9a97a933d33fe100ac6a61abf9b23a0e",
+              "expectedRevision": 2,
+              "actualRevision": 2,
+              "code": "controller_host_identity_mismatch",
+              "negotiationAuditId": "audit-8d409e4fe652368c6c9ad563"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "host_negotiation_failure",
+        "mode": "incompatible-major",
+        "diagnosis": {
+          "code": "host_protocol_major_mismatch",
+          "type": "host_negotiation_failure",
+          "retryable": true,
+          "explanation": "The Controller and local Host use incompatible protocol major versions.",
+          "retryGuidance": "Install matching Sand-King Controller and Host releases, then retry the launch.",
+          "auditId": "audit-6ff6c440046f0845b2e665f4"
+        },
+        "acceptedState": {
+          "files": [
+            "bootstrap-derivation-key",
+            "controller-host-binding.json",
+            "host-identity.json",
+            "runtime-lifecycle.json"
+          ],
+          "beforeSha256": "a6e6c93eb6ab07a49f19867009ef9724e06fb335c1a4cc82f1a1248665d1f811",
+          "afterSha256": "a6e6c93eb6ab07a49f19867009ef9724e06fb335c1a4cc82f1a1248665d1f811",
+          "preserved": true
+        },
+        "runtimeStatePresent": false,
+        "mutationOccurred": false,
+        "auditReferences": [
+          {
+            "auditId": "audit-e0915a901a09c09f93971746",
+            "action": "host.identity.accept",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "controller_host_identity_binding",
+              "idempotencyKeyHash": "sha256:15c9279bdfbe69d3044f4f03f3f5b437d805b7f38a54e3e5a7cf7e4760f0b75b",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "hostId": "host-ad8a14fd44dcaf0398701d8f",
+              "resultingRevision": 1
+            }
+          },
+          {
+            "auditId": "audit-b55d6b799452ce701004255b",
+            "action": "host.negotiate",
+            "outcome": "accepted",
+            "details": {
+              "controllerIdentity": "controller-runtime",
+              "controllerId": "runtime-0a9d212ae3592ee4469b93e9",
+              "expectedHostId": "host-ad8a14fd44dcaf0398701d8f",
+              "hostIdentity": "local-host",
+              "hostId": "host-ad8a14fd44dcaf0398701d8f",
+              "protocolVersion": "1.0.0",
+              "capabilities": [
+                "sandking.control.slice-1",
+                "sandking.bulk-stream.v1"
+              ],
+              "schemaDigest": "sha256:cc8ebbde9148f744b10f847c3619cf2d58c3d25c4a4eeabf8705b97ff066038a",
+              "framing": {
+                "maxFrameBytes": 65536,
+                "maxBulkChunkBytes": 16384
+              },
+              "hostIdentityMutation": {
+                "authorizationClass": "controller_host_identity_binding",
+                "expectedRevision": 0,
+                "revision": 1,
+                "idempotentReplay": false,
+                "auditId": "audit-e0915a901a09c09f93971746"
+              }
+            }
+          },
+          {
+            "auditId": "audit-ce89f19a095ff2a2597b8c63",
+            "action": "runtime.start",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:df19a69e8774cfbca80ff3360a57f0247d8c064059eb8003c0dcdbbd17339e82",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "resultingRevision": 1,
+              "runtimeId": "runtime-0a9d212ae3592ee4469b93e9",
+              "reused": false
+            }
+          },
+          {
+            "auditId": "audit-f719680d1647f3dbb2d4ce4c",
+            "action": "runtime.stop",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:5626d0f8d356d40fb9b2395aebb690327db222c45173266551012979aa2f344c",
+              "expectedRevision": 1,
+              "actualRevision": 1,
+              "resultingRevision": 2,
+              "runtimeId": "runtime-0a9d212ae3592ee4469b93e9"
+            }
+          },
+          {
+            "auditId": "audit-6ff6c440046f0845b2e665f4",
+            "action": "host.negotiate",
+            "outcome": "rejected",
+            "details": {
+              "code": "host_protocol_major_mismatch",
+              "controllerIdentity": "controller-runtime",
+              "expectedHostIdentity": "local-host",
+              "expectedHostId": "host-ad8a14fd44dcaf0398701d8f"
+            }
+          },
+          {
+            "auditId": "audit-45b99c17cae680f8cfc17e8b",
+            "action": "runtime.start",
+            "outcome": "rejected",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:ab514a7a934fc4e03a89012facbb912062054e5307a67e6184ea329c9908f249",
+              "expectedRevision": 2,
+              "actualRevision": 2,
+              "code": "host_protocol_major_mismatch",
+              "negotiationAuditId": "audit-6ff6c440046f0845b2e665f4"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "host_negotiation_failure",
+        "mode": "unexpected-identity",
+        "diagnosis": {
+          "code": "host_identity_mismatch",
+          "type": "host_negotiation_failure",
+          "retryable": true,
+          "explanation": "The local Host reported an unexpected identity.",
+          "retryGuidance": "Verify the local Host installation and expected identity, then retry the launch.",
+          "auditId": "audit-884b3ae30d4ec1d1d97318fa"
+        },
+        "acceptedState": {
+          "files": [
+            "bootstrap-derivation-key",
+            "controller-host-binding.json",
+            "host-identity.json",
+            "runtime-lifecycle.json"
+          ],
+          "beforeSha256": "2c3b08d756d1becf57dea846f1cd590efd4e730a11a639c766ba2afe866f5359",
+          "afterSha256": "2c3b08d756d1becf57dea846f1cd590efd4e730a11a639c766ba2afe866f5359",
+          "preserved": true
+        },
+        "runtimeStatePresent": false,
+        "mutationOccurred": false,
+        "auditReferences": [
+          {
+            "auditId": "audit-cba8d1e2f1e6050dc904f218",
+            "action": "host.identity.accept",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "controller_host_identity_binding",
+              "idempotencyKeyHash": "sha256:b54625da49a40662d7dfe04ea327f654a273c25f453990bc4a0dadef8ad1a7a3",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "hostId": "host-ffac876ef7bd5496f91766de",
+              "resultingRevision": 1
+            }
+          },
+          {
+            "auditId": "audit-cdc634c3938ae77a803461b8",
+            "action": "host.negotiate",
+            "outcome": "accepted",
+            "details": {
+              "controllerIdentity": "controller-runtime",
+              "controllerId": "runtime-ad8faae73aa1a01356fb1649",
+              "expectedHostId": "host-ffac876ef7bd5496f91766de",
+              "hostIdentity": "local-host",
+              "hostId": "host-ffac876ef7bd5496f91766de",
+              "protocolVersion": "1.0.0",
+              "capabilities": [
+                "sandking.control.slice-1",
+                "sandking.bulk-stream.v1"
+              ],
+              "schemaDigest": "sha256:cc8ebbde9148f744b10f847c3619cf2d58c3d25c4a4eeabf8705b97ff066038a",
+              "framing": {
+                "maxFrameBytes": 65536,
+                "maxBulkChunkBytes": 16384
+              },
+              "hostIdentityMutation": {
+                "authorizationClass": "controller_host_identity_binding",
+                "expectedRevision": 0,
+                "revision": 1,
+                "idempotentReplay": false,
+                "auditId": "audit-cba8d1e2f1e6050dc904f218"
+              }
+            }
+          },
+          {
+            "auditId": "audit-a1b0f24b6d59fc3020ab3570",
+            "action": "runtime.start",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:25ae8c5e68e1ef4308cc5f8063eed1034010d2f96eacd84199615a2565c00e32",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "resultingRevision": 1,
+              "runtimeId": "runtime-ad8faae73aa1a01356fb1649",
+              "reused": false
+            }
+          },
+          {
+            "auditId": "audit-718771416b3db6f3628435bf",
+            "action": "runtime.stop",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:3aa48d079351764a51377475ecb0bbc9e42780eb603236f77f29d40ef86eb977",
+              "expectedRevision": 1,
+              "actualRevision": 1,
+              "resultingRevision": 2,
+              "runtimeId": "runtime-ad8faae73aa1a01356fb1649"
+            }
+          },
+          {
+            "auditId": "audit-884b3ae30d4ec1d1d97318fa",
+            "action": "host.negotiate",
+            "outcome": "rejected",
+            "details": {
+              "code": "host_identity_mismatch",
+              "controllerIdentity": "controller-runtime",
+              "expectedHostIdentity": "local-host",
+              "expectedHostId": "host-ffac876ef7bd5496f91766de",
+              "controllerId": "runtime-7100adce141cdbe361af2dba",
+              "observedHostId": "host-000000000000000000000000"
+            }
+          },
+          {
+            "auditId": "audit-1d0ad19eedcac2c3b2c7c7d7",
+            "action": "runtime.start",
+            "outcome": "rejected",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:c5a201cfcf6b260398aa2537bf36f41f78c899fd3fd300fb900ee19182c9e86a",
+              "expectedRevision": 2,
+              "actualRevision": 2,
+              "code": "host_identity_mismatch",
+              "negotiationAuditId": "audit-884b3ae30d4ec1d1d97318fa"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "host_negotiation_failure",
+        "mode": "unknown-required-capability",
+        "diagnosis": {
+          "code": "host_capability_unsupported",
+          "type": "host_negotiation_failure",
+          "retryable": true,
+          "explanation": "The Controller and local Host could not agree on required capabilities.",
+          "retryGuidance": "Install compatible Sand-King Controller and Host releases, then retry the launch.",
+          "auditId": "audit-dde63761db0b0f846581509c"
+        },
+        "acceptedState": {
+          "files": [
+            "bootstrap-derivation-key",
+            "controller-host-binding.json",
+            "host-identity.json",
+            "runtime-lifecycle.json"
+          ],
+          "beforeSha256": "909652d0c0e10b5a359428fbf5005a386fddba870e44e8fa7bc0c1d868e08b13",
+          "afterSha256": "909652d0c0e10b5a359428fbf5005a386fddba870e44e8fa7bc0c1d868e08b13",
+          "preserved": true
+        },
+        "runtimeStatePresent": false,
+        "mutationOccurred": false,
+        "auditReferences": [
+          {
+            "auditId": "audit-65169b8eb50a457517921a2a",
+            "action": "host.identity.accept",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "controller_host_identity_binding",
+              "idempotencyKeyHash": "sha256:750e0358d5ec27f142c26081d0652dc553a5def35c3462b2bb3fe51bf3b8420a",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "hostId": "host-a8a6227054035c23f8ef61de",
+              "resultingRevision": 1
+            }
+          },
+          {
+            "auditId": "audit-e8868e2e5f980610f660b3b0",
+            "action": "host.negotiate",
+            "outcome": "accepted",
+            "details": {
+              "controllerIdentity": "controller-runtime",
+              "controllerId": "runtime-ebfcfdd2b7caed8799b495e7",
+              "expectedHostId": "host-a8a6227054035c23f8ef61de",
+              "hostIdentity": "local-host",
+              "hostId": "host-a8a6227054035c23f8ef61de",
+              "protocolVersion": "1.0.0",
+              "capabilities": [
+                "sandking.control.slice-1",
+                "sandking.bulk-stream.v1"
+              ],
+              "schemaDigest": "sha256:cc8ebbde9148f744b10f847c3619cf2d58c3d25c4a4eeabf8705b97ff066038a",
+              "framing": {
+                "maxFrameBytes": 65536,
+                "maxBulkChunkBytes": 16384
+              },
+              "hostIdentityMutation": {
+                "authorizationClass": "controller_host_identity_binding",
+                "expectedRevision": 0,
+                "revision": 1,
+                "idempotentReplay": false,
+                "auditId": "audit-65169b8eb50a457517921a2a"
+              }
+            }
+          },
+          {
+            "auditId": "audit-416d0a21409d362b6dcc885c",
+            "action": "runtime.start",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:833fb99e4e0e9d15d169145de4d272fc9370cd30f24a9d6514e9d781cbab8041",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "resultingRevision": 1,
+              "runtimeId": "runtime-ebfcfdd2b7caed8799b495e7",
+              "reused": false
+            }
+          },
+          {
+            "auditId": "audit-e822c5f8133de53ff2138388",
+            "action": "runtime.stop",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:611aa9c577cc694ce9dab5732e95af209c4dda535dab6c97ed0c31d5b0027295",
+              "expectedRevision": 1,
+              "actualRevision": 1,
+              "resultingRevision": 2,
+              "runtimeId": "runtime-ebfcfdd2b7caed8799b495e7"
+            }
+          },
+          {
+            "auditId": "audit-dde63761db0b0f846581509c",
+            "action": "host.negotiate",
+            "outcome": "rejected",
+            "details": {
+              "code": "host_capability_unsupported",
+              "controllerIdentity": "controller-runtime",
+              "expectedHostIdentity": "local-host",
+              "expectedHostId": "host-a8a6227054035c23f8ef61de"
+            }
+          },
+          {
+            "auditId": "audit-374c7006a0605ebe3a6ae3c7",
+            "action": "runtime.start",
+            "outcome": "rejected",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:d015b611f0a76de9b66a96f7a33c761124e15bb41bc1e11794459dffbff411d2",
+              "expectedRevision": 2,
+              "actualRevision": 2,
+              "code": "host_capability_unsupported",
+              "negotiationAuditId": "audit-dde63761db0b0f846581509c"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "host_negotiation_failure",
+        "mode": "malformed-frame",
+        "diagnosis": {
+          "code": "host_protocol_invalid_frame",
+          "type": "host_negotiation_failure",
+          "retryable": true,
+          "explanation": "The local Host sent malformed framed protocol data during negotiation.",
+          "retryGuidance": "Restart or update the local Host, then retry the launch.",
+          "auditId": "audit-4b834699a04cd3d443b9c211"
+        },
+        "acceptedState": {
+          "files": [
+            "bootstrap-derivation-key",
+            "controller-host-binding.json",
+            "host-identity.json",
+            "runtime-lifecycle.json"
+          ],
+          "beforeSha256": "311e744e8e9e84373c9e98ac203e1abae867e9b233d4c0d1a0a237984a04b0ca",
+          "afterSha256": "311e744e8e9e84373c9e98ac203e1abae867e9b233d4c0d1a0a237984a04b0ca",
+          "preserved": true
+        },
+        "runtimeStatePresent": false,
+        "mutationOccurred": false,
+        "auditReferences": [
+          {
+            "auditId": "audit-1770590991b2a299f6853603",
+            "action": "host.identity.accept",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "controller_host_identity_binding",
+              "idempotencyKeyHash": "sha256:bf29ac8e347c4b0069c4186bc506f56b3aad4b3ff6a8914b3149b3974ba95321",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "hostId": "host-9205b907b55e8ceab65b6e87",
+              "resultingRevision": 1
+            }
+          },
+          {
+            "auditId": "audit-146daf85331fa1a781a17fe8",
+            "action": "host.negotiate",
+            "outcome": "accepted",
+            "details": {
+              "controllerIdentity": "controller-runtime",
+              "controllerId": "runtime-b4d6e5a872ce62839b0a0efa",
+              "expectedHostId": "host-9205b907b55e8ceab65b6e87",
+              "hostIdentity": "local-host",
+              "hostId": "host-9205b907b55e8ceab65b6e87",
+              "protocolVersion": "1.0.0",
+              "capabilities": [
+                "sandking.control.slice-1",
+                "sandking.bulk-stream.v1"
+              ],
+              "schemaDigest": "sha256:cc8ebbde9148f744b10f847c3619cf2d58c3d25c4a4eeabf8705b97ff066038a",
+              "framing": {
+                "maxFrameBytes": 65536,
+                "maxBulkChunkBytes": 16384
+              },
+              "hostIdentityMutation": {
+                "authorizationClass": "controller_host_identity_binding",
+                "expectedRevision": 0,
+                "revision": 1,
+                "idempotentReplay": false,
+                "auditId": "audit-1770590991b2a299f6853603"
+              }
+            }
+          },
+          {
+            "auditId": "audit-a2d9142e04f28f44f9cfc9de",
+            "action": "runtime.start",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:5c35cf81d3e48c7d9d9660513a5dd9ee1c8ec996e484c57e6c53c343cc3047e1",
+              "expectedRevision": 0,
+              "actualRevision": 0,
+              "resultingRevision": 1,
+              "runtimeId": "runtime-b4d6e5a872ce62839b0a0efa",
+              "reused": false
+            }
+          },
+          {
+            "auditId": "audit-106e6ccac4b540dc085c5769",
+            "action": "runtime.stop",
+            "outcome": "accepted",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:7dda13e3c84c3b01446f34ae8d46321cb0a2bccd81df864a405731f21d9410b9",
+              "expectedRevision": 1,
+              "actualRevision": 1,
+              "resultingRevision": 2,
+              "runtimeId": "runtime-b4d6e5a872ce62839b0a0efa"
+            }
+          },
+          {
+            "auditId": "audit-4b834699a04cd3d443b9c211",
+            "action": "host.negotiate",
+            "outcome": "rejected",
+            "details": {
+              "code": "host_protocol_invalid_frame",
+              "controllerIdentity": "controller-runtime",
+              "expectedHostIdentity": "local-host",
+              "expectedHostId": "host-9205b907b55e8ceab65b6e87"
+            }
+          },
+          {
+            "auditId": "audit-61e045d7b08bd30f5e0f4f4e",
+            "action": "runtime.start",
+            "outcome": "rejected",
+            "details": {
+              "authorizationClass": "user_runtime_lifecycle",
+              "idempotencyKeyHash": "sha256:3fdf8e3b26dd77dca147b3646188270e027ae339ded725ab2e1d58e9c5174558",
+              "expectedRevision": 2,
+              "actualRevision": 2,
+              "code": "host_protocol_invalid_frame",
+              "negotiationAuditId": "audit-4b834699a04cd3d443b9c211"
+            }
+          }
+        ]
+      }
+    ],
+    "browser": [
+      {
+        "code": "browser_protocol_major_mismatch",
+        "observedAt": "runtime_rejection"
+      },
+      {
+        "code": "browser_capability_unsupported",
+        "observedAt": "runtime_rejection"
+      },
+      {
+        "code": "browser_runtime_handshake_mismatch",
+        "observedAt": "cockpit_acknowledgement_validation"
+      },
+      {
+        "code": "browser_opaque_frame_invalid",
+        "observedAt": "runtime_frame_rejection"
+      }
+    ],
+    "acceptedStatePreserved": true,
+    "mutationOccurred": false
+  },
+  "preAcceptanceHostFailureEvidence": {
+    "kind": "clean_host_negotiation_failure",
+    "mode": "incompatible-major",
+    "diagnosis": {
+      "code": "host_protocol_major_mismatch",
+      "type": "host_negotiation_failure",
+      "retryable": true,
+      "explanation": "The Controller and local Host use incompatible protocol major versions.",
+      "retryGuidance": "Install matching Sand-King Controller and Host releases, then retry the launch.",
+      "auditId": "audit-cda4bd2b5eab90958e08aa6e"
+    },
+    "productStateFiles": [
+      "host-identity.json",
+      "controller-host-binding.json",
+      "runtime-lifecycle.json",
+      "runtime-state.json"
+    ],
+    "presentFiles": [],
+    "acceptedIdentityStateCreated": false,
+    "auditReferences": [
+      {
+        "auditId": "audit-cda4bd2b5eab90958e08aa6e",
+        "action": "host.negotiate",
+        "outcome": "rejected",
+        "details": {
+          "code": "host_protocol_major_mismatch",
+          "controllerIdentity": "controller-runtime",
+          "expectedHostIdentity": "local-host",
+          "expectedHostId": "host-f1d1974dab50a2720d1ae7c4"
+        }
+      },
+      {
+        "auditId": "audit-9c7c014c7bda9b1570a6409f",
+        "action": "runtime.start",
+        "outcome": "rejected",
+        "details": {
+          "authorizationClass": "user_runtime_lifecycle",
+          "idempotencyKeyHash": "sha256:1ca5162dc046b0b1ef136cca5464a0bcbac57a397adfa6c8eef4efb15eb381b4",
+          "expectedRevision": 0,
+          "actualRevision": 0,
+          "code": "host_protocol_major_mismatch",
+          "negotiationAuditId": "audit-cda4bd2b5eab90958e08aa6e"
+        }
+      }
+    ]
+  },
+  "runtimeReuseFailureEvidence": [
+    {
+      "kind": "runtime_reuse_failure",
+      "mode": "live-incompatible",
+      "diagnosis": {
+        "code": "runtime_incompatible",
+        "type": "runtime_startup_failure",
+        "retryable": true,
+        "explanation": "The running Controller runtime is incompatible with this launcher.",
+        "retryGuidance": "Stop the existing Controller runtime, update Sand-King, then retry the launch.",
+        "auditId": "audit-fe0f5cd348fb92a6051ab90f"
+      },
+      "mutationOutcome": {
+        "idempotencyKeyHash": "sha256:9250501b6c8a2ca4d4b353bb7fb63a0163fee54847d4e8516bc7a8036c1a840a",
+        "expectedRevision": 1,
+        "failure": {
+          "code": "runtime_incompatible",
+          "auditId": "audit-fe0f5cd348fb92a6051ab90f"
+        }
+      },
+      "lifecycleAudit": {
+        "auditId": "audit-fe0f5cd348fb92a6051ab90f",
+        "action": "runtime.start",
+        "outcome": "rejected",
+        "details": {
+          "authorizationClass": "user_runtime_lifecycle",
+          "idempotencyKeyHash": "sha256:9250501b6c8a2ca4d4b353bb7fb63a0163fee54847d4e8516bc7a8036c1a840a",
+          "expectedRevision": 1,
+          "actualRevision": 1,
+          "code": "runtime_incompatible"
+        },
+        "recordedAt": "2026-08-01T16:30:25.193Z"
+      },
+      "competingRuntimeSpawned": false
+    },
+    {
+      "kind": "runtime_reuse_failure",
+      "mode": "live-unauthenticated-readiness",
+      "diagnosis": {
+        "code": "runtime_not_ready",
+        "type": "runtime_startup_failure",
+        "retryable": true,
+        "explanation": "The running Controller runtime did not pass authenticated readiness.",
+        "retryGuidance": "Stop the unready Controller runtime, then retry the launch.",
+        "auditId": "audit-2533411ce05632627b05422a"
+      },
+      "mutationOutcome": {
+        "idempotencyKeyHash": "sha256:18df73fc0ca1b00e6765e15ca2bedc317e7e6facb35d1731a88b354002874cb2",
+        "expectedRevision": 1,
+        "failure": {
+          "code": "runtime_not_ready",
+          "auditId": "audit-2533411ce05632627b05422a"
+        }
+      },
+      "lifecycleAudit": {
+        "auditId": "audit-2533411ce05632627b05422a",
+        "action": "runtime.start",
+        "outcome": "rejected",
+        "details": {
+          "authorizationClass": "user_runtime_lifecycle",
+          "idempotencyKeyHash": "sha256:18df73fc0ca1b00e6765e15ca2bedc317e7e6facb35d1731a88b354002874cb2",
+          "expectedRevision": 1,
+          "actualRevision": 1,
+          "code": "runtime_not_ready"
+        },
+        "recordedAt": "2026-08-01T16:30:26.559Z"
+      },
+      "competingRuntimeSpawned": false
+    }
+  ],
+  "browserSessionExpiryEvidence": {
+    "kind": "browser_session_expiry",
+    "ttlMs": 250,
+    "persistentCookieAttributesIssued": false,
+    "socketCloseCode": 1008,
+    "socketCloseReason": "session_expired",
+    "expiredHttpStatus": 401,
+    "expiredHttpCode": "session_expired",
+    "expiryAudit": {
+      "auditId": "audit-98a6be24515d33f45157a170",
+      "action": "browser.session.expire",
+      "outcome": "observed",
+      "details": {
+        "code": "session_expired",
+        "authorizationClass": "runtime_browser_session",
+        "sessionAuditId": "audit-708a772e49901d85d471db26",
+        "revision": 1,
+        "expiresAt": "2026-08-01T16:29:59.955Z"
+      }
+    }
+  },
+  "hostCredentialBoundary": {
+    "kind": "host_credential_boundary",
+    "mode": "secret-probe",
+    "observedHostIdentity": "local-host",
+    "controllerSecretForwarded": false,
+    "negotiationAuditId": "audit-d5706262d634591c22955834"
+  },
+  "verificationCommands": [
+    [
+      "node",
+      "--test",
+      "test/protocol.test.mjs",
+      "test/browser-protocol.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/host-negotiation.test.mjs",
+      "test/launch-runtime.test.mjs",
+      "test/security-boundary.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/package-command.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/local-walking-skeleton.browser.test.mjs"
+    ]
+  ]
+}

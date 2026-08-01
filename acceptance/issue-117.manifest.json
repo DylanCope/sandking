@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 2,
+  "issue": 117,
+  "parentPrd": 125,
+  "sourceSpecification": {
+    "issue": 116,
+    "githubBodyUtf8Sha256": "34ebbde096564621b14a68d4bc64cdbd8ba9e448a42cb75c084d80c0e201308a",
+    "parentApprovedTextExportSha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23",
+    "parentApprovedHashBasis": "exact GitHub body UTF-8 plus one terminal LF"
+  },
+  "scenarios": [
+    {
+      "id": "local-walking-skeleton/completes-approved-run",
+      "requirements": ["#116 stories 1-4", "#116 story 30", "#116 stories 41-44", "#117 acceptance criteria"],
+      "environment": "npm-pinned real headless Chromium; user-space Node processes; loopback network only",
+      "transport": "packaged CLI -> Controller runtime -> bounded framed stdio Host; typed same-origin WebSocket -> Cockpit",
+      "initialState": "no runtime; unredeemed short-lived bootstrap token; protected fixture present",
+      "actions": ["pack and install package", "launch installed sandking outside checkout with lifecycle mutation contract", "accept the first Host identity through its framed mutation contract", "redeem, replay, and expire token", "negotiate Host", "negotiate browser", "reload and resume", "end session concurrently and idempotently", "exercise hostile browser requests"],
+      "expectedTypedOutcome": "runtime.hello-ack",
+      "canonicalStateInvariants": ["one runtime identity", "one Host identity", "cursor resumes or explicitly resynchronizes"],
+      "prohibitedSideEffects": ["remote listener", "Controller credential forwarding", "Project mutation", "sudo", "system package install", "shell profile mutation", "service configuration"],
+      "evidence": "acceptance/evidence/issue-117.json"
+    },
+    {
+      "id": "local-walking-skeleton/shows-truthful-failure",
+      "requirements": ["#116 story 25", "#116 stories 28 and 43", "#117 failure and recovery"],
+      "environment": "real Controller runtime and local Host executables",
+      "transport": "bounded framed stdio and typed WebSocket control",
+      "initialState": "both clean first launch and previously accepted Controller Host binding, Host identity, bootstrap authority, and runtime lifecycle states; no ready runtime",
+      "actions": ["negotiate incompatible major from clean state", "verify live incompatible and unauthenticated runtime diagnoses", "negotiate incompatible major from accepted state", "negotiate unexpected identity", "negotiate unknown required capability", "send malformed framing", "expire a non-persistent browser session", "negotiate incompatible browser major"],
+      "expectedTypedOutcome": "sanitized protocol error before readiness or mutation",
+      "canonicalStateInvariants": ["clean failure creates no accepted Controller or Host identity", "accepted Controller and Host product state preserved", "no competing runtime", "no remotely reachable listener", "browser session expires in the runtime"],
+      "prohibitedSideEffects": ["accepted-state mutation", "orphan runtime", "orphan Host", "secret-bearing diagnostic"],
+      "evidence": "acceptance/evidence/issue-117.json"
+    }
+  ],
+  "verification": {
+    "commands": [
+      ["node", "--test", "test/protocol.test.mjs", "test/browser-protocol.test.mjs"],
+      ["node", "--test", "test/host-negotiation.test.mjs", "test/launch-runtime.test.mjs", "test/security-boundary.test.mjs"],
+      ["node", "--test", "test/package-command.test.mjs"],
+      ["node", "--test", "test/local-walking-skeleton.browser.test.mjs"]
+    ],
+    "typedHostFailures": [
+      "controller_protocol_major_mismatch",
+      "controller_capability_unsupported",
+      "controller_schema_mismatch",
+      "controller_host_identity_mismatch",
+      "host_protocol_major_mismatch",
+      "host_identity_mismatch",
+      "host_capability_unsupported",
+      "host_protocol_invalid_frame"
+    ],
+    "typedBrowserFailures": [
+      "browser_protocol_major_mismatch",
+      "browser_capability_unsupported",
+      "browser_runtime_handshake_mismatch",
+      "browser_opaque_frame_invalid"
+    ]
+  }
+}
