@@ -91,6 +91,10 @@ test("an approved delivery publishes actionable follow-ups after merge without b
             title: "Split runtime lifecycle responsibilities",
             body: "Extract lifecycle coordination behind a stable interface.\n\nAcceptance criteria:\n- Runtime behavior remains unchanged.\n- Existing acceptance scenarios pass.",
             sourceFinding: "The runtime module owns unrelated responsibilities.",
+            acceptanceCriteria: [
+              "Runtime behavior remains unchanged.",
+              "Existing acceptance scenarios pass.",
+            ],
           }],
           resolvedFindings: [],
         };
@@ -106,6 +110,10 @@ test("an approved delivery publishes actionable follow-ups after merge without b
     title: "Split runtime lifecycle responsibilities",
     body: "Extract lifecycle coordination behind a stable interface.\n\nAcceptance criteria:\n- Runtime behavior remains unchanged.\n- Existing acceptance scenarios pass.",
     sourceFinding: "The runtime module owns unrelated responsibilities.",
+    acceptanceCriteria: [
+      "Runtime behavior remains unchanged.",
+      "Existing acceptance scenarios pass.",
+    ],
     labels: ["ready-for-agent"],
   }]);
 });

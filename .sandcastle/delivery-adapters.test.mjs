@@ -77,6 +77,10 @@ test("the GitHub adapter publishes each ready follow-up once with source provena
     title: "Split runtime lifecycle responsibilities",
     body: "Extract the lifecycle module.\n\nAcceptance criteria:\n- Public behavior is unchanged.",
     sourceFinding: "Runtime coordination has divergent responsibilities.",
+    acceptanceCriteria: [
+      "Runtime behavior remains unchanged.",
+      "Existing acceptance scenarios pass.",
+    ],
     labels: ["ready-for-agent"],
   };
 
@@ -94,6 +98,8 @@ test("the GitHub adapter publishes each ready follow-up once with source provena
   assert.match(body, /Origin issue: #117/);
   assert.match(body, /Origin PR: https:\/\/github\.test\/pull\/127/);
   assert.match(body, /Runtime coordination has divergent responsibilities/);
+  assert.match(body, /## Acceptance criteria/);
+  assert.match(body, /- \[ \] Runtime behavior remains unchanged\./);
   assert.match(body, /sandcastle-follow-up:117:/);
   assert.deepEqual(
     created[0].slice(created[0].indexOf("--label") + 1),

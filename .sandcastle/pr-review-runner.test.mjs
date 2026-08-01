@@ -24,6 +24,7 @@ test("review instructions separate material blockers from non-blocking follow-up
 
   assert.match(prompt, /blockingFindings/);
   assert.match(prompt, /followUps/);
+  assert.match(prompt, /acceptanceCriteria/);
   assert.match(prompt, /resolvedFindings/);
   assert.match(prompt, /exact requirement/i);
   assert.match(prompt, /material impact/i);

@@ -59,11 +59,9 @@ const blockingFindingSchema = z.object({
 
 const followUpSchema = z.object({
   title: z.string().min(1),
-  body: z.string().refine(
-    (body) => /acceptance criteria/i.test(body),
-    "A ready-for-agent follow-up must contain acceptance criteria.",
-  ),
+  body: z.string().min(1),
   sourceFinding: z.string().min(1),
+  acceptanceCriteria: z.array(z.string().min(1)).min(1),
 });
 
 const reviewSchema = z.object({

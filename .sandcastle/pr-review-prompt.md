@@ -28,7 +28,7 @@ Do not run `git checkout`, `git switch`, `gh pr checkout`, `git reset`, or any c
 Return exactly one verdict:
 
 <review>
-{"approved":false,"blockingFindings":[{"summary":"Concrete unmet requirement or failing check.","requirement":"Exact issue or parent requirement.","evidence":"Observed failure or source location.","materialImpact":"Why merging would be unsafe or incomplete.","cannotDefer":"Why a later issue is insufficient."}],"followUps":[{"title":"Actionable improvement","body":"Context, proposed outcome, and acceptance criteria sufficient for an independent Worker.","sourceFinding":"Evidence observed during this review."}],"resolvedFindings":["Previously reported finding verified as resolved or stale."]}
+{"approved":false,"blockingFindings":[{"summary":"Concrete unmet requirement or failing check.","requirement":"Exact issue or parent requirement.","evidence":"Observed failure or source location.","materialImpact":"Why merging would be unsafe or incomplete.","cannotDefer":"Why a later issue is insufficient."}],"followUps":[{"title":"Actionable improvement","body":"Context and proposed outcome sufficient for an independent Worker.","sourceFinding":"Evidence observed during this review.","acceptanceCriteria":["Observable criterion that proves the improvement is complete."]}],"resolvedFindings":["Previously reported finding verified as resolved or stale."]}
 </review>
 
 Approve when `blockingFindings` is empty, required checks pass, and the PR is safe to merge and satisfies the issue and applicable parent requirements. Follow-ups do not prevent approval.

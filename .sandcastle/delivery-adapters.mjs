@@ -152,8 +152,11 @@ export function createGitHubDelivery({
         ? review.blockingFindings.map((finding) =>
             `- ${finding.summary}\n  - Requirement: ${finding.requirement}\n  - Evidence: ${finding.evidence}\n  - Material impact: ${finding.materialImpact}\n  - Cannot defer: ${finding.cannotDefer}`)
         : (review.findings ?? []).map((finding) => `- ${finding}`);
-      const followUps = (review.followUps ?? []).map((followUp) =>
-        `- ${followUp.title}: ${followUp.sourceFinding}`);
+      const followUps = (review.followUps ?? []).map((followUp) => [
+        `- ${followUp.title}: ${followUp.sourceFinding}`,
+        ...followUp.acceptanceCriteria.map((criterion) =>
+          `  - Acceptance: ${criterion}`),
+      ].join("\n"));
       const resolved = (review.resolvedFindings ?? []).map((finding) =>
         `- ${finding}`);
       const encodedReview = Buffer.from(JSON.stringify(review)).toString("base64url");
@@ -235,10 +238,11 @@ export function createGitHubDelivery({
       title,
       body,
       sourceFinding,
+      acceptanceCriteria,
       labels,
     }) {
       const fingerprint = createHash("sha256")
-        .update(`${sourceIssueId}\0${title}\0${body}`)
+        .update(`${sourceIssueId}\0${title}\0${body}\0${JSON.stringify(acceptanceCriteria)}`)
         .digest("hex")
         .slice(0, 16);
       const marker = `<!-- sandcastle-follow-up:${sourceIssueId}:${fingerprint} -->`;
@@ -258,6 +262,10 @@ export function createGitHubDelivery({
 
       const issueBody = [
         body,
+        "",
+        "## Acceptance criteria",
+        "",
+        ...acceptanceCriteria.map((criterion) => `- [ ] ${criterion}`),
         "",
         "## Review provenance",
         "",
