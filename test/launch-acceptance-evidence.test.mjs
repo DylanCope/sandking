@@ -201,6 +201,10 @@ test("retained issue 119 evidence proves authorization, idempotency, and termina
     replayReturnedOriginalAudit: true,
     replayReturnedOriginalDecision: true,
     changedContentCode: "idempotency_key_conflict",
+    failedReplayCode: "mutation_revision_conflict",
+    failedReplayIdempotent: true,
+    failedReplayReturnedOriginalAudit: true,
+    failedChangedContentCode: "idempotency_key_conflict",
   });
   assert.equal(decision.failures.unrelatedSession, "authorization_failed");
   assert.equal(decision.failures.staleRevision.code, "mutation_revision_conflict");
