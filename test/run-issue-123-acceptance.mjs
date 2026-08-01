@@ -4,6 +4,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import {
+  captureCleanEvidenceSourceRevision,
+  ISSUE_123_DEMONSTRATED_PATHS,
+  verifyEvidenceSourceRevisionUnchanged,
+} from "./issue-123-evidence-source.mjs";
 
 const execFileAsync = promisify(execFile);
 const updateEvidence = process.argv.includes("--update-evidence");
@@ -23,9 +28,16 @@ if (
   throw new Error("issue_123_acceptance_manifest_invalid");
 }
 
+const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+const repositoryRoot = process.cwd();
+const evidenceSourceRevision = updateEvidence
+  ? await captureCleanEvidenceSourceRevision({
+    repositoryRoot,
+    demonstratedPaths: ISSUE_123_DEMONSTRATED_PATHS,
+  })
+  : null;
 const observationDirectory = await mkdtemp(join(tmpdir(), "sandking-planning-evidence-"));
 const observationPath = join(observationDirectory, "planning-observation.json");
-const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 try {
   for (const [command, ...args] of manifest.verification.commands) {
@@ -45,6 +57,11 @@ try {
   }
 
   if (updateEvidence) {
+    await verifyEvidenceSourceRevisionUnchanged({
+      repositoryRoot,
+      demonstratedPaths: ISSUE_123_DEMONSTRATED_PATHS,
+      expectedRevision: evidenceSourceRevision,
+    });
     const observation = JSON.parse(await readFile(observationPath, "utf8"));
     if (observation.scenario !== "planning-spine/projects-an-optional-journey") {
       throw new Error("issue_123_browser_observation_invalid");
@@ -73,17 +90,12 @@ try {
     ) {
       throw new Error("issue_116_source_revision_mismatch");
     }
-    const { stdout: generatedFromCommitOutput } = await execFileAsync(
-      "git",
-      ["rev-parse", "HEAD"],
-      { cwd: process.cwd() },
-    );
     const evidence = {
       schemaVersion: 2,
       issue: 123,
       parentPrd: 125,
       sourceSpecification,
-      generatedFromCommit: generatedFromCommitOutput.trim(),
+      generatedFromCommit: evidenceSourceRevision,
       recordedAt: new Date().toISOString(),
       ...observation,
       verificationCommands: manifest.verification.commands,

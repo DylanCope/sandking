@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
+import {
+  captureCleanEvidenceSourceRevision,
+  ISSUE_123_DEMONSTRATED_PATHS,
+} from "./issue-123-evidence-source.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -17,6 +23,42 @@ const evidenceText = await readFile(
   "utf8",
 );
 const evidence = JSON.parse(evidenceText);
+
+test("issue 123 evidence source revision requires a clean demonstrated path", async () => {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "sandking-evidence-source-"));
+  try {
+    await execFileAsync("git", ["init", "--quiet"], { cwd: fixtureRoot });
+    await mkdir(join(fixtureRoot, "src"));
+    await writeFile(join(fixtureRoot, "src", "product.mjs"), "export const ready = false;\n");
+    await execFileAsync("git", ["add", "src/product.mjs"], { cwd: fixtureRoot });
+    await execFileAsync(
+      "git",
+      [
+        "-c", "user.name=Sand-King Test",
+        "-c", "user.email=sandking-test@example.invalid",
+        "commit", "--quiet", "-m", "fixture",
+      ],
+      { cwd: fixtureRoot },
+    );
+
+    const committedRevision = await captureCleanEvidenceSourceRevision({
+      repositoryRoot: fixtureRoot,
+      demonstratedPaths: ["src"],
+    });
+    assert.match(committedRevision, /^[a-f0-9]{40}$/);
+
+    await writeFile(join(fixtureRoot, "src", "product.mjs"), "export const ready = true;\n");
+    await assert.rejects(
+      captureCleanEvidenceSourceRevision({
+        repositoryRoot: fixtureRoot,
+        demonstratedPaths: ["src"],
+      }),
+      /issue_123_evidence_source_dirty: M src\/product\.mjs/,
+    );
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
 
 test("issue 123 acceptance manifest drives the named packaged browser scenario", () => {
   assert.equal(manifest.schemaVersion, 2);
@@ -47,6 +89,12 @@ test("retained issue 123 evidence identifies the demonstrated product-path revis
   );
   assert.equal(resolvedCommit.trim(), evidence.generatedFromCommit);
 
+  await execFileAsync(
+    "git",
+    ["merge-base", "--is-ancestor", evidence.generatedFromCommit, "HEAD"],
+    { cwd: repositoryRoot },
+  );
+
   const { stdout: productPathChanges } = await execFileAsync(
     "git",
     [
@@ -54,15 +102,7 @@ test("retained issue 123 evidence identifies the demonstrated product-path revis
       "--name-only",
       `${evidence.generatedFromCommit}..HEAD`,
       "--",
-      "README.md",
-      "package.json",
-      "package-lock.json",
-      "src",
-      "acceptance/issue-123.manifest.json",
-      "test/browser-protocol.test.mjs",
-      "test/planning-spine.test.mjs",
-      "test/planning-spine.browser.test.mjs",
-      "test/run-issue-123-acceptance.mjs",
+      ...ISSUE_123_DEMONSTRATED_PATHS,
     ],
     { cwd: repositoryRoot },
   );
