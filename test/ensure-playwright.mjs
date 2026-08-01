@@ -1,22 +1,15 @@
-import { access } from "node:fs/promises";
-import { constants } from "node:fs";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { chromium } from "playwright";
+import { launchBrowser } from "./browser-launch.mjs";
 
-const execFileAsync = promisify(execFile);
-
-const browserPath = chromium.executablePath();
-
+// The pretest gate launches the exact repository-declared browser runtime. It
+// cannot pass merely because a Chromium archive downloaded successfully.
+const browser = await launchBrowser();
 try {
-  await access(browserPath, constants.X_OK);
-} catch (error) {
-  if (!(error && typeof error === "object" && error.code === "ENOENT")) {
-    throw error;
+  const page = await browser.newPage();
+  await page.setContent("<main id='browser-gate'>real-browser-ready</main>");
+  const marker = await page.textContent("#browser-gate");
+  if (marker !== "real-browser-ready") {
+    throw new Error("real_browser_gate_failed");
   }
-
-  await execFileAsync(process.execPath, ["node_modules/playwright/cli.js", "install", "chromium"], {
-    cwd: process.cwd(),
-    env: process.env,
-  });
+} finally {
+  await browser.close();
 }

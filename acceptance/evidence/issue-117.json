@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 1,
+  "scenario": "local-walking-skeleton/completes-approved-run",
+  "issue": 117,
+  "parentPrd": 125,
+  "approvedSpecification": {
+    "issue": 116,
+    "bodySha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23"
+  },
+  "recordedAt": "2026-08-01T12:16:18.878Z",
+  "software": {
+    "sandking": "0.1.0",
+    "node": "v22.23.2",
+    "playwright": "1.62.1",
+    "chromiumBundle": "149.0.0",
+    "browser": "149.0.7827.0",
+    "hostProtocol": "1.0.0"
+  },
+  "browserVersion": "149.0.7827.0",
+  "listener": {
+    "address": "127.0.0.1",
+    "class": "loopback"
+  },
+  "runtime": {
+    "identity": "controller-runtime",
+    "reference": "runtime-709de759c802aa1ed9e34040",
+    "browserReloadReusedRuntime": true
+  },
+  "host": {
+    "identity": "local-host",
+    "release": "0.1.0",
+    "capabilities": {
+      "required": [
+        "sandking.control.slice-1"
+      ],
+      "optional": [
+        "sandking.bulk-stream.v1"
+      ]
+    },
+    "negotiatedCapabilities": [
+      "sandking.control.slice-1",
+      "sandking.bulk-stream.v1"
+    ],
+    "schemaDigest": "sha256:d0294e27570e359fc4a7b4c58b6a620802254bab05e3ad3280af3f06a8f1e014",
+    "framing": {
+      "maxFrameBytes": 65536,
+      "maxBulkChunkBytes": 16384
+    },
+    "observationCursor": "host:origin"
+  },
+  "protocol": {
+    "major": 1,
+    "minor": 0,
+    "patch": 0,
+    "version": "1.0.0"
+  },
+  "browserNegotiation": {
+    "identity": "cockpit",
+    "runtimeIdentity": "controller-runtime",
+    "protocol": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0,
+      "version": "1.0.0"
+    },
+    "capabilities": [
+      "cockpit.structured-control.v1",
+      "cockpit.opaque-stream.v1",
+      "cockpit.resynchronization.v1"
+    ],
+    "schemaDigest": "sha256:1b60e5fc485e113a347571df6fe73dffc621aaee413a0a96bb6331f0cc2d6913",
+    "framing": {
+      "maxControlMessageBytes": 32768,
+      "maxOpaqueStreamChunkBytes": 16384
+    },
+    "initialObservationMode": "snapshot",
+    "reloadObservationMode": "resume",
+    "mismatchReloadRequired": true
+  },
+  "auditReferences": [
+    {
+      "auditId": "audit-0578e8c842fa36f431dacf36",
+      "action": "host.negotiate",
+      "outcome": "accepted"
+    },
+    {
+      "auditId": "audit-730cd07dadff6cad18f6222a",
+      "action": "browser.session.create",
+      "outcome": "accepted"
+    },
+    {
+      "auditId": "audit-0885d168a2dbe252246bd24e",
+      "action": "browser.negotiate",
+      "outcome": "accepted"
+    },
+    {
+      "auditId": "audit-051fc2438a1404eb11602272",
+      "action": "browser.session.end",
+      "outcome": "rejected"
+    },
+    {
+      "auditId": "audit-434a6f8a872fcdc5fa69fa69",
+      "action": "browser.negotiate",
+      "outcome": "accepted"
+    },
+    {
+      "auditId": "audit-ca265893af5cd427644897de",
+      "action": "browser.negotiate",
+      "outcome": "rejected"
+    },
+    {
+      "auditId": "audit-3b20197b38923bfe02405765",
+      "action": "websocket.upgrade",
+      "outcome": "rejected"
+    },
+    {
+      "auditId": "audit-7ec0a4285132b04e0e4c1ce9",
+      "action": "http.request",
+      "outcome": "rejected"
+    }
+  ],
+  "securityAssertions": {
+    "exactHostRejected": true,
+    "hostileOriginRejected": true,
+    "corsAbsent": true,
+    "csrfRejected": true,
+    "sanitizedBrowserModel": true,
+    "controllerSecretAbsent": true,
+    "bootstrapCredentialAbsent": true
+  },
+  "prohibitedSideEffectAssertions": {
+    "remoteListenerCreated": false,
+    "controllerCredentialForwarded": false,
+    "protectedFixtureMutated": false,
+    "sudoUsed": false,
+    "systemPackageInstalled": false,
+    "shellProfileMutated": false,
+    "serviceConfigured": false
+  },
+  "sanitizedDiagnostics": [
+    "browser_protocol_major_mismatch",
+    "csrf_rejected",
+    "origin_mismatch",
+    "host_mismatch"
+  ],
+  "typedMismatchEvidence": {
+    "host": [
+      "host_protocol_major_mismatch",
+      "host_identity_mismatch",
+      "host_capability_unsupported",
+      "host_protocol_invalid_frame"
+    ],
+    "browser": [
+      "browser_protocol_major_mismatch"
+    ],
+    "acceptedStatePreserved": true,
+    "mutationOccurred": false
+  },
+  "verificationCommands": [
+    [
+      "node",
+      "--test",
+      "test/protocol.test.mjs",
+      "test/browser-protocol.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/host-negotiation.test.mjs",
+      "test/launch-runtime.test.mjs",
+      "test/security-boundary.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/local-walking-skeleton.browser.test.mjs"
+    ]
+  ]
+}

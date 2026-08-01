@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "checkJs": false
+  },
+  "include": [".sandcastle/main.mts", ".sandcastle/*.mjs"]
+}

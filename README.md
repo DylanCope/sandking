@@ -54,3 +54,29 @@ framed stdio protocol. Stop the runtime with:
 ```bash
 npm run cockpit:stop
 ```
+
+The published package exposes the stable `sandking` executable, so an installed
+package launches from any working directory without source-checkout-relative
+paths:
+
+```bash
+sandking launch --no-open
+sandking stop
+```
+
+The runtime stores its lock, bootstrap claims, audit records, and readiness
+state in a private user directory (`~/.sandking` by default). The Host inherits
+no Controller environment or credentials. Browser control is a versioned typed
+same-origin WebSocket protocol; opaque stream bytes use a separate bounded
+binary channel.
+
+Run the executable issue-117 acceptance manifest, including its npm-pinned real
+Chromium gate, with:
+
+```bash
+npm run acceptance:issue-117
+```
+
+The retained sanitized evidence is in
+`acceptance/evidence/issue-117.json`. Maintainers can regenerate it after a
+successful acceptance run with `npm run acceptance:issue-117:update-evidence`.

@@ -1,11 +1,15 @@
+#!/usr/bin/env node
+
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { launchRuntime, stopRuntime } from "./runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 
+/** @param {string[]} argv */
 const parseArgs = (argv) => {
   const [command = "launch", ...rest] = argv;
+  /** @type {{command: string, noOpen: boolean, json: boolean, dataDir?: string, hostMode?: string, startupTimeoutMs?: number}} */
   const options = { command, noOpen: false, json: false };
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -17,12 +21,24 @@ const parseArgs = (argv) => {
       options.noOpen = true;
     } else if (current === "--json") {
       options.json = true;
+    } else if (current === "--host-mode") {
+      options.hostMode = rest[index + 1];
+      index += 1;
+    } else if (current === "--startup-timeout-ms") {
+      options.startupTimeoutMs = Number(rest[index + 1]);
+      index += 1;
+      if (!Number.isSafeInteger(options.startupTimeoutMs) || options.startupTimeoutMs < 100) {
+        throw new Error("Invalid --startup-timeout-ms value.");
+      }
+    } else {
+      throw new Error(`Unsupported option: ${current}`);
     }
   }
 
   return options;
 };
 
+/** @param {string} url */
 const openBrowser = async (url) => {
   const command = process.platform === "darwin"
     ? "open"
@@ -43,7 +59,11 @@ const main = async () => {
   let output;
 
   if (options.command === "launch") {
-    output = await launchRuntime({ dataDir: options.dataDir });
+    output = await launchRuntime({
+      dataDir: options.dataDir,
+      hostMode: options.hostMode,
+      startupTimeoutMs: options.startupTimeoutMs,
+    });
     if (!options.noOpen) {
       await openBrowser(output.bootstrapUrl);
     }
@@ -55,9 +75,9 @@ const main = async () => {
 
   if (options.json) {
     process.stdout.write(`${JSON.stringify(output)}\n`);
-  } else if (output.bootstrapUrl) {
+  } else if ("bootstrapUrl" in output && output.bootstrapUrl) {
     process.stdout.write(`${output.bootstrapUrl}\n`);
-  } else {
+  } else if ("stopped" in output) {
     process.stdout.write(`${output.stopped ? "stopped" : "not-running"}\n`);
   }
 };

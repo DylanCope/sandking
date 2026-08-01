@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "issue": 117,
+  "parentPrd": 125,
+  "approvedSpecification": {
+    "issue": 116,
+    "bodySha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23"
+  },
+  "scenarios": [
+    {
+      "id": "local-walking-skeleton/completes-approved-run",
+      "requirements": ["#116 stories 1-4", "#116 story 30", "#116 stories 41-44", "#117 acceptance criteria"],
+      "environment": "npm-pinned real headless Chromium; user-space Node processes; loopback network only",
+      "transport": "packaged CLI -> Controller runtime -> bounded framed stdio Host; typed same-origin WebSocket -> Cockpit",
+      "initialState": "no runtime; unredeemed short-lived bootstrap token; protected fixture present",
+      "actions": ["launch", "redeem token", "negotiate Host", "negotiate browser", "reload and resume", "exercise hostile browser requests"],
+      "expectedTypedOutcome": "runtime.hello-ack",
+      "canonicalStateInvariants": ["one runtime identity", "one Host identity", "cursor resumes or explicitly resynchronizes"],
+      "prohibitedSideEffects": ["remote listener", "Controller credential forwarding", "Project mutation", "sudo", "system package install", "shell profile mutation", "service configuration"],
+      "evidence": "acceptance/evidence/issue-117.json"
+    },
+    {
+      "id": "local-walking-skeleton/shows-truthful-failure",
+      "requirements": ["#116 story 25", "#116 stories 28 and 43", "#117 failure and recovery"],
+      "environment": "real Controller runtime and local Host executables",
+      "transport": "bounded framed stdio and typed WebSocket control",
+      "initialState": "protected accepted-state fixture present; no ready runtime",
+      "actions": ["negotiate incompatible major", "negotiate unexpected identity", "negotiate unknown required capability", "send malformed framing", "negotiate incompatible browser major"],
+      "expectedTypedOutcome": "sanitized protocol error before readiness or mutation",
+      "canonicalStateInvariants": ["accepted fixture preserved", "no competing runtime", "no remotely reachable listener"],
+      "prohibitedSideEffects": ["accepted-state mutation", "orphan runtime", "orphan Host", "secret-bearing diagnostic"],
+      "evidence": "acceptance/evidence/issue-117.json"
+    }
+  ],
+  "verification": {
+    "commands": [
+      ["node", "--test", "test/protocol.test.mjs", "test/browser-protocol.test.mjs"],
+      ["node", "--test", "test/host-negotiation.test.mjs", "test/launch-runtime.test.mjs", "test/security-boundary.test.mjs"],
+      ["node", "--test", "test/local-walking-skeleton.browser.test.mjs"]
+    ],
+    "typedHostFailures": [
+      "host_protocol_major_mismatch",
+      "host_identity_mismatch",
+      "host_capability_unsupported",
+      "host_protocol_invalid_frame"
+    ],
+    "typedBrowserFailures": ["browser_protocol_major_mismatch"]
+  }
+}

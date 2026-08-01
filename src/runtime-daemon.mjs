@@ -1,80 +1,122 @@
+#!/usr/bin/env node
+
 import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { readFile, rm, writeFile } from "node:fs/promises";
-import { createHash as createHandshakeHash } from "node:crypto";
+import { open, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { protocolVersion, releaseVersion, readFrame, writeFrame, ProtocolError } from "./protocol.mjs";
+import { fileURLToPath } from "node:url";
+import { WebSocketServer, WebSocket } from "ws";
+import {
+  BROWSER_PROTOCOL_VERSION,
+  BROWSER_SCHEMA_DIGEST,
+  MAX_BROWSER_CONTROL_BYTES,
+  MAX_BROWSER_OPAQUE_CHUNK_BYTES,
+  BrowserProtocolError,
+  browserCapabilities,
+  parseBrowserControl,
+  serializeRuntimeControl,
+} from "./browser-protocol.mjs";
+import {
+  appendPrivateJsonLine,
+  ensurePrivateDirectory,
+  hasErrorCode,
+  PRIVATE_FILE_MODE,
+  readJson,
+  removePrivateFile,
+  writePrivateJson,
+} from "./private-state.mjs";
+import {
+  HOST_SCHEMA_DIGEST,
+  MAX_BULK_CHUNK_BYTES,
+  MAX_FRAME_BYTES,
+  ProtocolError,
+  hostCapabilities,
+  protocolVersion,
+  readFrame,
+  releaseVersion,
+  writeFrame,
+} from "./protocol.mjs";
 
+/** @param {string[]} argv */
 const parseArgs = (argv) => {
+  /** @type {{dataDir?: string, hostMode?: string}} */
   const result = {};
   for (let index = 0; index < argv.length; index += 1) {
     const current = argv[index];
     if (current === "--data-dir") {
       result.dataDir = argv[index + 1];
       index += 1;
+    } else if (current === "--host-mode") {
+      result.hostMode = argv[index + 1];
+      index += 1;
     }
   }
   if (!result.dataDir) {
-    throw new Error("Missing required --data-dir argument.");
+    throw new Error("runtime_data_dir_missing");
   }
-  return result;
+  return /** @type {{dataDir: string, hostMode?: string}} */ (result);
 };
 
 const args = parseArgs(process.argv.slice(2));
+const localHostPath = fileURLToPath(new URL("./local-host.mjs", import.meta.url));
+const cockpitScriptPath = fileURLToPath(new URL("./cockpit.js", import.meta.url));
 const statePath = join(args.dataDir, "runtime-state.json");
-const tokenPath = join(args.dataDir, "bootstrap-tokens.json");
+const tokenDirectory = join(args.dataDir, "bootstrap-tokens");
 const startupErrorPath = join(args.dataDir, "startup-error.json");
 const runtimeErrorPath = join(args.dataDir, "runtime-error.log");
+const auditPath = join(args.dataDir, "audit.jsonl");
 const sessionCookieName = "sandking_session";
 
+/** @type {Map<string, {createdAt: number, runtimeId: string, csrfToken: string, auditId: string}>} */
 const sessions = new Map();
+/** @type {import("node:child_process").ChildProcessWithoutNullStreams | undefined} */
 let hostProcess;
+/** @type {import("node:http").Server | undefined} */
+let httpServer;
+/** @type {WebSocketServer | undefined} */
+let websocketServer;
+/** @type {any} */
 let state;
+let shuttingDown = false;
 
-const cockpitCsp =
-  "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'";
+const cockpitCsp = [
+  "default-src 'self'",
+  "connect-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+  "object-src 'none'",
+].join("; ");
 
-const cockpitScript = `const protocol = location.protocol === "https:" ? "wss" : "ws";
-const socket = new WebSocket(protocol + "://" + location.host + "/ws");
-
-socket.addEventListener("message", (event) => {
-  const payload = JSON.parse(event.data);
-  document.getElementById("app").textContent =
-    "Connected to " + payload.host.identity + " with protocol " + payload.protocol.version;
+const securityHeaders = Object.freeze({
+  "content-security-policy": cockpitCsp,
+  "referrer-policy": "no-referrer",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "cache-control": "no-store",
 });
-`;
 
-const readJson = async (filePath, fallback) => {
-  try {
-    return JSON.parse(await readFile(filePath, "utf8"));
-  } catch (error) {
-    if (error && typeof error === "object" && error.code === "ENOENT") {
-      return fallback;
-    }
-    throw error;
-  }
+/** @param {string} action @param {"accepted" | "rejected" | "observed"} outcome @param {Record<string, unknown>} [details] */
+const recordAudit = async (action, outcome, details = {}) => {
+  const auditId = `audit-${randomBytes(12).toString("hex")}`;
+  await appendPrivateJsonLine(auditPath, {
+    auditId,
+    action,
+    outcome,
+    details,
+    recordedAt: new Date().toISOString(),
+  });
+  return auditId;
 };
 
-const consumeBootstrapToken = async (token) => {
-  const now = Date.now();
-  const tokens = await readJson(tokenPath, []);
-  const validToken = tokens.find((entry) => entry.token === token && !entry.usedAt && entry.expiresAt > now);
-  if (!validToken) {
-    return null;
-  }
-
-  const updated = tokens.map((entry) =>
-    entry.token === token ? { ...entry, usedAt: now } : entry);
-  await writeFile(tokenPath, `${JSON.stringify(updated, null, 2)}\n`);
-  return validToken;
-};
-
+/** @param {string | undefined} header */
 const parseCookies = (header) => {
   if (!header) {
     return {};
   }
-
   return Object.fromEntries(
     header.split(";").map((part) => {
       const [name, ...rest] = part.trim().split("=");
@@ -83,168 +125,448 @@ const parseCookies = (header) => {
   );
 };
 
-const ensureLoopbackHeaders = (request, port) => {
-  const expectedHost = `127.0.0.1:${port}`;
-  if (request.headers.host !== expectedHost) {
-    return { ok: false, statusCode: 403, body: "host_mismatch" };
-  }
-  return { ok: true };
+/** @param {import("node:http").IncomingMessage} request */
+const exactHostAccepted = (request) => request.headers.host === `127.0.0.1:${state.port}`;
+/** @param {import("node:http").IncomingMessage} request */
+const exactOriginAccepted = (request) =>
+  request.headers.origin === `http://127.0.0.1:${state.port}`;
+
+/** @param {import("node:http").ServerResponse} response @param {number} status @param {unknown} body */
+const sendJson = (response, status, body) => {
+  response.writeHead(status, {
+    ...securityHeaders,
+    "content-type": "application/json; charset=utf-8",
+  });
+  response.end(JSON.stringify(body));
 };
 
-const createSession = () => {
-  const sessionId = randomBytes(24).toString("hex");
+/** @param {string} token */
+const consumeBootstrapToken = async (token) => {
+  if (!/^[a-f0-9]{64}$/.test(token)) {
+    return null;
+  }
+  const tokenId = createHash("sha256").update(token).digest("hex");
+  const tokenPath = join(tokenDirectory, `${tokenId}.json`);
+  const claimPath = join(tokenDirectory, `${tokenId}.claim`);
+  let claim;
+  try {
+    claim = await open(claimPath, "wx", PRIVATE_FILE_MODE);
+    await claim.writeFile(`${process.pid}\n`, "utf8");
+  } catch (error) {
+    if (hasErrorCode(error, "EEXIST")) {
+      return null;
+    }
+    throw error;
+  } finally {
+    await claim?.close();
+  }
+
+  const tokenState = await readJson(tokenPath, null);
+  await removePrivateFile(tokenPath);
+  if (
+    !tokenState
+    || typeof tokenState !== "object"
+    || tokenState.runtimeId !== state.runtimeId
+    || Number(tokenState.expiresAt) <= Date.now()
+  ) {
+    return null;
+  }
+  return tokenState;
+};
+
+const createSession = async () => {
+  const sessionId = randomBytes(32).toString("hex");
+  const csrfToken = randomBytes(24).toString("hex");
+  const auditId = await recordAudit("browser.session.create", "accepted", {
+    runtimeId: state.runtimeId,
+  });
   sessions.set(sessionId, {
     createdAt: Date.now(),
     runtimeId: state.runtimeId,
+    csrfToken,
+    auditId,
   });
-  return sessionId;
+  return { sessionId, csrfToken, auditId };
 };
 
-const websocketAccept = (key) =>
-  createHandshakeHash("sha1")
-    .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
-    .digest("base64");
-
-const sendWebSocketJson = (socket, payload) => {
-  const body = Buffer.from(JSON.stringify(payload), "utf8");
-  const header = body.length < 126
-    ? Buffer.from([0x81, body.length])
-    : Buffer.from([0x81, 126, body.length >> 8, body.length & 0xff]);
-  socket.write(Buffer.concat([header, body]));
-};
-
-const persistState = async () => {
-  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
-};
-
-const logRuntimeError = async (error) => {
-  const message = error instanceof Error ? `${error.stack ?? error.message}\n` : `${String(error)}\n`;
-  await writeFile(runtimeErrorPath, message);
-};
-
-const shutdown = async () => {
-  if (hostProcess && !hostProcess.killed) {
-    hostProcess.kill("SIGTERM");
-  }
-  await rm(statePath, { force: true });
-};
-
-const sanitizeStartupError = (error) => {
+/** @param {unknown} error */
+const sanitizedRuntimeCode = (error) => {
   if (error instanceof ProtocolError) {
     return "host_protocol_invalid_frame";
   }
-
-  if (error instanceof Error) {
-    switch (error.message) {
-      case "host_protocol_error":
-      case "host_protocol_major_mismatch":
-      case "host_identity_mismatch":
-      case "host_capability_missing":
-        return error.message;
-      default:
-        return "runtime_start_failed";
-    }
+  if (error instanceof BrowserProtocolError) {
+    return error.code;
   }
-
+  if (error instanceof Error) {
+    const allowed = new Set([
+      "host_protocol_error",
+      "host_protocol_major_mismatch",
+      "host_identity_mismatch",
+      "host_capability_unsupported",
+      "host_schema_mismatch",
+      "host_framing_invalid",
+      "host_unavailable",
+    ]);
+    return allowed.has(error.message) ? error.message : "runtime_start_failed";
+  }
   return "runtime_start_failed";
 };
 
+/** @param {unknown} error */
+const logSanitizedRuntimeError = async (error) => {
+  await appendPrivateJsonLine(runtimeErrorPath, {
+    code: sanitizedRuntimeCode(error),
+    recordedAt: new Date().toISOString(),
+  });
+};
+
+/** @param {import("node:child_process").ChildProcess} child */
+const stopChild = async (child) => {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  child.kill("SIGTERM");
+  await new Promise((resolve) => {
+    const timeout = setTimeout(resolve, 500);
+    child.once("exit", () => {
+      clearTimeout(timeout);
+      resolve(undefined);
+    });
+  });
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGKILL");
+  }
+};
+
+const shutdown = async () => {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  for (const client of websocketServer?.clients ?? []) {
+    client.close(1001, "runtime_shutdown");
+  }
+  await new Promise((resolve) => {
+    if (!httpServer?.listening) {
+      resolve(undefined);
+      return;
+    }
+    httpServer.close(() => resolve(undefined));
+  });
+  if (hostProcess) {
+    await stopChild(hostProcess);
+  }
+  const recorded = await readJson(statePath, null);
+  if (recorded && typeof recorded === "object" && recorded.pid === process.pid) {
+    await removePrivateFile(statePath);
+  }
+};
+
 const launchHost = async () => {
-  const child = spawn(process.execPath, [join(process.cwd(), "src", "local-host.mjs")], {
-    cwd: process.cwd(),
-    stdio: ["pipe", "pipe", "ignore"],
-    env: process.env,
+  const hostArgs = [localHostPath];
+  if (args.hostMode) {
+    hostArgs.push("--mode", args.hostMode);
+  }
+
+  // This explicit environment is the credential boundary. Controller-side
+  // environment variables, provider credentials, and NODE_OPTIONS do not cross it.
+  const hostEnvironment = process.platform === "win32" && process.env.SystemRoot
+    ? { SystemRoot: process.env.SystemRoot }
+    : { LANG: "C.UTF-8" };
+  const child = spawn(process.execPath, hostArgs, {
+    cwd: args.dataDir,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: hostEnvironment,
   });
-
-  writeFrame(child.stdin, {
-    type: "hello",
-    protocol: protocolVersion,
-    release: releaseVersion,
-    identity: "controller-runtime",
-    capabilities: ["slice-1"],
-    schemaDigest: createHash("sha256").update("slice-1").digest("hex"),
-  });
-
-  const response = await readFrame(child.stdout);
-  if (response.type !== "hello-ack") {
-    throw new Error("host_protocol_error");
-  }
-  if (response.protocol.major !== protocolVersion.major) {
-    throw new Error("host_protocol_major_mismatch");
-  }
-  if (response.identity !== "local-host") {
-    throw new Error("host_identity_mismatch");
-  }
-  if (!response.capabilities.includes("slice-1")) {
-    throw new Error("host_capability_missing");
-  }
-
   hostProcess = child;
-  return response;
+  let hostDiagnostic = "";
+  child.stderr.on("data", (chunk) => {
+    if (hostDiagnostic.length < 1_024) {
+      hostDiagnostic += Buffer.from(chunk).toString("utf8").slice(0, 1_024);
+    }
+  });
+
+  try {
+    writeFrame(child.stdin, {
+      type: "hello",
+      protocol: protocolVersion,
+      release: releaseVersion,
+      identity: "controller-runtime",
+      expectedPeerIdentity: "local-host",
+      capabilities: {
+        required: [...hostCapabilities],
+        optional: [],
+      },
+      schemaDigest: HOST_SCHEMA_DIGEST,
+      framing: {
+        maxFrameBytes: MAX_FRAME_BYTES,
+        maxBulkChunkBytes: MAX_BULK_CHUNK_BYTES,
+      },
+      observationCursor: null,
+    });
+
+    const response = await readFrame(child.stdout);
+    if (response.type === "protocol-error") {
+      throw new Error(response.code);
+    }
+    if (response.type !== "hello-ack") {
+      throw new Error("host_protocol_error");
+    }
+    if (response.protocol.major !== protocolVersion.major) {
+      throw new Error("host_protocol_major_mismatch");
+    }
+    if (response.identity !== "local-host" || response.peerIdentity !== "controller-runtime") {
+      throw new Error("host_identity_mismatch");
+    }
+    const unknownRequired = response.capabilities.required.filter(
+      (capability) => !hostCapabilities.includes(capability),
+    );
+    const missingNegotiated = hostCapabilities.filter(
+      (capability) => !response.negotiatedCapabilities.includes(capability),
+    );
+    if (unknownRequired.length > 0 || missingNegotiated.length > 0) {
+      throw new Error("host_capability_unsupported");
+    }
+    if (response.schemaDigest !== HOST_SCHEMA_DIGEST) {
+      throw new Error("host_schema_mismatch");
+    }
+    if (
+      response.framing.maxFrameBytes > MAX_FRAME_BYTES
+      || response.framing.maxBulkChunkBytes > MAX_BULK_CHUNK_BYTES
+    ) {
+      throw new Error("host_framing_invalid");
+    }
+
+    const requestId = `ping-${randomBytes(8).toString("hex")}`;
+    writeFrame(child.stdin, { type: "ping", requestId });
+    const pong = await readFrame(child.stdout);
+    if (pong.type !== "pong" || pong.requestId !== requestId) {
+      throw new Error("host_unavailable");
+    }
+
+    return response;
+  } catch (error) {
+    await stopChild(child);
+    if (
+      error instanceof ProtocolError
+      && error.code === "frame_truncated"
+      && hostDiagnostic.trim() === "host_internal_error"
+    ) {
+      throw new Error("host_unavailable");
+    }
+    throw error;
+  }
+};
+
+/** @param {WebSocket} socket @param {string} code @param {boolean} reloadRequired */
+const rejectBrowserProtocol = (socket, code, reloadRequired) => {
+  if (socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  socket.send(serializeRuntimeControl({
+    type: "runtime.protocol-error",
+    code,
+    retryable: true,
+    reloadRequired,
+  }), () => socket.close(1002, "protocol_mismatch"));
+};
+
+/** @param {WebSocket} socket @param {{csrfToken: string, auditId: string}} session */
+const handleBrowserConnection = (socket, session) => {
+  let negotiated = false;
+  const handshakeTimeout = setTimeout(() => {
+    rejectBrowserProtocol(socket, "browser_hello_timeout", true);
+  }, 3_000);
+
+  socket.once("message", async (data, isBinary) => {
+    clearTimeout(handshakeTimeout);
+    try {
+      const controlData = Array.isArray(data)
+        ? Buffer.concat(data)
+        : Buffer.isBuffer(data)
+          ? data
+          : Buffer.from(new Uint8Array(data));
+      if (isBinary || controlData.byteLength > MAX_BROWSER_CONTROL_BYTES) {
+        throw new BrowserProtocolError("browser_control_frame_invalid");
+      }
+      let json;
+      try {
+        json = JSON.parse(controlData.toString());
+      } catch {
+        throw new BrowserProtocolError("browser_control_json_invalid");
+      }
+      const hello = parseBrowserControl(json);
+      if (hello.protocol.major !== BROWSER_PROTOCOL_VERSION.major) {
+        rejectBrowserProtocol(socket, "browser_protocol_major_mismatch", true);
+        await recordAudit("browser.negotiate", "rejected", {
+          code: "browser_protocol_major_mismatch",
+        });
+        return;
+      }
+      if (hello.schemaDigest !== BROWSER_SCHEMA_DIGEST) {
+        rejectBrowserProtocol(socket, "browser_schema_mismatch", true);
+        await recordAudit("browser.negotiate", "rejected", { code: "browser_schema_mismatch" });
+        return;
+      }
+      const unsupported = hello.capabilities.required.filter(
+        (capability) => !browserCapabilities.includes(capability),
+      );
+      if (unsupported.length > 0) {
+        rejectBrowserProtocol(socket, "browser_capability_unsupported", true);
+        await recordAudit("browser.negotiate", "rejected", {
+          code: "browser_capability_unsupported",
+        });
+        return;
+      }
+
+      const currentCursor = state.host.observationCursor ?? "host:origin";
+      const observation = hello.observationCursor === null
+        ? { mode: "snapshot", cursor: currentCursor }
+        : hello.observationCursor === currentCursor
+          ? { mode: "resume", cursor: currentCursor }
+          : { mode: "resynchronize", cursor: currentCursor, reason: "cursor_unavailable" };
+      const negotiatedCapabilities = browserCapabilities.filter((capability) =>
+        [...hello.capabilities.required, ...hello.capabilities.optional].includes(capability));
+
+      socket.send(serializeRuntimeControl({
+        type: "runtime.hello-ack",
+        protocol: BROWSER_PROTOCOL_VERSION,
+        release: releaseVersion,
+        identity: "controller-runtime",
+        peerIdentity: "cockpit",
+        capabilities: {
+          required: ["cockpit.structured-control.v1", "cockpit.resynchronization.v1"],
+          optional: ["cockpit.opaque-stream.v1"],
+        },
+        negotiatedCapabilities,
+        schemaDigest: BROWSER_SCHEMA_DIGEST,
+        framing: {
+          maxControlMessageBytes: MAX_BROWSER_CONTROL_BYTES,
+          maxOpaqueStreamChunkBytes: MAX_BROWSER_OPAQUE_CHUNK_BYTES,
+        },
+        observation,
+        session: { csrfToken: session.csrfToken },
+        viewModel: {
+          kind: "cockpit.connection",
+          runtime: {
+            identity: "controller-runtime",
+            runtimeId: state.runtimeId,
+            release: releaseVersion,
+          },
+          host: {
+            identity: state.host.identity,
+            release: state.host.release,
+            status: "connected",
+          },
+          negotiation: {
+            protocol: state.protocol,
+            capabilities: state.host.negotiatedCapabilities,
+            schemaDigest: state.host.schemaDigest,
+            framing: state.host.framing,
+            observationCursor: state.host.observationCursor,
+          },
+        },
+      }));
+      negotiated = true;
+      await recordAudit("browser.negotiate", "accepted", {
+        runtimeId: state.runtimeId,
+        hostIdentity: state.host.identity,
+        observationMode: observation.mode,
+        sessionAuditId: session.auditId,
+      });
+    } catch (error) {
+      const code = error instanceof BrowserProtocolError
+        ? error.code
+        : "browser_protocol_invalid";
+      rejectBrowserProtocol(socket, code, true);
+      await recordAudit("browser.negotiate", "rejected", { code });
+    }
+  });
+
+  socket.on("message", (_data, _isBinary) => {
+    if (!negotiated) {
+      return;
+    }
+    // Slice 1 has no browser-authorized mutations. Subsequent structured
+    // operations arrive in later tickets; opaque frames remain binary-only.
+  });
 };
 
 const main = async () => {
+  await ensurePrivateDirectory(args.dataDir);
+  await ensurePrivateDirectory(tokenDirectory);
+  const cockpitScript = await readFile(cockpitScriptPath, "utf8");
+
   try {
     const host = await launchHost();
-    const server = createServer(async (request, response) => {
+    const negotiationAuditId = await recordAudit("host.negotiate", "accepted", {
+      controllerIdentity: "controller-runtime",
+      hostIdentity: host.identity,
+      protocolVersion: host.protocol.version,
+      capabilities: host.negotiatedCapabilities,
+      schemaDigest: host.schemaDigest,
+      framing: host.framing,
+    });
+
+    httpServer = createServer(async (request, response) => {
       try {
-        const headerCheck = ensureLoopbackHeaders(request, state.port);
-        if (!headerCheck.ok) {
-          response.writeHead(headerCheck.statusCode, { "content-type": "text/plain" });
-          response.end(headerCheck.body);
+        if (!exactHostAccepted(request)) {
+          await recordAudit("http.request", "rejected", { code: "host_mismatch" });
+          sendJson(response, 403, { code: "host_mismatch" });
           return;
         }
 
         if (request.method === "GET" && request.url === "/health") {
-          response.writeHead(200, { "content-type": "application/json" });
-          response.end(JSON.stringify({
+          if (request.headers["x-sandking-readiness"] !== state.readinessToken) {
+            sendJson(response, 404, { code: "not_found" });
+            return;
+          }
+          sendJson(response, 200, {
+            ready: true,
+            identity: state.identity,
             runtimeId: state.runtimeId,
-            host: state.host,
-            protocol: state.protocol,
-          }));
+            version: state.version,
+          });
           return;
         }
 
         if (request.method === "GET" && request.url?.startsWith("/bootstrap?token=")) {
-          const token = new URL(request.url, `http://127.0.0.1:${state.port}`).searchParams.get("token");
+          const token = new URL(request.url, `http://127.0.0.1:${state.port}`)
+            .searchParams.get("token");
           const tokenState = token ? await consumeBootstrapToken(token) : null;
           if (!tokenState) {
-            response.writeHead(410, { "content-type": "application/json" });
-            response.end(JSON.stringify({ code: "bootstrap_token_invalid" }));
+            sendJson(response, 410, { code: "bootstrap_token_invalid" });
             return;
           }
-
-          const sessionId = createSession();
+          const session = await createSession();
           response.writeHead(302, {
+            ...securityHeaders,
             location: "/",
-            "set-cookie": `${sessionCookieName}=${sessionId}; HttpOnly; SameSite=Strict; Path=/`,
-            "content-security-policy": cockpitCsp,
+            "set-cookie": `${sessionCookieName}=${session.sessionId}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`,
           });
           response.end();
           return;
         }
 
-        if (request.method === "GET" && request.url === "/") {
-          const cookies = parseCookies(request.headers.cookie);
-          const session = sessions.get(cookies[sessionCookieName]);
-          if (!session) {
-            response.writeHead(401, {
-              "content-type": "application/json",
-              "content-security-policy": cockpitCsp,
-            });
-            response.end(JSON.stringify({ code: "session_required" }));
-            return;
-          }
+        const cookies = parseCookies(request.headers.cookie);
+        const sessionId = cookies[sessionCookieName];
+        const session = sessionId ? sessions.get(sessionId) : undefined;
+        if (!session) {
+          sendJson(response, 401, { code: "session_required" });
+          return;
+        }
 
+        if (request.method === "GET" && request.url === "/") {
           response.writeHead(200, {
+            ...securityHeaders,
             "content-type": "text/html; charset=utf-8",
-            "content-security-policy": cockpitCsp,
           });
           response.end(`<!doctype html>
 <html>
   <head><meta charset="utf-8"><title>Sand-King Cockpit</title></head>
   <body>
     <main id="app">Connecting to local Host…</main>
+    <button id="reload-cockpit" type="button" hidden>Reload Cockpit</button>
     <script type="module" src="/cockpit.js"></script>
   </body>
 </html>`);
@@ -252,37 +574,43 @@ const main = async () => {
         }
 
         if (request.method === "GET" && request.url === "/cockpit.js") {
-          const cookies = parseCookies(request.headers.cookie);
-          const session = sessions.get(cookies[sessionCookieName]);
-          if (!session) {
-            response.writeHead(401, {
-              "content-type": "application/json",
-              "content-security-policy": cockpitCsp,
-            });
-            response.end(JSON.stringify({ code: "session_required" }));
-            return;
-          }
-
           response.writeHead(200, {
+            ...securityHeaders,
             "content-type": "text/javascript; charset=utf-8",
-            "content-security-policy": cockpitCsp,
           });
           response.end(cockpitScript);
           return;
         }
 
-        response.writeHead(404, { "content-type": "application/json" });
-        response.end(JSON.stringify({ code: "not_found" }));
+        if (request.method === "POST" && request.url === "/session/end") {
+          if (!exactOriginAccepted(request) || request.headers["x-sandking-csrf"] !== session.csrfToken) {
+            await recordAudit("browser.session.end", "rejected", { code: "csrf_rejected" });
+            sendJson(response, 403, { code: "csrf_rejected" });
+            return;
+          }
+          sessions.delete(sessionId);
+          await recordAudit("browser.session.end", "accepted", {
+            sessionAuditId: session.auditId,
+          });
+          response.writeHead(204, securityHeaders);
+          response.end();
+          return;
+        }
+
+        sendJson(response, 404, { code: "not_found" });
       } catch (error) {
-        await logRuntimeError(error);
-        response.writeHead(500, { "content-type": "application/json" });
-        response.end(JSON.stringify({ code: "internal_error" }));
+        await logSanitizedRuntimeError(error);
+        sendJson(response, 500, { code: "internal_error" });
       }
     });
 
-    server.on("upgrade", (request, socket) => {
-      const headerCheck = ensureLoopbackHeaders(request, state.port);
-      if (!headerCheck.ok) {
+    websocketServer = new WebSocketServer({
+      noServer: true,
+      maxPayload: MAX_BROWSER_CONTROL_BYTES,
+    });
+    httpServer.on("upgrade", async (request, socket, head) => {
+      if (!exactHostAccepted(request)) {
+        await recordAudit("websocket.upgrade", "rejected", { code: "host_mismatch" });
         socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
         socket.destroy();
         return;
@@ -292,92 +620,93 @@ const main = async () => {
         socket.destroy();
         return;
       }
-
-      const expectedOrigin = `http://127.0.0.1:${state.port}`;
-      if (request.headers.origin !== expectedOrigin) {
+      if (!exactOriginAccepted(request)) {
+        await recordAudit("websocket.upgrade", "rejected", { code: "origin_mismatch" });
         socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
         socket.destroy();
         return;
       }
-
       const cookies = parseCookies(request.headers.cookie);
-      if (!sessions.has(cookies[sessionCookieName])) {
+      const session = sessions.get(cookies[sessionCookieName]);
+      if (!session) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
       }
-
-      const accept = websocketAccept(request.headers["sec-websocket-key"]);
-      socket.write([
-        "HTTP/1.1 101 Switching Protocols",
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        `Sec-WebSocket-Accept: ${accept}`,
-        "\r\n",
-      ].join("\r\n"));
-      sendWebSocketJson(socket, {
-        runtime: {
-          runtimeId: state.runtimeId,
-        },
-        host: {
-          identity: state.host.identity,
-          capabilities: state.host.capabilities,
-        },
-        protocol: {
-          version: state.protocol.version,
-        },
+      websocketServer?.handleUpgrade(request, socket, head, (websocket) => {
+        handleBrowserConnection(websocket, session);
       });
     });
 
-    await new Promise((resolve) => {
-      server.listen(0, "127.0.0.1", () => resolve());
+    await new Promise((resolve, reject) => {
+      httpServer?.once("error", reject);
+      httpServer?.listen(0, "127.0.0.1", () => resolve(undefined));
     });
+    const address = httpServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("runtime_listener_invalid");
+    }
 
-    const address = server.address();
     state = {
       pid: process.pid,
-      runtimeId: randomBytes(12).toString("hex"),
+      runtimeId: `runtime-${randomBytes(12).toString("hex")}`,
       port: address.port,
+      readinessToken: randomBytes(24).toString("hex"),
       compatibilityKey: "runtime-v1",
       version: releaseVersion,
+      identity: "controller-runtime",
       host: {
         identity: host.identity,
         capabilities: host.capabilities,
+        negotiatedCapabilities: host.negotiatedCapabilities,
         schemaDigest: host.schemaDigest,
         framing: host.framing,
         observationCursor: host.observationCursor,
         release: host.release,
       },
       protocol: host.protocol,
-      listener: { address: "127.0.0.1" },
+      listener: { address: "127.0.0.1", class: "loopback" },
+      negotiationAuditId,
       startedAt: new Date().toISOString(),
     };
-    await persistState();
+    await writePrivateJson(statePath, state);
 
-    process.on("SIGTERM", async () => {
-      server.close();
-      await shutdown();
-      process.exit(0);
-    });
-    process.on("SIGINT", async () => {
-      server.close();
-      await shutdown();
-      process.exit(0);
+    hostProcess?.once("exit", async () => {
+      if (!shuttingDown) {
+        await logSanitizedRuntimeError(new Error("host_unavailable"));
+        await shutdown();
+        process.exit(1);
+      }
     });
   } catch (error) {
-    await writeFile(startupErrorPath, `${JSON.stringify({
-      code: sanitizeStartupError(error),
-    }, null, 2)}\n`);
+    const code = sanitizedRuntimeCode(error);
+    await recordAudit("runtime.start", "rejected", { code });
+    await writePrivateJson(startupErrorPath, { code });
+    if (hostProcess) {
+      await stopChild(hostProcess);
+    }
+    await rm(statePath, { force: true });
     process.exit(1);
   }
 };
 
-process.on("uncaughtException", async (error) => {
-  await logRuntimeError(error);
+process.on("SIGTERM", async () => {
+  await shutdown();
+  process.exit(0);
 });
-
+process.on("SIGINT", async () => {
+  await shutdown();
+  process.exit(0);
+});
+process.on("uncaughtException", async (error) => {
+  await logSanitizedRuntimeError(error);
+  await shutdown();
+  process.exit(1);
+});
 process.on("unhandledRejection", async (error) => {
-  await logRuntimeError(error);
+  await logSanitizedRuntimeError(error);
+  await shutdown();
+  process.exit(1);
 });
 
 main();
