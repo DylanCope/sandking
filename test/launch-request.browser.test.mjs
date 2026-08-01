@@ -83,6 +83,46 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
       const runtimeAcknowledgement = JSON.parse(
         receivedFrames.find((frame) => frame.includes("runtime.hello-ack")),
       ).message;
+      const sessionOpen = (idempotencyKey, expectedRevision) => page.evaluate(
+        async (parameters) => {
+          const response = await fetch("/projects/sessions/open", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-sandking-csrf": parameters.csrf,
+              "x-sandking-idempotency-key": parameters.idempotencyKey,
+              "x-sandking-expected-revision": String(parameters.expectedRevision),
+            },
+            body: JSON.stringify({ projectId: parameters.projectId }),
+          });
+          return { status: response.status, body: await response.json() };
+        },
+        {
+          csrf: runtimeAcknowledgement.session.csrfToken,
+          idempotencyKey,
+          expectedRevision,
+          projectId,
+        },
+      );
+      const failedSessionOpen = await sessionOpen("failed-project-session-open", 1);
+      assert.equal(failedSessionOpen.status, 409);
+      assert.equal(failedSessionOpen.body.code, "mutation_revision_conflict");
+      assert.equal(failedSessionOpen.body.idempotentReplay, false);
+      const failedSessionOpenReplay = await sessionOpen("failed-project-session-open", 1);
+      assert.equal(failedSessionOpenReplay.status, 409);
+      assert.equal(failedSessionOpenReplay.body.code, "mutation_revision_conflict");
+      assert.equal(failedSessionOpenReplay.body.idempotentReplay, true);
+      assert.equal(failedSessionOpenReplay.body.auditId, failedSessionOpen.body.auditId);
+      const failedSessionOpenChanged = await sessionOpen("failed-project-session-open", 2);
+      assert.equal(failedSessionOpenChanged.status, 409);
+      assert.equal(failedSessionOpenChanged.body.code, "idempotency_key_conflict");
+      assert.equal(failedSessionOpenChanged.body.idempotentReplay, false);
+      const sessionsBeforeAcceptedOpen = await readFile(
+        join(dataDir, "controller-sessions.json"),
+        "utf8",
+      ).then(JSON.parse, () => ({ sessions: [] }));
+      assert.equal(sessionsBeforeAcceptedOpen.sessions.length, 0);
+
       const concurrentSessionOpens = await page.evaluate(async (parameters) => {
         const responses = await Promise.all(Array.from({ length: 2 }, () =>
           fetch("/projects/sessions/open", {
@@ -218,12 +258,20 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
       )?.textContent?.includes("did not recognize that request"));
       await assert.rejects(readFile(launchStatePath, "utf8"));
 
-      await enter("prepare 119 sandcastle/issue-120");
+      await enter("prepare 1000000000 sandcastle/issue-1000000000");
       await page.waitForFunction(() => document.querySelector(
         "#project-controller-terminal-output",
       )?.textContent?.includes(
         "Launch preparation failed safely: bounded_configuration_invalid",
       ));
+      await enter("prepare 1000000000 sandcastle/issue-1000000000");
+      await page.waitForFunction(() => {
+        const output = document.querySelector("#project-controller-terminal-output")
+          ?.textContent ?? "";
+        return output.split(
+          "Launch preparation failed safely: bounded_configuration_invalid",
+        ).length >= 3;
+      });
       const invalidPreparationState = JSON.parse(await readFile(launchStatePath, "utf8"));
       assert.equal(invalidPreparationState.launchRequests.length, 0);
       assert.equal(invalidPreparationState.preparationOutcomes.length, 1);
@@ -361,10 +409,26 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
         entry.action === "launch.request.decision"
         && entry.outcome === "observed"
         && entry.details.idempotentReplay === true);
+      const invalidPreparationAudit = launchAudits.find((entry) =>
+        entry.auditId === invalidPreparationState.preparationOutcomes[0].response.auditId);
+      const invalidPreparationReplayAudit = launchAudits.find((entry) =>
+        entry.action === "launch.request.prepare"
+        && entry.outcome === "observed"
+        && entry.details.originalAuditId === invalidPreparationAudit?.auditId);
+      const failedSessionOpenAudit = audits.find((entry) =>
+        entry.auditId === failedSessionOpen.body.auditId);
+      const failedSessionOpenReplayAudit = audits.find((entry) =>
+        entry.action === "project.session.open"
+        && entry.outcome === "observed"
+        && entry.details.originalAuditId === failedSessionOpen.body.auditId);
       assert.match(preparationAudit.auditId, /^audit-/);
       assert.match(approvalAudit.auditId, /^audit-/);
       assert.match(staleAudit.auditId, /^audit-/);
       assert.equal(replayAudit.details.originalAuditId, approvalAudit.auditId);
+      assert.equal(invalidPreparationAudit.details.code, "bounded_configuration_invalid");
+      assert.equal(invalidPreparationReplayAudit.details.idempotentReplay, true);
+      assert.equal(failedSessionOpenAudit.details.code, "mutation_revision_conflict");
+      assert.equal(failedSessionOpenReplayAudit.details.idempotentReplay, true);
       assert.deepEqual({
         request: approvalAudit.details.launchRequestId,
         host: approvalAudit.details.hostId,
@@ -470,12 +534,30 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
             outcome.body.idempotentReplay === true).length,
           oneOriginalAudit: new Set(concurrentSessionOpens.map((outcome) =>
             outcome.body.auditId)).size === 1,
+          failedAttempt: {
+            code: failedSessionOpen.body.code,
+            replayCode: failedSessionOpenReplay.body.code,
+            replayIdempotent: failedSessionOpenReplay.body.idempotentReplay,
+            replayReturnedOriginalAudit:
+              failedSessionOpenReplay.body.auditId === failedSessionOpen.body.auditId,
+            changedContentCode: failedSessionOpenChanged.body.code,
+            noSessionCreated: sessionsBeforeAcceptedOpen.sessions.length === 0,
+            auditId: failedSessionOpen.body.auditId,
+            replayAuditId: failedSessionOpenReplayAudit.auditId,
+          },
         },
         invalidPreparation: {
           code: invalidPreparationState.preparationOutcomes[0].response.code,
+          issueNumber: 1_000_000_000,
           retainedHostOutcome: true,
+          replayIdempotent: true,
+          replayReturnedOriginalAudit:
+            invalidPreparationReplayAudit.details.originalAuditId
+              === invalidPreparationAudit.auditId,
           delegatedWorkStarted: invalidPreparationState.preparationOutcomes[0]
             .response.prohibitedSideEffects.delegatedWorkStarted,
+          auditId: invalidPreparationAudit.auditId,
+          replayAuditId: invalidPreparationReplayAudit.auditId,
         },
         materialDeviation: {
           kind: "project_path_replaced",
@@ -502,7 +584,8 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
         },
         auditReferences: replacementAudits.filter((entry) =>
           entry.action.startsWith("launch.request")
-          || entry.action.startsWith("controller.")),
+          || entry.action.startsWith("controller.")
+          || entry.action === "project.session.open"),
         prohibitedSideEffectAssertions: {
           browserApprovalAccepted: false,
           delegatedWorkStarted: false,

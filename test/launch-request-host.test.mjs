@@ -148,6 +148,37 @@ test("the framed Host durably prepares and decides one immutable Launch request"
       expectedRevision: 0,
       expiresInSeconds: 300,
     };
+    const outOfRangePreparation = {
+      ...prepareRequest,
+      requestId: "prepare-framed-launch-out-of-range",
+      parameters: {
+        issueNumber: 1_000_000_000,
+        targetBranch: "sandcastle/issue-1000000000",
+      },
+      idempotencyKey: "prepare-framed-launch-out-of-range",
+    };
+    writeFrame(child.stdin, outOfRangePreparation);
+    const outOfRange = await readFrame(child.stdout);
+    assert.equal(outOfRange.type, "launch.request.prepare.failure");
+    assert.equal(outOfRange.code, "bounded_configuration_invalid");
+    assert.equal(outOfRange.idempotentReplay, false);
+    assert.equal(outOfRange.prohibitedSideEffects.delegatedWorkStarted, false);
+    writeFrame(child.stdin, {
+      ...outOfRangePreparation,
+      requestId: "prepare-framed-launch-out-of-range-replay",
+    });
+    const outOfRangeReplay = await readFrame(child.stdout);
+    assert.equal(outOfRangeReplay.code, "bounded_configuration_invalid");
+    assert.equal(outOfRangeReplay.idempotentReplay, true);
+    assert.equal(outOfRangeReplay.auditId, outOfRange.auditId);
+    const retainedAfterOutOfRange = JSON.parse(
+      await readFile(join(dataDir, "launch-requests.json"), "utf8"),
+    );
+    assert.equal(retainedAfterOutOfRange.launchRequests.length, 0);
+    assert.equal(retainedAfterOutOfRange.preparationOutcomes.length, 2);
+    assert.equal(retainedAfterOutOfRange.preparationOutcomes[1].response.code,
+      "bounded_configuration_invalid");
+
     writeFrame(child.stdin, prepareRequest);
     const prepared = await readFrame(child.stdout);
     assert.equal(prepared.type, "launch.request.prepare.result", JSON.stringify(prepared));

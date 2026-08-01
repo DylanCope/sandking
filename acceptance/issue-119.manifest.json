@@ -24,10 +24,10 @@
       "transport": "served Cockpit navigation and opaque terminal attachment -> capability-negotiated provider subprocess and persistent typed provider control socket -> real Controller runtime -> versioned framed stdio local Host -> Host-private immutable Launch-request state",
       "initialState": "one prepared Project with an independently Git-versioned pinned conformance Harness; no Launch request, Harness run, or approval",
       "actions": [
-        "open one Project-focused Controller session from the Cockpit and prove a concurrent identical retry returns that one canonical PTY-backed session",
+        "bind a failed Project-focused Controller session-open idempotency key, replay its original typed outcome, reject changed content, then prove a concurrent successful retry returns one canonical PTY-backed session",
         "inspect the selected Project work context in the Controller conversation",
         "negotiate and invoke side-effect-free preparation from the exact pinned Harness adapter revision",
-        "submit semantically invalid bounded Launch configuration through the provider and framed Host seam and retain its typed failure",
+        "submit and replay out-of-range bounded Launch configuration through the provider and framed Host seam and retain its typed idempotent failure",
         "present Host, Project, Harness pin, bounded parameters, capabilities, authorization, expiry, preconditions, identity, and revision in a sanitized Controller preview",
         "prove silence, unrelated conversation, browser POST, wrong session, and stale revision cannot approve",
         "approve the exact request identity and expected revision in the owning Controller conversation",
@@ -42,6 +42,7 @@
         "proposal facts and sanitized preview remain immutable while the decision advances the aggregate revision once",
         "only the exact owning Controller and Controller session can decide the request",
         "concurrent identical focused-session creation retries return one session identity and one original audit outcome",
+        "failed focused-session creation retries return the original typed outcome and audit while changed key content cannot create a PTY",
         "identical decision replay returns the original decision and audit while changed key content conflicts",
         "stale outcomes return the current revision and sanitized summary",
         "rejected, expired, Project-replaced, materially changed, and already decided requests are terminal",
@@ -89,6 +90,13 @@
       "launch_request_terminal",
       "launch_request_expired",
       "launch_request_materially_changed"
+    ],
+    "typedControllerSessionFailures": [
+      "authorization_failed",
+      "mutation_contract_invalid",
+      "project_not_found",
+      "idempotency_key_conflict",
+      "mutation_revision_conflict"
     ]
   }
 }

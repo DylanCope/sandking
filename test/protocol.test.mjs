@@ -108,8 +108,8 @@ test("Launch preparation and decision are capability-negotiated typed Host opera
     ...prepare,
     requestId: "prepare-launch-bounded-configuration-invalid",
     parameters: {
-      issueNumber: 119,
-      targetBranch: "sandcastle/issue-120",
+      issueNumber: 1_000_000_000,
+      targetBranch: "sandcastle/issue-1000000000",
     },
     idempotencyKey: "prepare-launch-bounded-configuration-invalid",
   };

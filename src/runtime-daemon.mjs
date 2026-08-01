@@ -139,7 +139,7 @@ let startupCommitted = false;
 let hostOperationQueue = Promise.resolve();
 let projectPreparationQueue = Promise.resolve();
 let projectSessionMutationQueue = Promise.resolve();
-/** @type {Map<string, {fingerprint: string, response: any}>} */
+/** @type {Map<string, {fingerprint: string, status: number, response: any}>} */
 const projectSessionOutcomes = new Map();
 
 const cockpitCsp = [
@@ -1160,13 +1160,16 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
       });
       return {
         status: 409,
-        body: mutationFailure(
-          "idempotency_key_conflict",
-          authorizationClass,
-          request.expectedRevision,
-          project?.revision ?? 0,
-          auditId,
-        ),
+        body: {
+          ...mutationFailure(
+            "idempotency_key_conflict",
+            authorizationClass,
+            request.expectedRevision,
+            project?.revision ?? 0,
+            auditId,
+          ),
+          idempotentReplay: false,
+        },
       };
     }
     await recordAudit("project.session.open", "observed", {
@@ -1174,10 +1177,13 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
       idempotencyKeyHash: request.idempotencyKeyHash,
       idempotentReplay: true,
       originalAuditId: existing.response.auditId,
-      sessionId: existing.response.session.sessionId,
+      code: existing.response.code,
+      ...(existing.response.session
+        ? { sessionId: existing.response.session.sessionId }
+        : {}),
     });
     return {
-      status: 200,
+      status: existing.response.type === "mutation_result" ? 200 : existing.status,
       body: { ...structuredClone(existing.response), idempotentReplay: true },
     };
   }
@@ -1203,16 +1209,29 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
         : null,
       actualRevision: project?.revision ?? 0,
     });
-    return {
-      status: code === "authorization_failed" ? 403 : code === "project_not_found" ? 404 : 400,
-      body: mutationFailure(
+    const status = code === "authorization_failed"
+      ? 403
+      : code === "project_not_found"
+        ? 404
+        : 400;
+    const body = {
+      ...mutationFailure(
         code,
         authorizationClass,
         Number.isSafeInteger(request.expectedRevision) ? request.expectedRevision : -1,
         project?.revision ?? 0,
         auditId,
       ),
+      idempotentReplay: false,
     };
+    if (request.idempotencyKeyHash) {
+      projectSessionOutcomes.set(request.idempotencyKeyHash, {
+        fingerprint,
+        status,
+        response: body,
+      });
+    }
+    return { status, body };
   }
   if (request.expectedRevision !== project.revision) {
     const auditId = await recordAudit("project.session.open", "rejected", {
@@ -1223,16 +1242,23 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
       actualRevision: project.revision,
       projectId: project.projectId,
     });
-    return {
-      status: 409,
-      body: mutationFailure(
+    const status = 409;
+    const body = {
+      ...mutationFailure(
         "mutation_revision_conflict",
         authorizationClass,
         request.expectedRevision,
         project.revision,
         auditId,
       ),
+      idempotentReplay: false,
     };
+    projectSessionOutcomes.set(request.idempotencyKeyHash, {
+      fingerprint,
+      status,
+      response: body,
+    });
+    return { status, body };
   }
   const session = await controllerSessions?.start({
     workContextId: project.projectId,
@@ -1269,7 +1295,11 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
       projectFileWrite: false,
     },
   };
-  projectSessionOutcomes.set(request.idempotencyKeyHash, { fingerprint, response });
+  projectSessionOutcomes.set(request.idempotencyKeyHash, {
+    fingerprint,
+    status: 201,
+    response,
+  });
   return { status: 201, body: response };
 });
 

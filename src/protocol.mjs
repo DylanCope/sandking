@@ -5,7 +5,6 @@ import {
   projectRegistrationSchema,
 } from "./project-registration.mjs";
 import {
-  boundedLaunchParametersSchema,
   launchRequestSchema,
 } from "./launch-requests.mjs";
 
@@ -334,7 +333,10 @@ const launchRequestPrepareSchema = z.object({
   type: z.literal("launch.request.prepare"),
   requestId: identifierSchema,
   projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
-  parameters: boundedLaunchParametersSchema,
+  // Mutation frames carry candidate configuration to the Host, which owns
+  // bounded validation and the durable typed failure outcome. Successful
+  // Launch requests remain constrained by launchRequestSchema below.
+  parameters: z.unknown(),
   controllerId: runtimeIdSchema,
   controllerSessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
   authorizationClass: launchAuthorizationClassSchema,

@@ -79,6 +79,9 @@ test("issue 119 manifest drives the focused immutable Launch approval scenario",
   assert.ok(manifest.verification.typedDecisionFailures.includes(
     "launch_request_materially_changed",
   ));
+  assert.ok(manifest.verification.typedControllerSessionFailures.includes(
+    "mutation_revision_conflict",
+  ));
 });
 
 test("retained issue 119 evidence identifies the unchanged demonstrated revision", async () => {
