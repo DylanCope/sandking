@@ -444,7 +444,52 @@ const initializeConformanceWorkspace = async (workspacePath) => {
     }, null, 2)}\n`, { mode: 0o600 });
     await writeFile(
       join(workspacePath, "run.mjs"),
-      "process.stdout.write(JSON.stringify({type: 'harness.outcome', status: 'conformance-only'}));\n",
+      `const adapterProtocol = "1.0.0";
+const adapterId = "conformance-harness-adapter-v1";
+const capabilities = ["harness.launch.prepare.v1"];
+const [command, encodedParameters] = process.argv.slice(2);
+if (command === "probe") {
+  process.stdout.write(JSON.stringify({
+    type: "harness.adapter.probe",
+    adapterProtocol,
+    adapterId,
+    capabilities,
+  }));
+} else if (command === "prepare") {
+  let parameters;
+  try {
+    parameters = JSON.parse(Buffer.from(encodedParameters ?? "", "base64url").toString("utf8"));
+  } catch {
+    throw new Error("bounded_configuration_invalid");
+  }
+  if (
+    !Number.isSafeInteger(parameters?.issueNumber)
+    || parameters.issueNumber < 1
+    || parameters.issueNumber > 999999999
+    || parameters.targetBranch !== \`sandcastle/issue-\${parameters.issueNumber}\`
+  ) {
+    throw new Error("bounded_configuration_invalid");
+  }
+  process.stdout.write(JSON.stringify({
+    type: "harness.launch.prepared",
+    adapterProtocol,
+    adapterId,
+    negotiatedCapabilities: capabilities,
+    suppliedCapabilities: ["github.issues.read", "project.git.read"],
+    sanitizedPreview: {
+      summary: \`Delegate GitHub issue #\${parameters.issueNumber} on \${parameters.targetBranch} using the pinned conformance Harness.\`,
+      secretFree: true,
+    },
+    sideEffects: {
+      delegatedWorkStarted: false,
+      projectWrite: false,
+      harnessWorkspaceWrite: false,
+    },
+  }));
+} else {
+  throw new Error("harness_adapter_command_invalid");
+}
+`,
       { mode: 0o700 },
     );
     await execFileAsync("git", ["-C", workspacePath, "add", "--", "harness.json", "run.mjs"]);
@@ -1225,12 +1270,51 @@ export const createProjectRegistry = async (options) => {
     return response;
   });
 
+  /** @param {string} projectId */
+  const loadLaunchContext = async (projectId) => {
+    const projectState = await readProjectState(options.dataDir);
+    const harnessState = await readHarnessState(options.dataDir);
+    const project = projectState.projects.find((candidate) =>
+      candidate.projectId === projectId && candidate.status === "active");
+    if (!project) {
+      throw new Error("project_not_found");
+    }
+    const location = await resolveProjectLocation(
+      projectState,
+      project.canonicalPath,
+      options.dataDir,
+    );
+    if (location.kind !== "registered") {
+      throw new Error(location.kind === "failure" ? location.code : "launch_precondition_invalid");
+    }
+    if (!location.project || location.project.projectId !== project.projectId) {
+      throw new Error("launch_precondition_invalid");
+    }
+    if (!project.harness) {
+      throw new Error("harness_pin_missing");
+    }
+    const harness = harnessState.harnesses.find((candidate) =>
+      candidate.harnessId === project.harness?.harnessId);
+    if (!harness) {
+      throw new Error("harness_not_found");
+    }
+    if (harness.immutableRevision !== project.harness.pinnedRevision) {
+      throw new Error("harness_pin_invalid");
+    }
+    return {
+      project: publicProject(project),
+      harness: publicHarness(harness),
+      harnessWorkspacePath: harness.workspacePath,
+    };
+  };
+
   return {
     inspectProject,
     registerProject,
     inspectConformanceHarness,
     registerConformanceHarness,
     pinConformanceHarness,
+    loadLaunchContext,
   };
 };
 

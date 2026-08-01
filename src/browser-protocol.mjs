@@ -14,6 +14,7 @@ export const browserCapabilities = Object.freeze([
   "cockpit.planning-spine.v1",
   "cockpit.controller-terminal.v1",
   "cockpit.project-preparation.v1",
+  "cockpit.launch-request.v1",
 ]);
 export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.structured-control.v1",
@@ -21,12 +22,13 @@ export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.planning-spine.v1",
   "cockpit.controller-terminal.v1",
   "cockpit.project-preparation.v1",
+  "cockpit.launch-request.v1",
 ]);
 export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-project-preparation")
+  .update("sandking-browser-runtime-schema-v1-with-focused-launch-approval")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -62,7 +64,7 @@ const browserTerminalAttachSchema = z.object({
   sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
   streamId: z.string().regex(/^controller-terminal-[a-f0-9]{24}$/),
   attachmentId: z.string().regex(/^terminal-attachment-[a-f0-9]{24}$/),
-  mode: z.literal("read-write"),
+  mode: z.enum(["read-write", "read-only"]),
   outputCursor: z.number().int().nonnegative(),
 }).strict();
 
@@ -139,8 +141,8 @@ const runtimeTerminalAttachedSchema = z.object({
   sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
   streamId: z.string().regex(/^controller-terminal-[a-f0-9]{24}$/),
   attachmentId: z.string().regex(/^terminal-attachment-[a-f0-9]{24}$/),
-  mode: z.literal("read-write"),
-  exclusive: z.literal(true),
+  mode: z.enum(["read-write", "read-only"]),
+  exclusive: z.boolean(),
   outputCursor: z.number().int().nonnegative(),
 }).strict();
 

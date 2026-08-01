@@ -138,6 +138,9 @@ let shuttingDown = false;
 let startupCommitted = false;
 let hostOperationQueue = Promise.resolve();
 let projectPreparationQueue = Promise.resolve();
+let projectSessionMutationQueue = Promise.resolve();
+/** @type {Map<string, {fingerprint: string, status: number, response: any}>} */
+const projectSessionOutcomes = new Map();
 
 const cockpitCsp = [
   "default-src 'self'",
@@ -801,6 +804,13 @@ const withProjectPreparationLock = (operation) => {
   return current;
 };
 
+/** @template T @param {() => Promise<T>} operation */
+const withProjectSessionMutationLock = (operation) => {
+  const current = projectSessionMutationQueue.catch(() => undefined).then(operation);
+  projectSessionMutationQueue = current.then(() => undefined, () => undefined);
+  return current;
+};
+
 /** @param {any} message */
 const requestHostOperation = (message) => {
   const current = hostOperationQueue.catch(() => undefined).then(async () => {
@@ -1065,6 +1075,276 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       },
     },
   };
+});
+
+/** @param {{sessionId: string, providerSessionId: string, workContext: any, operation: string, input: unknown}} request */
+const handleProviderOperation = async (request) => {
+  const input = request.input && typeof request.input === "object"
+    ? request.input
+    : {};
+  if (request.operation === "work-context.inspect") {
+    if (request.workContext.kind === "project") {
+      const project = currentProjectPreparation.current;
+      if (!project || project.projectId !== request.workContext.workContextId || !project.harness) {
+        throw new ControllerSessionError("project_work_context_unavailable");
+      }
+      return {
+        type: "project.work-context",
+        projectId: project.projectId,
+        revision: project.revision,
+        displayName: project.displayName,
+        harnessId: project.harness.harnessId,
+        pinnedRevision: project.harness.pinnedRevision,
+      };
+    }
+    return {
+      type: "planning.work-context",
+      workContextId: request.workContext.workContextId,
+      canonicalReference: request.workContext.canonicalReference,
+    };
+  }
+  if (request.workContext.kind !== "project") {
+    throw new ControllerSessionError("provider_operation_unsupported");
+  }
+  if (request.operation === "launch-request.prepare") {
+    return requestHostOperation({
+      type: "launch.request.prepare",
+      requestId: `launch-prepare-${randomBytes(8).toString("hex")}`,
+      projectId: request.workContext.workContextId,
+      parameters: "parameters" in input ? input.parameters : null,
+      controllerId: state.runtimeId,
+      controllerSessionId: request.sessionId,
+      authorizationClass: "focused_controller_launch",
+      idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
+      expectedRevision: 0,
+      expiresInSeconds: "expiresInSeconds" in input ? Number(input.expiresInSeconds) : 0,
+    });
+  }
+  if (request.operation === "launch-request.decide") {
+    return requestHostOperation({
+      type: "launch.request.decision",
+      requestId: `launch-decision-${randomBytes(8).toString("hex")}`,
+      launchRequestId: "launchRequestId" in input ? String(input.launchRequestId) : "",
+      decision: "decision" in input ? String(input.decision) : "",
+      controllerId: state.runtimeId,
+      controllerSessionId: request.sessionId,
+      authorizationClass: "focused_controller_launch",
+      idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
+      expectedRevision: "expectedRevision" in input ? Number(input.expectedRevision) : -1,
+    });
+  }
+  throw new ControllerSessionError("provider_operation_unsupported");
+};
+
+/**
+ * @param {{authorizationAccepted: boolean, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number, projectId: string}} request
+ */
+const openProjectControllerSession = (request) => withProjectSessionMutationLock(async () => {
+  const authorizationClass = "project_focused_session";
+  const project = currentProjectPreparation.current;
+  const fingerprint = hashIdempotencyKey(JSON.stringify({
+    projectId: request.projectId,
+    expectedRevision: request.expectedRevision,
+  }));
+  const existing = request.idempotencyKeyHash
+    ? projectSessionOutcomes.get(request.idempotencyKeyHash)
+    : null;
+  if (existing) {
+    if (existing.fingerprint !== fingerprint) {
+      const auditId = await recordAudit("project.session.open", "rejected", {
+        code: "idempotency_key_conflict",
+        authorizationClass,
+        idempotencyKeyHash: request.idempotencyKeyHash,
+        expectedRevision: request.expectedRevision,
+        actualRevision: project?.revision ?? 0,
+      });
+      return {
+        status: 409,
+        body: {
+          ...mutationFailure(
+            "idempotency_key_conflict",
+            authorizationClass,
+            request.expectedRevision,
+            project?.revision ?? 0,
+            auditId,
+          ),
+          idempotentReplay: false,
+        },
+      };
+    }
+    await recordAudit("project.session.open", "observed", {
+      authorizationClass,
+      idempotencyKeyHash: request.idempotencyKeyHash,
+      idempotentReplay: true,
+      originalAuditId: existing.response.auditId,
+      code: existing.response.code,
+      ...(existing.response.session
+        ? { sessionId: existing.response.session.sessionId }
+        : {}),
+    });
+    return {
+      status: existing.response.type === "mutation_result" ? 200 : existing.status,
+      body: { ...structuredClone(existing.response), idempotentReplay: true },
+    };
+  }
+  if (
+    !request.authorizationAccepted
+    || !request.idempotencyKeyHash
+    || request.idempotencyKey.length === 0
+    || request.idempotencyKey.length > 256
+    || !project
+    || project.projectId !== request.projectId
+  ) {
+    const code = !request.authorizationAccepted
+      ? "authorization_failed"
+      : !project || project.projectId !== request.projectId
+        ? "project_not_found"
+        : "mutation_contract_invalid";
+    const auditId = await recordAudit("project.session.open", "rejected", {
+      code,
+      authorizationClass,
+      idempotencyKeyHash: request.idempotencyKeyHash,
+      expectedRevision: Number.isSafeInteger(request.expectedRevision)
+        ? request.expectedRevision
+        : null,
+      actualRevision: project?.revision ?? 0,
+    });
+    const status = code === "authorization_failed"
+      ? 403
+      : code === "project_not_found"
+        ? 404
+        : 400;
+    const body = {
+      ...mutationFailure(
+        code,
+        authorizationClass,
+        Number.isSafeInteger(request.expectedRevision) ? request.expectedRevision : -1,
+        project?.revision ?? 0,
+        auditId,
+      ),
+      idempotentReplay: false,
+    };
+    if (request.idempotencyKeyHash) {
+      projectSessionOutcomes.set(request.idempotencyKeyHash, {
+        fingerprint,
+        status,
+        response: body,
+      });
+    }
+    return { status, body };
+  }
+  if (request.expectedRevision !== project.revision) {
+    const auditId = await recordAudit("project.session.open", "rejected", {
+      code: "mutation_revision_conflict",
+      authorizationClass,
+      idempotencyKeyHash: request.idempotencyKeyHash,
+      expectedRevision: request.expectedRevision,
+      actualRevision: project.revision,
+      projectId: project.projectId,
+    });
+    const status = 409;
+    const body = {
+      ...mutationFailure(
+        "mutation_revision_conflict",
+        authorizationClass,
+        request.expectedRevision,
+        project.revision,
+        auditId,
+      ),
+      idempotentReplay: false,
+    };
+    projectSessionOutcomes.set(request.idempotencyKeyHash, {
+      fingerprint,
+      status,
+      response: body,
+    });
+    return { status, body };
+  }
+  let session;
+  try {
+    session = await controllerSessions?.start({
+      workContextId: project.projectId,
+      kind: "project",
+      canonicalReference: `sandking:project:${project.projectId}`,
+    });
+    if (!session) {
+      throw new ControllerSessionError("controller_session_unavailable");
+    }
+  } catch (error) {
+    const code = error instanceof ControllerSessionError
+      ? error.code
+      : "controller_session_start_failed";
+    const auditId = await recordAudit("project.session.open", "rejected", {
+      code,
+      authorizationClass,
+      idempotencyKeyHash: request.idempotencyKeyHash,
+      expectedRevision: request.expectedRevision,
+      actualRevision: project.revision,
+      projectId: project.projectId,
+      controllerSessionCreated: false,
+      launchRequestPrepared: false,
+      approvalRecorded: false,
+      harnessRunStarted: false,
+      projectFileWrite: false,
+    });
+    const status = 503;
+    const body = {
+      ...mutationFailure(
+        code,
+        authorizationClass,
+        request.expectedRevision,
+        project.revision,
+        auditId,
+      ),
+      idempotentReplay: false,
+      prohibitedSideEffects: {
+        controllerSessionCreated: false,
+        launchRequestPrepared: false,
+        approvalRecorded: false,
+        harnessRunStarted: false,
+        projectFileWrite: false,
+      },
+    };
+    projectSessionOutcomes.set(request.idempotencyKeyHash, {
+      fingerprint,
+      status,
+      response: body,
+    });
+    return { status, body };
+  }
+  const auditId = await recordAudit("project.session.open", "accepted", {
+    authorizationClass,
+    idempotencyKeyHash: request.idempotencyKeyHash,
+    expectedRevision: request.expectedRevision,
+    resultingRevision: project.revision,
+    projectId: project.projectId,
+    sessionId: session.sessionId,
+    providerSessionId: session.provider.providerSessionId,
+    providerAdapterId: session.provider.adapterId,
+    ptyRuntimeOwned: session.terminal.runtimeOwned,
+  });
+  const response = {
+    type: "mutation_result",
+    code: "project_focused_controller_session_opened",
+    authorizationClass,
+    expectedRevision: request.expectedRevision,
+    revision: project.revision,
+    idempotentReplay: false,
+    auditId,
+    session,
+    prohibitedSideEffects: {
+      launchRequestPrepared: false,
+      approvalRecorded: false,
+      harnessRunStarted: false,
+      projectFileWrite: false,
+    },
+  };
+  projectSessionOutcomes.set(request.idempotencyKeyHash, {
+    fingerprint,
+    status: 201,
+    response,
+  });
+  return { status: 201, body: response };
 });
 
 /** @param {WebSocket} socket @param {string} code @param {boolean} reloadRequired */
@@ -1394,6 +1674,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
               sessionId: control.sessionId,
               streamId: control.streamId,
               attachmentId: control.attachmentId,
+              mode: control.mode,
               outputCursor: control.outputCursor,
               onOutput: (target, frame) => {
                 if (target.readyState === WebSocket.OPEN) {
@@ -1409,8 +1690,8 @@ const handleBrowserConnection = (socket, sessionId, session) => {
               sessionId: control.sessionId,
               streamId: control.streamId,
               attachmentId: control.attachmentId,
-              mode: "read-write",
-              exclusive: true,
+              mode: attached.mode,
+              exclusive: attached.exclusive,
               outputCursor: control.outputCursor,
             }));
             for (const frame of attached.frames) {
@@ -1551,6 +1832,7 @@ const main = async () => {
     controllerSessions = await createControllerSessionManager({
       dataDir: args.dataDir,
       recordAudit,
+      handleProviderOperation,
     });
     planningSpine = await createPlanningSpine({
       dataDir: args.dataDir,
@@ -1694,6 +1976,26 @@ const main = async () => {
             idempotencyKey,
             idempotencyKeyHash,
             expectedRevision,
+          });
+          sendJson(response, outcome.status, outcome.body);
+          return;
+        }
+
+        if (request.method === "POST" && request.url === "/projects/sessions/open") {
+          const body = await readJsonBody(request);
+          const record = body && typeof body === "object" ? body : {};
+          const {
+            idempotencyKey,
+            idempotencyKeyHash,
+            expectedRevision,
+          } = readMutationHeaders(request);
+          const outcome = await openProjectControllerSession({
+            authorizationAccepted: exactOriginAccepted(request)
+              && request.headers["x-sandking-csrf"] === activeSession.csrfToken,
+            idempotencyKey,
+            idempotencyKeyHash,
+            expectedRevision,
+            projectId: "projectId" in record ? String(record.projectId) : "",
           });
           sendJson(response, outcome.status, outcome.body);
           return;

@@ -18,6 +18,10 @@ import {
 import { acceptHostIdentity, readHostIdentity } from "./host-identity.mjs";
 import { appendPrivateJsonLine } from "./private-state.mjs";
 import { createProjectRegistry } from "./project-registration.mjs";
+import {
+  createLaunchRequestManager,
+  prepareConformanceHarnessLaunch,
+} from "./launch-requests.mjs";
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
@@ -336,6 +340,13 @@ const main = async () => {
     dataDir,
     recordAudit: recordProjectAudit,
   });
+  const launchRequests = await createLaunchRequestManager({
+    dataDir,
+    hostId: negotiatedHostId,
+    recordAudit: recordProjectAudit,
+    loadLaunchContext: projectRegistry.loadLaunchContext,
+    prepareHarness: prepareConformanceHarnessLaunch,
+  });
 
   // The Host is a durable process boundary. It remains available after
   // negotiation and keeps control and opaque bulk frames structurally distinct.
@@ -376,6 +387,14 @@ const main = async () => {
     }
     if (frame.message.type === "project.harness.pin") {
       writeFrame(process.stdout, await projectRegistry.pinConformanceHarness(frame.message));
+      continue;
+    }
+    if (frame.message.type === "launch.request.prepare") {
+      writeFrame(process.stdout, await launchRequests.prepare(frame.message));
+      continue;
+    }
+    if (frame.message.type === "launch.request.decision") {
+      writeFrame(process.stdout, await launchRequests.decide(frame.message));
       continue;
     }
     rejectHandshake("host_protocol_unexpected_message");

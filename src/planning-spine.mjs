@@ -196,11 +196,14 @@ const focusedSessionSchema = z.object({
     fixture: z.literal(true),
     adapterId: z.literal("conformance-controller-adapter-v1"),
     adapterProtocol: z.string().regex(/^1\.[0-9]+\.[0-9]+$/),
-    capabilities: z.tuple([
-      z.literal("controller.session.start"),
-      z.literal("controller.session.interactive"),
-      z.literal("controller.session.terminate"),
-    ]),
+    capabilities: z.array(z.enum([
+      "controller.session.start",
+      "controller.session.interactive",
+      "controller.session.terminate",
+      "controller.work-context.inspect",
+      "controller.launch-request.prepare",
+      "controller.launch-request.decide",
+    ])).min(3).max(6),
     providerSessionId: z.string()
       .regex(/^conformance-provider-session-[a-f0-9]{24}$/),
     readiness: z.object({
