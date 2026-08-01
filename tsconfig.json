@@ -10,5 +10,5 @@
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": [".sandcastle/main.mts", ".sandcastle/*.mjs"]
+  "include": [".sandcastle/main.mts", ".sandcastle/*.mjs", "src/*.mjs", "test/*.mjs"]
 }

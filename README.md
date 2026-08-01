@@ -40,3 +40,17 @@ npm run sandcastle -- --parent 25
 
 The scoped run ignores eligible tickets outside that issue tree and stops once
 GitHub reports the parent issue closed.
+
+Launch the local Cockpit walking-skeleton slice:
+
+```bash
+npm run cockpit -- --no-open --json
+```
+
+This starts or reuses one loopback-only Controller runtime, prints a short-lived
+bootstrap URL for the Cockpit, and negotiates with the local Host over the
+framed stdio protocol. Stop the runtime with:
+
+```bash
+npm run cockpit:stop
+```

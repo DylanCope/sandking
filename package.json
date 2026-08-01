@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "sandcastle": "tsx .sandcastle/main.mts",
+    "cockpit": "node src/cli.mjs launch",
+    "cockpit:stop": "node src/cli.mjs stop",
     "typecheck": "tsc --noEmit",
-    "test": "node --test .sandcastle/*.test.mjs"
+    "test": "node --test .sandcastle/*.test.mjs test/*.test.mjs"
   },
   "dependencies": {
     "zod": "^4.4.3"
