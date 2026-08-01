@@ -42,6 +42,7 @@ import {
   hostCapabilities,
   protocolVersion,
   readFrame,
+  readProtocolFrame,
   releaseVersion,
   writeFrame,
 } from "./protocol.mjs";
@@ -818,9 +819,27 @@ const requestHostOperation = (message) => {
       throw new Error("host_unavailable");
     }
     writeFrame(hostProcess.stdin, message);
-    const response = await readFrame(hostProcess.stdout);
+    const frame = await readProtocolFrame(hostProcess.stdout);
+    if (frame.channel !== "control") {
+      throw new Error("host_protocol_error");
+    }
+    const response = frame.message;
     if (!("requestId" in response) || response.requestId !== message.requestId) {
       throw new Error("host_protocol_error");
+    }
+    if (response.type === "harness.run.logs.result") {
+      const bulk = await readProtocolFrame(hostProcess.stdout);
+      if (
+        bulk.channel !== "bulk"
+        || bulk.streamId !== response.streamId
+        || bulk.sequence !== response.range.start
+        || bulk.eof !== response.range.eof
+        || bulk.data.byteLength !== response.byteLength
+        || `sha256:${createHash("sha256").update(bulk.data).digest("hex")}` !== response.sha256
+      ) {
+        throw new Error("host_protocol_error");
+      }
+      return { ...response, data: bulk.data };
     }
     return response;
   });
@@ -1131,6 +1150,25 @@ const handleProviderOperation = async (request) => {
       authorizationClass: "focused_controller_launch",
       idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
       expectedRevision: "expectedRevision" in input ? Number(input.expectedRevision) : -1,
+    });
+  }
+  if (request.operation === "harness-run.start") {
+    return requestHostOperation({
+      type: "harness.run.start",
+      requestId: `harness-run-start-${randomBytes(8).toString("hex")}`,
+      launchRequestId: "launchRequestId" in input ? String(input.launchRequestId) : "",
+      controllerId: state.runtimeId,
+      controllerSessionId: request.sessionId,
+      authorizationClass: "approved_launch_request_execution",
+      idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
+      expectedRevision: "expectedRevision" in input ? Number(input.expectedRevision) : -1,
+    });
+  }
+  if (request.operation === "harness-run.lookup") {
+    return requestHostOperation({
+      type: "harness.run.lookup",
+      requestId: `harness-run-lookup-${randomBytes(8).toString("hex")}`,
+      idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
     });
   }
   throw new ControllerSessionError("provider_operation_unsupported");
@@ -1703,6 +1741,56 @@ const handleBrowserConnection = (socket, sessionId, session) => {
               ? error.code
               : "controller_terminal_attach_failed");
           }
+        }
+        if (control.type === "browser.harness-run.observe") {
+          const observation = await requestHostOperation({
+            type: "harness.run.observe",
+            requestId: `harness-observe-${randomBytes(8).toString("hex")}`,
+            harnessRunId: control.harnessRunId,
+            afterSequence: control.afterSequence,
+          });
+          if (observation.type !== "harness.run.observe.result") {
+            throw new BrowserProtocolError("harness_run_observation_failed");
+          }
+          socket.send(serializeRuntimeControl({
+            type: "runtime.harness-run.observation",
+            requestId: control.requestId,
+            observation,
+          }));
+          return;
+        }
+        if (control.type === "browser.harness-run.logs.get") {
+          const result = await requestHostOperation({
+            type: "harness.run.logs.get",
+            requestId: `harness-logs-${randomBytes(8).toString("hex")}`,
+            harnessRunId: control.harnessRunId,
+            producer: control.producer,
+            offset: control.offset,
+            limit: control.limit,
+          });
+          if (result.type !== "harness.run.logs.result" || !Buffer.isBuffer(result.data)) {
+            throw new BrowserProtocolError("harness_run_logs_failed");
+          }
+          const { data: logBytes, ...metadata } = result;
+          socket.send(serializeRuntimeControl({
+            ...metadata,
+            type: "runtime.harness-run.logs.result",
+            requestId: control.requestId,
+          }));
+          socket.send(encodeBrowserOpaqueFrame({
+            streamId: result.streamId,
+            sequence: result.range.start,
+            eof: result.range.eof,
+            data: logBytes,
+          }), { binary: true });
+          await recordAudit("browser.harness-run.logs", "observed", {
+            harnessRunId: result.harnessRunId,
+            producer: result.producer,
+            range: result.range,
+            byteLength: result.byteLength,
+            insertedIntoControllerConversation: false,
+          });
+          return;
         }
         throw new BrowserProtocolError("browser_control_unexpected_message");
       }

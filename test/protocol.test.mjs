@@ -135,6 +135,56 @@ test("Launch preparation and decision are capability-negotiated typed Host opera
   );
 });
 
+test("Harness-run start, lookup, cursor observation, and ranged logs are typed Host operations", async () => {
+  assert.ok(hostCapabilities.includes("sandking.harness-run.v1"));
+  const stream = new PassThrough();
+  const harnessRunId = `harness-run-${"1".repeat(24)}`;
+  const start = {
+    type: "harness.run.start",
+    requestId: "start-harness-run-protocol",
+    launchRequestId: `launch-request-${"2".repeat(24)}`,
+    controllerId: `runtime-${"3".repeat(24)}`,
+    controllerSessionId: `controller-session-${"4".repeat(24)}`,
+    authorizationClass: "approved_launch_request_execution",
+    idempotencyKey: "start-harness-run-protocol-key",
+    expectedRevision: 2,
+  };
+  const lookup = {
+    type: "harness.run.lookup",
+    requestId: "lookup-harness-run-protocol",
+    idempotencyKey: start.idempotencyKey,
+  };
+  const observe = {
+    type: "harness.run.observe",
+    requestId: "observe-harness-run-protocol",
+    harnessRunId,
+    afterSequence: 3,
+  };
+  const logs = {
+    type: "harness.run.logs.get",
+    requestId: "read-harness-run-logs-protocol",
+    harnessRunId,
+    producer: "stderr",
+    offset: 12,
+    limit: 1_024,
+  };
+  for (const message of [start, lookup, observe, logs]) {
+    writeFrame(stream, message);
+  }
+  assert.deepEqual(await readFrame(stream), start);
+  assert.deepEqual(await readFrame(stream), lookup);
+  assert.deepEqual(await readFrame(stream), observe);
+  assert.deepEqual(await readFrame(stream), logs);
+  assert.throws(
+    () => writeFrame(stream, { ...start, authorizationClass: "browser_launch" }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+  assert.throws(
+    () => writeFrame(stream, { ...logs, limit: MAX_BULK_CHUNK_BYTES + 1 }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+});
+
 test("wire-level protocol errors include sanitized explanations and retry guidance", async () => {
   const stream = new PassThrough();
   const diagnosis = {

@@ -113,6 +113,7 @@ test("concurrent launches reuse one ready runtime and retain full Host negotiati
       "sandking.project-registration.v1",
       "sandking.conformance-harness-registration.v1",
       "sandking.launch-request.v1",
+      "sandking.harness-run.v1",
     ]);
     assert.match(first.host.schemaDigest, /^sha256:[a-f0-9]{64}$/);
     assert.deepEqual(first.host.framing, {

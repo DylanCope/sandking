@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 2,
+  "issue": 120,
+  "parentPrd": 125,
+  "sourceSpecification": {
+    "issue": 116,
+    "githubBodyUtf8Sha256": "34ebbde096564621b14a68d4bc64cdbd8ba9e448a42cb75c084d80c0e201308a",
+    "parentApprovedTextExportSha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23",
+    "parentApprovedHashBasis": "exact GitHub body UTF-8 plus one terminal LF"
+  },
+  "scenarios": [
+    {
+      "id": "local-walking-skeleton/completes-approved-run",
+      "requirements": [
+        "#116 stories 17-21, 27, 35-36, and 41-44",
+        "#120 acceptance criteria",
+        "#6 asynchronous run creation, idempotent lookup, cursor observation, and separate ranged logs",
+        "#8 approved immutable Launch authorization and sanitized audit boundary",
+        "#9 versioned dedicated Harness-adapter channel, diagnostics, and truthful terminal outcome",
+        "#11 invariant-based executable acceptance and retained evidence",
+        "#17 cockpit-visible vertical-slice acceptance boundary"
+      ],
+      "environment": "npm-packed Sand-King; npm-pinned real headless Chromium; one explicit local Project; independently Git-versioned conformance Harness; runtime-owned focused conformance Controller PTY; user-space Node and Git processes",
+      "transport": "served Cockpit and opaque Controller terminal -> typed provider control socket -> real Controller runtime -> versioned framed stdio local Host with opaque bulk log frames -> Host-private run supervision -> exact pinned conformance Harness adapter on its dedicated framed channel",
+      "initialState": "one prepared Project and pinned conformance Harness; one focused Controller session; no Launch request or Harness run",
+      "actions": [
+        "prepare and approve one immutable Launch request in its owning focused Controller conversation",
+        "start it with an idempotency key and exact expected revision and return while the canonical run is starting",
+        "replay and look up the same start outcome and reject changed key content without creating duplicate work",
+        "cross the exact pinned Harness adapter boundary and retain readiness plus one Harness-defined progress record",
+        "capture stdout and stderr only as independently ranged diagnostic streams",
+        "close the observing browser tab while the run and focused Controller session continue",
+        "reconnect through the public Cockpit and display the same ordered events, separate logs, and structured terminal outcome",
+        "exercise an adapter exit without a terminal envelope and retain a failed incomplete-result outcome even when its log says SUCCESS",
+        "reject pending, rejected, expired, changed, and stale Launch requests before supervision"
+      ],
+      "expectedTypedOutcome": "one canonical succeeded Harness run with four ordered lifecycle events, two separate ranged diagnostic streams, and one validated structured terminal envelope",
+      "canonicalStateInvariants": [
+        "one approved Launch request links to at most one canonical Harness-run identity",
+        "start returns from durable run creation without waiting for terminal completion",
+        "identical start replay and lookup return the original run and audit while changed key content conflicts",
+        "the execution snapshot retains Host, Project, Harness identity and pin, Launch request, Controller owner, adapter identity, and protocol",
+        "adapter readiness and Harness-defined progress remain ordered generic lifecycle records",
+        "stdout and stderr are never parsed as adapter protocol, progress, authorization, or success",
+        "exactly one valid terminal envelope determines the structured outcome",
+        "exit without one valid terminal envelope is failed and incomplete",
+        "browser observation disconnect neither cancels the run nor terminates the focused Controller session",
+        "ranged diagnostic retrieval is explicit and never inserted into a Controller conversation"
+      ],
+      "prohibitedSideEffects": [
+        "Harness run from a pending, rejected, expired, changed, or stale Launch request",
+        "duplicate Harness run",
+        "success inferred from process exit or log text",
+        "protocol parsing of stdout or stderr",
+        "automatic diagnostic insertion into Controller conversation",
+        "browser-disconnect cancellation",
+        "Project file mutation",
+        "Harness-workspace mutation",
+        "dangerous mode",
+        "restart supervision or cancellation-race claims",
+        "production Sandcastle-derived Harness claim",
+        "sudo",
+        "system package install",
+        "shell profile mutation",
+        "service configuration"
+      ],
+      "evidence": "acceptance/evidence/issue-120.json"
+    }
+  ],
+  "verification": {
+    "commands": [
+      ["node", "--test", "test/protocol.test.mjs", "test/launch-request.test.mjs", "test/harness-run.test.mjs", "test/controller-launch-session.test.mjs"],
+      ["node", "--test", "test/browser-protocol.test.mjs", "test/harness-run.browser.test.mjs"]
+    ],
+    "typedStartFailures": [
+      "authorization_failed",
+      "idempotency_key_conflict",
+      "mutation_revision_conflict",
+      "launch_request_not_found",
+      "launch_request_unapproved",
+      "launch_request_terminal",
+      "launch_request_expired",
+      "launch_request_stale",
+      "launch_request_already_started"
+    ],
+    "truthfulTerminalFailures": [
+      "harness_result_incomplete",
+      "harness_adapter_protocol_invalid",
+      "harness_adapter_start_failed"
+    ]
+  }
+}

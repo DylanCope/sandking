@@ -12,10 +12,11 @@ const browserProtocol = Object.freeze({
       "cockpit.controller-terminal.v1",
       "cockpit.project-preparation.v1",
       "cockpit.launch-request.v1",
+      "cockpit.harness-run-observation.v1",
     ],
     optional: [],
   },
-  schemaDigest: "sha256:3bd079c46e59214210475a8c4c0dda2065b7eb831d7e4566e361876898d4c8c5",
+  schemaDigest: "sha256:92e4331f6945b40de00865c16724ab9d9162e0b43da527298850c738b4ff6fd4",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -28,7 +29,11 @@ const websocketProtocol = location.protocol === "https:" ? "wss" : "ws";
 const socket = new WebSocket(`${websocketProtocol}://${location.host}/ws`);
 socket.binaryType = "arraybuffer";
 const terminalStreams = new Map();
+const diagnosticStreams = new Map();
 let runtimeNegotiated = false;
+let harnessRunSection;
+let harnessObservationTimer;
+let harnessRequestSequence = 0;
 
 const encodeOpaqueFrame = (streamId, sequence, data) => {
   const id = new TextEncoder().encode(streamId);
@@ -372,6 +377,140 @@ const renderProjectPreparation = (preparation, session) => {
   return section;
 };
 
+const requestHarnessRunObservation = () => {
+  if (!runtimeNegotiated || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  socket.send(JSON.stringify({
+    channel: "control",
+    message: {
+      type: "browser.harness-run.observe",
+      requestId: `harness-observe-${harnessRequestSequence}`,
+      harnessRunId: null,
+      afterSequence: 0,
+    },
+  }));
+  harnessRequestSequence += 1;
+};
+
+const renderHarnessRun = (observation) => {
+  const section = element("section", {
+    id: "harness-run-observation",
+    "data-observation-mode": observation.mode,
+    "data-run-present": String(Boolean(observation.run)),
+  });
+  section.append(
+    element("h2", {}, "Harness run observation"),
+    element("p", { "data-observation-independent": "true" },
+      "Observation is independent of the browser and focused Controller session lifecycle."),
+  );
+  if (!observation.run) {
+    section.append(element("p", { id: "harness-run-empty" },
+      "No approved Harness run has started."));
+    return section;
+  }
+  const run = observation.run;
+  section.dataset.runId = run.harnessRunId;
+  section.dataset.runStatus = run.status;
+  section.dataset.launchRequestId = run.launchRequestId;
+  section.dataset.harnessPin = run.harnessPinnedRevision;
+  section.append(
+    element("h3", {}, `Harness run ${run.harnessRunId}`),
+    element("p", { "data-run-status": run.status }, `Lifecycle status: ${run.status}`),
+    element("p", {}, `Launch request: ${run.launchRequestId}`),
+    element("p", {}, `Harness: ${run.harnessId} @ ${run.harnessPinnedRevision}`),
+  );
+  const events = element("ol", {
+    id: "harness-run-events",
+    "data-event-count": observation.events.length,
+    "data-event-sequences": observation.events.map((event) => event.sequence).join(","),
+  });
+  for (const event of observation.events) {
+    events.append(element("li", {
+      "data-event-id": event.eventId,
+      "data-event-sequence": event.sequence,
+      "data-event-type": event.type,
+    }, `${event.sequence}. ${event.type}${event.progressRecord
+      ? ` — ${event.progressRecord.summary}`
+      : ""}`));
+  }
+  section.append(element("h3", {}, "Ordered lifecycle events"), events);
+
+  const logs = element("section", {
+    id: "harness-run-diagnostics",
+    "data-logs-separate": "true",
+    "data-conversation-insertion": "false",
+  });
+  logs.append(element("p", {},
+    "Diagnostic logs are explicitly ranged and are never inserted into a Controller conversation."));
+  for (const producer of ["stdout", "stderr"]) {
+    const stream = observation.logStreams.find((candidate) => candidate.producer === producer);
+    logs.append(
+      element("h4", {}, `${producer} diagnostics`),
+      element("pre", {
+        "data-log-producer": producer,
+        "data-log-stream-id": stream?.streamId ?? "",
+        "data-range-start": stream?.availableStart ?? 0,
+        "data-range-end": stream?.availableEnd ?? 0,
+        "data-explicit-retrieval": String(stream?.explicitRetrievalRequired ?? true),
+        "data-conversation-inserted": String(stream?.insertedIntoControllerConversation ?? false),
+      }),
+    );
+  }
+  section.append(logs);
+  const outcome = element("pre", {
+    id: "harness-run-structured-outcome",
+    "data-outcome-status": observation.outcome?.status ?? "pending",
+    "data-incomplete-result": String(observation.outcome?.incompleteResult ?? false),
+  }, observation.outcome ? JSON.stringify(observation.outcome, null, 2) : "Outcome pending");
+  section.append(
+    element("h3", {}, "Structured outcome"),
+    outcome,
+    element("p", {
+      id: "harness-terminal-validation",
+      "data-exactly-one-terminal": String(
+        observation.terminalEnvelopeValidation?.exactlyOne ?? false,
+      ),
+      "data-process-exit-observed": String(
+        observation.terminalEnvelopeValidation?.processExitObserved ?? false,
+      ),
+    }, observation.terminalEnvelopeValidation
+      ? `Terminal envelopes: ${observation.terminalEnvelopeValidation.validTerminalEnvelopeCount}; process exit observed: ${observation.terminalEnvelopeValidation.processExitObserved}.`
+      : "Terminal envelope validation pending."),
+  );
+  return section;
+};
+
+const applyHarnessRunObservation = (observation) => {
+  const replacement = renderHarnessRun(observation);
+  harnessRunSection?.replaceWith(replacement);
+  harnessRunSection = replacement;
+  diagnosticStreams.clear();
+  if (observation.run) {
+    for (const stream of observation.logStreams) {
+      if (stream.availableEnd === 0) {
+        continue;
+      }
+      socket.send(JSON.stringify({
+        channel: "control",
+        message: {
+          type: "browser.harness-run.logs.get",
+          requestId: `harness-logs-${stream.producer}-${harnessRequestSequence}`,
+          harnessRunId: observation.run.harnessRunId,
+          producer: stream.producer,
+          offset: 0,
+          limit: Math.min(16_384, Math.max(1, stream.availableEnd)),
+        },
+      }));
+      harnessRequestSequence += 1;
+    }
+  }
+  clearTimeout(harnessObservationTimer);
+  if (!observation.run || !["succeeded", "failed", "cancelled"].includes(observation.run.status)) {
+    harnessObservationTimer = setTimeout(requestHarnessRunObservation, 75);
+  }
+};
+
 const renderPlanning = (planning, session) => {
   const section = element("section", {
     id: "planning-spine",
@@ -619,6 +758,15 @@ socket.addEventListener("message", (event) => {
         terminal.panel.dataset.sessionState = "exited";
         terminal.sendInput.disabled = true;
       }
+    } else if (opaque) {
+      const diagnostic = diagnosticStreams.get(opaque.streamId);
+      if (diagnostic) {
+        diagnostic.output.textContent += diagnostic.decoder.decode(opaque.data, {
+          stream: !opaque.eof,
+        });
+        diagnostic.output.dataset.outputSequence = String(opaque.sequence);
+        diagnostic.output.dataset.rangeEof = String(opaque.eof);
+      }
     }
     return;
   }
@@ -655,6 +803,37 @@ socket.addEventListener("message", (event) => {
     }
     terminal.panel.dataset.terminalAttachment = "read-write";
     terminal.sendInput.disabled = false;
+    return;
+  }
+
+  if (message?.type === "runtime.harness-run.observation") {
+    if (!runtimeNegotiated) {
+      requireReload("runtime_harness_observation_before_negotiation");
+      return;
+    }
+    applyHarnessRunObservation(message.observation);
+    return;
+  }
+
+  if (message?.type === "runtime.harness-run.logs.result") {
+    if (!runtimeNegotiated || !harnessRunSection) {
+      requireReload("runtime_harness_logs_before_negotiation");
+      return;
+    }
+    const output = harnessRunSection.querySelector(
+      `[data-log-producer="${message.producer}"]`,
+    );
+    if (!output || output.dataset.logStreamId !== message.streamId) {
+      requireReload("runtime_harness_log_stream_mismatch");
+      return;
+    }
+    output.textContent = "";
+    output.dataset.rangeStart = String(message.range.start);
+    output.dataset.rangeEnd = String(message.range.end);
+    diagnosticStreams.set(message.streamId, {
+      output,
+      decoder: new TextDecoder(),
+    });
     return;
   }
 
@@ -732,11 +911,22 @@ socket.addEventListener("message", (event) => {
         + ` (${message.viewModel.host.hostId})`,
     ),
     renderProjectPreparation(message.viewModel.projectPreparation, message.session),
+    renderHarnessRun({
+      mode: "snapshot",
+      run: null,
+      events: [],
+      outcome: null,
+      logStreams: [],
+      terminalEnvelopeValidation: null,
+    }),
     renderPlanning(message.viewModel.planning, message.session),
   );
+  harnessRunSection = document.getElementById("harness-run-observation");
+  requestHarnessRunObservation();
 });
 
 socket.addEventListener("close", (event) => {
+  clearTimeout(harnessObservationTimer);
   if (!document.documentElement.dataset.protocolError && !event.wasClean) {
     app.textContent = "Host connection is stale. Retry by reloading the Cockpit.";
   }

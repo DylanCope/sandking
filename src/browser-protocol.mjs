@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { planningProjectionSchema } from "./planning-spine.mjs";
 import { projectPreparationProjectionSchema } from "./project-registration.mjs";
+import {
+  harnessRunEventSchema,
+  harnessRunOutcomeSchema,
+  harnessRunSchema,
+} from "./harness-runs.mjs";
 import { protocolVersion, releaseVersion, versionSchema } from "./protocol.mjs";
 
 export const BROWSER_PROTOCOL_VERSION = protocolVersion;
@@ -15,6 +20,7 @@ export const browserCapabilities = Object.freeze([
   "cockpit.controller-terminal.v1",
   "cockpit.project-preparation.v1",
   "cockpit.launch-request.v1",
+  "cockpit.harness-run-observation.v1",
 ]);
 export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.structured-control.v1",
@@ -23,12 +29,13 @@ export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.controller-terminal.v1",
   "cockpit.project-preparation.v1",
   "cockpit.launch-request.v1",
+  "cockpit.harness-run-observation.v1",
 ]);
 export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-focused-launch-approval")
+  .update("sandking-browser-runtime-schema-v1-with-harness-run-observation")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -68,12 +75,30 @@ const browserTerminalAttachSchema = z.object({
   outputCursor: z.number().int().nonnegative(),
 }).strict();
 
+const browserHarnessRunObserveSchema = z.object({
+  type: z.literal("browser.harness-run.observe"),
+  requestId: identifierSchema,
+  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/).nullable(),
+  afterSequence: z.number().int().nonnegative(),
+}).strict();
+
+const browserHarnessRunLogsGetSchema = z.object({
+  type: z.literal("browser.harness-run.logs.get"),
+  requestId: identifierSchema,
+  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
+  producer: z.enum(["stdout", "stderr"]),
+  offset: z.number().int().nonnegative(),
+  limit: z.number().int().min(1).max(MAX_BROWSER_OPAQUE_CHUNK_BYTES),
+}).strict();
+
 const browserControlEnvelopeSchema = z.object({
   channel: z.literal("control"),
   message: z.discriminatedUnion("type", [
     browserHelloSchema,
     browserPingSchema,
     browserTerminalAttachSchema,
+    browserHarnessRunObserveSchema,
+    browserHarnessRunLogsGetSchema,
   ]),
 }).strict();
 
@@ -146,6 +171,53 @@ const runtimeTerminalAttachedSchema = z.object({
   outputCursor: z.number().int().nonnegative(),
 }).strict();
 
+const runtimeHarnessRunObservationSchema = z.object({
+  type: z.literal("runtime.harness-run.observation"),
+  requestId: identifierSchema,
+  observation: z.object({
+    type: z.literal("harness.run.observe.result"),
+    requestId: identifierSchema,
+    code: z.enum(["harness_run_absent", "harness_run_observed"]),
+    mode: z.enum(["snapshot", "resume"]),
+    run: harnessRunSchema.nullable(),
+    events: z.array(harnessRunEventSchema).max(1_024),
+    nextSequence: z.number().int().nonnegative(),
+    outcome: harnessRunOutcomeSchema.nullable(),
+    logStreams: z.array(z.object({
+      streamId: z.string().regex(/^harness-log-[a-f0-9]{24}$/),
+      producer: z.enum(["stdout", "stderr"]),
+      availableStart: z.literal(0),
+      availableEnd: z.number().int().nonnegative(),
+      explicitRetrievalRequired: z.literal(true),
+      insertedIntoControllerConversation: z.literal(false),
+    }).strict()).max(2),
+    terminalEnvelopeValidation: z.object({
+      adapterReadyObserved: z.boolean(),
+      validTerminalEnvelopeCount: z.number().int().nonnegative(),
+      exactlyOne: z.boolean(),
+      processExitObserved: z.boolean(),
+    }).strict().nullable(),
+  }).strict(),
+}).strict();
+
+const runtimeHarnessRunLogsResultSchema = z.object({
+  type: z.literal("runtime.harness-run.logs.result"),
+  requestId: identifierSchema,
+  code: z.literal("harness_log_range"),
+  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
+  producer: z.enum(["stdout", "stderr"]),
+  streamId: z.string().regex(/^harness-log-[a-f0-9]{24}$/),
+  range: z.object({
+    start: z.number().int().nonnegative(),
+    end: z.number().int().nonnegative(),
+    availableEnd: z.number().int().nonnegative(),
+    eof: z.boolean(),
+  }).strict(),
+  byteLength: z.number().int().nonnegative().max(MAX_BROWSER_OPAQUE_CHUNK_BYTES),
+  sha256: digestSchema,
+  insertedIntoControllerConversation: z.literal(false),
+}).strict();
+
 export const runtimeControlEnvelopeSchema = z.object({
   channel: z.literal("control"),
   message: z.discriminatedUnion("type", [
@@ -153,6 +225,8 @@ export const runtimeControlEnvelopeSchema = z.object({
     browserProtocolErrorSchema,
     runtimePongSchema,
     runtimeTerminalAttachedSchema,
+    runtimeHarnessRunObservationSchema,
+    runtimeHarnessRunLogsResultSchema,
   ]),
 }).strict();
 

@@ -116,9 +116,22 @@ Silence, unrelated input, a Cockpit POST, a different Controller session, or a
 stale/materially changed request fails closed. Identical decision retries return
 the original durable result, changed idempotency content conflicts, and rejected
 or expired requests are terminal. Approval records `not_started` execution
-linkage and does not create a Harness run in this issue slice. One PTY view may
+linkage and does not itself create a Harness run. One PTY view may
 write while secondary views attach read-only, and browser disconnection does
 not terminate the provider PTY.
+
+After approval, `start <request-id> <revision>` sends a separate typed,
+revisioned, idempotent Harness-run mutation through the provider, Controller
+runtime, and framed Host protocol. The Host durably creates or finds one
+canonical run and returns while supervision continues. It invokes the exact
+pinned conformance Harness adapter on a dedicated framed channel; adapter
+readiness, Harness-defined progress, and exactly one terminal envelope are
+canonical control records, while stdout and stderr remain independently ranged
+diagnostic streams. Process exit or log text never implies success. The Cockpit
+observes ordered lifecycle events, explicitly fetches each log range over the
+opaque bulk channel, and renders the structured outcome. Closing or refreshing
+the browser neither cancels the run nor terminates its focused Controller
+session.
 
 The Cockpit also projects a thin optional Planning journey. Its Journey Rail
 shows the built-in Wayfinding, Speccing, and Ticketing stages from data labelled
@@ -178,6 +191,16 @@ npm run acceptance:issue-119
 Its retained sanitized evidence is generated with
 `npm run acceptance:issue-119:update-evidence` and stored in
 `acceptance/evidence/issue-119.json`.
+
+Run the approved conformance Harness and Cockpit observation scenario with:
+
+```bash
+npm run acceptance:issue-120
+```
+
+Its retained sanitized evidence is generated with
+`npm run acceptance:issue-120:update-evidence` and stored in
+`acceptance/evidence/issue-120.json`.
 
 Run the optional-Planning public-seam scenario with:
 

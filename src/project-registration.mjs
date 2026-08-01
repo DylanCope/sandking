@@ -444,17 +444,26 @@ const initializeConformanceWorkspace = async (workspacePath) => {
     }, null, 2)}\n`, { mode: 0o600 });
     await writeFile(
       join(workspacePath, "run.mjs"),
-      `const adapterProtocol = "1.0.0";
+      `import { writeSync } from "node:fs";
+
+const adapterProtocol = "1.0.0";
 const adapterId = "conformance-harness-adapter-v1";
-const capabilities = ["harness.launch.prepare.v1"];
+const capabilities = ["harness.launch.prepare.v1", "harness.run.v1"];
+const writeFrame = (message) => {
+  const body = Buffer.from(JSON.stringify(message), "utf8");
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(body.byteLength, 0);
+  writeSync(3, header);
+  writeSync(3, body);
+};
 const [command, encodedParameters] = process.argv.slice(2);
 if (command === "probe") {
-  process.stdout.write(JSON.stringify({
+  writeFrame({
     type: "harness.adapter.probe",
     adapterProtocol,
     adapterId,
     capabilities,
-  }));
+  });
 } else if (command === "prepare") {
   let parameters;
   try {
@@ -470,11 +479,11 @@ if (command === "probe") {
   ) {
     throw new Error("bounded_configuration_invalid");
   }
-  process.stdout.write(JSON.stringify({
+  writeFrame({
     type: "harness.launch.prepared",
     adapterProtocol,
     adapterId,
-    negotiatedCapabilities: capabilities,
+    negotiatedCapabilities: ["harness.launch.prepare.v1"],
     suppliedCapabilities: ["github.issues.read", "project.git.read"],
     sanitizedPreview: {
       summary: \`Delegate GitHub issue #\${parameters.issueNumber} on \${parameters.targetBranch} using the pinned conformance Harness.\`,
@@ -485,7 +494,72 @@ if (command === "probe") {
       projectWrite: false,
       harnessWorkspaceWrite: false,
     },
-  }));
+  });
+} else if (command === "run") {
+  let execution;
+  try {
+    execution = JSON.parse(Buffer.from(encodedParameters ?? "", "base64url").toString("utf8"));
+  } catch {
+    throw new Error("bounded_configuration_invalid");
+  }
+  if (
+    !/^harness-run-[a-f0-9]{24}$/.test(execution?.harnessRunId ?? "")
+    || !Number.isSafeInteger(execution?.parameters?.issueNumber)
+    || execution.parameters.issueNumber < 1
+    || execution.parameters.issueNumber > 999999999
+    || execution.parameters.targetBranch
+      !== \`sandcastle/issue-\${execution.parameters.issueNumber}\`
+  ) {
+    throw new Error("bounded_configuration_invalid");
+  }
+  const now = () => new Date().toISOString();
+  process.stdout.write(
+    \`Conformance diagnostic stdout for issue #\${execution.parameters.issueNumber}.\\n\`,
+  );
+  process.stderr.write(
+    \`Conformance diagnostic stderr for \${execution.parameters.targetBranch}.\\n\`,
+  );
+  writeFrame({
+    type: "harness.run.ready",
+    adapterProtocol,
+    adapterId,
+    harnessRunId: execution.harnessRunId,
+    capabilities: ["harness.run.v1"],
+    readyAt: now(),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  writeFrame({
+    type: "harness.run.progress",
+    adapterProtocol,
+    adapterId,
+    harnessRunId: execution.harnessRunId,
+    record: {
+      recordId: \`progress-\${"1".repeat(24)}\`,
+      schemaVersion: "1.0.0",
+      type: "conformance.step",
+      parentRecordId: null,
+      label: "Exercise approved conformance Launch",
+      summary: "The deterministic conformance workflow crossed its pinned adapter boundary.",
+      status: "complete",
+      timestamp: now(),
+      payload: { issueNumber: execution.parameters.issueNumber },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  writeFrame({
+    type: "harness.run.terminal",
+    adapterProtocol,
+    adapterId,
+    harnessRunId: execution.harnessRunId,
+    terminalId: \`harness-terminal-\${"2".repeat(24)}\`,
+    status: "succeeded",
+    completedAt: now(),
+    result: {
+      kind: "conformance-result",
+      issueNumber: execution.parameters.issueNumber,
+      targetBranch: execution.parameters.targetBranch,
+    },
+  });
 } else {
   throw new Error("harness_adapter_command_invalid");
 }
