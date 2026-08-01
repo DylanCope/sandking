@@ -30,7 +30,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.launch-request.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-immutable-launch-requests")
+  .update("sandking-host-control-schema-v1-with-durable-launch-idempotency")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -373,6 +373,7 @@ const launchRequestPrepareFailureSchema = z.object({
   idempotencyKeyHash: digestSchema.nullable(),
   expectedRevision: z.number().int().nonnegative().nullable(),
   actualRevision: z.literal(0),
+  idempotentReplay: z.boolean(),
   auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
   prohibitedSideEffects: z.object({
     delegatedWorkStarted: z.literal(false),
@@ -390,7 +391,7 @@ const launchRequestDecisionSchema = z.object({
   controllerSessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
   authorizationClass: launchAuthorizationClassSchema,
   idempotencyKey: z.string().min(1).max(256),
-  expectedRevision: z.number().int().positive(),
+  expectedRevision: z.number().int().nonnegative(),
 }).strip();
 const launchRequestDecisionResultSchema = z.object({
   type: z.literal("launch.request.decision.result"),
@@ -422,6 +423,7 @@ const launchRequestDecisionFailureSchema = z.object({
   idempotencyKeyHash: digestSchema.nullable(),
   expectedRevision: z.number().int().nonnegative().nullable(),
   actualRevision: z.number().int().nonnegative(),
+  idempotentReplay: z.boolean(),
   auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
   current: z.object({
     launchRequestId: z.string().regex(/^launch-request-[a-f0-9]{24}$/),

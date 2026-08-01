@@ -296,7 +296,7 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
       assert.equal(approved.revision, 2);
       assert.equal(approved.decision.controllerSessionId, sessionId);
       assert.equal(approved.execution.status, "not_started");
-      assert.equal(approvedState.decisionOutcomes.length, 1);
+      assert.equal(approvedState.decisionOutcomes.length, 2);
       assert.equal((await readdir(dataDir)).some((name) => /harness-run/i.test(name)), false);
 
       const auditText = await readFile(join(dataDir, "audit.jsonl"), "utf8");

@@ -61,6 +61,38 @@ test("the framed Host durably prepares and decides one immutable Launch request"
     });
     assert.equal((await readFrame(child.stdout)).type, "host.identity.result");
 
+    const missingProjectPreparation = {
+      type: "launch.request.prepare",
+      requestId: "prepare-missing-project",
+      projectId: `project-${"9".repeat(24)}`,
+      parameters: { issueNumber: 119, targetBranch: "sandcastle/issue-119" },
+      controllerId,
+      controllerSessionId,
+      authorizationClass: "focused_controller_launch",
+      idempotencyKey: "prepare-missing-project",
+      expectedRevision: 0,
+      expiresInSeconds: 300,
+    };
+    writeFrame(child.stdin, missingProjectPreparation);
+    const missingProject = await readFrame(child.stdout);
+    assert.equal(missingProject.code, "project_not_found");
+    assert.equal(missingProject.idempotentReplay, false);
+    writeFrame(child.stdin, {
+      ...missingProjectPreparation,
+      requestId: "prepare-missing-project-replay",
+    });
+    const missingProjectReplay = await readFrame(child.stdout);
+    assert.equal(missingProjectReplay.code, "project_not_found");
+    assert.equal(missingProjectReplay.idempotentReplay, true);
+    assert.equal(missingProjectReplay.auditId, missingProject.auditId);
+    writeFrame(child.stdin, {
+      ...missingProjectPreparation,
+      requestId: "prepare-missing-project-conflict",
+      projectId: `project-${"8".repeat(24)}`,
+    });
+    const missingProjectKeyConflict = await readFrame(child.stdout);
+    assert.equal(missingProjectKeyConflict.code, "idempotency_key_conflict");
+
     writeFrame(child.stdin, {
       type: "project.register",
       requestId: "register-launch-test-project",
@@ -134,6 +166,39 @@ test("the framed Host durably prepares and decides one immutable Launch request"
       idempotencyKey: "approve-framed-launch",
       expectedRevision: 1,
     };
+    const staleDecisionRequest = {
+      ...decisionRequest,
+      requestId: "stale-framed-launch",
+      idempotencyKey: "stale-framed-launch",
+      expectedRevision: 0,
+    };
+    writeFrame(child.stdin, staleDecisionRequest);
+    const stale = await readFrame(child.stdout);
+    assert.equal(stale.type, "launch.request.decision.failure");
+    assert.equal(stale.code, "mutation_revision_conflict");
+    assert.equal(stale.actualRevision, 1);
+    assert.equal(stale.current.revision, 1);
+    assert.equal(stale.current.preview.secretFree, true);
+    assert.equal(stale.idempotentReplay, false);
+
+    writeFrame(child.stdin, {
+      ...staleDecisionRequest,
+      requestId: "stale-framed-launch-replay",
+    });
+    const staleReplay = await readFrame(child.stdout);
+    assert.equal(staleReplay.code, "mutation_revision_conflict");
+    assert.equal(staleReplay.idempotentReplay, true);
+    assert.equal(staleReplay.auditId, stale.auditId);
+
+    writeFrame(child.stdin, {
+      ...staleDecisionRequest,
+      requestId: "stale-framed-launch-conflict",
+      expectedRevision: 1,
+    });
+    const staleKeyConflict = await readFrame(child.stdout);
+    assert.equal(staleKeyConflict.code, "idempotency_key_conflict");
+    assert.equal(staleKeyConflict.idempotentReplay, false);
+
     writeFrame(child.stdin, decisionRequest);
     const approved = await readFrame(child.stdout);
     assert.equal(approved.type, "launch.request.decision.result");
@@ -145,10 +210,36 @@ test("the framed Host durably prepares and decides one immutable Launch request"
     assert.equal(replay.idempotentReplay, true);
     assert.equal(replay.auditId, approved.auditId);
 
+    writeFrame(child.stdin, {
+      ...prepareRequest,
+      requestId: "prepare-framed-launch-for-drift",
+      idempotencyKey: "prepare-framed-launch-for-drift",
+    });
+    const preparedForDrift = await readFrame(child.stdout);
+    assert.equal(preparedForDrift.type, "launch.request.prepare.result");
+    const harnessState = JSON.parse(
+      await readFile(join(dataDir, "harness-registry.json"), "utf8"),
+    );
+    const adapterPath = join(harnessState.harnesses[0].workspacePath, "run.mjs");
+    const adapterSource = await readFile(adapterPath, "utf8");
+    await writeFile(adapterPath, `${adapterSource}\n// material workspace drift\n`);
+    writeFrame(child.stdin, {
+      ...decisionRequest,
+      requestId: "decide-framed-launch-after-drift",
+      launchRequestId: preparedForDrift.launchRequest.launchRequestId,
+      idempotencyKey: "decide-framed-launch-after-drift",
+    });
+    const changed = await readFrame(child.stdout);
+    assert.equal(changed.type, "launch.request.decision.failure");
+    assert.equal(changed.code, "launch_request_materially_changed");
+    assert.equal(changed.current.status, "expired");
+    assert.equal(changed.current.revision, 2);
+
     const retained = JSON.parse(await readFile(join(dataDir, "launch-requests.json"), "utf8"));
-    assert.equal(retained.launchRequests.length, 1);
+    assert.equal(retained.launchRequests.length, 2);
     assert.equal(retained.launchRequests[0].status, "approved");
     assert.equal(retained.launchRequests[0].revision, 2);
+    assert.equal(retained.launchRequests[1].status, "expired");
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGTERM");

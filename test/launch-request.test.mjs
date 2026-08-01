@@ -219,15 +219,32 @@ test("only the owning focused Controller decides the exact revision idempotently
     assert.equal(unrelated.current.revision, 1);
     assert.equal(unrelated.prohibitedSideEffects.harnessRunStarted, false);
 
-    const stale = await manager.decide({
+    const staleRequest = {
       ...decisionRequest,
       requestId: "stale-session-approval",
       idempotencyKey: "stale-session-approval",
       expectedRevision: 0,
-    });
+    };
+    const stale = await manager.decide(staleRequest);
     assert.equal(stale.code, "mutation_revision_conflict");
     assert.equal(stale.actualRevision, 1);
     assert.equal(stale.current.preview.secretFree, true);
+    assert.equal(stale.idempotentReplay, false);
+
+    const staleReplay = await manager.decide({
+      ...staleRequest,
+      requestId: "stale-session-approval-replay",
+    });
+    assert.equal(staleReplay.code, "mutation_revision_conflict");
+    assert.equal(staleReplay.idempotentReplay, true);
+    assert.equal(staleReplay.auditId, stale.auditId);
+
+    const staleKeyConflict = await manager.decide({
+      ...staleRequest,
+      requestId: "stale-session-approval-conflict",
+      expectedRevision: 1,
+    });
+    assert.equal(staleKeyConflict.code, "idempotency_key_conflict");
 
     const approved = await manager.decide(decisionRequest);
     assert.equal(approved.type, "launch.request.decision.result");
@@ -336,6 +353,10 @@ test("only the owning focused Controller decides the exact revision idempotently
               replay.launchRequest.decision.decisionId
                 === approved.launchRequest.decision.decisionId,
             changedContentCode: conflictingUse.code,
+            failedReplayCode: staleReplay.code,
+            failedReplayIdempotent: staleReplay.idempotentReplay,
+            failedReplayReturnedOriginalAudit: staleReplay.auditId === stale.auditId,
+            failedChangedContentCode: staleKeyConflict.code,
           },
           failures: {
             unrelatedSession: unrelated.code,
@@ -446,6 +467,7 @@ test("expiry, rejection, and material change are terminal and require a new Laun
   const audits = [];
   let observedNow = new Date("2026-08-01T12:00:00.000Z");
   let currentContext = structuredClone(launchContext);
+  let currentSuppliedCapabilities = ["github.issues.read", "project.git.read"];
   const recordAudit = async (action, outcome, details) => {
     const auditId = `audit-${String(audits.length + 1).padStart(24, "0")}`;
     audits.push({ auditId, action, outcome, details });
@@ -461,7 +483,7 @@ test("expiry, rejection, and material change are terminal and require a new Laun
         adapterId: "conformance-harness-adapter-v1",
         adapterProtocol: "1.0.0",
         negotiatedCapabilities: ["harness.launch.prepare.v1"],
-        suppliedCapabilities: ["github.issues.read", "project.git.read"],
+        suppliedCapabilities: structuredClone(currentSuppliedCapabilities),
         sanitizedPreview: { summary: "Sanitized conformance preview", secretFree: true },
         sideEffects: {
           delegatedWorkStarted: false,
@@ -518,6 +540,13 @@ test("expiry, rejection, and material change are terminal and require a new Laun
     assert.equal(materiallyChanged.current.status, "expired");
 
     currentContext = structuredClone(launchContext);
+    const changedCapabilities = (await prepare()).launchRequest;
+    currentSuppliedCapabilities = ["github.issues.read"];
+    const capabilitiesMateriallyChanged = await decide(changedCapabilities);
+    assert.equal(capabilitiesMateriallyChanged.code, "launch_request_materially_changed");
+    assert.equal(capabilitiesMateriallyChanged.current.status, "expired");
+
+    currentSuppliedCapabilities = ["github.issues.read", "project.git.read"];
     const rejectable = (await prepare()).launchRequest;
     const rejected = await decide(rejectable, "rejected");
     assert.equal(rejected.code, "launch_request_rejected");
@@ -575,6 +604,87 @@ test("expiry, rejection, and material change are terminal and require a new Laun
         { mode: 0o600 },
       );
     }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("durable Launch requests and preparation outcomes are never silently evicted", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-launch-durability-"));
+  let auditSequence = 0;
+  const recordAudit = async () => {
+    auditSequence += 1;
+    return `audit-${String(auditSequence).padStart(24, "0")}`;
+  };
+  const managerOptions = {
+    dataDir,
+    hostId,
+    recordAudit,
+    loadLaunchContext: async () => structuredClone(launchContext),
+    prepareHarness: async (_context, parameters) => ({
+      adapterId: "conformance-harness-adapter-v1",
+      adapterProtocol: "1.0.0",
+      negotiatedCapabilities: ["harness.launch.prepare.v1"],
+      suppliedCapabilities: ["github.issues.read", "project.git.read"],
+      sanitizedPreview: {
+        summary: `Delegate issue #${parameters.issueNumber}`,
+        secretFree: true,
+      },
+      sideEffects: {
+        delegatedWorkStarted: false,
+        projectWrite: false,
+        harnessWorkspaceWrite: false,
+      },
+    }),
+    now: () => new Date("2026-08-01T12:00:00.000Z"),
+  };
+  try {
+    const manager = await createLaunchRequestManager(managerOptions);
+    let firstRequest;
+    let firstOutcome;
+    for (let index = 1; index <= 257; index += 1) {
+      const request = {
+        requestId: `prepare-durable-launch-${index}`,
+        projectId,
+        parameters: {
+          issueNumber: index,
+          targetBranch: `sandcastle/issue-${index}`,
+        },
+        controllerId,
+        controllerSessionId,
+        authorizationClass: "focused_controller_launch",
+        idempotencyKey: `prepare-durable-launch-${index}`,
+        expectedRevision: 0,
+        expiresInSeconds: 300,
+      };
+      const outcome = await manager.prepare(request);
+      if (index === 1) {
+        firstRequest = request;
+        firstOutcome = outcome;
+      }
+    }
+
+    const retained = JSON.parse(await readFile(join(dataDir, "launch-requests.json"), "utf8"));
+    assert.equal(retained.launchRequests.length, 257);
+    assert.equal(retained.preparationOutcomes.length, 257);
+    assert.equal(retained.launchRequests[0].launchRequestId,
+      firstOutcome.launchRequest.launchRequestId);
+
+    const reloadedManager = await createLaunchRequestManager(managerOptions);
+    const replay = await reloadedManager.prepare({
+      ...firstRequest,
+      requestId: "prepare-durable-launch-1-replay",
+    });
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.launchRequest.launchRequestId,
+      firstOutcome.launchRequest.launchRequestId);
+
+    const changedKeyUse = await reloadedManager.prepare({
+      ...firstRequest,
+      requestId: "prepare-durable-launch-1-conflict",
+      parameters: { issueNumber: 999, targetBranch: "sandcastle/issue-999" },
+    });
+    assert.equal(changedKeyUse.code, "idempotency_key_conflict");
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

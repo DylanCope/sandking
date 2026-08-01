@@ -153,9 +153,9 @@ const retainedOutcomeSchema = z.object({
 }).strict();
 const retainedStateSchema = z.object({
   schemaVersion: z.literal(1),
-  launchRequests: z.array(launchRequestSchema).max(256),
-  preparationOutcomes: z.array(retainedOutcomeSchema).max(256),
-  decisionOutcomes: z.array(retainedOutcomeSchema).max(512),
+  launchRequests: z.array(launchRequestSchema),
+  preparationOutcomes: z.array(retainedOutcomeSchema),
+  decisionOutcomes: z.array(retainedOutcomeSchema),
 }).strict();
 
 const initialState = () => ({
@@ -277,12 +277,14 @@ export const createLaunchRequestManager = async (options) => {
    * @param {any} request
    * @param {string | null} idempotencyKeyHash
    * @param {boolean} [retryable]
+   * @param {{state: any, requestFingerprint: string} | null} [retention]
    */
   const preparationFailure = async (
     code,
     request,
     idempotencyKeyHash,
     retryable = true,
+    retention = null,
   ) => {
     const authorizationClass = "focused_controller_launch";
     const auditId = await options.recordAudit("launch.request.prepare", "rejected", {
@@ -304,7 +306,7 @@ export const createLaunchRequestManager = async (options) => {
       harnessWorkspaceWrite: false,
       outcomeReference: null,
     });
-    return {
+    const response = {
       type: "launch.request.prepare.failure",
       requestId: typeof request.requestId === "string" ? request.requestId : "invalid-request",
       code,
@@ -315,6 +317,7 @@ export const createLaunchRequestManager = async (options) => {
         ? request.expectedRevision
         : null,
       actualRevision: 0,
+      idempotentReplay: false,
       auditId,
       prohibitedSideEffects: {
         delegatedWorkStarted: false,
@@ -323,6 +326,15 @@ export const createLaunchRequestManager = async (options) => {
         approvalRecorded: false,
       },
     };
+    if (retention && idempotencyKeyHash) {
+      retention.state.preparationOutcomes.push({
+        idempotencyKeyHash,
+        requestFingerprint: retention.requestFingerprint,
+        response,
+      });
+      await writePrivateJson(statePath(options.dataDir), retention.state);
+    }
+    return response;
   };
 
   /** @param {any} request */
@@ -387,6 +399,7 @@ export const createLaunchRequestManager = async (options) => {
         request,
         idempotencyKeyHash,
         false,
+        { state, requestFingerprint },
       );
     }
 
@@ -401,7 +414,13 @@ export const createLaunchRequestManager = async (options) => {
         "harness_pin_missing",
         "harness_pin_invalid",
       ].includes(observedCode) ? observedCode : "launch_precondition_invalid";
-      return preparationFailure(code, request, idempotencyKeyHash);
+      return preparationFailure(
+        code,
+        request,
+        idempotencyKeyHash,
+        true,
+        { state, requestFingerprint },
+      );
     }
     if (
       context.project.projectId !== request.projectId
@@ -412,6 +431,8 @@ export const createLaunchRequestManager = async (options) => {
         "launch_precondition_invalid",
         request,
         idempotencyKeyHash,
+        true,
+        { state, requestFingerprint },
       );
     }
     let harnessPreparation;
@@ -427,7 +448,13 @@ export const createLaunchRequestManager = async (options) => {
         "harness_adapter_protocol_invalid",
         "harness_preparation_side_effect_detected",
       ].includes(observedCode) ? observedCode : "harness_adapter_protocol_invalid";
-      return preparationFailure(code, request, idempotencyKeyHash, false);
+      return preparationFailure(
+        code,
+        request,
+        idempotencyKeyHash,
+        false,
+        { state, requestFingerprint },
+      );
     }
     const launchRequestId = `launch-request-${randomBytes(12).toString("hex")}`;
     const preparedAtDate = now();
@@ -525,13 +552,11 @@ export const createLaunchRequestManager = async (options) => {
       launchRequest,
     };
     state.launchRequests.push(launchRequest);
-    state.launchRequests = state.launchRequests.slice(-256);
     state.preparationOutcomes.push({
       idempotencyKeyHash,
       requestFingerprint,
       response,
     });
-    state.preparationOutcomes = state.preparationOutcomes.slice(-256);
     await writePrivateJson(statePath(options.dataDir), state);
     return response;
   });
@@ -550,6 +575,7 @@ export const createLaunchRequestManager = async (options) => {
    * @param {import("zod").infer<typeof launchRequestSchema> | undefined} launchRequest
    * @param {string | null} idempotencyKeyHash
    * @param {boolean} [retryable]
+   * @param {{state: any, requestFingerprint: string} | null} [retention]
    */
   const decisionFailure = async (
     code,
@@ -557,6 +583,7 @@ export const createLaunchRequestManager = async (options) => {
     launchRequest,
     idempotencyKeyHash,
     retryable = true,
+    retention = null,
   ) => {
     const authorizationClass = "focused_controller_launch";
     const expectedRevision = Number.isSafeInteger(request.expectedRevision)
@@ -587,7 +614,7 @@ export const createLaunchRequestManager = async (options) => {
       executionOutcome: "not_started",
       outcomeReference: null,
     });
-    return {
+    const response = {
       type: "launch.request.decision.failure",
       requestId: typeof request.requestId === "string" ? request.requestId : "invalid-request",
       code,
@@ -596,6 +623,7 @@ export const createLaunchRequestManager = async (options) => {
       idempotencyKeyHash,
       expectedRevision,
       actualRevision,
+      idempotentReplay: false,
       auditId,
       current: currentSummary(launchRequest),
       prohibitedSideEffects: {
@@ -603,6 +631,15 @@ export const createLaunchRequestManager = async (options) => {
         browserApprovalAccepted: false,
       },
     };
+    if (retention && idempotencyKeyHash) {
+      retention.state.decisionOutcomes.push({
+        idempotencyKeyHash,
+        requestFingerprint: retention.requestFingerprint,
+        response,
+      });
+      await writePrivateJson(statePath(options.dataDir), retention.state);
+    }
+    return response;
   };
 
   /** @param {any} request */
@@ -675,6 +712,7 @@ export const createLaunchRequestManager = async (options) => {
         launchRequest,
         idempotencyKeyHash,
         false,
+        { state, requestFingerprint },
       );
     }
     if (!launchRequest) {
@@ -683,6 +721,8 @@ export const createLaunchRequestManager = async (options) => {
         request,
         undefined,
         idempotencyKeyHash,
+        true,
+        { state, requestFingerprint },
       );
     }
     if (
@@ -695,6 +735,7 @@ export const createLaunchRequestManager = async (options) => {
         launchRequest,
         idempotencyKeyHash,
         false,
+        { state, requestFingerprint },
       );
     }
     if (request.expectedRevision !== launchRequest.revision) {
@@ -703,6 +744,8 @@ export const createLaunchRequestManager = async (options) => {
         request,
         launchRequest,
         idempotencyKeyHash,
+        true,
+        { state, requestFingerprint },
       );
     }
     if (launchRequest.status !== "pending") {
@@ -712,6 +755,7 @@ export const createLaunchRequestManager = async (options) => {
         launchRequest,
         idempotencyKeyHash,
         false,
+        { state, requestFingerprint },
       );
     }
 
@@ -734,25 +778,31 @@ export const createLaunchRequestManager = async (options) => {
         executionOutcome: "not_started",
         outcomeReference: null,
       });
-      await writePrivateJson(statePath(options.dataDir), state);
       return decisionFailure(
         "launch_request_expired",
         request,
         launchRequest,
         idempotencyKeyHash,
         false,
+        { state, requestFingerprint },
       );
     }
 
     let currentContext;
+    let currentHarnessPreparation;
     try {
       currentContext = launchContextSchema.parse(
         await options.loadLaunchContext(launchRequest.project.projectId),
       );
+      currentHarnessPreparation = harnessPreparationSchema.parse(
+        await options.prepareHarness(currentContext, launchRequest.parameters),
+      );
     } catch {
       currentContext = null;
+      currentHarnessPreparation = null;
     }
     const preconditionsHold = currentContext
+      && currentHarnessPreparation
       && currentContext.project.revision === launchRequest.capturedPreconditions.projectRevision
       && currentContext.project.harness.harnessId
         === launchRequest.capturedPreconditions.harnessId
@@ -761,7 +811,11 @@ export const createLaunchRequestManager = async (options) => {
       && currentContext.harness.immutableRevision
         === launchRequest.capturedPreconditions.harnessPinnedRevision
       && digest(currentContext.project.harness.boundedConfiguration)
-        === launchRequest.capturedPreconditions.boundedConfigurationDigest;
+        === launchRequest.capturedPreconditions.boundedConfigurationDigest
+      && digest(currentHarnessPreparation.suppliedCapabilities)
+        === launchRequest.capturedPreconditions.suppliedCapabilitiesDigest
+      && currentHarnessPreparation.sanitizedPreview.summary
+        === launchRequest.preview.summary;
     if (!preconditionsHold) {
       launchRequest.status = "expired";
       launchRequest.revision += 1;
@@ -780,13 +834,13 @@ export const createLaunchRequestManager = async (options) => {
         executionOutcome: "not_started",
         outcomeReference: null,
       });
-      await writePrivateJson(statePath(options.dataDir), state);
       return decisionFailure(
         "launch_request_materially_changed",
         request,
         launchRequest,
         idempotencyKeyHash,
         false,
+        { state, requestFingerprint },
       );
     }
 
@@ -845,7 +899,6 @@ export const createLaunchRequestManager = async (options) => {
       requestFingerprint,
       response,
     });
-    state.decisionOutcomes = state.decisionOutcomes.slice(-512);
     await writePrivateJson(statePath(options.dataDir), state);
     return response;
   });

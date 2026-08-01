@@ -105,8 +105,15 @@ test("Launch preparation and decision are capability-negotiated typed Host opera
 
   writeFrame(stream, prepare);
   writeFrame(stream, decision);
+  writeFrame(stream, {
+    ...decision,
+    requestId: "decide-launch-protocol-stale-request",
+    idempotencyKey: "decide-launch-protocol-stale-request",
+    expectedRevision: 0,
+  });
   assert.deepEqual(await readFrame(stream), prepare);
   assert.deepEqual(await readFrame(stream), decision);
+  assert.equal((await readFrame(stream)).expectedRevision, 0);
   assert.throws(
     () => writeFrame(stream, {
       ...decision,
