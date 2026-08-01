@@ -107,13 +107,14 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
       const staleJourney = page.locator(
         "[data-journey-id='journey-fixture-unrefreshable']",
       );
-      assert.equal(await staleJourney.getAttribute("data-freshness"), "stale");
-      assert.match(await staleJourney.textContent(), /stale.*mutation.*disabled/is);
-      assert.equal(
-        await staleJourney.locator("button[data-planning-mutation]").evaluateAll((buttons) =>
-          buttons.every((button) => button.disabled)),
-        true,
-      );
+      const staleFreshnessAttribute = await staleJourney.getAttribute("data-freshness");
+      const staleWarning = await staleJourney.textContent();
+      const staleControlsDisabled = await staleJourney
+        .locator("button[data-planning-mutation]")
+        .evaluateAll((buttons) => buttons.every((button) => button.disabled));
+      assert.equal(staleFreshnessAttribute, "stale");
+      assert.match(staleWarning, /stale.*mutation.*disabled/is);
+      assert.equal(staleControlsDisabled, true);
 
       const sessionButton = freshJourney.locator(
         "[data-stage-id='speccing'] button[data-action='open-session']",
@@ -252,18 +253,15 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
 
       const projectAfter = sha256(await readFile(protectedProjectFile));
       assert.equal(projectAfter, projectBefore);
+      const projectFilesAfter = await readdir(protectedProject);
+      assert.deepEqual(projectFilesAfter, ["README.md"]);
       const privateStateFiles = await readdir(dataDir);
       assert.ok(privateStateFiles.includes("planning-state.json"));
       assert.equal(privateStateFiles.some((file) => /queue/i.test(file)), false);
 
       const observation = {
         scenario: "planning-spine/projects-an-optional-journey",
-        packagedPublicSeam: {
-          command: "sandking",
-          installed: true,
-          launchedOutsideCheckout: true,
-          tarballSha256: installed.tarballSha256,
-        },
+        packagedPublicSeam: installed.observation,
         runtime: {
           runtimeId: launch.runtime.runtimeId,
           hostId: launch.host.hostId,
@@ -274,6 +272,11 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
           stale: acknowledgement.viewModel.planning.journeys[1].projection,
         },
         builtInStages: acknowledgement.viewModel.planning.builtInStages,
+        visibleStaleState: {
+          freshnessAttribute: staleFreshnessAttribute,
+          warningShown: /stale.*mutation.*disabled/is.test(staleWarning),
+          allMutationControlsDisabled: staleControlsDisabled,
+        },
         focusedSession: {
           sessionId,
           workContextId: "work-context-speccing-optional-planning",
@@ -319,9 +322,17 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
         securityAssertions: {
           secretAbsentFromPage: !pageText.includes(controllerSecret),
           idempotencyKeyAbsentFromAudit: !JSON.stringify(planningAudits).includes(idempotencyKey),
-          planningStateOutsideProject: !privateStateFiles.includes(protectedProjectFile),
+          planningStateOutsideProject:
+            privateStateFiles.includes("planning-state.json")
+            && projectFilesAfter.length === 1
+            && projectFilesAfter[0] === "README.md",
         },
-        software: { browser: browser.version(), node: process.version },
+        software: {
+          sandking: "0.1.0",
+          browserProtocol: acknowledgement.protocol.version,
+          browser: browser.version(),
+          node: process.version,
+        },
       };
       const observationText = JSON.stringify(observation);
       assert.doesNotMatch(observationText, new RegExp(controllerSecret));
