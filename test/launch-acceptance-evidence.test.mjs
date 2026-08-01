@@ -188,6 +188,37 @@ test("retained issue 119 evidence proves the immutable request and focused appro
 });
 
 test("retained issue 119 evidence proves authorization, idempotency, and terminality", () => {
+  assert.deepEqual({
+    concurrentStatuses: evidence.sessionCreation.concurrentStatuses,
+    freshOutcomes: evidence.sessionCreation.freshOutcomes,
+    replayOutcomes: evidence.sessionCreation.replayOutcomes,
+    oneOriginalAudit: evidence.sessionCreation.oneOriginalAudit,
+  }, {
+    concurrentStatuses: [200, 201],
+    freshOutcomes: 1,
+    replayOutcomes: 1,
+    oneOriginalAudit: true,
+  });
+  assert.match(evidence.sessionCreation.canonicalSessionId,
+    /^controller-session-[a-f0-9]{24}$/);
+  assert.deepEqual(evidence.invalidPreparation, {
+    code: "bounded_configuration_invalid",
+    retainedHostOutcome: true,
+    delegatedWorkStarted: false,
+  });
+  assert.deepEqual({
+    kind: evidence.materialDeviation.kind,
+    code: evidence.materialDeviation.code,
+    status: evidence.materialDeviation.status,
+    revision: evidence.materialDeviation.revision,
+  }, {
+    kind: "project_path_replaced",
+    code: "launch_request_materially_changed",
+    status: "expired",
+    revision: 2,
+  });
+  assert.match(evidence.materialDeviation.auditId, /^audit-[a-f0-9]{24}$/);
+
   const decision = evidence.contractEvidence.decision;
   assert.equal(decision.kind, "launch_decision_contract");
   assert.deepEqual(decision.approved.execution, {
@@ -273,9 +304,19 @@ test("retained issue 119 evidence proves PTY ownership, audit linkage, and secre
   assert.equal(approval.details.controllerSessionId, evidence.identities.controllerSessionId);
   assert.equal(approval.details.expectedRevision, 1);
   assert.equal(approval.details.resultingRevision, 2);
+  assert.deepEqual(approval.details.parameters, evidence.launchRequest.parameters);
   assert.equal(approval.details.decision, "approved");
   assert.equal(approval.details.executionOutcome, "not_started");
   assert.equal(approval.details.outcomeReference, null);
+  const terminalRequestAudits = evidence.contractEvidence.terminal.auditReferences.filter((entry) =>
+    entry.action === "launch.request.expire"
+    || (entry.action === "launch.request.decision"
+      && entry.outcome === "accepted"
+      && entry.details.decision === "rejected"));
+  assert.ok(terminalRequestAudits.length >= 3);
+  assert.ok(terminalRequestAudits.every((entry) =>
+    JSON.stringify(entry.details.parameters)
+      === JSON.stringify(evidence.launchRequest.parameters)));
   assert.ok(Object.values(evidence.securityAssertions).every(Boolean));
   assert.ok(Object.values(evidence.prohibitedSideEffectAssertions).every(
     (observed) => observed === false,
