@@ -33,7 +33,9 @@ test("issue 117 acceptance manifest is executable and traces the live specificat
     "test/local-walking-skeleton.browser.test.mjs",
   ));
   assert.ok(manifest.verification.commands.flat().includes("test/package-command.test.mjs"));
-  assert.ok(manifest.scenarios[0].actions.includes("launch installed sandking outside checkout"));
+  assert.ok(manifest.scenarios[0].actions.includes(
+    "launch installed sandking outside checkout with lifecycle mutation contract",
+  ));
 });
 
 test("retained issue 117 evidence is sanitized and covers negotiation and prohibited effects", () => {
@@ -84,6 +86,7 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
     "controller_protocol_major_mismatch",
     "controller_capability_unsupported",
     "controller_schema_mismatch",
+    "controller_host_identity_mismatch",
     "host_protocol_major_mismatch",
     "host_identity_mismatch",
     "host_capability_unsupported",
@@ -99,6 +102,9 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
   assert.equal(evidence.typedMismatchEvidence.mutationOccurred, false);
   assert.ok(evidence.typedMismatchEvidence.host.every((result) =>
     result.acceptedState.beforeSha256 === result.acceptedState.afterSha256
+    && result.acceptedState.files.includes("controller-host-binding.json")
+    && result.acceptedState.files.includes("host-identity.json")
+    && result.acceptedState.files.includes("runtime-lifecycle.json")
     && result.runtimeStatePresent === false
     && result.auditReferences.some((entry) =>
       entry.auditId === result.diagnosis.auditId
@@ -122,6 +128,23 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
   assert.equal(evidence.sessionMutationEvidence.socketCloseCode, 1008);
   assert.equal(evidence.sessionMutationEvidence.socketCloseReason, "session_ended");
   assert.equal(evidence.sessionMutationEvidence.postEndPong, false);
+  assert.equal(evidence.sessionMutationEvidence.concurrentRequestCount, 8);
+  assert.equal(evidence.sessionMutationEvidence.acceptedOutcomeCount, 1);
+  assert.equal(evidence.sessionMutationEvidence.replayOutcomeCount, 7);
+  assert.equal(evidence.sessionMutationEvidence.concurrentSameAudit, true);
+  assert.deepEqual({
+    authorizationClass: evidence.runtimeStartEvidence.authorizationClass,
+    initialRevision: evidence.runtimeStartEvidence.initialRevision,
+    resultingRevision: evidence.runtimeStartEvidence.resultingRevision,
+    code: evidence.runtimeStartEvidence.code,
+    idempotentReplay: evidence.runtimeStartEvidence.idempotentReplay,
+  }, {
+    authorizationClass: "user_runtime_lifecycle",
+    initialRevision: 0,
+    resultingRevision: 1,
+    code: "runtime_started",
+    idempotentReplay: false,
+  });
   assert.deepEqual({
     authorizationClass: evidence.runtimeStopEvidence.authorizationClass,
     initialRevision: evidence.runtimeStopEvidence.initialRevision,
@@ -174,6 +197,22 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
     expectedRevision: 1,
     actualRevision: 1,
     resultingRevision: 2,
+  });
+  const acceptedRuntimeStart = evidence.auditReferences.find((entry) =>
+    entry.auditId === evidence.runtimeStartEvidence.auditId);
+  assert.equal(acceptedRuntimeStart.action, "runtime.start");
+  assert.equal(acceptedRuntimeStart.outcome, "accepted");
+  assert.match(acceptedRuntimeStart.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+  assert.deepEqual({
+    authorizationClass: acceptedRuntimeStart.details.authorizationClass,
+    expectedRevision: acceptedRuntimeStart.details.expectedRevision,
+    actualRevision: acceptedRuntimeStart.details.actualRevision,
+    resultingRevision: acceptedRuntimeStart.details.resultingRevision,
+  }, {
+    authorizationClass: "user_runtime_lifecycle",
+    expectedRevision: 0,
+    actualRevision: 0,
+    resultingRevision: 1,
   });
   const durableIdentityMismatch = evidence.typedMismatchEvidence.host.find((result) =>
     result.diagnosis.code === "host_identity_mismatch");
