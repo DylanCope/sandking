@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { createHash as createHandshakeHash } from "node:crypto";
 import { join } from "node:path";
-import { protocolVersion, releaseVersion, readFrame, writeFrame } from "./protocol.mjs";
+import { protocolVersion, releaseVersion, readFrame, writeFrame, ProtocolError } from "./protocol.mjs";
 
 const parseArgs = (argv) => {
   const result = {};
@@ -26,6 +26,7 @@ const statePath = join(args.dataDir, "runtime-state.json");
 const tokenPath = join(args.dataDir, "bootstrap-tokens.json");
 const startupErrorPath = join(args.dataDir, "startup-error.json");
 const runtimeErrorPath = join(args.dataDir, "runtime-error.log");
+const sessionCookieName = "sandking_session";
 
 const sessions = new Map();
 let hostProcess;
@@ -33,6 +34,16 @@ let state;
 
 const cockpitCsp =
   "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'";
+
+const cockpitScript = `const protocol = location.protocol === "https:" ? "wss" : "ws";
+const socket = new WebSocket(protocol + "://" + location.host + "/ws");
+
+socket.addEventListener("message", (event) => {
+  const payload = JSON.parse(event.data);
+  document.getElementById("app").textContent =
+    "Connected to " + payload.host.identity + " with protocol " + payload.protocol.version;
+});
+`;
 
 const readJson = async (filePath, fallback) => {
   try {
@@ -118,6 +129,26 @@ const shutdown = async () => {
   await rm(statePath, { force: true });
 };
 
+const sanitizeStartupError = (error) => {
+  if (error instanceof ProtocolError) {
+    return "host_protocol_invalid_frame";
+  }
+
+  if (error instanceof Error) {
+    switch (error.message) {
+      case "host_protocol_error":
+      case "host_protocol_major_mismatch":
+      case "host_identity_mismatch":
+      case "host_capability_missing":
+        return error.message;
+      default:
+        return "runtime_start_failed";
+    }
+  }
+
+  return "runtime_start_failed";
+};
+
 const launchHost = async () => {
   const child = spawn(process.execPath, [join(process.cwd(), "src", "local-host.mjs")], {
     cwd: process.cwd(),
@@ -186,7 +217,7 @@ const main = async () => {
           const sessionId = createSession();
           response.writeHead(302, {
             location: "/",
-            "set-cookie": `__Host-sandking_session=${sessionId}; HttpOnly; SameSite=Strict; Path=/`,
+            "set-cookie": `${sessionCookieName}=${sessionId}; HttpOnly; SameSite=Strict; Path=/`,
             "content-security-policy": cockpitCsp,
           });
           response.end();
@@ -195,7 +226,7 @@ const main = async () => {
 
         if (request.method === "GET" && request.url === "/") {
           const cookies = parseCookies(request.headers.cookie);
-          const session = sessions.get(cookies["__Host-sandking_session"]);
+          const session = sessions.get(cookies[sessionCookieName]);
           if (!session) {
             response.writeHead(401, {
               "content-type": "application/json",
@@ -214,17 +245,29 @@ const main = async () => {
   <head><meta charset="utf-8"><title>Sand-King Cockpit</title></head>
   <body>
     <main id="app">Connecting to local Host…</main>
-    <script type="module">
-      const protocol = location.protocol === "https:" ? "wss" : "ws";
-      const socket = new WebSocket(protocol + "://" + location.host + "/ws");
-      socket.addEventListener("message", (event) => {
-        const payload = JSON.parse(event.data);
-        document.getElementById("app").textContent =
-          "Connected to " + payload.host.identity + " with protocol " + payload.protocol.version;
-      });
-    </script>
+    <script type="module" src="/cockpit.js"></script>
   </body>
 </html>`);
+          return;
+        }
+
+        if (request.method === "GET" && request.url === "/cockpit.js") {
+          const cookies = parseCookies(request.headers.cookie);
+          const session = sessions.get(cookies[sessionCookieName]);
+          if (!session) {
+            response.writeHead(401, {
+              "content-type": "application/json",
+              "content-security-policy": cockpitCsp,
+            });
+            response.end(JSON.stringify({ code: "session_required" }));
+            return;
+          }
+
+          response.writeHead(200, {
+            "content-type": "text/javascript; charset=utf-8",
+            "content-security-policy": cockpitCsp,
+          });
+          response.end(cockpitScript);
           return;
         }
 
@@ -258,7 +301,7 @@ const main = async () => {
       }
 
       const cookies = parseCookies(request.headers.cookie);
-      if (!sessions.has(cookies["__Host-sandking_session"])) {
+      if (!sessions.has(cookies[sessionCookieName])) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
@@ -323,7 +366,7 @@ const main = async () => {
     });
   } catch (error) {
     await writeFile(startupErrorPath, `${JSON.stringify({
-      code: error instanceof Error ? error.message : String(error),
+      code: sanitizeStartupError(error),
     }, null, 2)}\n`);
     process.exit(1);
   }

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "pretest": "node test/ensure-playwright.mjs",
     "sandcastle": "tsx .sandcastle/main.mts",
     "cockpit": "node src/cli.mjs launch",
     "cockpit:stop": "node src/cli.mjs stop",
@@ -16,6 +17,7 @@
   "devDependencies": {
     "@ai-hero/sandcastle": "^0.12.0",
     "@types/node": "^24.3.0",
+    "playwright": "^1.62.1",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }

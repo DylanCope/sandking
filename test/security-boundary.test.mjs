@@ -69,7 +69,7 @@ test("bootstrap URLs exchange once into a session and same-origin WebSockets req
     const cookie = setCookie?.split(";")[0];
 
     assert.equal(bootstrap.status, 302);
-    assert.match(setCookie, /__Host-sandking_session=/);
+    assert.match(setCookie, /sandking_session=/);
     assert.match(
       bootstrap.headers.get("content-security-policy"),
       /default-src 'self'/,
@@ -80,7 +80,19 @@ test("bootstrap URLs exchange once into a session and same-origin WebSockets req
       headers: { cookie },
     });
     assert.equal(cockpit.status, 200);
-    assert.match(await cockpit.text(), /Connecting to local Host/);
+    const cockpitHtml = await cockpit.text();
+    assert.match(cockpit.headers.get("content-security-policy"), /script-src 'self'/);
+    assert.match(cockpitHtml, /<script type="module" src="\/cockpit\.js"><\/script>/);
+    assert.doesNotMatch(cockpitHtml, /<script type="module">/);
+    assert.match(cockpitHtml, /Connecting to local Host/);
+
+    const cockpitScript = await request({
+      url: `http://127.0.0.1:${launch.runtime.port}/cockpit.js`,
+      headers: { cookie },
+    });
+    assert.equal(cockpitScript.status, 200);
+    assert.match(cockpitScript.headers.get("content-type"), /text\/javascript/);
+    assert.match(await cockpitScript.text(), /new WebSocket/);
 
     const replay = await request({ url: launch.bootstrapUrl });
     assert.equal(replay.status, 410);
