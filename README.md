@@ -90,7 +90,10 @@ shows the built-in Wayfinding, Speccing, and Ticketing stages from data labelled
 `Conformance fixture data — not live GitHub`. Selecting fixture-backed work
 opens an independently identified focused conformance Controller session. The
 runtime negotiates with the packaged conformance provider adapter, launches its
-provider command in a runtime-owned PTY, and gives the Cockpit one exclusive
+provider command in a runtime-owned PTY, and requires a typed, process-correlated
+`provider.session.ready` envelope on a private runtime-owned control socket before
+reporting the session opened. Terminal bytes remain opaque presentation data and
+do not determine session state. The runtime gives the Cockpit one exclusive
 writable attachment over the opaque WebSocket channel. The deterministic
 Controller can inspect the selected canonical work context through that real
 interactive boundary. A person may mark an optional stage **Not used** without

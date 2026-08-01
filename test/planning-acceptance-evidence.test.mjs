@@ -98,10 +98,13 @@ test("retained issue 123 evidence proves the optional Planning path and mutation
   );
   assert.match(evidence.focusedSession.providerSessionId,
     /^conformance-provider-session-[a-f0-9]{24}$/);
+  assert.equal(evidence.focusedSession.providerControlProtocol, "1.0.0");
+  assert.equal(evidence.focusedSession.providerReadySignal, "provider.session.ready");
   assert.match(evidence.focusedSession.terminalStreamId,
     /^controller-terminal-[a-f0-9]{24}$/);
   assert.equal(evidence.focusedSession.ptyRuntimeOwned, true);
   assert.equal(evidence.focusedSession.providerObservedTty, true);
+  assert.equal(evidence.focusedSession.terminalDisplayedTtyObservation, true);
   assert.equal(evidence.focusedSession.writableAttachment, true);
   assert.equal(
     evidence.focusedSession.competingWritableAttachmentRejectedAs,
@@ -111,12 +114,19 @@ test("retained issue 123 evidence proves the optional Planning path and mutation
   assert.deepEqual({
     providerSessionId: evidence.focusedSession.retainedLifecycle.providerSessionId,
     providerAdapterId: evidence.focusedSession.retainedLifecycle.providerAdapterId,
+    providerControlProtocol:
+      evidence.focusedSession.retainedLifecycle.providerControlProtocol,
+    providerReadySignal: evidence.focusedSession.retainedLifecycle.providerReadySignal,
+    providerObservedTty: evidence.focusedSession.retainedLifecycle.providerObservedTty,
     terminalKind: evidence.focusedSession.retainedLifecycle.terminalKind,
     ptyRuntimeOwned: evidence.focusedSession.retainedLifecycle.ptyRuntimeOwned,
     status: evidence.focusedSession.retainedLifecycle.status,
   }, {
     providerSessionId: evidence.focusedSession.providerSessionId,
     providerAdapterId: "conformance-controller-adapter-v1",
+    providerControlProtocol: "1.0.0",
+    providerReadySignal: "provider.session.ready",
+    providerObservedTty: true,
     terminalKind: "pty",
     ptyRuntimeOwned: true,
     status: "running",
@@ -168,6 +178,9 @@ test("retained issue 123 evidence proves the optional Planning path and mutation
     evidence.focusedSession.providerSessionId);
   assert.equal(controllerStart.details.providerAdapterId,
     "conformance-controller-adapter-v1");
+  assert.equal(controllerStart.details.providerControlProtocol, "1.0.0");
+  assert.equal(controllerStart.details.providerReadySignal, "provider.session.ready");
+  assert.equal(controllerStart.details.providerObservedTty, true);
   assert.equal(controllerStart.details.ptyRuntimeOwned, true);
   const controllerInput = evidence.auditReferences.find((entry) =>
     entry.action === "controller.terminal.input" && entry.outcome === "observed");

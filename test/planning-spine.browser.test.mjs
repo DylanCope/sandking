@@ -138,6 +138,15 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
         await focusedSession.getAttribute("data-provider-adapter-id"),
         "conformance-controller-adapter-v1",
       );
+      assert.equal(
+        await focusedSession.getAttribute("data-provider-control-protocol"),
+        "1.0.0",
+      );
+      assert.equal(
+        await focusedSession.getAttribute("data-provider-ready-signal"),
+        "provider.session.ready",
+      );
+      assert.equal(await focusedSession.getAttribute("data-provider-observed-tty"), "true");
       assert.equal(await focusedSession.getAttribute("data-pty-runtime-owned"), "true");
       assert.match(
         await focusedSession.getAttribute("data-provider-session-id"),
@@ -323,6 +332,9 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
         && entry.outcome === "accepted"
         && entry.details.sessionId === sessionId
         && entry.details.providerAdapterId === "conformance-controller-adapter-v1"
+        && entry.details.providerControlProtocol === "1.0.0"
+        && entry.details.providerReadySignal === "provider.session.ready"
+        && entry.details.providerObservedTty === true
         && entry.details.ptyRuntimeOwned === true));
       assert.ok(planningSessionAudits.some((entry) =>
         entry.action === "controller.terminal.input"
@@ -358,6 +370,14 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
       );
       assert.equal(retainedControllerSession.workContextId,
         "work-context-speccing-optional-planning");
+      assert.equal(retainedControllerSession.providerControl.protocol, "1.0.0");
+      assert.equal(
+        retainedControllerSession.providerControl.readySignal,
+        "provider.session.ready",
+      );
+      assert.equal(retainedControllerSession.providerControl.providerObservedTty, true);
+      assert.match(retainedControllerSession.providerControl.readyObservedAt,
+        /^\d{4}-\d{2}-\d{2}T/);
       assert.deepEqual({
         kind: retainedControllerSession.terminal.kind,
         runtimeOwned: retainedControllerSession.terminal.runtimeOwned,
@@ -393,10 +413,15 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
           providerId: "conformance-controller-v1",
           providerAdapterId: await focusedSession.getAttribute("data-provider-adapter-id"),
           providerSessionId: await focusedSession.getAttribute("data-provider-session-id"),
+          providerControlProtocol:
+            await focusedSession.getAttribute("data-provider-control-protocol"),
+          providerReadySignal: await focusedSession.getAttribute("data-provider-ready-signal"),
           terminalStreamId: await focusedSession.getAttribute("data-terminal-stream-id"),
           ptyRuntimeOwned:
             await focusedSession.getAttribute("data-pty-runtime-owned") === "true",
           providerObservedTty:
+            await focusedSession.getAttribute("data-provider-observed-tty") === "true",
+          terminalDisplayedTtyObservation:
             controllerOutput.includes("Provider terminal: stdin TTY=true; stdout TTY=true"),
           writableAttachment:
             await focusedSession.getAttribute("data-terminal-attachment") === "read-write",
@@ -407,6 +432,10 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
           retainedLifecycle: {
             providerSessionId: retainedControllerSession.providerSessionId,
             providerAdapterId: retainedControllerSession.providerAdapterId,
+            providerControlProtocol: retainedControllerSession.providerControl.protocol,
+            providerReadySignal: retainedControllerSession.providerControl.readySignal,
+            providerObservedTty:
+              retainedControllerSession.providerControl.providerObservedTty,
             terminalKind: retainedControllerSession.terminal.kind,
             ptyRuntimeOwned: retainedControllerSession.terminal.runtimeOwned,
             status: retainedControllerSession.terminal.status,

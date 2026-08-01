@@ -174,6 +174,13 @@ const renderPlanning = (planning, session) => {
         sessionPanel.dataset.providerId = outcome.body.session.provider.providerId;
         sessionPanel.dataset.providerAdapterId = outcome.body.session.provider.adapterId;
         sessionPanel.dataset.providerSessionId = outcome.body.session.provider.providerSessionId;
+        sessionPanel.dataset.providerControlProtocol =
+          outcome.body.session.provider.readiness.controlProtocol;
+        sessionPanel.dataset.providerReadySignal =
+          outcome.body.session.provider.readiness.signal;
+        sessionPanel.dataset.providerObservedTty = String(
+          outcome.body.session.provider.readiness.providerObservedTty,
+        );
         sessionPanel.dataset.terminalStreamId = outcome.body.session.terminal.streamId;
         sessionPanel.dataset.terminalAttachmentId =
           outcome.body.session.terminal.writableAttachment.attachmentId;

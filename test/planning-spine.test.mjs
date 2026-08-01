@@ -94,6 +94,11 @@ test("opening fixture-backed Planning work creates one focused conformance Contr
           "controller.session.terminate",
         ],
         providerSessionId: `conformance-provider-session-${"2".repeat(24)}`,
+        readiness: {
+          controlProtocol: "1.0.0",
+          signal: "provider.session.ready",
+          providerObservedTty: true,
+        },
       },
       terminal: {
         streamId: `controller-terminal-${"3".repeat(24)}`,
@@ -140,6 +145,11 @@ test("opening fixture-backed Planning work creates one focused conformance Contr
             "controller.session.terminate",
           ],
           providerSessionId: `conformance-provider-session-${"2".repeat(24)}`,
+          readiness: {
+            controlProtocol: "1.0.0",
+            signal: "provider.session.ready",
+            providerObservedTty: true,
+          },
         },
         terminal: {
           streamId: `controller-terminal-${"3".repeat(24)}`,

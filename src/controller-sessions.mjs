@@ -1,5 +1,8 @@
 import { spawn as spawnChild } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createServer as createNetServer } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as pty from "@lydell/node-pty";
@@ -47,11 +50,34 @@ const preparedSchema = z.object({
     columns: z.number().int().min(20).max(500),
     rows: z.number().int().min(5).max(200),
   }).strict(),
+  control: z.object({
+    protocol: adapterProtocolSchema,
+    readySignal: z.literal("provider.session.ready"),
+    endpoint: z.string().min(1).max(512),
+  }).strict(),
   command: z.object({
     executable: z.string().min(1),
     args: z.array(z.string()).min(1).max(32),
     environment: z.record(z.string(), z.string()).refine((environment) =>
       !Object.keys(environment).some((name) => /secret|token|credential|key/i.test(name))),
+  }).strict(),
+}).strict();
+const providerReadySchema = z.object({
+  type: z.literal("provider.session.ready"),
+  controlProtocol: adapterProtocolSchema,
+  adapterId: z.literal("conformance-controller-adapter-v1"),
+  sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
+  providerSessionId: z.string().regex(/^conformance-provider-session-[a-f0-9]{24}$/),
+  workContext: z.object({
+    workContextId: identifierSchema,
+    canonicalReference: z.string().regex(/^github:fixture:issue:[0-9]+$/),
+  }).strict(),
+  process: z.object({
+    pid: z.number().int().positive(),
+  }).strict(),
+  terminal: z.object({
+    stdinTty: z.literal(true),
+    stdoutTty: z.literal(true),
   }).strict(),
 }).strict();
 const workContextSchema = z.object({
@@ -68,6 +94,12 @@ const retainedSessionSchema = z.object({
   capabilities: capabilitiesSchema,
   workContextId: identifierSchema,
   canonicalReference: z.string().regex(/^github:fixture:issue:[0-9]+$/),
+  providerControl: z.object({
+    protocol: z.literal("1.0.0"),
+    readySignal: z.literal("provider.session.ready"),
+    readyObservedAt: z.string(),
+    providerObservedTty: z.literal(true),
+  }).strict(),
   terminal: z.object({
     streamId: z.string().regex(/^controller-terminal-[a-f0-9]{24}$/),
     runtimeOwned: z.literal(true),
@@ -151,6 +183,116 @@ const invokeAdapter = async (mode, args = []) => new Promise((resolve, reject) =
   });
 });
 
+const openProviderControl = async () => {
+  const controlDirectory = process.platform === "win32"
+    ? null
+    : await mkdtemp(join(tmpdir(), "sandking-provider-control-"));
+  const endpoint = controlDirectory
+    ? join(controlDirectory, "ready.sock")
+    : `\\\\.\\pipe\\sandking-provider-${randomBytes(18).toString("hex")}`;
+  let settled = false;
+  /** @type {NodeJS.Timeout | undefined} */
+  let timeout;
+  /** @type {(value: z.infer<typeof providerReadySchema>) => void} */
+  let resolveReady = () => undefined;
+  /** @type {(reason?: unknown) => void} */
+  let rejectReady = () => undefined;
+  const ready = new Promise((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  /**
+   * @param {ControllerSessionError | null} error
+   * @param {z.infer<typeof providerReadySchema> | undefined} [value]
+   */
+  const finish = (error, value) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimeout(timeout);
+    if (error) {
+      rejectReady(error);
+    } else if (value) {
+      resolveReady(value);
+    } else {
+      rejectReady(new ControllerSessionError("provider_control_protocol_invalid"));
+    }
+  };
+  const server = createNetServer((socket) => {
+    let input = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      input += chunk;
+      if (Buffer.byteLength(input, "utf8") > 32_768) {
+        finish(new ControllerSessionError("provider_control_frame_too_large"));
+        socket.destroy();
+        return;
+      }
+      const newline = input.indexOf("\n");
+      if (newline === -1) {
+        return;
+      }
+      if (input.slice(newline + 1).trim().length > 0) {
+        finish(new ControllerSessionError("provider_control_protocol_invalid"));
+        socket.destroy();
+        return;
+      }
+      try {
+        finish(null, providerReadySchema.parse(JSON.parse(input.slice(0, newline))));
+        socket.end();
+      } catch {
+        finish(new ControllerSessionError("provider_control_protocol_invalid"));
+        socket.destroy();
+      }
+    });
+    socket.once("error", () => {
+      finish(new ControllerSessionError("provider_control_unavailable"));
+    });
+    socket.once("end", () => {
+      if (!settled) {
+        finish(new ControllerSessionError("provider_control_protocol_invalid"));
+      }
+    });
+  });
+  server.maxConnections = 1;
+  try {
+    await new Promise((resolve, reject) => {
+      const onError = () => reject(new ControllerSessionError("provider_control_unavailable"));
+      server.once("error", onError);
+      server.listen(endpoint, () => {
+        server.off("error", onError);
+        resolve(undefined);
+      });
+    });
+  } catch (error) {
+    if (controlDirectory) {
+      await rm(controlDirectory, { recursive: true, force: true });
+    }
+    throw error;
+  }
+  server.once("error", () => {
+    finish(new ControllerSessionError("provider_control_unavailable"));
+  });
+  timeout = setTimeout(() => {
+    finish(new ControllerSessionError("provider_session_ready_timeout"));
+  }, 3_000);
+  const close = async () => {
+    clearTimeout(timeout);
+    await new Promise((resolve) => server.close(() => resolve(undefined)));
+    if (controlDirectory) {
+      await rm(controlDirectory, { recursive: true, force: true });
+    }
+  };
+  return {
+    endpoint,
+    ready,
+    /** @param {ControllerSessionError} error */
+    fail: (error) => finish(error),
+    close,
+  };
+};
+
 /**
  * @param {{
  *   dataDir: string,
@@ -211,6 +353,7 @@ export const createControllerSessionManager = async (options) => {
     const providerSessionId = `conformance-provider-session-${randomBytes(12).toString("hex")}`;
     const streamId = `controller-terminal-${randomBytes(12).toString("hex")}`;
     const attachmentId = `terminal-attachment-${randomBytes(12).toString("hex")}`;
+    const providerControl = await openProviderControl();
     let adapter;
     let prepared;
     try {
@@ -220,8 +363,10 @@ export const createControllerSessionManager = async (options) => {
         "--provider-session-id", providerSessionId,
         "--work-context-id", selectedWorkContext.workContextId,
         "--canonical-reference", selectedWorkContext.canonicalReference,
+        "--control-endpoint", providerControl.endpoint,
       ]));
     } catch (error) {
+      await providerControl.close();
       await options.recordAudit("controller.session.start", "rejected", {
         code: error instanceof ControllerSessionError
           ? error.code
@@ -241,7 +386,10 @@ export const createControllerSessionManager = async (options) => {
       || prepared.command.executable !== process.execPath
       || prepared.command.args[0] !== adapterPath
       || prepared.command.args[1] !== "run"
+      || prepared.control.endpoint !== providerControl.endpoint
+      || prepared.control.protocol.version !== adapter.adapterProtocol.version
     ) {
+      await providerControl.close();
       throw new ControllerSessionError("provider_adapter_protocol_invalid");
     }
 
@@ -255,6 +403,7 @@ export const createControllerSessionManager = async (options) => {
         env: prepared.command.environment,
       });
     } catch {
+      await providerControl.close();
       throw new ControllerSessionError("provider_pty_start_failed");
     }
 
@@ -276,31 +425,13 @@ export const createControllerSessionManager = async (options) => {
     activeBySession.set(sessionId, runtimeSession);
     activeByStream.set(streamId, runtimeSession);
 
-    let readyText = "";
-    /** @type {(value: undefined) => void} */
-    let resolveReady = () => undefined;
-    /** @type {(reason?: unknown) => void} */
-    let rejectReady = () => undefined;
-    const ready = new Promise((resolve, reject) => {
-      resolveReady = resolve;
-      rejectReady = reject;
-    });
     /** @type {(value: undefined) => void} */
     let resolveExit = () => undefined;
     const exited = new Promise((resolve) => {
       resolveExit = resolve;
     });
     runtimeSession.exited = exited;
-    const readinessTimer = setTimeout(() => {
-      rejectReady(new ControllerSessionError("provider_session_ready_timeout"));
-    }, 3_000);
-
     terminal.onData((data) => {
-      readyText = `${readyText}${data}`.slice(-8_192);
-      if (readyText.includes(`Conformance Controller ready (${providerSessionId})`)) {
-        clearTimeout(readinessTimer);
-        resolveReady(undefined);
-      }
       const bytes = Buffer.from(data, "utf8");
       for (let offset = 0; offset < bytes.byteLength; offset += 16_384) {
         const frame = {
@@ -320,34 +451,16 @@ export const createControllerSessionManager = async (options) => {
       }
     });
 
-    const startedAt = new Date().toISOString();
-    const retainedSession = retainedSessionSchema.parse({
-      sessionId,
-      providerSessionId,
-      providerId: prepared.provider.providerId,
-      providerAdapterId: prepared.adapterId,
-      adapterProtocol: prepared.adapterProtocol.version,
-      capabilities: prepared.capabilities,
-      workContextId: selectedWorkContext.workContextId,
-      canonicalReference: selectedWorkContext.canonicalReference,
-      terminal: {
-        streamId,
-        runtimeOwned: true,
-        kind: "pty",
-        status: "running",
-        startedAt,
-        exitedAt: null,
-        exitCode: null,
-        signal: null,
-      },
-    });
+    /** @type {z.infer<typeof retainedSessionSchema> | undefined} */
+    let retainedSession;
     terminal.onExit(({ exitCode, signal }) => {
-      clearTimeout(readinessTimer);
       runtimeSession.running = false;
-      retainedSession.terminal.status = "exited";
-      retainedSession.terminal.exitedAt = new Date().toISOString();
-      retainedSession.terminal.exitCode = exitCode;
-      retainedSession.terminal.signal = signal ?? null;
+      if (retainedSession) {
+        retainedSession.terminal.status = "exited";
+        retainedSession.terminal.exitedAt = new Date().toISOString();
+        retainedSession.terminal.exitCode = exitCode;
+        retainedSession.terminal.signal = signal ?? null;
+      }
       const eofFrame = {
         streamId,
         sequence: runtimeSession.outputSequence,
@@ -359,7 +472,9 @@ export const createControllerSessionManager = async (options) => {
       if (runtimeSession.writableSocket?.readyState === 1) {
         runtimeSession.onOutput?.(runtimeSession.writableSocket, eofFrame);
       }
-      persist().catch(() => undefined);
+      if (retainedSession) {
+        persist().catch(() => undefined);
+      }
       options.recordAudit("controller.session.exit", "observed", {
         sessionId,
         providerSessionId,
@@ -367,20 +482,65 @@ export const createControllerSessionManager = async (options) => {
         exitCode,
         signal,
       }).catch(() => undefined);
-      rejectReady(new ControllerSessionError("provider_session_exited_before_ready"));
+      providerControl.fail(new ControllerSessionError("provider_session_exited_before_ready"));
       resolveExit(undefined);
     });
 
+    let readyMessage;
     try {
-      await ready;
+      readyMessage = await providerControl.ready;
+      if (
+        readyMessage.sessionId !== sessionId
+        || readyMessage.providerSessionId !== providerSessionId
+        || readyMessage.adapterId !== prepared.adapterId
+        || readyMessage.controlProtocol.version !== prepared.control.protocol.version
+        || readyMessage.process.pid !== terminal.pid
+        || readyMessage.workContext.workContextId !== selectedWorkContext.workContextId
+        || readyMessage.workContext.canonicalReference !== selectedWorkContext.canonicalReference
+        || !runtimeSession.running
+      ) {
+        throw new ControllerSessionError("provider_control_correlation_failed");
+      }
     } catch (error) {
       activeBySession.delete(sessionId);
       activeByStream.delete(streamId);
       if (runtimeSession.running) {
         terminal.kill();
       }
+      await providerControl.close();
       throw error;
     }
+    await providerControl.close();
+
+    const readyObservedAt = new Date().toISOString();
+    const startedAt = readyObservedAt;
+    retainedSession = retainedSessionSchema.parse({
+      sessionId,
+      providerSessionId,
+      providerId: prepared.provider.providerId,
+      providerAdapterId: prepared.adapterId,
+      adapterProtocol: prepared.adapterProtocol.version,
+      capabilities: prepared.capabilities,
+      workContextId: selectedWorkContext.workContextId,
+      canonicalReference: selectedWorkContext.canonicalReference,
+      providerControl: {
+        protocol: prepared.control.protocol.version,
+        readySignal: readyMessage.type,
+        readyObservedAt,
+        providerObservedTty:
+          readyMessage.terminal.stdinTty && readyMessage.terminal.stdoutTty,
+      },
+      terminal: {
+        streamId,
+        runtimeOwned: true,
+        kind: "pty",
+        status: "running",
+        startedAt,
+        exitedAt: null,
+        exitCode: null,
+        signal: null,
+      },
+    });
 
     retained.sessions.push(retainedSession);
     retained.sessions = retained.sessions.slice(-128);
@@ -395,6 +555,9 @@ export const createControllerSessionManager = async (options) => {
       workContextId: selectedWorkContext.workContextId,
       canonicalReference: selectedWorkContext.canonicalReference,
       streamId,
+      providerControlProtocol: prepared.control.protocol.version,
+      providerReadySignal: readyMessage.type,
+      providerObservedTty: true,
       ptyRuntimeOwned: true,
       terminalKind: "pty",
     });
@@ -408,6 +571,11 @@ export const createControllerSessionManager = async (options) => {
         adapterProtocol: prepared.adapterProtocol.version,
         capabilities: prepared.capabilities,
         providerSessionId,
+        readiness: {
+          controlProtocol: prepared.control.protocol.version,
+          signal: readyMessage.type,
+          providerObservedTty: true,
+        },
       },
       terminal: {
         streamId,

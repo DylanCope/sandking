@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
 
 const adapterPath = fileURLToPath(import.meta.url);
@@ -23,6 +24,7 @@ const capabilities = Object.freeze([
 const identifierPattern = /^[a-zA-Z0-9._:-]{1,160}$/;
 const providerSessionPattern = /^conformance-provider-session-[a-f0-9]{24}$/;
 const canonicalReferencePattern = /^github:fixture:issue:[0-9]+$/;
+const controlEndpointPattern = /^.{1,512}$/;
 
 /** @param {string[]} argv */
 const parseFlags = (argv) => {
@@ -60,11 +62,13 @@ const prepare = (argv) => {
   const providerSessionId = flags.get("provider-session-id") ?? "";
   const workContextId = flags.get("work-context-id") ?? "";
   const canonicalReference = flags.get("canonical-reference") ?? "";
+  const controlEndpoint = flags.get("control-endpoint") ?? "";
   if (
     !/^controller-session-[a-f0-9]{24}$/.test(sessionId)
     || !providerSessionPattern.test(providerSessionId)
     || !identifierPattern.test(workContextId)
     || !canonicalReferencePattern.test(canonicalReference)
+    || !controlEndpointPattern.test(controlEndpoint)
   ) {
     throw new Error("provider_session_contract_invalid");
   }
@@ -80,6 +84,11 @@ const prepare = (argv) => {
       columns: 80,
       rows: 24,
     },
+    control: {
+      protocol: adapterProtocol,
+      readySignal: "provider.session.ready",
+      endpoint: controlEndpoint,
+    },
     command: {
       executable: process.execPath,
       args: [
@@ -89,6 +98,7 @@ const prepare = (argv) => {
         "--provider-session-id", providerSessionId,
         "--work-context-id", workContextId,
         "--canonical-reference", canonicalReference,
+        "--control-endpoint", controlEndpoint,
       ],
       environment: {
         LANG: "C.UTF-8",
@@ -98,24 +108,75 @@ const prepare = (argv) => {
   });
 };
 
+/** @param {string} endpoint @param {unknown} message */
+const reportReady = async (endpoint, message) => new Promise((resolve, reject) => {
+  const socket = createConnection(endpoint);
+  let settled = false;
+  /** @param {Error | null} error */
+  const finish = (error) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimeout(timeout);
+    if (error) {
+      reject(error);
+    } else {
+      resolve(undefined);
+    }
+  };
+  const timeout = setTimeout(() => {
+    socket.destroy();
+    finish(new Error("provider_control_timeout"));
+  }, 2_000);
+  socket.once("connect", () => {
+    socket.end(`${JSON.stringify(message)}\n`);
+  });
+  socket.once("error", () => finish(new Error("provider_control_unavailable")));
+  socket.once("close", (hadError) => {
+    if (!hadError) {
+      finish(null);
+    }
+  });
+});
+
 /** @param {string[]} argv */
-const run = (argv) => {
+const run = async (argv) => {
   const flags = parseFlags(argv);
   const sessionId = flags.get("session-id") ?? "";
   const providerSessionId = flags.get("provider-session-id") ?? "";
   const workContextId = flags.get("work-context-id") ?? "";
   const canonicalReference = flags.get("canonical-reference") ?? "";
+  const controlEndpoint = flags.get("control-endpoint") ?? "";
   if (
     !/^controller-session-[a-f0-9]{24}$/.test(sessionId)
     || !providerSessionPattern.test(providerSessionId)
     || !identifierPattern.test(workContextId)
     || !canonicalReferencePattern.test(canonicalReference)
+    || !controlEndpointPattern.test(controlEndpoint)
   ) {
     throw new Error("provider_session_contract_invalid");
   }
   if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
     throw new Error("provider_pty_required");
   }
+
+  await reportReady(controlEndpoint, {
+    type: "provider.session.ready",
+    controlProtocol: adapterProtocol,
+    adapterId,
+    sessionId,
+    providerSessionId,
+    workContext: {
+      workContextId,
+      canonicalReference,
+    },
+    process: { pid: process.pid },
+    terminal: {
+      stdinTty: process.stdin.isTTY,
+      stdoutTty: process.stdout.isTTY,
+    },
+  });
 
   process.stdout.write(
     `Conformance Controller ready (${providerSessionId}).\r\n`
@@ -148,17 +209,21 @@ const run = (argv) => {
   });
 };
 
-try {
+const main = async () => {
   const [command, ...rest] = process.argv.slice(2);
   if (command === "probe") {
     probe();
   } else if (command === "prepare") {
     prepare(rest);
   } else if (command === "run") {
-    run(rest);
+    await run(rest);
   } else {
     throw new Error("provider_adapter_command_invalid");
   }
+};
+
+try {
+  await main();
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : "provider_adapter_failed"}\n`);
   process.exitCode = 1;

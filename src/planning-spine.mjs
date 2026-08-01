@@ -203,6 +203,11 @@ const focusedSessionSchema = z.object({
     ]),
     providerSessionId: z.string()
       .regex(/^conformance-provider-session-[a-f0-9]{24}$/),
+    readiness: z.object({
+      controlProtocol: z.literal("1.0.0"),
+      signal: z.literal("provider.session.ready"),
+      providerObservedTty: z.literal(true),
+    }).strict(),
   }).strict(),
   terminal: z.object({
     streamId: z.string().regex(/^controller-terminal-[a-f0-9]{24}$/),
@@ -558,6 +563,9 @@ export const createPlanningSpine = async (options) => {
         sessionId: session.sessionId,
         providerSessionId: session.provider.providerSessionId,
         providerAdapterId: session.provider.adapterId,
+        providerControlProtocol: session.provider.readiness.controlProtocol,
+        providerReadySignal: session.provider.readiness.signal,
+        providerObservedTty: session.provider.readiness.providerObservedTty,
         streamId: session.terminal.streamId,
         ptyRuntimeOwned: session.terminal.runtimeOwned,
       });
