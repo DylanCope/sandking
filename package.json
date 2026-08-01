@@ -21,6 +21,8 @@
     "cockpit:stop": "node src/cli.mjs stop",
     "acceptance:issue-117": "node test/run-issue-117-acceptance.mjs acceptance/issue-117.manifest.json",
     "acceptance:issue-117:update-evidence": "node test/run-issue-117-acceptance.mjs acceptance/issue-117.manifest.json --update-evidence",
+    "acceptance:issue-118": "node test/run-issue-118-acceptance.mjs acceptance/issue-118.manifest.json",
+    "acceptance:issue-118:update-evidence": "node test/run-issue-118-acceptance.mjs acceptance/issue-118.manifest.json --update-evidence",
     "acceptance:issue-123": "node test/run-issue-123-acceptance.mjs acceptance/issue-123.manifest.json",
     "acceptance:issue-123:update-evidence": "node test/run-issue-123-acceptance.mjs acceptance/issue-123.manifest.json --update-evidence",
     "typecheck": "tsc --noEmit -p tsconfig.sandcastle.json && tsc --noEmit -p tsconfig.json",

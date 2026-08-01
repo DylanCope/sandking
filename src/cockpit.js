@@ -10,10 +10,11 @@ const browserProtocol = Object.freeze({
       "cockpit.resynchronization.v1",
       "cockpit.planning-spine.v1",
       "cockpit.controller-terminal.v1",
+      "cockpit.project-preparation.v1",
     ],
     optional: [],
   },
-  schemaDigest: "sha256:e80bfa3575c10ec9eb271ffe80a5bba38c672befb988141acadb68b51b18cb3e",
+  schemaDigest: "sha256:853f317151b05b10432bbf9e9fe1518d6fee0d6a05c8b3ee79f91b963b737d4c",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -90,6 +91,153 @@ const submitPlanningMutation = async (path, body, expectedRevision, csrfToken) =
     body: JSON.stringify(body),
   });
   return { status: response.status, body: await response.json() };
+};
+
+const renderPreparedProject = (current) => {
+  if (!current) {
+    return element(
+      "p",
+      { id: "project-not-selected", "data-project-selected": "false" },
+      "No Project path has been selected.",
+    );
+  }
+  const card = element("article", {
+    id: "project-readiness",
+    "data-project-selected": "true",
+    "data-project-id": current.projectId,
+    "data-project-revision": current.revision,
+    "data-harness-id": current.harness?.harnessId ?? "",
+    "data-harness-pin": current.harness?.pinnedRevision ?? "",
+    "data-checks-readiness": current.readiness.checks,
+    "data-configuration-readiness": current.readiness.configuration,
+    "data-launch-request-ready": String(current.canPrepareLaunchRequest),
+  });
+  card.append(
+    element("h3", {}, current.displayName),
+    element("p", {}, `Project identity: ${current.projectId} (revision ${current.revision})`),
+    element("p", {},
+      `Issue workflow: GitHub Issues — ${current.issueWorkflow.readiness}`),
+    element("p", {},
+      `Checks: ${current.checks.map((check) => `${check.checkId} (${check.readiness})`).join(", ")}`),
+    element("p", {}, current.harness
+      ? `Harness identity: ${current.harness.harnessId} — ${current.harness.name}`
+      : "Harness: missing"),
+    element("p", {}, current.harness
+      ? `Pinned immutable revision: ${current.harness.pinnedRevision}`
+      : "Pinned immutable revision: missing"),
+    element("p", { "data-launch-guidance": current.readiness.launchRequest },
+      current.canPrepareLaunchRequest
+        ? "A Launch request can be prepared."
+        : `Launch request preparation is blocked: ${current.readiness.diagnostics.join(", ")}`),
+  );
+  return card;
+};
+
+const renderProjectPreparation = (preparation, session) => {
+  const section = element("section", {
+    id: "project-preparation",
+    "data-explicit-path-only": "true",
+    "data-directory-scanning": String(preparation.selection.directoryScanning),
+  });
+  section.append(
+    element("h2", {}, "Open and prepare a local Project"),
+    element("p", {},
+      "Choose one explicit Host-native path. Sand-King does not scan other directories."),
+    element("p", {},
+      "Host-local Project registration requires no separate Sand-King approval."),
+  );
+  const pathLabel = element("label", { for: "project-path" }, "Project path");
+  const pathInput = element("input", {
+    id: "project-path",
+    name: "projectPath",
+    type: "text",
+    autocomplete: "off",
+    placeholder: "/absolute/path/to/project",
+  });
+  const typecheckLabel = element(
+    "label",
+    { for: "project-typecheck-command" },
+    "Typecheck command",
+  );
+  const typecheckInput = element("input", {
+    id: "project-typecheck-command",
+    type: "text",
+    value: "npm run typecheck",
+  });
+  const testLabel = element("label", { for: "project-test-command" }, "Test command");
+  const testInput = element("input", {
+    id: "project-test-command",
+    type: "text",
+    value: "npm run test",
+  });
+  const openButton = element("button", {
+    id: "open-project",
+    type: "button",
+    "data-action": "open-project",
+  }, "Open and prepare Project");
+  const feedback = element("p", { id: "project-feedback", role: "status" });
+  let currentNode = renderPreparedProject(preparation.current);
+  let expectedRevision = preparation.current?.revision ?? 0;
+
+  openButton.addEventListener("click", async () => {
+    openButton.disabled = true;
+    feedback.textContent = "Opening the selected Project path…";
+    const response = await fetch("/projects/open", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-sandking-csrf": session.csrfToken,
+        "x-sandking-idempotency-key": mutationKey(),
+        "x-sandking-expected-revision": String(expectedRevision),
+      },
+      body: JSON.stringify({
+        path: pathInput.value,
+        configuration: {
+          issueWorkflow: { provider: "github", kind: "issues" },
+          checks: [
+            { checkId: "typecheck", command: typecheckInput.value },
+            { checkId: "test", command: testInput.value },
+          ],
+        },
+      }),
+    });
+    const outcome = await response.json();
+    if (!response.ok) {
+      if (
+        outcome.code === "mutation_revision_conflict"
+        && Number.isSafeInteger(outcome.actualRevision)
+      ) {
+        expectedRevision = outcome.actualRevision;
+      }
+      feedback.textContent = `Project was not changed: ${outcome.code}. ${
+        outcome.resolution?.actions?.join(", ") ?? "Review the typed guidance."}`;
+      openButton.disabled = false;
+      return;
+    }
+    expectedRevision = outcome.project.revision;
+    const replacement = renderPreparedProject(outcome.project);
+    currentNode.replaceWith(replacement);
+    currentNode = replacement;
+    feedback.textContent = "Project and conformance Harness are ready for Launch preparation.";
+    openButton.disabled = false;
+  });
+
+  section.append(
+    element("h3", {}, "Bounded Project configuration"),
+    element("p", {}, "Issue workflow: GitHub Issues"),
+    pathLabel,
+    pathInput,
+    typecheckLabel,
+    typecheckInput,
+    testLabel,
+    testInput,
+    openButton,
+    feedback,
+    currentNode,
+    element("p", { "data-project-scope": "registration-only" },
+      "This slice does not project a Harness into the Project or provide import, update, rollback, switching, or drift recovery."),
+  );
+  return section;
 };
 
 const renderPlanning = (planning, session) => {
@@ -416,6 +564,11 @@ socket.addEventListener("message", (event) => {
     && message.viewModel.planning.adapter?.fixture === true
     && JSON.stringify(message.viewModel.planning.builtInStages)
       === JSON.stringify(["wayfinding", "speccing", "ticketing"]);
+  const projectPreparationCompatible =
+    message?.viewModel?.projectPreparation?.kind === "cockpit.project-preparation"
+    && message.viewModel.projectPreparation.selection?.mode === "explicit-host-path"
+    && message.viewModel.projectPreparation.selection?.directoryScanning === false
+    && message.viewModel.projectPreparation.conformanceHarness?.permittedTestDouble === true;
 
   if (
     message?.type !== "runtime.hello-ack"
@@ -427,6 +580,7 @@ socket.addEventListener("message", (event) => {
     || !framingCompatible
     || !durableIdentitiesCompatible
     || !planningCompatible
+    || !projectPreparationCompatible
     || message.viewModel?.kind !== "cockpit.connection"
   ) {
     requireReload("browser_runtime_handshake_mismatch");
@@ -445,6 +599,7 @@ socket.addEventListener("message", (event) => {
       `Connected to ${message.viewModel.host.identity} with protocol ${message.protocol.version}`
         + ` (${message.viewModel.host.hostId})`,
     ),
+    renderProjectPreparation(message.viewModel.projectPreparation, message.session),
     renderPlanning(message.viewModel.planning, message.session),
   );
 });

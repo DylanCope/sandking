@@ -9,8 +9,8 @@ The product is currently being specified through the
 This initial planning workspace preserves the known-good Sandcastle harness
 used to develop the concept. Its safe bootstrap source is temporarily tracked
 under `.sandcastle/`; credentials, databases, logs, and worktrees remain
-ignored. The MVP design will determine how hosts generate untracked harnesses
-for target projects.
+ignored. That bootstrap workspace is distinct from the independently identified
+Host-local Harness registrations used by the Cockpit product path.
 
 Install the harness dependencies:
 
@@ -85,6 +85,19 @@ WebSockets. Bootstrap and session-end rejections return typed failures linked
 to audit evidence. Explicitly ending a browser session serializes concurrent
 retries; opaque stream bytes remain on a separate bounded binary channel.
 
+From the Cockpit, a person can enter one explicit Host-native Project path and
+confirm its bounded GitHub-Issues/check configuration. Sand-King never scans
+for Projects. The real local Host creates or reuses a generated, path-anchored
+Project identity without a separate approval, registers the named conformance
+Harness in its own Git-versioned Harness workspace, and pins its exact commit.
+The Cockpit shows the Project and Harness identities, pin, checks and
+configuration readiness, and whether a Launch request can be prepared. Moved,
+replaced, conflicting, missing, and tombstoned paths fail with typed resolution
+guidance rather than inheriting an old identity. Registration, Harness links,
+pins, idempotency outcomes, and audits remain in Host-private state; neither the
+Project nor the Harness workspace receives execution state, and the Project
+receives no manifest or `.sandcastle/` projection in this slice.
+
 The Cockpit also projects a thin optional Planning journey. Its Journey Rail
 shows the built-in Wayfinding, Speccing, and Ticketing stages from data labelled
 `Conformance fixture data — not live GitHub`. Selecting fixture-backed work
@@ -122,6 +135,16 @@ successful acceptance run with `npm run acceptance:issue-117:update-evidence`.
 The manifest distinguishes GitHub's exact specification-body bytes from the
 parent PRD's legacy line-terminated text export, so source provenance does not
 depend on an implicit trailing-newline convention.
+
+Run the explicit-Project and conformance-Harness preparation scenario with:
+
+```bash
+npm run acceptance:issue-118
+```
+
+Its retained sanitized evidence is generated with
+`npm run acceptance:issue-118:update-evidence` and stored in
+`acceptance/evidence/issue-118.json`.
 
 Run the optional-Planning public-seam scenario with:
 

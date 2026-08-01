@@ -17,6 +17,7 @@ import {
 } from "./protocol.mjs";
 import { acceptHostIdentity, readHostIdentity } from "./host-identity.mjs";
 import { appendPrivateJsonLine } from "./private-state.mjs";
+import { createProjectRegistry } from "./project-registration.mjs";
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
@@ -46,6 +47,19 @@ const recordHostIdentityAudit = async (outcome, details, auditId) => {
   await appendPrivateJsonLine(hostAuditPath, {
     auditId: resolvedAuditId,
     action: "host.identity.accept",
+    outcome,
+    details,
+    recordedAt: new Date().toISOString(),
+  });
+  return resolvedAuditId;
+};
+
+/** @param {string} action @param {"accepted" | "rejected" | "observed"} outcome @param {Record<string, unknown>} details @param {string} [auditId] */
+const recordProjectAudit = async (action, outcome, details = {}, auditId) => {
+  const resolvedAuditId = auditId ?? `audit-${randomBytes(12).toString("hex")}`;
+  await appendPrivateJsonLine(hostAuditPath, {
+    auditId: resolvedAuditId,
+    action,
     outcome,
     details,
     recordedAt: new Date().toISOString(),
@@ -318,6 +332,11 @@ const main = async () => {
     await handleHostIdentityAcceptance(identityFrame.message, negotiatedHostId);
   }
 
+  const projectRegistry = await createProjectRegistry({
+    dataDir,
+    recordAudit: recordProjectAudit,
+  });
+
   // The Host is a durable process boundary. It remains available after
   // negotiation and keeps control and opaque bulk frames structurally distinct.
   while (true) {
@@ -334,6 +353,29 @@ const main = async () => {
     }
     if (frame.message.type === "host.identity.accept") {
       await handleHostIdentityAcceptance(frame.message, negotiatedHostId);
+      continue;
+    }
+    if (frame.message.type === "project.inspect") {
+      writeFrame(process.stdout, await projectRegistry.inspectProject(frame.message));
+      continue;
+    }
+    if (frame.message.type === "project.register") {
+      writeFrame(process.stdout, await projectRegistry.registerProject(frame.message));
+      continue;
+    }
+    if (frame.message.type === "harness.conformance.inspect") {
+      writeFrame(process.stdout, await projectRegistry.inspectConformanceHarness(frame.message));
+      continue;
+    }
+    if (frame.message.type === "harness.conformance.register") {
+      writeFrame(
+        process.stdout,
+        await projectRegistry.registerConformanceHarness(frame.message),
+      );
+      continue;
+    }
+    if (frame.message.type === "project.harness.pin") {
+      writeFrame(process.stdout, await projectRegistry.pinConformanceHarness(frame.message));
       continue;
     }
     rejectHandshake("host_protocol_unexpected_message");

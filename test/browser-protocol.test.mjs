@@ -126,8 +126,13 @@ test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and 
     assert.equal(ack.viewModel.host.identity, "local-host");
     assert.equal(ack.viewModel.host.hostId, runtime.host.hostId);
     assert.deepEqual(Object.keys(ack.viewModel).sort(), [
-      "host", "kind", "negotiation", "planning", "runtime",
+      "host", "kind", "negotiation", "planning", "projectPreparation", "runtime",
     ]);
+    assert.deepEqual(ack.viewModel.projectPreparation.selection, {
+      mode: "explicit-host-path",
+      directoryScanning: false,
+    });
+    assert.equal(ack.viewModel.projectPreparation.current, null);
     assert.doesNotMatch(JSON.stringify(ack), new RegExp(secret));
     assert.doesNotMatch(JSON.stringify(ack), /bootstrap|credential|filesystem|dataDir|process\.env/i);
     socket.close();
