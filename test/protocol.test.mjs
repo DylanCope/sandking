@@ -38,6 +38,40 @@ test("framed control reads preserve following frames and validate their schema",
   );
 });
 
+test("Host identity acceptance is an explicit revisioned and idempotent mutation outcome", async () => {
+  const stream = new PassThrough();
+  const hostId = `host-${"1".repeat(24)}`;
+  const request = {
+    type: "host.identity.accept",
+    requestId: "host-identity-request-1",
+    hostId,
+    authorizationClass: "controller_host_identity_binding",
+    idempotencyKey: "host-identity-idempotency-key-1",
+    expectedRevision: 0,
+  };
+  const outcome = {
+    type: "host.identity.result",
+    requestId: request.requestId,
+    code: "host_identity_accepted",
+    authorizationClass: request.authorizationClass,
+    idempotencyKeyHash: `sha256:${"2".repeat(64)}`,
+    expectedRevision: 0,
+    revision: 1,
+    idempotentReplay: false,
+    hostId,
+    auditId: `audit-${"3".repeat(24)}`,
+  };
+
+  writeFrame(stream, request);
+  writeFrame(stream, outcome);
+  assert.deepEqual(await readFrame(stream), request);
+  assert.deepEqual(await readFrame(stream), outcome);
+  assert.throws(
+    () => writeFrame(stream, { type: "host.identity.accept", requestId: "missing-contract" }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+});
+
 test("wire-level protocol errors include sanitized explanations and retry guidance", async () => {
   const stream = new PassThrough();
   const diagnosis = {

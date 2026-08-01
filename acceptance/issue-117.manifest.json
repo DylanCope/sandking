@@ -15,7 +15,7 @@
       "environment": "npm-pinned real headless Chromium; user-space Node processes; loopback network only",
       "transport": "packaged CLI -> Controller runtime -> bounded framed stdio Host; typed same-origin WebSocket -> Cockpit",
       "initialState": "no runtime; unredeemed short-lived bootstrap token; protected fixture present",
-      "actions": ["pack and install package", "launch installed sandking outside checkout with lifecycle mutation contract", "redeem, replay, and expire token", "negotiate Host", "negotiate browser", "reload and resume", "end session concurrently and idempotently", "exercise hostile browser requests"],
+      "actions": ["pack and install package", "launch installed sandking outside checkout with lifecycle mutation contract", "accept the first Host identity through its framed mutation contract", "redeem, replay, and expire token", "negotiate Host", "negotiate browser", "reload and resume", "end session concurrently and idempotently", "exercise hostile browser requests"],
       "expectedTypedOutcome": "runtime.hello-ack",
       "canonicalStateInvariants": ["one runtime identity", "one Host identity", "cursor resumes or explicitly resynchronizes"],
       "prohibitedSideEffects": ["remote listener", "Controller credential forwarding", "Project mutation", "sudo", "system package install", "shell profile mutation", "service configuration"],

@@ -561,14 +561,25 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         },
       };
       const audit = await readFile(join(dataDir, "audit.jsonl"), "utf8");
+      const auditEntries = audit.trim().split("\n").map((line) => JSON.parse(line));
+      const hostIdentityMutationAudit = auditEntries.find((entry) =>
+        entry.action === "host.identity.accept" && entry.outcome === "accepted");
       assert.match(audit, /"action":"host.negotiate"/);
+      assert.equal(hostIdentityMutationAudit.auditId, launch.audit.hostIdentityId);
+      assert.equal(
+        hostIdentityMutationAudit.details.authorizationClass,
+        "controller_host_identity_binding",
+      );
+      assert.match(hostIdentityMutationAudit.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+      assert.equal(hostIdentityMutationAudit.details.expectedRevision, 0);
+      assert.equal(hostIdentityMutationAudit.details.actualRevision, 0);
+      assert.equal(hostIdentityMutationAudit.details.resultingRevision, 1);
       assert.match(audit, /"action":"browser.negotiate"/);
       assert.match(audit, /"code":"csrf_rejected"/);
       assert.match(audit, /"code":"origin_mismatch"/);
       assert.doesNotMatch(audit, new RegExp(controllerSecret));
 
       if (process.env.SANDKING_ACCEPTANCE_OBSERVATION_PATH) {
-        const auditEntries = audit.trim().split("\n").map((line) => JSON.parse(line));
         await writeFile(process.env.SANDKING_ACCEPTANCE_OBSERVATION_PATH, `${JSON.stringify({
           browserVersion,
           packagedPublicSeam: installed.observation,
@@ -588,6 +599,15 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
             schemaDigest: launch.host.schemaDigest,
             framing: launch.host.framing,
             observationCursor: launch.host.observationCursor,
+          },
+          hostIdentityMutationEvidence: {
+            authorizationClass: hostIdentityMutationAudit.details.authorizationClass,
+            expectedRevision: hostIdentityMutationAudit.details.expectedRevision,
+            actualRevision: hostIdentityMutationAudit.details.actualRevision,
+            resultingRevision: hostIdentityMutationAudit.details.resultingRevision,
+            auditId: hostIdentityMutationAudit.auditId,
+            launchOutcomeReferencesSameAudit:
+              launch.audit.hostIdentityId === hostIdentityMutationAudit.auditId,
           },
           protocol: launch.protocol,
           browserNegotiation: {

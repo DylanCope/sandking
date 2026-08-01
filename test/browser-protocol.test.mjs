@@ -195,6 +195,7 @@ test("session termination declares authorization, idempotency, revision, audit, 
     assert.deepEqual(firstOutcome, {
       type: "mutation_result",
       code: "session_ended",
+      authorizationClass: "runtime_browser_session",
       revision: 2,
       idempotentReplay: false,
       auditId: firstOutcome.auditId,
@@ -225,13 +226,17 @@ test("session termination declares authorization, idempotency, revision, audit, 
       },
     });
     assert.equal(stale.status, 409);
-    assert.deepEqual(await stale.json(), {
+    const staleOutcome = await stale.json();
+    assert.deepEqual(staleOutcome, {
       type: "mutation_failure",
       code: "mutation_revision_conflict",
       retryable: true,
+      authorizationClass: "runtime_browser_session",
       expectedRevision: 1,
       actualRevision: 2,
+      auditId: staleOutcome.auditId,
     });
+    assert.match(staleOutcome.auditId, /^audit-/);
 
     const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
       .trim().split("\n").map((line) => JSON.parse(line));

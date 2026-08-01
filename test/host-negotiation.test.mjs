@@ -1,14 +1,25 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import {
+  HOST_SCHEMA_DIGEST,
+  MAX_BULK_CHUNK_BYTES,
+  MAX_FRAME_BYTES,
+  hostCapabilities,
+  protocolVersion,
+  readFrame,
+  releaseVersion,
+  writeFrame,
+} from "../src/protocol.mjs";
 
 const execFileAsync = promisify(execFile);
 const cliPath = join(process.cwd(), "src", "cli.mjs");
+const localHostPath = join(process.cwd(), "src", "local-host.mjs");
 /** @param {Buffer | string} value */
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
@@ -30,6 +41,100 @@ const readAcceptedProductState = async (dataDir) => {
     sha256: sha256(acceptedStateFiles.map((file) => `${file}\0${files[file]}`).join("\0")),
   };
 };
+
+test("the local Host replays the first identity mutation outcome for the same idempotency key", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-host-identity-mutation-"));
+  const hostId = `host-${"1".repeat(24)}`;
+  const controllerId = `runtime-${"2".repeat(24)}`;
+  const child = spawn(process.execPath, [
+    localHostPath,
+    "--data-dir",
+    dataDir,
+    "--allow-host-identity-create",
+  ], { stdio: ["pipe", "pipe", "pipe"], env: { LANG: "C.UTF-8" } });
+
+  try {
+    writeFrame(child.stdin, {
+      type: "hello",
+      protocol: protocolVersion,
+      release: releaseVersion,
+      identity: "controller-runtime",
+      controllerId,
+      expectedPeerIdentity: "local-host",
+      expectedHostId: hostId,
+      capabilities: { required: [...hostCapabilities], optional: [] },
+      schemaDigest: HOST_SCHEMA_DIGEST,
+      framing: {
+        maxFrameBytes: MAX_FRAME_BYTES,
+        maxBulkChunkBytes: MAX_BULK_CHUNK_BYTES,
+      },
+      observationCursor: null,
+    });
+    const acknowledgement = await readFrame(child.stdout);
+    assert.equal(acknowledgement.type, "hello-ack");
+
+    const mutation = {
+      type: "host.identity.accept",
+      requestId: "host-identity-first",
+      hostId,
+      authorizationClass: "controller_host_identity_binding",
+      idempotencyKey: "host-identity-replay-key",
+      expectedRevision: 0,
+    };
+    writeFrame(child.stdin, mutation);
+    const first = await readFrame(child.stdout);
+    assert.equal(first.type, "host.identity.result");
+    assert.equal(first.idempotentReplay, false);
+    assert.match(first.auditId, /^audit-/);
+
+    writeFrame(child.stdin, { ...mutation, requestId: "host-identity-replay" });
+    const replay = await readFrame(child.stdout);
+    assert.deepEqual(replay, {
+      ...first,
+      requestId: "host-identity-replay",
+      idempotentReplay: true,
+    });
+
+    writeFrame(child.stdin, {
+      ...mutation,
+      requestId: "host-identity-conflict",
+      idempotencyKey: "host-identity-conflicting-key",
+    });
+    const conflict = await readFrame(child.stdout);
+    assert.deepEqual(conflict, {
+      type: "host.identity.failure",
+      requestId: "host-identity-conflict",
+      code: "idempotency_key_conflict",
+      retryable: true,
+      authorizationClass: "controller_host_identity_binding",
+      idempotencyKeyHash: conflict.idempotencyKeyHash,
+      expectedRevision: 0,
+      actualRevision: 1,
+      auditId: conflict.auditId,
+    });
+    assert.match(conflict.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    assert.match(conflict.auditId, /^audit-/);
+
+    const identity = JSON.parse(await readFile(join(dataDir, "host-identity.json"), "utf8"));
+    assert.equal(identity.hostId, hostId);
+    assert.equal(identity.revision, 1);
+    assert.equal(identity.auditId, first.auditId);
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(audits.filter((entry) => entry.action === "host.identity.accept").length, 3);
+    assert.equal(audits[0].outcome, "accepted");
+    assert.equal(audits[1].outcome, "observed");
+    assert.equal(audits[1].details.originalAuditId, first.auditId);
+    assert.equal(audits[2].auditId, conflict.auditId);
+    assert.equal(audits[2].outcome, "rejected");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
 
 /** @param {string[]} args */
 const runFailingCli = async (args) => {

@@ -71,13 +71,19 @@ records, and readiness state in a private user directory (`~/.sandking` by
 default). Launch and stop use the same lock and record their idempotency-key
 hashes, expected and resulting revisions, outcomes, and audit IDs. Omitting the
 flags lets the local CLI generate a one-shot key and use the current lifecycle
-revision. Until readiness is acknowledged, the runtime and Host remain owned by
-the launcher and shut down if it is killed. The Host inherits no Controller
+revision. The lock wait covers the full startup deadline, and corrupt state for
+a still-live runtime fails closed without deleting its ownership record or
+starting a competitor. Until readiness is acknowledged, the runtime and Host
+remain owned by the launcher and shut down if it is killed. The first durable
+Host identity is accepted through an explicit framed, authorized, idempotent,
+revisioned Host mutation whose typed outcome carries the Host audit ID; a
+readiness ping does not create identity state. The Host inherits no Controller
 environment or credentials. Browser control is a versioned typed same-origin
 WebSocket protocol. Its HttpOnly cookie is non-persistent, and the runtime
 expires the session after at most 15 minutes and revokes its existing
-WebSockets. Explicitly ending a browser session serializes concurrent retries;
-opaque stream bytes remain on a separate bounded binary channel.
+WebSockets. Bootstrap and session-end rejections return typed failures linked
+to audit evidence. Explicitly ending a browser session serializes concurrent
+retries; opaque stream bytes remain on a separate bounded binary channel.
 
 Run the executable issue-117 acceptance manifest, including its npm-pinned real
 Chromium gate, with:

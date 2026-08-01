@@ -26,7 +26,7 @@ const COMPATIBILITY_KEY = "runtime-v1";
 export const BOOTSTRAP_TTL_MS = 60_000;
 export const BROWSER_SESSION_TTL_MS = 15 * 60_000;
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
-const LOCK_TIMEOUT_MS = 5_000;
+const LOCK_TIMEOUT_MS = DEFAULT_STARTUP_TIMEOUT_MS + 2_000;
 const daemonPath = fileURLToPath(new URL("./runtime-daemon.mjs", import.meta.url));
 
 /**
@@ -132,6 +132,12 @@ const startupDiagnosisDetails = Object.freeze({
     explanation: "The Controller runtime could not start safely.",
     retryGuidance: "Check the local Sand-King installation and retry the launch.",
   },
+  runtime_lock_timeout: {
+    type: "runtime_startup_failure",
+    retryable: true,
+    explanation: "The Controller runtime lifecycle lock remained busy past the safe wait deadline.",
+    retryGuidance: "Wait for the active local lifecycle operation to finish, then retry with the same idempotency key.",
+  },
   runtime_incompatible: {
     type: "runtime_startup_failure",
     retryable: true,
@@ -143,6 +149,12 @@ const startupDiagnosisDetails = Object.freeze({
     retryable: true,
     explanation: "The running Controller runtime did not pass authenticated readiness.",
     retryGuidance: "Stop the unready Controller runtime, then retry the launch.",
+  },
+  runtime_state_invalid: {
+    type: "runtime_startup_failure",
+    retryable: true,
+    explanation: "The running Controller runtime state is invalid.",
+    retryGuidance: "Repair the private runtime state or terminate the verified Controller runtime, then retry.",
   },
 });
 
@@ -198,6 +210,7 @@ const runtimeStateSchema = z.object({
     class: z.literal("loopback"),
   }).strict(),
   negotiationAuditId: z.string().min(1).max(128),
+  hostIdentityAuditId: z.string().regex(/^audit-[a-f0-9]{24}$/).nullable().optional(),
   startedAt: z.string(),
 }).strict();
 
@@ -234,6 +247,27 @@ const readLifecycle = async (dataDir) => {
     throw new Error("runtime_lifecycle_state_invalid");
   }
   return parsed.data;
+};
+
+/** @param {string} statePath */
+const readRuntimeStateBoundary = async (statePath) => {
+  const text = await readFile(statePath, "utf8").catch((error) => {
+    if (hasErrorCode(error, "ENOENT")) {
+      return null;
+    }
+    throw error;
+  });
+  if (text === null) {
+    return { raw: null, present: false };
+  }
+  try {
+    return { raw: JSON.parse(text), present: true };
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return { raw: null, present: true };
+    }
+    throw error;
+  }
 };
 
 /** @param {string} dataDir @returns {Promise<StopOutcome[]>} */
@@ -390,13 +424,14 @@ const releaseOwnedLock = async (lockPath, lockId) => {
  * @template T
  * @param {string} dataDir
  * @param {() => Promise<T>} operation
+ * @param {number} [timeoutMs]
  * @returns {Promise<T>}
  */
-const withRuntimeLock = async (dataDir, operation) => {
+const withRuntimeLock = async (dataDir, operation, timeoutMs = LOCK_TIMEOUT_MS) => {
   const lockPath = join(dataDir, "runtime.lock");
   const recoveryPath = join(dataDir, "runtime.lock.recovery");
   const lockId = randomBytes(12).toString("hex");
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
     const recoveryText = await readFile(recoveryPath, "utf8").catch(() => null);
@@ -480,6 +515,47 @@ const withRuntimeLock = async (dataDir, operation) => {
   }
 
   throw new Error("runtime_lock_timeout");
+};
+
+/**
+ * @template T
+ * @param {string} dataDir
+ * @param {"runtime.start" | "runtime.stop"} action
+ * @param {{idempotencyKey?: string, expectedRevision?: number}} contract
+ * @param {() => Promise<T>} operation
+ * @param {number} [timeoutMs]
+ * @returns {Promise<T>}
+ */
+const withAuditedRuntimeLock = async (dataDir, action, contract, operation, timeoutMs) => {
+  try {
+    return await withRuntimeLock(dataDir, operation, timeoutMs);
+  } catch (error) {
+    if (error instanceof RuntimeStartupError || !(error instanceof Error) || error.message !== "runtime_lock_timeout") {
+      throw error;
+    }
+    const idempotencyKeyHash = typeof contract.idempotencyKey === "string"
+      && contract.idempotencyKey.length > 0
+      && contract.idempotencyKey.length <= 256
+      ? `sha256:${createHash("sha256").update(contract.idempotencyKey).digest("hex")}`
+      : null;
+    const auditId = await recordLifecycleAudit(dataDir, action, "rejected", {
+      code: "runtime_lock_timeout",
+      authorizationClass: "user_runtime_lifecycle",
+      idempotencyKeyHash,
+      expectedRevision: Number.isSafeInteger(contract.expectedRevision)
+        ? contract.expectedRevision
+        : null,
+      actualRevision: null,
+    });
+    const publicError = new RuntimeStartupError("runtime_lock_timeout", auditId);
+    if (action === "runtime.start") {
+      await writePrivateJson(join(dataDir, "last-startup-error.json"), {
+        ...publicError.diagnosis,
+        recordedAt: new Date().toISOString(),
+      });
+    }
+    throw publicError;
+  }
 };
 
 /**
@@ -747,10 +823,6 @@ const spawnRuntime = async (dataDir, options) => {
     if (typeof child.pid === "number") {
       await terminateProcessTree(child.pid);
     }
-    await writePrivateJson(join(dataDir, "last-startup-error.json"), {
-      ...startupError.diagnosis,
-      recordedAt: new Date().toISOString(),
-    });
     await removePrivateFile(statePath);
     await removePrivateFile(errorPath);
     throw startupError;
@@ -778,12 +850,17 @@ export const launchRuntime = async (options = {}) => {
     throw new Error("browser_session_ttl_invalid");
   }
   await ensurePrivateDirectory(resolvedDataDir);
+  const lifecycleIdempotencyKey = options.idempotencyKey ?? randomBytes(32).toString("hex");
 
-  return withRuntimeLock(resolvedDataDir, async () => {
+  return withAuditedRuntimeLock(resolvedDataDir, "runtime.start", {
+    idempotencyKey: lifecycleIdempotencyKey,
+    expectedRevision: options.expectedRevision,
+  }, async () => {
     const lifecyclePath = join(resolvedDataDir, "runtime-lifecycle.json");
     const lifecycle = await readLifecycle(resolvedDataDir);
     const statePath = join(resolvedDataDir, "runtime-state.json");
-    const rawExisting = await readJson(statePath, null);
+    const stateBoundary = await readRuntimeStateBoundary(statePath);
+    const rawExisting = stateBoundary.raw;
     const rawPid = rawExisting && typeof rawExisting === "object" && "pid" in rawExisting
       ? Number(rawExisting.pid)
       : Number.NaN;
@@ -792,7 +869,7 @@ export const launchRuntime = async (options = {}) => {
       ? existingState.data.revision
       : lifecycle?.revision ?? 0;
     const expectedRevision = options.expectedRevision ?? actualRevision;
-    const idempotencyKey = options.idempotencyKey ?? randomBytes(32).toString("hex");
+    const idempotencyKey = lifecycleIdempotencyKey;
     const validContract = typeof idempotencyKey === "string"
       && idempotencyKey.length > 0
       && idempotencyKey.length <= 256
@@ -819,6 +896,7 @@ export const launchRuntime = async (options = {}) => {
         type: "mutation_failure",
         code: "mutation_contract_invalid",
         retryable: true,
+        authorizationClass: "user_runtime_lifecycle",
         started: false,
         expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
         actualRevision,
@@ -841,6 +919,7 @@ export const launchRuntime = async (options = {}) => {
           type: "mutation_failure",
           code: "idempotency_key_conflict",
           retryable: true,
+          authorizationClass: "user_runtime_lifecycle",
           started: false,
           expectedRevision,
           actualRevision,
@@ -891,6 +970,7 @@ export const launchRuntime = async (options = {}) => {
         type: "mutation_failure",
         code: "mutation_revision_conflict",
         retryable: true,
+        authorizationClass: "user_runtime_lifecycle",
         started: false,
         expectedRevision,
         actualRevision,
@@ -903,7 +983,7 @@ export const launchRuntime = async (options = {}) => {
 
     const hostBinding = await prepareControllerHostBinding(resolvedDataDir);
 
-    /** @param {"runtime_incompatible" | "runtime_not_ready"} code */
+    /** @param {"runtime_incompatible" | "runtime_not_ready" | "runtime_state_invalid"} code */
     const rejectLiveRuntime = async (code) => {
       const auditId = await recordLifecycleAudit(
         resolvedDataDir,
@@ -922,6 +1002,10 @@ export const launchRuntime = async (options = {}) => {
 
     let runtimeState;
     let reused = false;
+    if (stateBoundary.present && !existingState.success) {
+      await rejectLiveRuntime("runtime_state_invalid");
+      throw new Error("runtime_state_invalid");
+    }
     if (pidIsRunning(rawPid)) {
       if (!existingState.success) {
         throw new Error("runtime_state_invalid");
@@ -975,16 +1059,22 @@ export const launchRuntime = async (options = {}) => {
             negotiationAuditId: startupError.diagnosis.auditId,
           },
         );
+        const publicAuditId = startupError.diagnosis.auditId ?? runtimeStartAuditId;
+        const publicError = new RuntimeStartupError(startupError.diagnosis.code, publicAuditId);
         outcomes.push({
           idempotencyKeyHash,
           expectedRevision,
           failure: {
-            code: startupError.diagnosis.code,
-            auditId: startupError.diagnosis.auditId ?? runtimeStartAuditId,
+            code: publicError.diagnosis.code,
+            auditId: publicAuditId,
           },
         });
         await writeLaunchOutcomes(resolvedDataDir, outcomes);
-        throw startupError;
+        await writePrivateJson(join(resolvedDataDir, "last-startup-error.json"), {
+          ...publicError.diagnosis,
+          recordedAt: new Date().toISOString(),
+        });
+        throw publicError;
       }
       await writePrivateJson(lifecyclePath, {
         revision: lifecycleRevision,
@@ -1025,6 +1115,7 @@ export const launchRuntime = async (options = {}) => {
       protocol: runtimeState.protocol,
       audit: {
         negotiationId: runtimeState.negotiationAuditId,
+        hostIdentityId: runtimeState.hostIdentityAuditId ?? null,
         runtimeStartId: runtimeStartAuditId,
       },
       bootstrapUrl: bootstrap.url,
@@ -1051,24 +1142,33 @@ export const launchRuntime = async (options = {}) => {
     });
     await writeLaunchOutcomes(resolvedDataDir, outcomes);
     return response;
-  });
+  }, Math.max(
+    LOCK_TIMEOUT_MS,
+    (options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS) + 2_000,
+  ));
 };
 
 /** @param {{dataDir?: string, idempotencyKey?: string, expectedRevision?: number}} options */
 export const stopRuntime = async (options = {}) => {
   const resolvedDataDir = resolveDataDir(options.dataDir);
   await ensurePrivateDirectory(resolvedDataDir);
-  return withRuntimeLock(resolvedDataDir, async () => {
+  const lifecycleIdempotencyKey = options.idempotencyKey ?? randomBytes(32).toString("hex");
+  return withAuditedRuntimeLock(resolvedDataDir, "runtime.stop", {
+    idempotencyKey: lifecycleIdempotencyKey,
+    expectedRevision: options.expectedRevision,
+  }, async () => {
     const statePath = join(resolvedDataDir, "runtime-state.json");
-    const rawState = await readJson(statePath, null);
+    const stateBoundary = await readRuntimeStateBoundary(statePath);
+    const rawState = stateBoundary.raw;
     const parsed = runtimeStateSchema.safeParse(rawState);
     const lifecycle = await readLifecycle(resolvedDataDir);
     const actualRevision = parsed.success
       ? parsed.data.revision
       : lifecycle?.revision ?? 0;
     const expectedRevision = options.expectedRevision ?? actualRevision;
-    const idempotencyKey = options.idempotencyKey ?? randomBytes(32).toString("hex");
-    const validContract = idempotencyKey.length > 0
+    const idempotencyKey = lifecycleIdempotencyKey;
+    const validContract = typeof idempotencyKey === "string"
+      && idempotencyKey.length > 0
       && idempotencyKey.length <= 256
       && Number.isSafeInteger(expectedRevision)
       && expectedRevision >= 0;
@@ -1093,6 +1193,7 @@ export const stopRuntime = async (options = {}) => {
         type: "mutation_failure",
         code: "mutation_contract_invalid",
         retryable: true,
+        authorizationClass: "user_runtime_lifecycle",
         stopped: false,
         expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
         actualRevision,
@@ -1115,6 +1216,7 @@ export const stopRuntime = async (options = {}) => {
           type: "mutation_failure",
           code: "idempotency_key_conflict",
           retryable: true,
+          authorizationClass: "user_runtime_lifecycle",
           stopped: false,
           expectedRevision,
           actualRevision,
@@ -1140,6 +1242,29 @@ export const stopRuntime = async (options = {}) => {
         type: "mutation_failure",
         code: "mutation_revision_conflict",
         retryable: true,
+        authorizationClass: "user_runtime_lifecycle",
+        stopped: false,
+        expectedRevision,
+        actualRevision,
+        auditId,
+      };
+      outcomes.push({ idempotencyKeyHash, expectedRevision, response });
+      await writeStopOutcomes(resolvedDataDir, outcomes);
+      return response;
+    }
+
+    if (stateBoundary.present && !parsed.success) {
+      const auditId = await recordLifecycleAudit(
+        resolvedDataDir,
+        "runtime.stop",
+        "rejected",
+        { ...auditDetails, code: "runtime_state_invalid" },
+      );
+      const response = {
+        type: "mutation_failure",
+        code: "runtime_state_invalid",
+        retryable: true,
+        authorizationClass: "user_runtime_lifecycle",
         stopped: false,
         expectedRevision,
         actualRevision,
@@ -1161,6 +1286,7 @@ export const stopRuntime = async (options = {}) => {
       const response = {
         type: "mutation_result",
         code: "runtime_not_running",
+        authorizationClass: "user_runtime_lifecycle",
         stopped: false,
         revision: actualRevision,
         idempotentReplay: false,
@@ -1181,6 +1307,7 @@ export const stopRuntime = async (options = {}) => {
         type: "mutation_failure",
         code: "runtime_not_ready",
         retryable: true,
+        authorizationClass: "user_runtime_lifecycle",
         stopped: false,
         expectedRevision,
         actualRevision,
@@ -1212,6 +1339,7 @@ export const stopRuntime = async (options = {}) => {
     const response = {
       type: "mutation_result",
       code: "runtime_stopped",
+      authorizationClass: "user_runtime_lifecycle",
       stopped: true,
       runtimeId: parsed.data.runtimeId,
       revision: resultingRevision,

@@ -22,7 +22,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.bulk-stream.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-durable-peer-identities")
+  .update("sandking-host-control-schema-v1-with-audited-identity-mutation")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -134,12 +134,54 @@ const pongSchema = z.object({
   requestId: identifierSchema,
 }).strip();
 
+const hostIdentityAuthorizationClass = z.literal("controller_host_identity_binding");
+const hostIdentityAcceptSchema = z.object({
+  type: z.literal("host.identity.accept"),
+  requestId: identifierSchema,
+  hostId: hostIdSchema,
+  authorizationClass: hostIdentityAuthorizationClass,
+  idempotencyKey: z.string().min(1).max(256),
+  expectedRevision: z.number().int().nonnegative(),
+}).strip();
+
+const hostIdentityResultSchema = z.object({
+  type: z.literal("host.identity.result"),
+  requestId: identifierSchema,
+  code: z.literal("host_identity_accepted"),
+  authorizationClass: hostIdentityAuthorizationClass,
+  idempotencyKeyHash: digestSchema,
+  expectedRevision: z.number().int().nonnegative(),
+  revision: z.number().int().positive(),
+  idempotentReplay: z.boolean(),
+  hostId: hostIdSchema,
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+}).strip();
+
+const hostIdentityFailureSchema = z.object({
+  type: z.literal("host.identity.failure"),
+  requestId: identifierSchema,
+  code: z.enum([
+    "host_identity_mismatch",
+    "idempotency_key_conflict",
+    "mutation_revision_conflict",
+  ]),
+  retryable: z.boolean(),
+  authorizationClass: hostIdentityAuthorizationClass,
+  idempotencyKeyHash: digestSchema,
+  expectedRevision: z.number().int().nonnegative(),
+  actualRevision: z.number().int().nonnegative(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+}).strip();
+
 export const controlMessageSchema = z.discriminatedUnion("type", [
   helloSchema,
   helloAckSchema,
   protocolErrorSchema,
   pingSchema,
   pongSchema,
+  hostIdentityAcceptSchema,
+  hostIdentityResultSchema,
+  hostIdentityFailureSchema,
 ]);
 
 export class ProtocolError extends Error {

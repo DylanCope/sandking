@@ -123,7 +123,17 @@ test("bootstrap URLs exchange once into a session and same-origin WebSockets req
       headers: { cookie },
     });
     assert.equal(csrfRejected.status, 403);
-    assert.deepEqual(await csrfRejected.json(), { code: "csrf_rejected" });
+    const csrfFailure = await csrfRejected.json();
+    assert.deepEqual(csrfFailure, {
+      type: "mutation_failure",
+      code: "csrf_rejected",
+      retryable: true,
+      authorizationClass: "runtime_browser_session",
+      expectedRevision: -1,
+      actualRevision: 1,
+      auditId: csrfFailure.auditId,
+    });
+    assert.match(csrfFailure.auditId, /^audit-/);
     assert.equal(csrfRejected.headers.get("access-control-allow-origin"), null);
 
     const hostRejected = await openHttpRequest({
@@ -142,13 +152,17 @@ test("bootstrap URLs exchange once into a session and same-origin WebSockets req
     staleBootstrap.searchParams.set("expectedRevision", "1");
     const staleResponse = await request({ url: staleBootstrap.href });
     assert.equal(staleResponse.status, 409);
-    assert.deepEqual(await staleResponse.json(), {
+    const staleFailure = await staleResponse.json();
+    assert.deepEqual(staleFailure, {
       type: "mutation_failure",
       code: "mutation_revision_conflict",
       retryable: true,
+      authorizationClass: "bootstrap_token",
       expectedRevision: 1,
       actualRevision: 1,
+      auditId: staleFailure.auditId,
     });
+    assert.match(staleFailure.auditId, /^audit-/);
 
     const rejected = await openWebSocketHandshake({
       port: launch.runtime.port,
@@ -209,6 +223,83 @@ test("bootstrap-token redemption is atomic and the plaintext token is never reta
   }
 });
 
+test("malformed bootstrap and unauthenticated session mutations return typed audited failures", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-mutation-rejections-"));
+
+  try {
+    const launch = await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]);
+    const origin = `http://127.0.0.1:${launch.runtime.port}`;
+
+    const malformedBootstrap = await request({ url: `${origin}/bootstrap?token=bad` });
+    assert.equal(malformedBootstrap.status, 400);
+    const bootstrapFailure = await malformedBootstrap.json();
+    assert.deepEqual(bootstrapFailure, {
+      type: "mutation_failure",
+      code: "mutation_contract_invalid",
+      retryable: true,
+      authorizationClass: "bootstrap_token",
+      expectedRevision: 0,
+      actualRevision: 0,
+      auditId: bootstrapFailure.auditId,
+    });
+    assert.match(bootstrapFailure.auditId, /^audit-/);
+
+    const unauthenticatedEnd = await request({
+      method: "POST",
+      url: `${origin}/session/end`,
+      headers: {
+        origin,
+        "x-sandking-idempotency-key": "unauthenticated-session-end",
+        "x-sandking-expected-revision": "0",
+      },
+    });
+    assert.equal(unauthenticatedEnd.status, 401);
+    const sessionFailure = await unauthenticatedEnd.json();
+    assert.deepEqual(sessionFailure, {
+      type: "mutation_failure",
+      code: "session_required",
+      retryable: true,
+      authorizationClass: "runtime_browser_session",
+      expectedRevision: 0,
+      actualRevision: 0,
+      auditId: sessionFailure.auditId,
+    });
+    assert.match(sessionFailure.auditId, /^audit-/);
+
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const bootstrapAudit = audits.find((entry) => entry.auditId === bootstrapFailure.auditId);
+    assert.deepEqual({
+      action: bootstrapAudit.action,
+      outcome: bootstrapAudit.outcome,
+      code: bootstrapAudit.details.code,
+      authorizationClass: bootstrapAudit.details.authorizationClass,
+      idempotencyKeyHash: bootstrapAudit.details.idempotencyKeyHash,
+      expectedRevision: bootstrapAudit.details.expectedRevision,
+      actualRevision: bootstrapAudit.details.actualRevision,
+    }, {
+      action: "browser.session.create",
+      outcome: "rejected",
+      code: "mutation_contract_invalid",
+      authorizationClass: "bootstrap_token",
+      idempotencyKeyHash: null,
+      expectedRevision: 0,
+      actualRevision: 0,
+    });
+    const sessionAudit = audits.find((entry) => entry.auditId === sessionFailure.auditId);
+    assert.equal(sessionAudit.action, "browser.session.end");
+    assert.equal(sessionAudit.outcome, "rejected");
+    assert.equal(sessionAudit.details.code, "session_required");
+    assert.equal(sessionAudit.details.authorizationClass, "runtime_browser_session");
+    assert.match(sessionAudit.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    assert.equal(sessionAudit.details.expectedRevision, 0);
+    assert.equal(sessionAudit.details.actualRevision, 0);
+  } finally {
+    await runCli(["stop", "--data-dir", dataDir, "--json"]).catch(() => undefined);
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("expired bootstrap tokens return a typed retryable outcome without creating a session", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-token-expiry-"));
 
@@ -227,13 +318,17 @@ test("expired bootstrap tokens return a typed retryable outcome without creating
 
     const expired = await request({ url: launch.bootstrapUrl });
     assert.equal(expired.status, 410);
-    assert.deepEqual(await expired.json(), {
+    const expiredFailure = await expired.json();
+    assert.deepEqual(expiredFailure, {
       type: "mutation_failure",
       code: "bootstrap_token_expired",
       retryable: true,
+      authorizationClass: "bootstrap_token",
       expectedRevision: 0,
       actualRevision: 0,
+      auditId: expiredFailure.auditId,
     });
+    assert.match(expiredFailure.auditId, /^audit-/);
 
     const redeemedLaunch = await runCli([
       "launch",
@@ -248,13 +343,17 @@ test("expired bootstrap tokens return a typed retryable outcome without creating
     await new Promise((resolve) => setTimeout(resolve, 575));
     const expiredReplay = await request({ url: redeemedLaunch.bootstrapUrl });
     assert.equal(expiredReplay.status, 410);
-    assert.deepEqual(await expiredReplay.json(), {
+    const expiredReplayFailure = await expiredReplay.json();
+    assert.deepEqual(expiredReplayFailure, {
       type: "mutation_failure",
       code: "bootstrap_token_expired",
       retryable: true,
+      authorizationClass: "bootstrap_token",
       expectedRevision: 0,
       actualRevision: 1,
+      auditId: expiredReplayFailure.auditId,
     });
+    assert.match(expiredReplayFailure.auditId, /^audit-/);
 
     const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
       .trim().split("\n").map((line) => JSON.parse(line));

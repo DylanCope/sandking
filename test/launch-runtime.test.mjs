@@ -158,6 +158,19 @@ test("Host negotiation binds an ephemeral runtime ID to one persisted Host ID", 
     assert.match(first.runtime.runtimeId, /^runtime-[a-f0-9]{24}$/);
     assert.match(first.host.hostId, /^host-[a-f0-9]{24}$/);
     assert.equal(persistedIdentity.hostId, first.host.hostId);
+    assert.deepEqual({
+      authorizationClass: persistedIdentity.authorizationClass,
+      expectedRevision: persistedIdentity.expectedRevision,
+      revision: persistedIdentity.revision,
+      auditId: persistedIdentity.auditId,
+    }, {
+      authorizationClass: "controller_host_identity_binding",
+      expectedRevision: 0,
+      revision: 1,
+      auditId: first.audit.hostIdentityId,
+    });
+    assert.match(persistedIdentity.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    assert.match(first.audit.hostIdentityId, /^audit-/);
     const controllerBinding = JSON.parse(
       await readFile(join(dataDir, "controller-host-binding.json"), "utf8"),
     );
@@ -165,6 +178,26 @@ test("Host negotiation binds an ephemeral runtime ID to one persisted Host ID", 
     assert.equal(negotiation.details.controllerId, first.runtime.runtimeId);
     assert.equal(negotiation.details.expectedHostId, first.host.hostId);
     assert.equal(negotiation.details.hostId, first.host.hostId);
+    assert.equal(negotiation.details.hostIdentityMutation.auditId, first.audit.hostIdentityId);
+    const identityAudit = audits.find((entry) => entry.auditId === first.audit.hostIdentityId);
+    assert.deepEqual({
+      action: identityAudit.action,
+      outcome: identityAudit.outcome,
+      authorizationClass: identityAudit.details.authorizationClass,
+      expectedRevision: identityAudit.details.expectedRevision,
+      actualRevision: identityAudit.details.actualRevision,
+      resultingRevision: identityAudit.details.resultingRevision,
+      hostId: identityAudit.details.hostId,
+    }, {
+      action: "host.identity.accept",
+      outcome: "accepted",
+      authorizationClass: "controller_host_identity_binding",
+      expectedRevision: 0,
+      actualRevision: 0,
+      resultingRevision: 1,
+      hostId: first.host.hostId,
+    });
+    assert.equal(identityAudit.details.idempotencyKeyHash, persistedIdentity.idempotencyKeyHash);
 
     const stopped = await runCli(["stop", "--data-dir", dataDir, "--json"]);
     assert.equal(stopped.stopped, true);
@@ -264,6 +297,7 @@ test("runtime launch is revisioned, idempotent, and accepted in the audit", asyn
       type: "mutation_failure",
       code: "mutation_revision_conflict",
       retryable: true,
+      authorizationClass: "user_runtime_lifecycle",
       started: false,
       expectedRevision: 0,
       actualRevision: 1,
@@ -330,6 +364,64 @@ test("a stop queued behind startup uses the runtime lock and stops the launched 
   }
 });
 
+test("a contending launch waits through the startup deadline and the failed startup is typed and audited", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-runtime-lock-deadline-"));
+
+  try {
+    const firstLaunch = runFailingCli([
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--host-mode",
+      "hang-before-ack",
+      "--startup-timeout-ms",
+      "6000",
+      "--idempotency-key",
+      "lock-holder-launch",
+      "--expected-revision",
+      "0",
+      "--json",
+      "--no-open",
+    ]);
+    const lockPath = join(dataDir, "runtime.lock");
+    const lockDeadline = Date.now() + 2_000;
+    while (Date.now() < lockDeadline) {
+      if (await readFile(lockPath, "utf8").then(() => true, () => false)) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(await readFile(lockPath, "utf8").then(() => true, () => false), true);
+
+    const contendingLaunch = runCli([
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--idempotency-key",
+      "lock-contender-launch",
+      "--json",
+      "--no-open",
+    ]);
+    const [failed, recovered] = await Promise.all([firstLaunch, contendingLaunch]);
+    assert.equal(failed.stderr, "");
+    const publicOutcome = JSON.parse(failed.stdout);
+    assert.equal(publicOutcome.ok, false);
+    assert.equal(publicOutcome.diagnosis.code, "runtime_start_timeout");
+    assert.match(publicOutcome.diagnosis.auditId, /^audit-/);
+    assert.equal(recovered.runtime.reused, false);
+
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const timeoutAudit = audits.find((entry) => entry.auditId === publicOutcome.diagnosis.auditId);
+    assert.equal(timeoutAudit.action, "runtime.start");
+    assert.equal(timeoutAudit.outcome, "rejected");
+    assert.equal(timeoutAudit.details.code, "runtime_start_timeout");
+  } finally {
+    await stopAndRemove(dataDir);
+    await terminateMatchingProcesses(dataDir);
+  }
+});
+
 test("runtime stop is revisioned, idempotent, and audited", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-runtime-stop-contract-"));
 
@@ -352,6 +444,7 @@ test("runtime stop is revisioned, idempotent, and audited", async () => {
       type: "mutation_failure",
       code: "mutation_revision_conflict",
       retryable: true,
+      authorizationClass: "user_runtime_lifecycle",
       stopped: false,
       expectedRevision: 0,
       actualRevision: 1,
@@ -377,6 +470,7 @@ test("runtime stop is revisioned, idempotent, and audited", async () => {
     assert.deepEqual(first, {
       type: "mutation_result",
       code: "runtime_stopped",
+      authorizationClass: "user_runtime_lifecycle",
       stopped: true,
       runtimeId: launch.runtime.runtimeId,
       revision: 2,
@@ -416,6 +510,82 @@ test("runtime stop is revisioned, idempotent, and audited", async () => {
     assert.match(accepted.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
   } finally {
     await stopAndRemove(dataDir);
+  }
+});
+
+test("schema-invalid live runtime state fails closed without deleting or duplicating the runtime", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-invalid-live-state-"));
+  const statePath = join(dataDir, "runtime-state.json");
+  let original;
+
+  try {
+    const launched = await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]);
+    original = JSON.parse(await readFile(statePath, "utf8"));
+    const invalidStateText = `${JSON.stringify({ ...original, unexpectedField: true })}\n`;
+    await writeFile(statePath, invalidStateText, { mode: 0o600 });
+
+    const stopOutcome = await runCli([
+      "stop",
+      "--data-dir",
+      dataDir,
+      "--idempotency-key",
+      "invalid-live-state-stop",
+      "--expected-revision",
+      "1",
+      "--json",
+    ]);
+    assert.deepEqual(stopOutcome, {
+      type: "mutation_failure",
+      code: "runtime_state_invalid",
+      retryable: true,
+      authorizationClass: "user_runtime_lifecycle",
+      stopped: false,
+      expectedRevision: 1,
+      actualRevision: 1,
+      auditId: stopOutcome.auditId,
+    });
+    assert.match(stopOutcome.auditId, /^audit-/);
+    assert.equal(await readFile(statePath, "utf8"), invalidStateText);
+
+    const readiness = await fetch(`http://127.0.0.1:${launched.runtime.port}/health`, {
+      headers: { "x-sandking-readiness": original.readinessToken },
+    });
+    assert.equal(readiness.status, 200);
+
+    const launchFailure = await runFailingCli([
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--idempotency-key",
+      "invalid-live-state-launch",
+      "--expected-revision",
+      "1",
+      "--json",
+      "--no-open",
+    ]);
+    assert.equal(launchFailure.stderr, "");
+    const publicOutcome = JSON.parse(launchFailure.stdout);
+    assert.equal(publicOutcome.ok, false);
+    assert.equal(publicOutcome.diagnosis.code, "runtime_state_invalid");
+    assert.match(publicOutcome.diagnosis.auditId, /^audit-/);
+    assert.equal(await readFile(statePath, "utf8"), invalidStateText);
+
+    const processes = await matchingProcesses(dataDir);
+    assert.equal(processes.filter((entry) => entry.command.includes("runtime-daemon.mjs")).length, 1);
+    assert.equal(processes.filter((entry) => entry.command.includes("local-host.mjs")).length, 1);
+
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const stopAudit = audits.find((entry) => entry.auditId === stopOutcome.auditId);
+    assert.equal(stopAudit.action, "runtime.stop");
+    assert.equal(stopAudit.outcome, "rejected");
+    assert.equal(stopAudit.details.code, "runtime_state_invalid");
+  } finally {
+    if (original) {
+      await writeFile(statePath, `${JSON.stringify(original)}\n`, { mode: 0o600 });
+    }
+    await stopAndRemove(dataDir);
+    await terminateMatchingProcesses(dataDir);
   }
 });
 
@@ -667,8 +837,10 @@ test("startup timeout terminates the detached runtime and Host process group", a
         retryable: true,
         explanation: "The Controller runtime did not become ready before the startup deadline.",
         retryGuidance: "Check the local Host installation and retry the launch.",
+        auditId: publicOutcome.diagnosis.auditId,
       },
     });
+    assert.match(publicOutcome.diagnosis.auditId, /^audit-/);
     const { stdout: processes } = await execFileAsync("ps", ["-eo", "args="]);
     assert.doesNotMatch(processes, new RegExp(`runtime-daemon\\.mjs --data-dir ${dataDir}`));
     const retained = JSON.parse(
@@ -679,6 +851,17 @@ test("startup timeout terminates the detached runtime and Host process group", a
       { ...publicOutcome.diagnosis, recordedAt: "<timestamp>" },
     );
     assert.match(retained.recordedAt, /^\d{4}-\d{2}-\d{2}T/);
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const timeoutAudit = audits.find((entry) => entry.auditId === publicOutcome.diagnosis.auditId);
+    assert.equal(timeoutAudit.action, "runtime.start");
+    assert.equal(timeoutAudit.outcome, "rejected");
+    assert.equal(timeoutAudit.details.code, "runtime_start_timeout");
+    const outcomes = JSON.parse(
+      await readFile(join(dataDir, "runtime-launch-outcomes.json"), "utf8"),
+    ).outcomes;
+    assert.equal(outcomes.at(-1).failure.code, "runtime_start_timeout");
+    assert.equal(outcomes.at(-1).failure.auditId, publicOutcome.diagnosis.auditId);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

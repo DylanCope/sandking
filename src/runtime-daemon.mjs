@@ -189,14 +189,29 @@ const sendJson = (response, status, body) => {
 /** @param {string} key */
 const hashIdempotencyKey = (key) => `sha256:${createHash("sha256").update(key).digest("hex")}`;
 
-/** @param {string} code @param {number} expectedRevision @param {number} actualRevision */
-const mutationFailure = (code, expectedRevision, actualRevision) => ({
+/** @param {string} code @param {string} authorizationClass @param {number} expectedRevision @param {number} actualRevision @param {string} auditId */
+const mutationFailure = (code, authorizationClass, expectedRevision, actualRevision, auditId) => ({
   type: "mutation_failure",
   code,
   retryable: true,
+  authorizationClass,
   expectedRevision,
   actualRevision,
+  auditId,
 });
+
+/** @param {import("node:http").IncomingMessage} request */
+const readMutationHeaders = (request) => {
+  const rawIdempotencyKey = request.headers["x-sandking-idempotency-key"];
+  const idempotencyKey = typeof rawIdempotencyKey === "string" ? rawIdempotencyKey : "";
+  const expectedRevision = Number(request.headers["x-sandking-expected-revision"]);
+  return {
+    idempotencyKeyHash: idempotencyKey.length > 0 && idempotencyKey.length <= 256
+      ? hashIdempotencyKey(idempotencyKey)
+      : null,
+    expectedRevision,
+  };
+};
 
 /**
  * Serialize mutations for one browser session. The queue entry is installed
@@ -230,10 +245,25 @@ const exchangeBootstrapToken = async (token, idempotencyKey, expectedRevision) =
     || !Number.isSafeInteger(expectedRevision)
     || expectedRevision < 0
   ) {
+    const auditId = await recordAudit("browser.session.create", "rejected", {
+      code: "mutation_contract_invalid",
+      authorizationClass: "bootstrap_token",
+      idempotencyKeyHash: /^[a-f0-9]{64}$/.test(idempotencyKey)
+        ? hashIdempotencyKey(idempotencyKey)
+        : null,
+      expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+      actualRevision: 0,
+    });
     return {
       ok: false,
       status: 400,
-      body: mutationFailure("mutation_contract_invalid", expectedRevision, 0),
+      body: mutationFailure(
+        "mutation_contract_invalid",
+        "bootstrap_token",
+        Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
+        0,
+        auditId,
+      ),
     };
   }
   const tokenId = createHash("sha256").update(token).digest("hex");
@@ -242,7 +272,7 @@ const exchangeBootstrapToken = async (token, idempotencyKey, expectedRevision) =
   if (existingExchange) {
     const existing = await existingExchange;
     if (existing.idempotencyKeyHash !== idempotencyKeyHash) {
-      await recordAudit("browser.session.create", "rejected", {
+      const auditId = await recordAudit("browser.session.create", "rejected", {
         code: "idempotency_key_conflict",
         authorizationClass: "bootstrap_token",
         idempotencyKeyHash,
@@ -254,13 +284,15 @@ const exchangeBootstrapToken = async (token, idempotencyKey, expectedRevision) =
         status: 409,
         body: mutationFailure(
           "idempotency_key_conflict",
+          "bootstrap_token",
           expectedRevision,
           existing.resultingRevision ?? 0,
+          auditId,
         ),
       };
     }
     if (existing.expectedRevision !== expectedRevision) {
-      await recordAudit("browser.session.create", "rejected", {
+      const auditId = await recordAudit("browser.session.create", "rejected", {
         code: "mutation_revision_conflict",
         authorizationClass: "bootstrap_token",
         idempotencyKeyHash,
@@ -272,13 +304,15 @@ const exchangeBootstrapToken = async (token, idempotencyKey, expectedRevision) =
         status: 409,
         body: mutationFailure(
           "mutation_revision_conflict",
+          "bootstrap_token",
           expectedRevision,
           existing.resultingRevision ?? 0,
+          auditId,
         ),
       };
     }
     if (existing.ok && Number(existing.expiresAt) <= Date.now()) {
-      await recordAudit("browser.session.create", "rejected", {
+      const auditId = await recordAudit("browser.session.create", "rejected", {
         code: "bootstrap_token_expired",
         authorizationClass: "bootstrap_token",
         idempotencyKeyHash,
@@ -290,8 +324,10 @@ const exchangeBootstrapToken = async (token, idempotencyKey, expectedRevision) =
         status: 410,
         body: mutationFailure(
           "bootstrap_token_expired",
+          "bootstrap_token",
           expectedRevision,
           existing.resultingRevision,
+          auditId,
         ),
       };
     }
@@ -323,14 +359,20 @@ const exchangeBootstrapToken = async (token, idempotencyKey, expectedRevision) =
     await rename(tokenPath, claimPath);
   } catch (error) {
     if (hasErrorCode(error, "ENOENT")) {
-      const body = mutationFailure("bootstrap_token_invalid", expectedRevision, 0);
-      await recordAudit("browser.session.create", "rejected", {
-        code: body.code,
+      const auditId = await recordAudit("browser.session.create", "rejected", {
+        code: "bootstrap_token_invalid",
         authorizationClass: "bootstrap_token",
         idempotencyKeyHash,
         expectedRevision,
         actualRevision: 0,
       });
+      const body = mutationFailure(
+        "bootstrap_token_invalid",
+        "bootstrap_token",
+        expectedRevision,
+        0,
+        auditId,
+      );
       return { ok: false, status: 410, body, idempotencyKeyHash, expectedRevision };
     }
     throw error;
@@ -347,57 +389,76 @@ const exchangeBootstrapToken = async (token, idempotencyKey, expectedRevision) =
       || tokenState.revision < 0
       || !Number.isSafeInteger(tokenState.expiresAt)
     ) {
+      const auditId = await recordAudit("browser.session.create", "rejected", {
+        code: "bootstrap_token_invalid",
+        authorizationClass: "bootstrap_token",
+        idempotencyKeyHash,
+        expectedRevision,
+        actualRevision: 0,
+      });
       const invalid = {
         ok: false,
         status: 410,
-        body: mutationFailure("bootstrap_token_invalid", expectedRevision, 0),
+        body: mutationFailure(
+          "bootstrap_token_invalid",
+          "bootstrap_token",
+          expectedRevision,
+          0,
+          auditId,
+        ),
         idempotencyKeyHash,
         expectedRevision,
       };
-      await recordAudit("browser.session.create", "rejected", {
-        code: invalid.body.code,
-        authorizationClass: "bootstrap_token",
-        idempotencyKeyHash,
-        expectedRevision,
-        actualRevision: 0,
-      });
       return invalid;
     }
     if (tokenState.idempotencyKeyHash !== idempotencyKeyHash) {
-      const body = mutationFailure("idempotency_key_conflict", expectedRevision, 0);
-      await recordAudit("browser.session.create", "rejected", {
-        code: body.code,
+      const auditId = await recordAudit("browser.session.create", "rejected", {
+        code: "idempotency_key_conflict",
         authorizationClass: "bootstrap_token",
         idempotencyKeyHash,
         expectedRevision,
         actualRevision: 0,
       });
+      const body = mutationFailure(
+        "idempotency_key_conflict",
+        "bootstrap_token",
+        expectedRevision,
+        0,
+        auditId,
+      );
       return { ok: false, status: 409, body, idempotencyKeyHash, expectedRevision };
     }
     if (expectedRevision !== Number(tokenState.revision)) {
       const body = mutationFailure(
         "mutation_revision_conflict",
+        "bootstrap_token",
         expectedRevision,
         Number(tokenState.revision),
+        await recordAudit("browser.session.create", "rejected", {
+          code: "mutation_revision_conflict",
+          authorizationClass: "bootstrap_token",
+          idempotencyKeyHash,
+          expectedRevision,
+          actualRevision: Number(tokenState.revision),
+        }),
       );
-      await recordAudit("browser.session.create", "rejected", {
-        code: body.code,
-        authorizationClass: "bootstrap_token",
-        idempotencyKeyHash,
-        expectedRevision,
-        actualRevision: Number(tokenState.revision),
-      });
       return { ok: false, status: 409, body, idempotencyKeyHash, expectedRevision };
     }
     if (Number(tokenState.expiresAt) <= Date.now()) {
-      const body = mutationFailure("bootstrap_token_expired", expectedRevision, 0);
-      await recordAudit("browser.session.create", "rejected", {
-        code: body.code,
+      const auditId = await recordAudit("browser.session.create", "rejected", {
+        code: "bootstrap_token_expired",
         authorizationClass: "bootstrap_token",
         idempotencyKeyHash,
         expectedRevision,
         actualRevision: 0,
       });
+      const body = mutationFailure(
+        "bootstrap_token_expired",
+        "bootstrap_token",
+        expectedRevision,
+        0,
+        auditId,
+      );
       return { ok: false, status: 410, body, idempotencyKeyHash, expectedRevision };
     }
     const session = await createSession({ idempotencyKeyHash, expectedRevision });
@@ -634,14 +695,45 @@ const launchHost = async (runtimeId) => {
       throw new Error("host_framing_invalid");
     }
 
-    const requestId = `ping-${randomBytes(8).toString("hex")}`;
-    writeFrame(child.stdin, { type: "ping", requestId });
-    const pong = await readFrame(child.stdout);
-    if (pong.type !== "pong" || pong.requestId !== requestId) {
-      throw new Error("host_unavailable");
+    let hostIdentityOutcome = null;
+    if (args.allowHostIdentityCreate) {
+      const requestId = `host-identity-${randomBytes(8).toString("hex")}`;
+      const idempotencyKey = `host-identity:${args.startupId}`;
+      writeFrame(child.stdin, {
+        type: "host.identity.accept",
+        requestId,
+        hostId: args.expectedHostId,
+        authorizationClass: "controller_host_identity_binding",
+        idempotencyKey,
+        expectedRevision: 0,
+      });
+      const outcome = await readFrame(child.stdout);
+      if (outcome.type === "host.identity.failure") {
+        throw Object.assign(new Error("host_protocol_error"), {
+          hostIdentityAuditId: outcome.auditId,
+        });
+      }
+      if (
+        outcome.type !== "host.identity.result"
+        || outcome.requestId !== requestId
+        || outcome.hostId !== args.expectedHostId
+        || outcome.authorizationClass !== "controller_host_identity_binding"
+        || outcome.expectedRevision !== 0
+        || outcome.revision !== 1
+      ) {
+        throw new Error("host_protocol_error");
+      }
+      hostIdentityOutcome = outcome;
+    } else {
+      const requestId = `ping-${randomBytes(8).toString("hex")}`;
+      writeFrame(child.stdin, { type: "ping", requestId });
+      const pong = await readFrame(child.stdout);
+      if (pong.type !== "pong" || pong.requestId !== requestId) {
+        throw new Error("host_unavailable");
+      }
     }
 
-    return response;
+    return { host: response, hostIdentityOutcome };
   } catch (error) {
     await stopChild(child);
     if (
@@ -734,33 +826,63 @@ const expireBrowserSessionIfDue = async (sessionId) => {
 const endBrowserSession = async (request, response, sessionId) => {
   const activeSession = await expireBrowserSessionIfDue(sessionId);
   const endedSession = endedSessions.get(sessionId);
-  const session = activeSession ?? endedSession;
+  const expiredSession = expiredSessions.get(sessionId);
+  const session = activeSession ?? endedSession ?? expiredSession;
+  const { idempotencyKeyHash, expectedRevision } = readMutationHeaders(request);
   if (!session) {
-    sendJson(response, 401, {
-      code: expiredSessions.has(sessionId) ? "session_expired" : "session_required",
+    const auditId = await recordAudit("browser.session.end", "rejected", {
+      code: "session_required",
+      authorizationClass: "runtime_browser_session",
+      idempotencyKeyHash,
+      expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+      actualRevision: 0,
     });
+    sendJson(response, 401, mutationFailure(
+      "session_required",
+      "runtime_browser_session",
+      Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
+      0,
+      auditId,
+    ));
     return;
   }
 
-  const rawIdempotencyKey = request.headers["x-sandking-idempotency-key"];
-  const idempotencyKey = typeof rawIdempotencyKey === "string" ? rawIdempotencyKey : "";
-  const expectedRevision = Number(request.headers["x-sandking-expected-revision"]);
-  const idempotencyKeyHash = idempotencyKey.length > 0 && idempotencyKey.length <= 256
-    ? hashIdempotencyKey(idempotencyKey)
-    : null;
+  if (expiredSession) {
+    const auditId = await recordAudit("browser.session.end", "rejected", {
+      code: "session_expired",
+      authorizationClass: "runtime_browser_session",
+      idempotencyKeyHash,
+      expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+      actualRevision: expiredSession.revision,
+    });
+    sendJson(response, 401, mutationFailure(
+      "session_expired",
+      "runtime_browser_session",
+      Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
+      expiredSession.revision,
+      auditId,
+    ));
+    return;
+  }
   if (!exactOriginAccepted(request) || request.headers["x-sandking-csrf"] !== session.csrfToken) {
-    await recordAudit("browser.session.end", "rejected", {
+    const auditId = await recordAudit("browser.session.end", "rejected", {
       code: "csrf_rejected",
       authorizationClass: "runtime_browser_session",
       idempotencyKeyHash,
       expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
       actualRevision: session.revision,
     });
-    sendJson(response, 403, { code: "csrf_rejected" });
+    sendJson(response, 403, mutationFailure(
+      "csrf_rejected",
+      "runtime_browser_session",
+      Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
+      session.revision,
+      auditId,
+    ));
     return;
   }
   if (!idempotencyKeyHash || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
-    await recordAudit("browser.session.end", "rejected", {
+    const auditId = await recordAudit("browser.session.end", "rejected", {
       code: "mutation_contract_invalid",
       authorizationClass: "runtime_browser_session",
       idempotencyKeyHash,
@@ -769,8 +891,10 @@ const endBrowserSession = async (request, response, sessionId) => {
     });
     sendJson(response, 400, mutationFailure(
       "mutation_contract_invalid",
+      "runtime_browser_session",
       Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
       session.revision,
+      auditId,
     ));
     return;
   }
@@ -791,6 +915,7 @@ const endBrowserSession = async (request, response, sessionId) => {
     sendJson(response, 200, {
       type: "mutation_result",
       code: "session_ended",
+      authorizationClass: "runtime_browser_session",
       revision: endedSession.revision,
       idempotentReplay: true,
       auditId: endedSession.termination.auditId,
@@ -798,7 +923,7 @@ const endBrowserSession = async (request, response, sessionId) => {
     return;
   }
   if (!activeSession || expectedRevision !== activeSession.revision) {
-    await recordAudit("browser.session.end", "rejected", {
+    const auditId = await recordAudit("browser.session.end", "rejected", {
       code: "mutation_revision_conflict",
       authorizationClass: "runtime_browser_session",
       idempotencyKeyHash,
@@ -807,8 +932,10 @@ const endBrowserSession = async (request, response, sessionId) => {
     });
     sendJson(response, 409, mutationFailure(
       "mutation_revision_conflict",
+      "runtime_browser_session",
       expectedRevision,
       session.revision,
+      auditId,
     ));
     return;
   }
@@ -836,6 +963,7 @@ const endBrowserSession = async (request, response, sessionId) => {
   sendJson(response, 200, {
     type: "mutation_result",
     code: "session_ended",
+    authorizationClass: "runtime_browser_session",
     revision: resultingRevision,
     idempotentReplay: false,
     auditId,
@@ -1046,7 +1174,8 @@ const main = async () => {
 
   try {
     const runtimeId = `runtime-${randomBytes(12).toString("hex")}`;
-    const host = await launchHost(runtimeId);
+    const negotiation = await launchHost(runtimeId);
+    const host = negotiation.host;
     const negotiationAuditId = await recordAudit("host.negotiate", "accepted", {
       controllerIdentity: "controller-runtime",
       controllerId: runtimeId,
@@ -1057,6 +1186,15 @@ const main = async () => {
       capabilities: host.negotiatedCapabilities,
       schemaDigest: host.schemaDigest,
       framing: host.framing,
+      hostIdentityMutation: negotiation.hostIdentityOutcome
+        ? {
+            authorizationClass: negotiation.hostIdentityOutcome.authorizationClass,
+            expectedRevision: negotiation.hostIdentityOutcome.expectedRevision,
+            revision: negotiation.hostIdentityOutcome.revision,
+            idempotentReplay: negotiation.hostIdentityOutcome.idempotentReplay,
+            auditId: negotiation.hostIdentityOutcome.auditId,
+          }
+        : null,
     });
 
     httpServer = createServer(async (request, response) => {
@@ -1081,7 +1219,10 @@ const main = async () => {
           return;
         }
 
-        if (request.method === "GET" && request.url?.startsWith("/bootstrap?token=")) {
+        if (
+          request.method === "GET"
+          && (request.url === "/bootstrap" || request.url?.startsWith("/bootstrap?"))
+        ) {
           const bootstrapRequest = new URL(request.url, `http://127.0.0.1:${state.port}`);
           const token = bootstrapRequest.searchParams.get("token") ?? "";
           const idempotencyKey = bootstrapRequest.searchParams.get("idempotencyKey") ?? "";
@@ -1104,7 +1245,21 @@ const main = async () => {
         const sessionId = cookies[sessionCookieName];
         if (request.method === "POST" && request.url === "/session/end") {
           if (!sessionId) {
-            sendJson(response, 401, { code: "session_required" });
+            const { idempotencyKeyHash, expectedRevision } = readMutationHeaders(request);
+            const auditId = await recordAudit("browser.session.end", "rejected", {
+              code: "session_required",
+              authorizationClass: "runtime_browser_session",
+              idempotencyKeyHash,
+              expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+              actualRevision: 0,
+            });
+            sendJson(response, 401, mutationFailure(
+              "session_required",
+              "runtime_browser_session",
+              Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
+              0,
+              auditId,
+            ));
             return;
           }
           await withSessionMutationLock(
@@ -1231,6 +1386,7 @@ const main = async () => {
       protocol: host.protocol,
       listener: { address: "127.0.0.1", class: "loopback" },
       negotiationAuditId,
+      hostIdentityAuditId: negotiation.hostIdentityOutcome?.auditId ?? null,
       startedAt: new Date().toISOString(),
     };
     await writePrivateJson(statePath, state);

@@ -23,9 +23,39 @@ const validateHostIdentity = (value) => {
   ) {
     throw new Error("host_identity_state_invalid");
   }
+  const record = /** @type {Record<string, unknown>} */ (value);
+  const identity = {
+    hostId: String(record.hostId),
+    createdAt: String(record.createdAt),
+  };
+  const mutationFields = [
+    "authorizationClass",
+    "idempotencyKeyHash",
+    "expectedRevision",
+    "revision",
+    "auditId",
+  ];
+  const mutationFieldCount = mutationFields.filter((field) => field in record).length;
+  if (mutationFieldCount === 0) {
+    return identity;
+  }
+  if (
+    mutationFieldCount !== mutationFields.length
+    || record.authorizationClass !== "controller_host_identity_binding"
+    || !/^sha256:[a-f0-9]{64}$/.test(String(record.idempotencyKeyHash))
+    || record.expectedRevision !== 0
+    || record.revision !== 1
+    || !/^audit-[a-f0-9]{24}$/.test(String(record.auditId))
+  ) {
+    throw new Error("host_identity_state_invalid");
+  }
   return {
-    hostId: String(value.hostId),
-    createdAt: String(value.createdAt),
+    ...identity,
+    authorizationClass: "controller_host_identity_binding",
+    idempotencyKeyHash: String(record.idempotencyKeyHash),
+    expectedRevision: 0,
+    revision: 1,
+    auditId: String(record.auditId),
   };
 };
 
@@ -65,10 +95,15 @@ const writeIdentityOnce = async (filePath, identity, readRacedIdentity, invalidC
  * first authenticated protocol request.
  * @param {string} dataDir
  * @param {string} hostId
+ * @param {{authorizationClass: "controller_host_identity_binding", idempotencyKeyHash: string, expectedRevision: 0, revision: 1, auditId: string}} [mutation]
  */
-export const acceptHostIdentity = async (dataDir, hostId) => {
+export const acceptHostIdentity = async (dataDir, hostId, mutation) => {
   await ensurePrivateDirectory(dataDir);
-  const identity = validateHostIdentity({ hostId, createdAt: new Date().toISOString() });
+  const identity = validateHostIdentity({
+    hostId,
+    createdAt: new Date().toISOString(),
+    ...(mutation ?? {}),
+  });
   const existing = await readHostIdentity(dataDir);
   if (existing) {
     if (existing.hostId !== identity.hostId) {
