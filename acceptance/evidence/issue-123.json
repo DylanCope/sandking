@@ -1,0 +1,266 @@
+{
+  "schemaVersion": 2,
+  "issue": 123,
+  "parentPrd": 125,
+  "sourceSpecification": {
+    "issue": 116,
+    "githubBodyUtf8Sha256": "34ebbde096564621b14a68d4bc64cdbd8ba9e448a42cb75c084d80c0e201308a",
+    "parentApprovedTextExportSha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23",
+    "parentApprovedHashBasis": "exact GitHub body UTF-8 plus one terminal LF",
+    "normalizationDifference": "one terminal LF",
+    "exactContentEquivalentAfterApprovedExportNormalization": true
+  },
+  "generatedFromCommit": "36fe833026eabcd563a5172c11b70ca5b01b91f1",
+  "recordedAt": "2026-08-01T17:13:24.465Z",
+  "scenario": "planning-spine/projects-an-optional-journey",
+  "packagedPublicSeam": {
+    "command": "sandking",
+    "installed": true,
+    "launchedOutsideCheckout": true,
+    "tarballSha256": "f58f8be0d0cd0c93b825fe2ce4ff02a2e697672e2daf361f65b9add6acc3cde6"
+  },
+  "runtime": {
+    "runtimeId": "runtime-85bf869067d7e3ecab9c853d",
+    "hostId": "host-3ad83bd914053cb7f463bb6d"
+  },
+  "projectionProvenance": {
+    "adapter": {
+      "adapterId": "github-conformance-fixture-v1",
+      "authority": "github",
+      "fixture": true,
+      "label": "Conformance fixture data — not live GitHub"
+    },
+    "fresh": {
+      "projectionId": "projection-fixture-optional-planning-v1",
+      "sourceFixtureId": "github-fixture-optional-planning-v1",
+      "projectionDigest": "sha256:d0c9db10ab6db034f61163b82cc06e129246e9b4ed3e9c5a162ac6cdc6e8eb6d",
+      "freshness": "fresh",
+      "mutationsEnabled": true,
+      "refreshFailure": null
+    },
+    "stale": {
+      "projectionId": "projection-fixture-unrefreshable-v1",
+      "sourceFixtureId": "github-fixture-unrefreshable-v1",
+      "projectionDigest": "sha256:47b2e53ad639e26776e8303c4699b443fcb85209e88a74474ac8e0bb036cfe0f",
+      "freshness": "stale",
+      "mutationsEnabled": false,
+      "refreshFailure": {
+        "code": "github_projection_unavailable",
+        "retryable": true
+      }
+    }
+  },
+  "builtInStages": [
+    "wayfinding",
+    "speccing",
+    "ticketing"
+  ],
+  "visibleStaleState": {
+    "freshnessAttribute": "stale",
+    "warningShown": true,
+    "allMutationControlsDisabled": true
+  },
+  "focusedSession": {
+    "sessionId": "controller-session-41380e9cd24fdbe2ba22a1a7",
+    "workContextId": "work-context-speccing-optional-planning",
+    "canonicalReference": "github:fixture:issue:116",
+    "providerId": "conformance-controller-v1"
+  },
+  "notUsedMutation": {
+    "authorizationClass": "planning_stage_status",
+    "expectedRevision": 1,
+    "resultingRevision": 2,
+    "auditId": "audit-dd8cbc1337063c4cf104f834",
+    "replayReturnedSameAudit": true,
+    "replayIdempotent": true,
+    "ordinaryWorkBlocked": false
+  },
+  "failureOutcomes": {
+    "changedUse": {
+      "status": 409,
+      "code": "idempotency_key_conflict"
+    },
+    "staleRevision": {
+      "status": 409,
+      "code": "mutation_revision_conflict",
+      "actualRevision": 2
+    },
+    "unavailableProjection": {
+      "status": 409,
+      "code": "projection_stale",
+      "queuedWrite": false
+    },
+    "unauthorized": {
+      "status": 403,
+      "code": "authorization_failed"
+    }
+  },
+  "scopeExclusions": [
+    "skill-owned-reasoning",
+    "private-specifications",
+    "ticket-set-publication",
+    "complete-optional-or-out-of-order-planning",
+    "downstream-needs-review"
+  ],
+  "auditReferences": [
+    {
+      "auditId": "audit-85bcee9f0e86ab7a19139ed3",
+      "action": "planning.session.open",
+      "outcome": "accepted",
+      "details": {
+        "authorizationClass": "planning_focused_session",
+        "idempotencyKeyHash": "sha256:f0e8a90caa1feab1545e513b8bf5ea07e3ff65180e8f5e14d8ba429b62013c54",
+        "expectedRevision": 0,
+        "actualRevision": 0,
+        "workContextId": "work-context-speccing-optional-planning",
+        "githubWrite": false,
+        "queuedWrite": false,
+        "skillInvocation": false,
+        "projectFileWrite": false,
+        "resultingRevision": 1,
+        "sessionId": "controller-session-41380e9cd24fdbe2ba22a1a7"
+      }
+    },
+    {
+      "auditId": "audit-dd8cbc1337063c4cf104f834",
+      "action": "planning.stage.not-used",
+      "outcome": "accepted",
+      "details": {
+        "authorizationClass": "planning_stage_status",
+        "idempotencyKeyHash": "sha256:937710eeb277fb18f8be0eb81a8959b85cfce94f8fa23d3696e88a76b352e899",
+        "expectedRevision": 1,
+        "actualRevision": 1,
+        "journeyId": "journey-fixture-optional-planning",
+        "stageId": "ticketing",
+        "githubWrite": false,
+        "queuedWrite": false,
+        "skillInvocation": false,
+        "projectFileWrite": false,
+        "resultingRevision": 2,
+        "fixtureProjectionWrite": true
+      }
+    },
+    {
+      "auditId": "audit-da8ef69dc1084b3763650d8f",
+      "action": "planning.stage.not-used",
+      "outcome": "observed",
+      "details": {
+        "authorizationClass": "planning_stage_status",
+        "idempotencyKeyHash": "sha256:937710eeb277fb18f8be0eb81a8959b85cfce94f8fa23d3696e88a76b352e899",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "journeyId": "journey-fixture-optional-planning",
+        "stageId": "ticketing",
+        "githubWrite": false,
+        "queuedWrite": false,
+        "skillInvocation": false,
+        "projectFileWrite": false,
+        "idempotentReplay": true,
+        "originalAuditId": "audit-dd8cbc1337063c4cf104f834"
+      }
+    },
+    {
+      "auditId": "audit-45b28467af64e3b1d9cc8720",
+      "action": "planning.stage.not-used",
+      "outcome": "rejected",
+      "details": {
+        "authorizationClass": "planning_stage_status",
+        "idempotencyKeyHash": "sha256:937710eeb277fb18f8be0eb81a8959b85cfce94f8fa23d3696e88a76b352e899",
+        "expectedRevision": 1,
+        "actualRevision": 1,
+        "journeyId": "journey-fixture-optional-planning",
+        "stageId": "speccing",
+        "githubWrite": false,
+        "queuedWrite": false,
+        "skillInvocation": false,
+        "projectFileWrite": false,
+        "code": "idempotency_key_conflict"
+      }
+    },
+    {
+      "auditId": "audit-ca6f7527d51c0c146b85709f",
+      "action": "planning.stage.not-used",
+      "outcome": "rejected",
+      "details": {
+        "authorizationClass": "planning_stage_status",
+        "idempotencyKeyHash": "sha256:8bf80f7076e394c458810a57cce7d6e56dd384c86bc4cf1e60edac97959ce3e6",
+        "expectedRevision": 1,
+        "actualRevision": 2,
+        "journeyId": "journey-fixture-optional-planning",
+        "stageId": "ticketing",
+        "githubWrite": false,
+        "queuedWrite": false,
+        "skillInvocation": false,
+        "projectFileWrite": false,
+        "code": "mutation_revision_conflict"
+      }
+    },
+    {
+      "auditId": "audit-060bf8a8f8c9b90003e44258",
+      "action": "planning.stage.not-used",
+      "outcome": "rejected",
+      "details": {
+        "authorizationClass": "planning_stage_status",
+        "idempotencyKeyHash": "sha256:042aae89a3b355f410a46cfa7f57c331d602e77f267d0f2842c31908554fec2f",
+        "expectedRevision": 1,
+        "actualRevision": 1,
+        "journeyId": "journey-fixture-unrefreshable",
+        "stageId": "ticketing",
+        "githubWrite": false,
+        "queuedWrite": false,
+        "skillInvocation": false,
+        "projectFileWrite": false,
+        "code": "projection_stale",
+        "refreshFailure": "github_projection_unavailable"
+      }
+    },
+    {
+      "auditId": "audit-f0507ec87c88a2b9722496c7",
+      "action": "planning.stage.not-used",
+      "outcome": "rejected",
+      "details": {
+        "authorizationClass": "planning_stage_status",
+        "idempotencyKeyHash": "sha256:cbac30888c96cb01287d5439765973ef844009821c8b015ecc26352ed3f0ea8c",
+        "expectedRevision": 1,
+        "actualRevision": 1,
+        "journeyId": "journey-fixture-optional-planning",
+        "stageId": "speccing",
+        "githubWrite": false,
+        "queuedWrite": false,
+        "skillInvocation": false,
+        "projectFileWrite": false,
+        "code": "authorization_failed"
+      }
+    }
+  ],
+  "prohibitedSideEffectAssertions": {
+    "liveGithubWrite": false,
+    "queuedWrite": false,
+    "skillInvocation": false,
+    "projectFileWrite": false
+  },
+  "securityAssertions": {
+    "secretAbsentFromPage": true,
+    "idempotencyKeyAbsentFromAudit": true,
+    "planningStateOutsideProject": true
+  },
+  "software": {
+    "sandking": "0.1.0",
+    "browserProtocol": "1.0.0",
+    "browser": "149.0.7827.0",
+    "node": "v22.23.2"
+  },
+  "verificationCommands": [
+    [
+      "node",
+      "--test",
+      "test/planning-spine.test.mjs",
+      "test/browser-protocol.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/planning-spine.browser.test.mjs"
+    ]
+  ]
+}
