@@ -119,7 +119,7 @@ const runIssueWorker = async (
           ...runSettings,
           name: "implementer",
           maxIterations: 100,
-          agent: sandcastle.codex("gpt-5.4"),
+          agent: sandcastle.codex("gpt-5.6-sol", { effort: "xhigh" }),
           promptFile: "./.sandcastle/implement-prompt.md",
           promptArgs: {
             TASK_ID: issue.id,
@@ -158,7 +158,7 @@ const runPullRequestReviewer = async (
         ...runSettings,
         name: `pr-${pullRequest.number}-reviewer`,
         maxIterations: 1,
-        agent: sandcastle.codex("gpt-5.4"),
+        agent: sandcastle.codex("gpt-5.6-sol", { effort: "xhigh" }),
         promptFile: "./.sandcastle/pr-review-prompt.md",
       },
       parseReview: (value: unknown) => reviewSchema.parse(value),
@@ -201,7 +201,7 @@ const main = async () => {
       // One iteration is enough: the planner just needs to read and reason,
       // not write code. (Structured output requires maxIterations: 1.)
       maxIterations: 1,
-      agent: sandcastle.codex("gpt-5.4"),
+      agent: sandcastle.codex("gpt-5.6-sol", { effort: "xhigh" }),
       promptFile: "./.sandcastle/plan-prompt.md",
       output: sandcastle.Output.object({ tag: "plan", schema: planSchema }),
     }),

@@ -84,3 +84,13 @@ test("--stdout enables terminal output for Sandcastle runs", () => {
     logging: { type: "stdout" },
   });
 });
+
+test("every Harness agent uses GPT-5.6 Sol at the highest supported effort", async () => {
+  const source = await readFile(".sandcastle/main.mts", "utf8");
+  const configuredAgents = source.match(
+    /sandcastle\.codex\("gpt-5\.6-sol", \{ effort: "xhigh" \}\)/g,
+  );
+
+  assert.equal(configuredAgents?.length, 3);
+  assert.doesNotMatch(source, /sandcastle\.codex\("gpt-5\.4"/);
+});
