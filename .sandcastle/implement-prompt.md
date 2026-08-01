@@ -1,8 +1,8 @@
 # TASK
 
-Fix issue {{TASK_ID}}
+Fix issue {{TASK_ID}}: {{ISSUE_TITLE}}
 
-Do not read the issue via `gh`; it is provided below.
+Pull in the issue using `gh issue view <ID>`. If it has a parent PRD, pull that in too.
 
 Only work on the issue specified.
 
