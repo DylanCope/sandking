@@ -98,6 +98,28 @@ pins, idempotency outcomes, and audits remain in Host-private state; neither the
 Project nor the Harness workspace receives execution state, and the Project
 receives no manifest or `.sandcastle/` projection in this slice.
 
+From a ready Project, the Cockpit can navigate to one focused conformance
+Controller session but cannot submit a Launch approval assertion. Inside that
+runtime-owned PTY, `inspect` reads the selected Project work context and
+`prepare <issue> sandcastle/issue-<issue>` invokes the exact pinned Harness
+adapter through its capability-negotiated subprocess boundary. Preparation
+accepts only the bounded secret-free conformance parameters, starts no delegated
+work, and presents a sanitized preview with the immutable Launch-request ID and
+revision, Host, Project revision, Harness pin, supplied capabilities,
+authorization class, expiry, and captured preconditions.
+
+The person decides by entering the exact `approve <request-id> <revision>` or
+`reject <request-id> <revision>` assertion in that owning Controller
+conversation. The provider sends the same typed framed Host operation required
+of other provider adapters; terminal output is never parsed as authorization.
+Silence, unrelated input, a Cockpit POST, a different Controller session, or a
+stale/materially changed request fails closed. Identical decision retries return
+the original durable result, changed idempotency content conflicts, and rejected
+or expired requests are terminal. Approval records `not_started` execution
+linkage and does not create a Harness run in this issue slice. One PTY view may
+write while secondary views attach read-only, and browser disconnection does
+not terminate the provider PTY.
+
 The Cockpit also projects a thin optional Planning journey. Its Journey Rail
 shows the built-in Wayfinding, Speccing, and Ticketing stages from data labelled
 `Conformance fixture data — not live GitHub`. Selecting fixture-backed work
@@ -145,6 +167,17 @@ npm run acceptance:issue-118
 Its retained sanitized evidence is generated with
 `npm run acceptance:issue-118:update-evidence` and stored in
 `acceptance/evidence/issue-118.json`.
+
+Run the immutable Launch-request preparation and focused-Controller approval
+scenario with:
+
+```bash
+npm run acceptance:issue-119
+```
+
+Its retained sanitized evidence is generated with
+`npm run acceptance:issue-119:update-evidence` and stored in
+`acceptance/evidence/issue-119.json`.
 
 Run the optional-Planning public-seam scenario with:
 

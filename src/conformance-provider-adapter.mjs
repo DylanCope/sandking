@@ -20,10 +20,13 @@ const capabilities = Object.freeze([
   "controller.session.start",
   "controller.session.interactive",
   "controller.session.terminate",
+  "controller.work-context.inspect",
+  "controller.launch-request.prepare",
+  "controller.launch-request.decide",
 ]);
 const identifierPattern = /^[a-zA-Z0-9._:-]{1,160}$/;
 const providerSessionPattern = /^conformance-provider-session-[a-f0-9]{24}$/;
-const canonicalReferencePattern = /^github:fixture:issue:[0-9]+$/;
+const canonicalReferencePattern = /^(?:github:fixture:issue:[0-9]+|sandking:project:project-[a-f0-9]{24})$/;
 const controlEndpointPattern = /^.{1,512}$/;
 
 /** @param {string[]} argv */
@@ -108,12 +111,15 @@ const prepare = (argv) => {
   });
 };
 
-/** @param {string} endpoint @param {unknown} message */
-const reportReady = async (endpoint, message) => new Promise((resolve, reject) => {
+/** @param {string} endpoint @param {any} readyMessage */
+const openControl = async (endpoint, readyMessage) => new Promise((resolve, reject) => {
   const socket = createConnection(endpoint);
   let settled = false;
-  /** @param {Error | null} error */
-  const finish = (error) => {
+  let input = "";
+  let operationSequence = 0;
+  const pending = new Map();
+  /** @param {Error | null} error @param {unknown} [value] */
+  const finish = (error, value) => {
     if (settled) {
       return;
     }
@@ -122,7 +128,7 @@ const reportReady = async (endpoint, message) => new Promise((resolve, reject) =
     if (error) {
       reject(error);
     } else {
-      resolve(undefined);
+      resolve(value);
     }
   };
   const timeout = setTimeout(() => {
@@ -130,12 +136,76 @@ const reportReady = async (endpoint, message) => new Promise((resolve, reject) =
     finish(new Error("provider_control_timeout"));
   }, 2_000);
   socket.once("connect", () => {
-    socket.end(`${JSON.stringify(message)}\n`);
+    socket.write(`${JSON.stringify(readyMessage)}\n`);
+    finish(null, {
+      /** @param {string} operation @param {unknown} operationInput */
+      request: (operation, operationInput) => new Promise((resolveOperation, rejectOperation) => {
+        const operationId = `provider-operation-${operationSequence}`;
+        operationSequence += 1;
+        const timeout = setTimeout(() => {
+          pending.delete(operationId);
+          rejectOperation(new Error("provider_operation_timeout"));
+        }, 3_000);
+        pending.set(operationId, {
+          /** @param {unknown} value */
+          resolve: (value) => {
+            clearTimeout(timeout);
+            resolveOperation(value);
+          },
+          /** @param {Error} error */
+          reject: (error) => {
+            clearTimeout(timeout);
+            rejectOperation(error);
+          },
+        });
+        socket.write(`${JSON.stringify({
+          type: "provider.operation.request",
+          controlProtocol: adapterProtocol,
+          operationId,
+          sessionId: readyMessage.sessionId,
+          providerSessionId: readyMessage.providerSessionId,
+          operation,
+          input: operationInput,
+        })}\n`);
+      }),
+    });
+  });
+  socket.setEncoding("utf8");
+  socket.on("data", (chunk) => {
+    input += chunk;
+    while (input.includes("\n")) {
+      const newline = input.indexOf("\n");
+      const line = input.slice(0, newline);
+      input = input.slice(newline + 1);
+      let response;
+      try {
+        response = JSON.parse(line);
+      } catch {
+        socket.destroy(new Error("provider_control_protocol_invalid"));
+        return;
+      }
+      const pendingOperation = pending.get(response?.operationId);
+      if (!pendingOperation || response?.type !== "provider.operation.result") {
+        socket.destroy(new Error("provider_control_protocol_invalid"));
+        return;
+      }
+      pending.delete(response.operationId);
+      if (response.ok === true) {
+        pendingOperation.resolve(response.outcome);
+      } else {
+        pendingOperation.reject(new Error(response?.failure?.code
+          ?? "provider_operation_failed"));
+      }
+    }
   });
   socket.once("error", () => finish(new Error("provider_control_unavailable")));
-  socket.once("close", (hadError) => {
-    if (!hadError) {
-      finish(null);
+  socket.once("close", () => {
+    for (const operation of pending.values()) {
+      operation.reject(new Error("provider_control_unavailable"));
+    }
+    pending.clear();
+    if (!settled) {
+      finish(new Error("provider_control_unavailable"));
     }
   });
 });
@@ -161,7 +231,7 @@ const run = async (argv) => {
     throw new Error("provider_pty_required");
   }
 
-  await reportReady(controlEndpoint, {
+  const control = await openControl(controlEndpoint, {
     type: "provider.session.ready",
     controlProtocol: adapterProtocol,
     adapterId,
@@ -186,6 +256,89 @@ const run = async (argv) => {
   );
   process.stdin.setEncoding("utf8");
   let pending = "";
+  let processing = Promise.resolve();
+  /** @param {string} line */
+  const handleLine = async (line) => {
+    if (line === "inspect") {
+      const inspected = await control.request("work-context.inspect", {});
+      if (inspected?.type === "project.work-context") {
+        process.stdout.write(
+          `Project identity: ${inspected.projectId} (revision ${inspected.revision}).\r\n`
+            + `Harness: ${inspected.harnessId} @ ${inspected.pinnedRevision}.\r\ncontroller> `,
+        );
+      } else {
+        process.stdout.write(
+          `Inspected ${canonicalReference} for ${workContextId}.\r\ncontroller> `,
+        );
+      }
+      return;
+    }
+    const prepareMatch = /^prepare ([1-9][0-9]*) (sandcastle\/issue-[1-9][0-9]*)$/.exec(line);
+    if (prepareMatch) {
+      const issueNumber = Number(prepareMatch[1]);
+      const targetBranch = prepareMatch[2];
+      const outcome = await control.request("launch-request.prepare", {
+        parameters: { issueNumber, targetBranch },
+        expiresInSeconds: 300,
+        idempotencyKey: `provider:${sessionId}:prepare:${issueNumber}:${targetBranch}`,
+      });
+      if (outcome?.type !== "launch.request.prepare.result") {
+        process.stdout.write(
+          `Launch preparation failed safely: ${outcome?.code ?? "provider_operation_failed"}.\r\ncontroller> `,
+        );
+        return;
+      }
+      const request = outcome.launchRequest;
+      const preview = request.preview;
+      process.stdout.write(
+        `Launch request: ${request.launchRequestId} (revision ${request.revision}).\r\n`
+          + `Host: ${preview.hostId}.\r\n`
+          + `Project: ${preview.projectId}.\r\n`
+          + `Harness: ${preview.harnessId} @ ${preview.harnessPinnedRevision}.\r\n`
+          + `Parameters: issue #${preview.parameters.issueNumber}; branch ${preview.parameters.targetBranch}.\r\n`
+          + `Supplied capabilities: ${preview.suppliedCapabilities.join(", ")}.\r\n`
+          + `Authorization: ${preview.authorizationClass}; expires ${preview.expiresAt}.\r\n`
+          + `Preview: ${preview.summary}\r\n`
+          + `Secret-free preview: ${preview.secretFree ? "yes" : "no"}.\r\n`
+          + `Delegated work started: ${preview.delegatedWorkStarted ? "yes" : "no"}.\r\n`
+          + `Reply exactly: approve ${request.launchRequestId} ${request.revision} or reject ${request.launchRequestId} ${request.revision}.\r\ncontroller> `,
+      );
+      return;
+    }
+    const decisionMatch = /^(approve|reject) (launch-request-[a-f0-9]{24}) ([1-9][0-9]*)$/.exec(line);
+    if (decisionMatch) {
+      const decision = decisionMatch[1] === "approve" ? "approved" : "rejected";
+      const launchRequestId = decisionMatch[2];
+      const expectedRevision = Number(decisionMatch[3]);
+      const outcome = await control.request("launch-request.decide", {
+        launchRequestId,
+        decision,
+        expectedRevision,
+        idempotencyKey:
+          `provider:${sessionId}:decision:${launchRequestId}:${expectedRevision}:${decision}`,
+      });
+      if (outcome?.type !== "launch.request.decision.result") {
+        process.stdout.write(
+          `Launch decision failed safely: ${outcome?.code ?? "provider_operation_failed"}`
+            + `${outcome?.current ? `; current revision ${outcome.current.revision} (${outcome.current.status})` : ""}.\r\ncontroller> `,
+        );
+        return;
+      }
+      process.stdout.write(
+        `Launch request ${launchRequestId} ${decision} at revision ${outcome.revision}. `
+          + "No Harness run was started.\r\ncontroller> ",
+      );
+      return;
+    }
+    if (line === "exit") {
+      process.stdout.write("Conformance Controller session ended.\r\n");
+      process.exit(0);
+      return;
+    }
+    if (line.length > 0) {
+      process.stdout.write("Conformance Controller did not recognize that request.\r\ncontroller> ");
+    }
+  };
   process.stdin.on("data", (chunk) => {
     pending += chunk;
     while (/\r|\n/.test(pending)) {
@@ -195,16 +348,11 @@ const run = async (argv) => {
       }
       const line = pending.slice(0, match.index).trim();
       pending = pending.slice(match.index + match[0].length);
-      if (line === "inspect") {
+      processing = processing.then(() => handleLine(line)).catch((error) => {
         process.stdout.write(
-          `Inspected ${canonicalReference} for ${workContextId}.\r\ncontroller> `,
+          `Controller operation failed safely: ${error instanceof Error ? error.message : "provider_operation_failed"}.\r\ncontroller> `,
         );
-      } else if (line === "exit") {
-        process.stdout.write("Conformance Controller session ended.\r\n");
-        process.exit(0);
-      } else if (line.length > 0) {
-        process.stdout.write("Conformance Controller did not recognize that request.\r\ncontroller> ");
-      }
+      });
     }
   });
 };

@@ -11,10 +11,11 @@ const browserProtocol = Object.freeze({
       "cockpit.planning-spine.v1",
       "cockpit.controller-terminal.v1",
       "cockpit.project-preparation.v1",
+      "cockpit.launch-request.v1",
     ],
     optional: [],
   },
-  schemaDigest: "sha256:853f317151b05b10432bbf9e9fe1518d6fee0d6a05c8b3ee79f91b963b737d4c",
+  schemaDigest: "sha256:3bd079c46e59214210475a8c4c0dda2065b7eb831d7e4566e361876898d4c8c5",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -177,7 +178,23 @@ const renderProjectPreparation = (preparation, session) => {
   }, "Open and prepare Project");
   const feedback = element("p", { id: "project-feedback", role: "status" });
   let currentNode = renderPreparedProject(preparation.current);
+  let currentProject = preparation.current;
   let expectedRevision = preparation.current?.revision ?? 0;
+  const openController = element("button", {
+    id: "open-project-controller",
+    type: "button",
+    "data-action": "open-project-controller",
+    disabled: !preparation.current?.canPrepareLaunchRequest,
+  }, "Open focused Controller for Launch");
+  const controllerFeedback = element("p", {
+    id: "project-controller-feedback",
+    role: "status",
+  });
+  const controllerPanel = element("section", {
+    id: "project-focused-controller-session",
+    "data-session-state": "closed",
+    hidden: true,
+  });
 
   openButton.addEventListener("click", async () => {
     openButton.disabled = true;
@@ -215,11 +232,123 @@ const renderProjectPreparation = (preparation, session) => {
       return;
     }
     expectedRevision = outcome.project.revision;
+    currentProject = outcome.project;
     const replacement = renderPreparedProject(outcome.project);
     currentNode.replaceWith(replacement);
     currentNode = replacement;
     feedback.textContent = "Project and conformance Harness are ready for Launch preparation.";
+    openController.disabled = !outcome.project.canPrepareLaunchRequest;
     openButton.disabled = false;
+  });
+
+  openController.addEventListener("click", async () => {
+    if (!currentProject) {
+      return;
+    }
+    openController.disabled = true;
+    controllerFeedback.textContent = "Opening the owning focused Controller session…";
+    const response = await fetch("/projects/sessions/open", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-sandking-csrf": session.csrfToken,
+        "x-sandking-idempotency-key": mutationKey(),
+        "x-sandking-expected-revision": String(currentProject.revision),
+      },
+      body: JSON.stringify({ projectId: currentProject.projectId }),
+    });
+    const outcome = await response.json();
+    if (!response.ok || outcome.type !== "mutation_result") {
+      controllerFeedback.textContent = `Focused Controller failed safely: ${outcome.code}.`;
+      openController.disabled = false;
+      return;
+    }
+    const focused = outcome.session;
+    controllerPanel.hidden = false;
+    controllerPanel.dataset.sessionState = "open";
+    controllerPanel.dataset.sessionId = focused.sessionId;
+    controllerPanel.dataset.workContextId = focused.workContext.workContextId;
+    controllerPanel.dataset.providerId = focused.provider.providerId;
+    controllerPanel.dataset.providerAdapterId = focused.provider.adapterId;
+    controllerPanel.dataset.providerSessionId = focused.provider.providerSessionId;
+    controllerPanel.dataset.providerControlProtocol =
+      focused.provider.readiness.controlProtocol;
+    controllerPanel.dataset.providerReadySignal = focused.provider.readiness.signal;
+    controllerPanel.dataset.providerObservedTty = String(
+      focused.provider.readiness.providerObservedTty,
+    );
+    controllerPanel.dataset.terminalStreamId = focused.terminal.streamId;
+    controllerPanel.dataset.terminalAttachmentId =
+      focused.terminal.writableAttachment.attachmentId;
+    controllerPanel.dataset.ptyRuntimeOwned = String(focused.terminal.runtimeOwned);
+    controllerPanel.dataset.terminalAttachment = "attaching";
+    const terminalOutput = element("pre", {
+      id: "project-controller-terminal-output",
+      "data-terminal-output": focused.terminal.streamId,
+      "aria-live": "polite",
+    });
+    const terminalInput = element("input", {
+      id: "project-controller-terminal-input",
+      type: "text",
+      autocomplete: "off",
+      "aria-label": "Project Controller terminal input",
+    });
+    const sendInput = element("button", {
+      id: "send-project-controller-input",
+      type: "button",
+      disabled: true,
+    }, "Send to Controller");
+    const terminalState = {
+      attachmentId: focused.terminal.writableAttachment.attachmentId,
+      decoder: new TextDecoder(),
+      inputSequence: 0,
+      output: terminalOutput,
+      panel: controllerPanel,
+      sendInput,
+      terminalInput,
+    };
+    terminalStreams.set(focused.terminal.streamId, terminalState);
+    const submitTerminalInput = () => {
+      if (socket.readyState !== WebSocket.OPEN || sendInput.disabled) {
+        return;
+      }
+      const input = `${terminalInput.value}\n`;
+      terminalInput.value = "";
+      socket.send(encodeOpaqueFrame(
+        focused.terminal.streamId,
+        terminalState.inputSequence,
+        new TextEncoder().encode(input),
+      ));
+      terminalState.inputSequence += 1;
+    };
+    sendInput.addEventListener("click", submitTerminalInput);
+    terminalInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submitTerminalInput();
+      }
+    });
+    controllerPanel.replaceChildren(
+      element("p", {}, `Focused Controller session ${focused.sessionId} owns Launch decisions for ${focused.workContext.workContextId}.`),
+      element("p", { "data-browser-approval": "prohibited" },
+        "The Cockpit can navigate to this conversation but cannot submit a Launch approval assertion."),
+      terminalOutput,
+      terminalInput,
+      sendInput,
+    );
+    socket.send(JSON.stringify({
+      channel: "control",
+      message: {
+        type: "browser.terminal.attach",
+        sessionId: focused.sessionId,
+        streamId: focused.terminal.streamId,
+        attachmentId: focused.terminal.writableAttachment.attachmentId,
+        mode: "read-write",
+        outputCursor: 0,
+      },
+    }));
+    controllerFeedback.textContent =
+      "Use the focused Controller conversation to inspect, prepare, approve, or reject.";
   });
 
   section.append(
@@ -234,6 +363,9 @@ const renderProjectPreparation = (preparation, session) => {
     openButton,
     feedback,
     currentNode,
+    openController,
+    controllerFeedback,
+    controllerPanel,
     element("p", { "data-project-scope": "registration-only" },
       "This slice does not project a Harness into the Project or provide import, update, rollback, switching, or drift recovery."),
   );

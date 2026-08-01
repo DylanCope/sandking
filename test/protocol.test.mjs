@@ -72,6 +72,51 @@ test("Host identity acceptance is an explicit revisioned and idempotent mutation
   );
 });
 
+test("Launch preparation and decision are capability-negotiated typed Host operations", async () => {
+  assert.ok(hostCapabilities.includes("sandking.launch-request.v1"));
+  const stream = new PassThrough();
+  const launchRequestId = `launch-request-${"1".repeat(24)}`;
+  const prepare = {
+    type: "launch.request.prepare",
+    requestId: "prepare-launch-protocol-request",
+    projectId: `project-${"2".repeat(24)}`,
+    parameters: {
+      issueNumber: 119,
+      targetBranch: "sandcastle/issue-119",
+    },
+    controllerId: `runtime-${"3".repeat(24)}`,
+    controllerSessionId: `controller-session-${"4".repeat(24)}`,
+    authorizationClass: "focused_controller_launch",
+    idempotencyKey: "prepare-launch-protocol-request",
+    expectedRevision: 0,
+    expiresInSeconds: 300,
+  };
+  const decision = {
+    type: "launch.request.decision",
+    requestId: "decide-launch-protocol-request",
+    launchRequestId,
+    decision: "approved",
+    controllerId: prepare.controllerId,
+    controllerSessionId: prepare.controllerSessionId,
+    authorizationClass: "focused_controller_launch",
+    idempotencyKey: "decide-launch-protocol-request",
+    expectedRevision: 1,
+  };
+
+  writeFrame(stream, prepare);
+  writeFrame(stream, decision);
+  assert.deepEqual(await readFrame(stream), prepare);
+  assert.deepEqual(await readFrame(stream), decision);
+  assert.throws(
+    () => writeFrame(stream, {
+      ...decision,
+      requestId: "decision-without-owner",
+      controllerSessionId: undefined,
+    }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+});
+
 test("wire-level protocol errors include sanitized explanations and retry guidance", async () => {
   const stream = new PassThrough();
   const diagnosis = {
