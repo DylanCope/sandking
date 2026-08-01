@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const commandRunner = (cwd) => ({
   run: (command, args) =>
@@ -61,8 +62,11 @@ export function createGitRepository({ cwd = process.cwd() } = {}) {
   };
 }
 
-export function createGitHubDelivery() {
-  const { run, runResult } = commandRunner(process.cwd());
+export function createGitHubDelivery({
+  cwd = process.cwd(),
+  commandRunner: suppliedCommandRunner,
+} = {}) {
+  const { run, runResult } = suppliedCommandRunner ?? commandRunner(cwd);
   const repository = run("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]);
 
   const readPullRequest = (selector) => {
@@ -144,16 +148,48 @@ export function createGitHubDelivery() {
       const heading = review.approved
         ? "Sandcastle independent review: APPROVED"
         : "Sandcastle independent review: CHANGES REQUESTED";
-      const findings = review.findings.length > 0
-        ? review.findings.map((finding) => `- ${finding}`).join("\n")
-        : "- No findings.";
+      const blockers = review.blockingFindings
+        ? review.blockingFindings.map((finding) =>
+            `- ${finding.summary}\n  - Requirement: ${finding.requirement}\n  - Evidence: ${finding.evidence}\n  - Material impact: ${finding.materialImpact}\n  - Cannot defer: ${finding.cannotDefer}`)
+        : (review.findings ?? []).map((finding) => `- ${finding}`);
+      const followUps = (review.followUps ?? []).map((followUp) =>
+        `- ${followUp.title}: ${followUp.sourceFinding}`);
+      const resolved = (review.resolvedFindings ?? []).map((finding) =>
+        `- ${finding}`);
+      const encodedReview = Buffer.from(JSON.stringify(review)).toString("base64url");
       run("gh", [
         "pr",
         "comment",
         String(pullRequest.number),
         "--body",
-        `${heading}\n\n${findings}`,
+        [
+          heading,
+          "",
+          "### BLOCKERS",
+          blockers.join("\n") || "- None.",
+          "",
+          "### NON-BLOCKING FOLLOW-UPS",
+          followUps.join("\n") || "- None.",
+          "",
+          "### RESOLVED OR STALE",
+          resolved.join("\n") || "- None.",
+          "",
+          `<!-- sandcastle-review:${encodedReview} -->`,
+        ].join("\n"),
       ]);
+    },
+
+    async getReviewLedger({ pullRequest }) {
+      const payload = JSON.parse(run("gh", [
+        "pr",
+        "view",
+        String(pullRequest.number),
+        "--json",
+        "comments",
+      ]));
+      return payload.comments.flatMap(({ body }) =>
+        [...body.matchAll(/<!-- sandcastle-review:([A-Za-z0-9_-]+) -->/g)]
+          .map((match) => JSON.parse(Buffer.from(match[1], "base64url").toString("utf8"))));
     },
 
     async getPullRequestDiff({ pullRequest }) {
@@ -191,6 +227,58 @@ export function createGitHubDelivery() {
         "--comment",
         `Completed by merged PR ${pullRequest.url}`,
       ]);
+    },
+
+    async createFollowUpIssue({
+      sourceIssueId,
+      sourcePullRequest,
+      title,
+      body,
+      sourceFinding,
+      labels,
+    }) {
+      const fingerprint = createHash("sha256")
+        .update(`${sourceIssueId}\0${title}\0${body}`)
+        .digest("hex")
+        .slice(0, 16);
+      const marker = `<!-- sandcastle-follow-up:${sourceIssueId}:${fingerprint} -->`;
+      const matches = JSON.parse(run("gh", [
+        "issue",
+        "list",
+        "--state",
+        "all",
+        "--search",
+        `\"${marker}\" in:body`,
+        "--json",
+        "number",
+      ]));
+      if (matches.length > 0) {
+        return { created: false, issueNumber: matches[0].number };
+      }
+
+      const issueBody = [
+        body,
+        "",
+        "## Review provenance",
+        "",
+        `Origin issue: #${sourceIssueId}`,
+        `Origin PR: ${sourcePullRequest}`,
+        `Source finding: ${sourceFinding}`,
+        "",
+        marker,
+      ].join("\n");
+      const args = [
+        "issue",
+        "create",
+        "--title",
+        title,
+        "--body",
+        issueBody,
+      ];
+      for (const label of labels) {
+        args.push("--label", label);
+      }
+      return { created: true, url: run("gh", args) };
     },
 
     async getParentIssue(issueId) {

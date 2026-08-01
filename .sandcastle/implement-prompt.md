@@ -14,6 +14,12 @@ Work on branch {{BRANCH}}. Make commits and run tests.
 
 On a change-request pass, address every finding without weakening the issue requirements or tests. Commit the corrections to the same issue branch; the harness will push the revised head for independent re-review.
 
+# ACCEPTANCE MATRIX
+
+Before changing code, build a complete acceptance matrix from the ticket and inherited parent requirements. For every applicable requirement record the required public seam, executable evidence, current status, and any relevant review finding. Keep this matrix in your working context; do not add a tracked planning artifact unless the issue requests one.
+
+On a change-request pass, re-audit the complete matrix against the current branch, not merely the latest findings. A correction is complete only when the new regression test passes and the rest of the matrix remains satisfied. Explicitly identify any review suggestion that conflicts with the source requirements or belongs to a later slice rather than silently expanding scope.
+
 # CONTEXT
 
 Here are the last 10 commits:
