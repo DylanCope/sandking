@@ -80,8 +80,10 @@ const main = async () => {
       hostMode: options.hostMode,
       startupTimeoutMs: options.startupTimeoutMs,
       bootstrapTtlMs: options.bootstrapTtlMs,
+      idempotencyKey: options.idempotencyKey,
+      expectedRevision: options.expectedRevision,
     });
-    if (!options.noOpen) {
+    if (!options.noOpen && "bootstrapUrl" in output) {
       await openBrowser(output.bootstrapUrl);
     }
   } else if (options.command === "stop") {

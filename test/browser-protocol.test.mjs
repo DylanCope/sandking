@@ -179,9 +179,19 @@ test("session termination declares authorization, idempotency, revision, audit, 
     const postTerminationMessages = [];
     socket.on("message", (message) => postTerminationMessages.push(message.toString()));
 
-    const first = await fetch(url, { method: "POST", headers: mutationHeaders });
-    assert.equal(first.status, 200);
-    const firstOutcome = await first.json();
+    const concurrentResponses = await Promise.all(Array.from(
+      { length: 8 },
+      () => fetch(url, { method: "POST", headers: mutationHeaders }),
+    ));
+    assert.deepEqual(concurrentResponses.map((response) => response.status), Array(8).fill(200));
+    const concurrentOutcomes = await Promise.all(
+      concurrentResponses.map((response) => response.json()),
+    );
+    const freshOutcomes = concurrentOutcomes.filter((outcome) => !outcome.idempotentReplay);
+    assert.equal(freshOutcomes.length, 1);
+    assert.equal(new Set(concurrentOutcomes.map((outcome) => outcome.auditId)).size, 1);
+    assert.equal(concurrentOutcomes.filter((outcome) => outcome.idempotentReplay).length, 7);
+    const firstOutcome = freshOutcomes[0];
     assert.deepEqual(firstOutcome, {
       type: "mutation_result",
       code: "session_ended",

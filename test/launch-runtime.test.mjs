@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +35,45 @@ const runFailingCli = async (args) => {
 const stopAndRemove = async (dataDir) => {
   await runCli(["stop", "--data-dir", dataDir, "--json"]).catch(() => undefined);
   await rm(dataDir, { recursive: true, force: true });
+};
+
+const matchingProcesses = async (dataDir) => {
+  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,args="]);
+  return stdout.trim().split("\n").flatMap((line) => {
+    const match = line.trim().match(/^(\d+)\s+(.*)$/);
+    if (!match || !match[2].includes(dataDir)) {
+      return [];
+    }
+    if (!match[2].includes("runtime-daemon.mjs") && !match[2].includes("local-host.mjs")) {
+      return [];
+    }
+    return [{ pid: Number(match[1]), command: match[2] }];
+  });
+};
+
+const waitForProcessCount = async (dataDir, expected, timeoutMs = 3_000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const processes = await matchingProcesses(dataDir);
+    if (processes.length === expected) {
+      return processes;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const processes = await matchingProcesses(dataDir);
+  assert.equal(processes.length, expected, JSON.stringify(processes));
+  return processes;
+};
+
+const terminateMatchingProcesses = async (dataDir) => {
+  const processes = await matchingProcesses(dataDir);
+  for (const processEntry of processes.filter((entry) => entry.command.includes("runtime-daemon.mjs"))) {
+    try {
+      process.kill(process.platform === "win32" ? processEntry.pid : -processEntry.pid, "SIGKILL");
+    } catch {
+      // The scoped test process exited before cleanup.
+    }
+  }
 };
 
 test("concurrent launches reuse one ready runtime and retain full Host negotiation", async () => {
@@ -106,6 +145,10 @@ test("Host negotiation binds an ephemeral runtime ID to one persisted Host ID", 
     assert.match(first.runtime.runtimeId, /^runtime-[a-f0-9]{24}$/);
     assert.match(first.host.hostId, /^host-[a-f0-9]{24}$/);
     assert.equal(persistedIdentity.hostId, first.host.hostId);
+    const controllerBinding = JSON.parse(
+      await readFile(join(dataDir, "controller-host-binding.json"), "utf8"),
+    );
+    assert.equal(controllerBinding.hostId, first.host.hostId);
     assert.equal(negotiation.details.controllerId, first.runtime.runtimeId);
     assert.equal(negotiation.details.expectedHostId, first.host.hostId);
     assert.equal(negotiation.details.hostId, first.host.hostId);
@@ -115,6 +158,126 @@ test("Host negotiation binds an ephemeral runtime ID to one persisted Host ID", 
     const second = await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]);
     assert.notEqual(second.runtime.runtimeId, first.runtime.runtimeId);
     assert.equal(second.host.hostId, first.host.hostId);
+  } finally {
+    await stopAndRemove(dataDir);
+  }
+});
+
+test("a previously accepted Host identity replacement fails closed", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-host-identity-replacement-"));
+
+  try {
+    const accepted = await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]);
+    await runCli(["stop", "--data-dir", dataDir, "--json"]);
+    const bindingBefore = await readFile(join(dataDir, "controller-host-binding.json"), "utf8");
+    const lifecycleBefore = await readFile(join(dataDir, "runtime-lifecycle.json"), "utf8");
+    const replacementHostId = `host-${"f".repeat(24)}`;
+    assert.notEqual(replacementHostId, accepted.host.hostId);
+    await writeFile(join(dataDir, "host-identity.json"), `${JSON.stringify({
+      hostId: replacementHostId,
+      createdAt: new Date().toISOString(),
+    }, null, 2)}\n`, { mode: 0o600 });
+
+    const failure = await runFailingCli([
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--idempotency-key",
+      "host-replacement-launch",
+      "--expected-revision",
+      "2",
+      "--json",
+      "--no-open",
+    ]);
+    const outcome = JSON.parse(failure.stdout);
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.diagnosis.code, "controller_host_identity_mismatch");
+    assert.equal(
+      JSON.parse(await readFile(join(dataDir, "controller-host-binding.json"), "utf8")).hostId,
+      accepted.host.hostId,
+    );
+    assert.equal(await readFile(join(dataDir, "controller-host-binding.json"), "utf8"), bindingBefore);
+    assert.equal(await readFile(join(dataDir, "runtime-lifecycle.json"), "utf8"), lifecycleBefore);
+    await assert.rejects(readFile(join(dataDir, "runtime-state.json"), "utf8"));
+  } finally {
+    await stopAndRemove(dataDir);
+  }
+});
+
+test("runtime launch is revisioned, idempotent, and accepted in the audit", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-runtime-launch-contract-"));
+  const launchArgs = [
+    "launch",
+    "--data-dir",
+    dataDir,
+    "--idempotency-key",
+    "runtime-launch-success-1",
+    "--expected-revision",
+    "0",
+    "--json",
+    "--no-open",
+  ];
+
+  try {
+    const first = await runCli(launchArgs);
+    assert.deepEqual(first.mutation, {
+      type: "mutation_result",
+      code: "runtime_started",
+      authorizationClass: "user_runtime_lifecycle",
+      expectedRevision: 0,
+      revision: 1,
+      idempotentReplay: false,
+      auditId: first.mutation.auditId,
+    });
+    assert.match(first.mutation.auditId, /^audit-/);
+
+    const replay = await runCli(launchArgs);
+    assert.equal(replay.runtime.runtimeId, first.runtime.runtimeId);
+    assert.equal(replay.bootstrapUrl, first.bootstrapUrl);
+    assert.deepEqual(replay.mutation, { ...first.mutation, idempotentReplay: true });
+
+    const stale = await runCli([
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--idempotency-key",
+      "runtime-launch-stale-1",
+      "--expected-revision",
+      "0",
+      "--json",
+      "--no-open",
+    ]);
+    assert.deepEqual(stale, {
+      type: "mutation_failure",
+      code: "mutation_revision_conflict",
+      retryable: true,
+      started: false,
+      expectedRevision: 0,
+      actualRevision: 1,
+      auditId: stale.auditId,
+    });
+
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const acceptedAudit = audits.find((entry) => entry.auditId === first.mutation.auditId);
+    assert.equal(acceptedAudit.action, "runtime.start");
+    assert.equal(acceptedAudit.outcome, "accepted");
+    assert.deepEqual({
+      authorizationClass: acceptedAudit.details.authorizationClass,
+      expectedRevision: acceptedAudit.details.expectedRevision,
+      actualRevision: acceptedAudit.details.actualRevision,
+      resultingRevision: acceptedAudit.details.resultingRevision,
+      runtimeId: acceptedAudit.details.runtimeId,
+      reused: acceptedAudit.details.reused,
+    }, {
+      authorizationClass: "user_runtime_lifecycle",
+      expectedRevision: 0,
+      actualRevision: 0,
+      resultingRevision: 1,
+      runtimeId: first.runtime.runtimeId,
+      reused: false,
+    });
+    assert.match(acceptedAudit.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
   } finally {
     await stopAndRemove(dataDir);
   }
@@ -271,6 +434,52 @@ test("a partial stale launch lock left before its owner was recorded is recovere
     assert.equal(launch.runtime.identity, "controller-runtime");
   } finally {
     await stopAndRemove(dataDir);
+  }
+});
+
+test("killing launch before readiness cannot orphan its runtime and Host", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-killed-launch-"));
+  const launcher = spawn(process.execPath, [
+    cliPath,
+    "launch",
+    "--data-dir",
+    dataDir,
+    "--host-mode",
+    "hang-before-ack",
+    "--startup-timeout-ms",
+    "10000",
+    "--json",
+    "--no-open",
+  ], {
+    cwd: tmpdir(),
+    env: process.env,
+    stdio: "ignore",
+  });
+
+  try {
+    const startupProcesses = await waitForProcessCount(dataDir, 2);
+    assert.equal(startupProcesses.filter((entry) => entry.command.includes("runtime-daemon.mjs")).length, 1);
+    assert.equal(startupProcesses.filter((entry) => entry.command.includes("local-host.mjs")).length, 1);
+    launcher.kill("SIGKILL");
+    await new Promise((resolve) => launcher.once("close", resolve));
+
+    const recovered = await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]);
+    assert.equal(recovered.runtime.reused, false);
+    const recoveredProcesses = await waitForProcessCount(dataDir, 2);
+    assert.equal(recoveredProcesses.filter((entry) => entry.command.includes("runtime-daemon.mjs")).length, 1);
+    assert.equal(recoveredProcesses.filter((entry) => entry.command.includes("local-host.mjs")).length, 1);
+    assert.deepEqual(
+      recoveredProcesses.filter((entry) =>
+        startupProcesses.some((startupProcess) => startupProcess.pid === entry.pid)),
+      [],
+    );
+  } finally {
+    if (launcher.exitCode === null && launcher.signalCode === null) {
+      launcher.kill("SIGKILL");
+    }
+    await runCli(["stop", "--data-dir", dataDir, "--json"]).catch(() => undefined);
+    await terminateMatchingProcesses(dataDir);
+    await rm(dataDir, { recursive: true, force: true });
   }
 });
 

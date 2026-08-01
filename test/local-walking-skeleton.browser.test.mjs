@@ -115,7 +115,9 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
 
   try {
     const { stdout } = await execFileAsync(installed.command, [
-      "launch", "--data-dir", dataDir, "--host-mode", "secret-probe", "--json", "--no-open",
+      "launch", "--data-dir", dataDir, "--host-mode", "secret-probe",
+      "--idempotency-key", "acceptance-runtime-launch-key", "--expected-revision", "0",
+      "--json", "--no-open",
     ], {
       cwd: executionDirectory,
       env: productEnvironment,
@@ -196,7 +198,9 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       assert.equal(staleBootstrapOutcome.code, "mutation_revision_conflict");
 
       const { stdout: expiringLaunchOutput } = await execFileAsync(installed.command, [
-        "launch", "--data-dir", dataDir, "--bootstrap-ttl-ms", "25", "--json", "--no-open",
+        "launch", "--data-dir", dataDir, "--bootstrap-ttl-ms", "25",
+        "--idempotency-key", "acceptance-expiring-bootstrap-launch-key",
+        "--expected-revision", String(launch.runtime.revision), "--json", "--no-open",
       ], { cwd: executionDirectory, env: productEnvironment });
       const expiringLaunch = JSON.parse(expiringLaunchOutput);
       await new Promise((resolve) => setTimeout(resolve, 75));
@@ -402,9 +406,20 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         "x-sandking-expected-revision": String(acknowledgement.message.session.revision),
       };
       const sessionEndUrl = `http://127.0.0.1:${launch.runtime.port}/session/end`;
-      const sessionEnd = await fetch(sessionEndUrl, { method: "POST", headers: mutationHeaders });
-      assert.equal(sessionEnd.status, 200);
-      const sessionEndOutcome = await sessionEnd.json();
+      const concurrentSessionEnds = await Promise.all(Array.from(
+        { length: 8 },
+        () => fetch(sessionEndUrl, { method: "POST", headers: mutationHeaders }),
+      ));
+      assert.deepEqual(concurrentSessionEnds.map((response) => response.status), Array(8).fill(200));
+      const concurrentSessionEndOutcomes = await Promise.all(
+        concurrentSessionEnds.map((response) => response.json()),
+      );
+      const freshSessionEndOutcomes = concurrentSessionEndOutcomes.filter(
+        (outcome) => !outcome.idempotentReplay,
+      );
+      assert.equal(freshSessionEndOutcomes.length, 1);
+      assert.equal(new Set(concurrentSessionEndOutcomes.map((outcome) => outcome.auditId)).size, 1);
+      const sessionEndOutcome = freshSessionEndOutcomes[0];
       assert.equal(sessionEndOutcome.code, "session_ended");
       assert.equal(sessionEndOutcome.idempotentReplay, false);
       const sessionSocketRevocation = await revocationPage.evaluate(async () => {
@@ -456,6 +471,13 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         initialRevision: acknowledgement.message.session.revision,
         resultingRevision: sessionEndOutcome.revision,
         auditId: sessionEndOutcome.auditId,
+        concurrentRequestCount: concurrentSessionEndOutcomes.length,
+        acceptedOutcomeCount: freshSessionEndOutcomes.length,
+        replayOutcomeCount: concurrentSessionEndOutcomes.filter(
+          (outcome) => outcome.idempotentReplay,
+        ).length,
+        concurrentSameAudit:
+          new Set(concurrentSessionEndOutcomes.map((outcome) => outcome.auditId)).size === 1,
         replayStatus: sessionEndReplay.status,
         replayReturnedSameAudit: sessionEndReplayOutcome.auditId === sessionEndOutcome.auditId,
         staleStatus: staleSessionEnd.status,
@@ -583,6 +605,14 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
             details: entry.details,
           })),
           bootstrapMutationEvidence,
+          runtimeStartEvidence: {
+            authorizationClass: launch.mutation.authorizationClass,
+            initialRevision: launch.mutation.expectedRevision,
+            resultingRevision: launch.mutation.revision,
+            code: launch.mutation.code,
+            auditId: launch.mutation.auditId,
+            idempotentReplay: launch.mutation.idempotentReplay,
+          },
           sessionMutationEvidence,
           runtimeStopEvidence,
           browserMismatchEvidence,

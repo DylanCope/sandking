@@ -42,7 +42,7 @@ import {
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
-  /** @type {{dataDir?: string, hostMode?: string, expectedHostId?: string, lifecycleRevision?: number}} */
+  /** @type {{dataDir?: string, hostMode?: string, expectedHostId?: string, lifecycleRevision?: number, startupId?: string}} */
   const result = {};
   for (let index = 0; index < argv.length; index += 1) {
     const current = argv[index];
@@ -58,6 +58,9 @@ const parseArgs = (argv) => {
     } else if (current === "--lifecycle-revision") {
       result.lifecycleRevision = Number(argv[index + 1]);
       index += 1;
+    } else if (current === "--startup-id") {
+      result.startupId = argv[index + 1];
+      index += 1;
     }
   }
   if (!result.dataDir) {
@@ -69,7 +72,10 @@ const parseArgs = (argv) => {
   if (!Number.isSafeInteger(result.lifecycleRevision) || Number(result.lifecycleRevision) < 1) {
     throw new Error("runtime_lifecycle_revision_missing");
   }
-  return /** @type {{dataDir: string, hostMode?: string, expectedHostId: string, lifecycleRevision: number}} */ (result);
+  if (!result.startupId || !/^[a-f0-9]{24}$/.test(result.startupId)) {
+    throw new Error("runtime_startup_id_missing");
+  }
+  return /** @type {{dataDir: string, hostMode?: string, expectedHostId: string, lifecycleRevision: number, startupId: string}} */ (result);
 };
 
 const args = parseArgs(process.argv.slice(2));
@@ -89,6 +95,8 @@ const endedSessions = new Map();
 /** @type {Map<string, Set<WebSocket>>} */
 const sessionSockets = new Map();
 /** @type {Map<string, Promise<any>>} */
+const sessionMutationQueues = new Map();
+/** @type {Map<string, Promise<any>>} */
 const bootstrapExchanges = new Map();
 /** @type {import("node:child_process").ChildProcessWithoutNullStreams | undefined} */
 let hostProcess;
@@ -99,6 +107,7 @@ let websocketServer;
 /** @type {any} */
 let state;
 let shuttingDown = false;
+let startupCommitted = false;
 
 const cockpitCsp = [
   "default-src 'self'",
@@ -171,6 +180,26 @@ const mutationFailure = (code, expectedRevision, actualRevision) => ({
   expectedRevision,
   actualRevision,
 });
+
+/**
+ * Serialize mutations for one browser session. The queue entry is installed
+ * synchronously before the first mutation awaits audit I/O.
+ * @template T
+ * @param {string} sessionId
+ * @param {() => Promise<T>} operation
+ */
+const withSessionMutationLock = async (sessionId, operation) => {
+  const previous = sessionMutationQueues.get(sessionId) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  sessionMutationQueues.set(sessionId, current);
+  try {
+    return await current;
+  } finally {
+    if (sessionMutationQueues.get(sessionId) === current) {
+      sessionMutationQueues.delete(sessionId);
+    }
+  }
+};
 
 /**
  * @param {string} token
@@ -622,6 +651,115 @@ const revokeBrowserSession = (sessionId) => {
 };
 
 /**
+ * @param {import("node:http").IncomingMessage} request
+ * @param {import("node:http").ServerResponse} response
+ * @param {string} sessionId
+ */
+const endBrowserSession = async (request, response, sessionId) => {
+  const activeSession = sessions.get(sessionId);
+  const endedSession = endedSessions.get(sessionId);
+  const session = activeSession ?? endedSession;
+  if (!session) {
+    sendJson(response, 401, { code: "session_required" });
+    return;
+  }
+
+  const rawIdempotencyKey = request.headers["x-sandking-idempotency-key"];
+  const idempotencyKey = typeof rawIdempotencyKey === "string" ? rawIdempotencyKey : "";
+  const expectedRevision = Number(request.headers["x-sandking-expected-revision"]);
+  const idempotencyKeyHash = idempotencyKey.length > 0 && idempotencyKey.length <= 256
+    ? hashIdempotencyKey(idempotencyKey)
+    : null;
+  if (!exactOriginAccepted(request) || request.headers["x-sandking-csrf"] !== session.csrfToken) {
+    await recordAudit("browser.session.end", "rejected", {
+      code: "csrf_rejected",
+      authorizationClass: "runtime_browser_session",
+      idempotencyKeyHash,
+      expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+      actualRevision: session.revision,
+    });
+    sendJson(response, 403, { code: "csrf_rejected" });
+    return;
+  }
+  if (!idempotencyKeyHash || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    await recordAudit("browser.session.end", "rejected", {
+      code: "mutation_contract_invalid",
+      authorizationClass: "runtime_browser_session",
+      idempotencyKeyHash,
+      expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+      actualRevision: session.revision,
+    });
+    sendJson(response, 400, mutationFailure(
+      "mutation_contract_invalid",
+      Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
+      session.revision,
+    ));
+    return;
+  }
+  if (
+    endedSession
+    && endedSession.termination.idempotencyKeyHash === idempotencyKeyHash
+    && endedSession.termination.expectedRevision === expectedRevision
+  ) {
+    await recordAudit("browser.session.end", "observed", {
+      authorizationClass: "runtime_browser_session",
+      idempotencyKeyHash,
+      expectedRevision,
+      actualRevision: endedSession.revision,
+      resultingRevision: endedSession.revision,
+      idempotentReplay: true,
+      originalAuditId: endedSession.termination.auditId,
+    });
+    sendJson(response, 200, {
+      type: "mutation_result",
+      code: "session_ended",
+      revision: endedSession.revision,
+      idempotentReplay: true,
+      auditId: endedSession.termination.auditId,
+    });
+    return;
+  }
+  if (!activeSession || expectedRevision !== activeSession.revision) {
+    await recordAudit("browser.session.end", "rejected", {
+      code: "mutation_revision_conflict",
+      authorizationClass: "runtime_browser_session",
+      idempotencyKeyHash,
+      expectedRevision,
+      actualRevision: session.revision,
+    });
+    sendJson(response, 409, mutationFailure(
+      "mutation_revision_conflict",
+      expectedRevision,
+      session.revision,
+    ));
+    return;
+  }
+  const resultingRevision = activeSession.revision + 1;
+  const auditId = await recordAudit("browser.session.end", "accepted", {
+    sessionAuditId: activeSession.auditId,
+    authorizationClass: "runtime_browser_session",
+    idempotencyKeyHash,
+    expectedRevision,
+    actualRevision: activeSession.revision,
+    resultingRevision,
+  });
+  sessions.delete(sessionId);
+  endedSessions.set(sessionId, {
+    ...activeSession,
+    revision: resultingRevision,
+    termination: { idempotencyKeyHash, expectedRevision, auditId },
+  });
+  revokeBrowserSession(sessionId);
+  sendJson(response, 200, {
+    type: "mutation_result",
+    code: "session_ended",
+    revision: resultingRevision,
+    idempotentReplay: false,
+    auditId,
+  });
+};
+
+/**
  * @param {WebSocket} socket
  * @param {string} sessionId
  * @param {{csrfToken: string, auditId: string, revision: number}} session
@@ -880,18 +1018,25 @@ const main = async () => {
 
         const cookies = parseCookies(request.headers.cookie);
         const sessionId = cookies[sessionCookieName];
-        const activeSession = sessionId ? sessions.get(sessionId) : undefined;
-        const endedSession = sessionId ? endedSessions.get(sessionId) : undefined;
-        const session = activeSession ?? endedSession;
-        if (!session) {
-          sendJson(response, 401, { code: "session_required" });
+        if (request.method === "POST" && request.url === "/session/end") {
+          if (!sessionId) {
+            sendJson(response, 401, { code: "session_required" });
+            return;
+          }
+          await withSessionMutationLock(
+            sessionId,
+            () => endBrowserSession(request, response, sessionId),
+          );
           return;
         }
-        if (
-          !activeSession
-          && !(request.method === "POST" && request.url === "/session/end")
-        ) {
-          sendJson(response, 401, { code: "session_ended" });
+
+        const activeSession = sessionId ? sessions.get(sessionId) : undefined;
+        if (!activeSession) {
+          if (sessionId && endedSessions.has(sessionId)) {
+            sendJson(response, 401, { code: "session_ended" });
+            return;
+          }
+          sendJson(response, 401, { code: "session_required" });
           return;
         }
 
@@ -918,103 +1063,6 @@ const main = async () => {
             "content-type": "text/javascript; charset=utf-8",
           });
           response.end(cockpitScript);
-          return;
-        }
-
-        if (request.method === "POST" && request.url === "/session/end") {
-          const rawIdempotencyKey = request.headers["x-sandking-idempotency-key"];
-          const idempotencyKey = typeof rawIdempotencyKey === "string" ? rawIdempotencyKey : "";
-          const expectedRevision = Number(request.headers["x-sandking-expected-revision"]);
-          const idempotencyKeyHash = idempotencyKey.length > 0 && idempotencyKey.length <= 256
-            ? hashIdempotencyKey(idempotencyKey)
-            : null;
-          if (!exactOriginAccepted(request) || request.headers["x-sandking-csrf"] !== session.csrfToken) {
-            await recordAudit("browser.session.end", "rejected", {
-              code: "csrf_rejected",
-              authorizationClass: "runtime_browser_session",
-              idempotencyKeyHash,
-              expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
-              actualRevision: session.revision,
-            });
-            sendJson(response, 403, { code: "csrf_rejected" });
-            return;
-          }
-          if (!idempotencyKeyHash || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
-            await recordAudit("browser.session.end", "rejected", {
-              code: "mutation_contract_invalid",
-              authorizationClass: "runtime_browser_session",
-              idempotencyKeyHash,
-              expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
-              actualRevision: session.revision,
-            });
-            sendJson(response, 400, mutationFailure(
-              "mutation_contract_invalid",
-              Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
-              session.revision,
-            ));
-            return;
-          }
-          if (
-            endedSession
-            && endedSession.termination.idempotencyKeyHash === idempotencyKeyHash
-            && endedSession.termination.expectedRevision === expectedRevision
-          ) {
-            await recordAudit("browser.session.end", "observed", {
-              authorizationClass: "runtime_browser_session",
-              idempotencyKeyHash,
-              expectedRevision,
-              actualRevision: 1,
-              resultingRevision: endedSession.revision,
-              idempotentReplay: true,
-              originalAuditId: endedSession.termination.auditId,
-            });
-            sendJson(response, 200, {
-              type: "mutation_result",
-              code: "session_ended",
-              revision: endedSession.revision,
-              idempotentReplay: true,
-              auditId: endedSession.termination.auditId,
-            });
-            return;
-          }
-          if (!activeSession || expectedRevision !== activeSession.revision) {
-            await recordAudit("browser.session.end", "rejected", {
-              code: "mutation_revision_conflict",
-              authorizationClass: "runtime_browser_session",
-              idempotencyKeyHash,
-              expectedRevision,
-              actualRevision: session.revision,
-            });
-            sendJson(response, 409, mutationFailure(
-              "mutation_revision_conflict",
-              expectedRevision,
-              session.revision,
-            ));
-            return;
-          }
-          const resultingRevision = activeSession.revision + 1;
-          const auditId = await recordAudit("browser.session.end", "accepted", {
-            sessionAuditId: activeSession.auditId,
-            authorizationClass: "runtime_browser_session",
-            idempotencyKeyHash,
-            expectedRevision,
-            actualRevision: activeSession.revision,
-            resultingRevision,
-          });
-          sessions.delete(sessionId);
-          endedSessions.set(sessionId, {
-            ...activeSession,
-            revision: resultingRevision,
-            termination: { idempotencyKeyHash, expectedRevision, auditId },
-          });
-          revokeBrowserSession(sessionId);
-          sendJson(response, 200, {
-            type: "mutation_result",
-            code: "session_ended",
-            revision: resultingRevision,
-            idempotentReplay: false,
-            auditId,
-          });
           return;
         }
 
@@ -1114,9 +1162,7 @@ const main = async () => {
       ...(error instanceof Error && "observedHostId" in error
         ? { observedHostId: error.observedHostId }
         : {}),
-      mutationOccurred: false,
     });
-    await recordAudit("runtime.start", "rejected", { code, negotiationAuditId });
     await writePrivateJson(startupErrorPath, { code, auditId: negotiationAuditId });
     if (hostProcess) {
       await stopChild(hostProcess);
@@ -1133,6 +1179,28 @@ process.on("SIGTERM", async () => {
 process.on("SIGINT", async () => {
   await shutdown();
   process.exit(0);
+});
+process.on("message", (/** @type {unknown} */ message) => {
+  if (
+    !message
+    || typeof message !== "object"
+    || !("type" in message)
+    || !("startupId" in message)
+    || message.type !== "runtime.start.commit"
+    || message.startupId !== args.startupId
+    || startupCommitted
+  ) {
+    return;
+  }
+  startupCommitted = true;
+  process.send?.({ type: "runtime.start.committed", startupId: args.startupId });
+});
+process.on("disconnect", async () => {
+  if (startupCommitted) {
+    return;
+  }
+  await shutdown();
+  process.exit(1);
 });
 process.on("uncaughtException", async (error) => {
   await logSanitizedRuntimeError(error);

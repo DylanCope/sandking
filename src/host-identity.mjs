@@ -9,6 +9,7 @@ import {
 } from "./private-state.mjs";
 
 const hostIdPattern = /^host-[a-f0-9]{24}$/;
+const controllerBindingPath = "controller-host-binding.json";
 
 /** @param {unknown} value */
 const validateHostIdentity = (value) => {
@@ -70,5 +71,52 @@ export const ensureHostIdentity = async (dataDir) => {
       throw new Error("host_identity_state_invalid");
     }
     return racedIdentity;
+  }
+};
+
+/** @param {string} dataDir */
+export const readControllerHostBinding = async (dataDir) => {
+  const value = await readJson(join(dataDir, controllerBindingPath), null);
+  return value === null ? null : validateHostIdentity(value);
+};
+
+/**
+ * Pin the first accepted local Host identity in Controller-owned state. Later
+ * launches read this binding independently from the Host-owned identity file,
+ * so replacing the Host identity cannot silently change Controller trust.
+ * @param {string} dataDir
+ */
+export const ensureControllerHostBinding = async (dataDir) => {
+  await ensurePrivateDirectory(dataDir);
+  const existing = await readControllerHostBinding(dataDir);
+  if (existing) {
+    return existing;
+  }
+
+  const hostIdentity = await ensureHostIdentity(dataDir);
+  const binding = {
+    hostId: hostIdentity.hostId,
+    createdAt: new Date().toISOString(),
+  };
+  const bindingFile = join(dataDir, controllerBindingPath);
+  try {
+    const handle = await open(bindingFile, "wx", PRIVATE_FILE_MODE);
+    try {
+      await handle.writeFile(`${JSON.stringify(binding, null, 2)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await chmod(bindingFile, PRIVATE_FILE_MODE);
+    return binding;
+  } catch (error) {
+    if (!hasErrorCode(error, "EEXIST")) {
+      throw error;
+    }
+    const racedBinding = await readControllerHostBinding(dataDir);
+    if (!racedBinding) {
+      throw new Error("controller_host_binding_state_invalid");
+    }
+    return racedBinding;
   }
 };

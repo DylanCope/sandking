@@ -61,17 +61,22 @@ package launches from any working directory without source-checkout-relative
 paths:
 
 ```bash
-sandking launch --no-open
+sandking launch --no-open --idempotency-key <key> --expected-revision <revision>
 sandking stop
 ```
 
-The runtime stores its lifecycle revision, shared launch/stop lock, durable Host
-identity, bootstrap claims, audit records, and readiness state in a private user
-directory (`~/.sandking` by default). Stop uses the same lock and records its
-idempotency key hash, expected revision, outcome, and audit ID. The Host inherits
-no Controller environment or credentials. Browser control is a versioned typed
-same-origin WebSocket protocol; ending a browser session revokes its existing
-WebSockets, while opaque stream bytes use a separate bounded binary channel.
+The runtime stores its lifecycle revision, shared launch/stop lock, independent
+Controller-to-Host identity binding, Host identity, bootstrap claims, audit
+records, and readiness state in a private user directory (`~/.sandking` by
+default). Launch and stop use the same lock and record their idempotency-key
+hashes, expected and resulting revisions, outcomes, and audit IDs. Omitting the
+flags lets the local CLI generate a one-shot key and use the current lifecycle
+revision. Until readiness is acknowledged, the runtime and Host remain owned by
+the launcher and shut down if it is killed. The Host inherits no Controller
+environment or credentials. Browser control is a versioned typed same-origin
+WebSocket protocol; ending a browser session serializes concurrent retries,
+revokes its existing WebSockets, and keeps opaque stream bytes on a separate
+bounded binary channel.
 
 Run the executable issue-117 acceptance manifest, including its npm-pinned real
 Chromium gate, with:

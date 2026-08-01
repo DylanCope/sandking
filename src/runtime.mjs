@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { chmod, open, readFile, stat } from "node:fs/promises";
@@ -16,7 +16,7 @@ import {
   removePrivateFile,
   writePrivateJson,
 } from "./private-state.mjs";
-import { ensureHostIdentity } from "./host-identity.mjs";
+import { ensureControllerHostBinding } from "./host-identity.mjs";
 import { capabilitySetSchema, framingSchema, releaseVersion, versionSchema } from "./protocol.mjs";
 
 const COMPATIBILITY_KEY = "runtime-v1";
@@ -192,6 +192,7 @@ const runtimeLifecycleSchema = z.object({
 }).strict();
 
 /** @typedef {{idempotencyKeyHash: string, expectedRevision: number, response: Record<string, any>}} StopOutcome */
+/** @typedef {{idempotencyKeyHash: string, expectedRevision: number, response?: Record<string, any>, bootstrapRuntime?: {runtimeId: string, port: number}, failure?: {code: string, auditId?: string}}} LaunchOutcome */
 
 /** @param {string} dataDir @param {string} action @param {"accepted" | "rejected" | "observed"} outcome @param {Record<string, unknown>} details */
 const recordLifecycleAudit = async (dataDir, action, outcome, details) => {
@@ -250,6 +251,71 @@ const writeStopOutcomes = async (dataDir, outcomes) => {
   await writePrivateJson(join(dataDir, "runtime-stop-outcomes.json"), {
     outcomes: outcomes.slice(-128),
   });
+};
+
+/** @param {string} dataDir @returns {Promise<LaunchOutcome[]>} */
+const readLaunchOutcomes = async (dataDir) => {
+  const raw = await readJson(join(dataDir, "runtime-launch-outcomes.json"), { outcomes: [] });
+  if (!raw || typeof raw !== "object" || !("outcomes" in raw) || !Array.isArray(raw.outcomes)) {
+    throw new Error("runtime_launch_outcomes_invalid");
+  }
+  return /** @type {LaunchOutcome[]} */ (raw.outcomes.filter((/** @type {any} */ outcome) => (
+    outcome
+    && typeof outcome === "object"
+    && /^sha256:[a-f0-9]{64}$/.test(String(outcome.idempotencyKeyHash))
+    && Number.isSafeInteger(outcome.expectedRevision)
+    && (
+      (outcome.response && typeof outcome.response === "object")
+      || (outcome.failure && typeof outcome.failure === "object")
+    )
+  )));
+};
+
+/** @param {string} dataDir @param {LaunchOutcome[]} outcomes */
+const writeLaunchOutcomes = async (dataDir, outcomes) => {
+  await writePrivateJson(join(dataDir, "runtime-launch-outcomes.json"), {
+    outcomes: outcomes.slice(-128),
+  });
+};
+
+/** @param {string} dataDir */
+const ensureBootstrapDerivationKey = async (dataDir) => {
+  const keyPath = join(dataDir, "bootstrap-derivation-key");
+  const existing = await readFile(keyPath, "utf8").catch((error) => {
+    if (hasErrorCode(error, "ENOENT")) {
+      return null;
+    }
+    throw error;
+  });
+  if (existing !== null) {
+    const key = existing.trim();
+    if (!/^[a-f0-9]{64}$/.test(key)) {
+      throw new Error("bootstrap_derivation_key_invalid");
+    }
+    return key;
+  }
+
+  const key = randomBytes(32).toString("hex");
+  try {
+    const handle = await open(keyPath, "wx", PRIVATE_FILE_MODE);
+    try {
+      await handle.writeFile(`${key}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await chmod(keyPath, PRIVATE_FILE_MODE);
+    return key;
+  } catch (error) {
+    if (!hasErrorCode(error, "EEXIST")) {
+      throw error;
+    }
+    const racedKey = (await readFile(keyPath, "utf8")).trim();
+    if (!/^[a-f0-9]{64}$/.test(racedKey)) {
+      throw new Error("bootstrap_derivation_key_invalid");
+    }
+    return racedKey;
+  }
 };
 
 /** @param {number} pid */
@@ -404,12 +470,19 @@ const withRuntimeLock = async (dataDir, operation) => {
  * @param {string} dataDir
  * @param {z.infer<typeof runtimeStateSchema>} state
  * @param {number} ttlMs
+ * @param {string} lifecycleIdempotencyKey
  */
-const createBootstrap = async (dataDir, state, ttlMs) => {
+const createBootstrap = async (dataDir, state, ttlMs, lifecycleIdempotencyKey) => {
   const tokenDirectory = join(dataDir, "bootstrap-tokens");
   await ensurePrivateDirectory(tokenDirectory);
-  const token = randomBytes(32).toString("hex");
-  const idempotencyKey = randomBytes(32).toString("hex");
+  const derivationKey = await ensureBootstrapDerivationKey(dataDir);
+  const context = `${state.runtimeId}\0${lifecycleIdempotencyKey}`;
+  const token = createHmac("sha256", derivationKey)
+    .update(`bootstrap-token\0${context}`)
+    .digest("hex");
+  const idempotencyKey = createHmac("sha256", derivationKey)
+    .update(`bootstrap-idempotency\0${context}`)
+    .digest("hex");
   const tokenId = createHash("sha256").update(token).digest("hex");
   const idempotencyKeyHash = `sha256:${createHash("sha256")
     .update(idempotencyKey)
@@ -436,6 +509,30 @@ const createBootstrap = async (dataDir, state, ttlMs) => {
       expiresAt: new Date(expiresAt).toISOString(),
     },
   };
+};
+
+/**
+ * Reconstruct the unretained bootstrap credential for an idempotent launch
+ * replay. Only the caller-supplied lifecycle key and the private derivation key
+ * can reproduce it.
+ * @param {string} dataDir
+ * @param {{runtimeId: string, port: number}} runtime
+ * @param {string} lifecycleIdempotencyKey
+ */
+const replayBootstrapUrl = async (dataDir, runtime, lifecycleIdempotencyKey) => {
+  const derivationKey = await ensureBootstrapDerivationKey(dataDir);
+  const context = `${runtime.runtimeId}\0${lifecycleIdempotencyKey}`;
+  const token = createHmac("sha256", derivationKey)
+    .update(`bootstrap-token\0${context}`)
+    .digest("hex");
+  const idempotencyKey = createHmac("sha256", derivationKey)
+    .update(`bootstrap-idempotency\0${context}`)
+    .digest("hex");
+  const url = new URL(`http://127.0.0.1:${runtime.port}/bootstrap`);
+  url.searchParams.set("token", token);
+  url.searchParams.set("idempotencyKey", idempotencyKey);
+  url.searchParams.set("expectedRevision", "0");
+  return url.href;
 };
 
 /** @param {z.infer<typeof runtimeStateSchema>} state */
@@ -542,6 +639,52 @@ const waitForStartup = async (dataDir, child, startupTimeoutMs) => {
 };
 
 /**
+ * Transfer ownership only after authenticated readiness. Until this
+ * acknowledgement, loss of the launcher IPC channel makes the daemon shut
+ * down its listener and Host.
+ * @param {import("node:child_process").ChildProcess} child
+ * @param {string} startupId
+ */
+const commitRuntimeStartup = async (child, startupId) => new Promise((resolve, reject) => {
+  const timeout = setTimeout(() => {
+    cleanup();
+    reject(new RuntimeStartupError("runtime_start_failed"));
+  }, 1_000);
+  const onExit = () => {
+    cleanup();
+    reject(new RuntimeStartupError("runtime_start_failed"));
+  };
+  /** @param {unknown} message */
+  const onMessage = (message) => {
+    if (
+      !message
+      || typeof message !== "object"
+      || !("type" in message)
+      || !("startupId" in message)
+      || message.type !== "runtime.start.committed"
+      || message.startupId !== startupId
+    ) {
+      return;
+    }
+    cleanup();
+    resolve(undefined);
+  };
+  const cleanup = () => {
+    clearTimeout(timeout);
+    child.off("exit", onExit);
+    child.off("message", onMessage);
+  };
+  child.once("exit", onExit);
+  child.on("message", onMessage);
+  child.send?.({ type: "runtime.start.commit", startupId }, (error) => {
+    if (error) {
+      cleanup();
+      reject(new RuntimeStartupError("runtime_start_failed"));
+    }
+  });
+});
+
+/**
  * @param {string} dataDir
  * @param {{hostMode?: string, startupTimeoutMs?: number, expectedHostId: string, lifecycleRevision: number}} options
  */
@@ -550,16 +693,18 @@ const spawnRuntime = async (dataDir, options) => {
   const errorPath = join(dataDir, "startup-error.json");
   await Promise.all([removePrivateFile(statePath), removePrivateFile(errorPath)]);
 
+  const startupId = randomBytes(12).toString("hex");
   const daemonArgs = [daemonPath, "--data-dir", dataDir];
   daemonArgs.push("--expected-host-id", options.expectedHostId);
   daemonArgs.push("--lifecycle-revision", String(options.lifecycleRevision));
+  daemonArgs.push("--startup-id", startupId);
   if (options.hostMode) {
     daemonArgs.push("--host-mode", options.hostMode);
   }
   const child = spawn(process.execPath, daemonArgs, {
     cwd: dataDir,
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
     env: process.env,
   });
 
@@ -569,6 +714,10 @@ const spawnRuntime = async (dataDir, options) => {
       child,
       options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
     );
+    await commitRuntimeStartup(child, startupId);
+    if (child.connected) {
+      child.disconnect();
+    }
     child.unref();
     await removePrivateFile(errorPath);
     return runtimeState;
@@ -591,7 +740,7 @@ const spawnRuntime = async (dataDir, options) => {
 export const resolveDataDir = (provided) => resolve(provided ?? defaultDataDir());
 
 /**
- * @param {{dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number}} options
+ * @param {{dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} options
  */
 export const launchRuntime = async (options = {}) => {
   const resolvedDataDir = resolveDataDir(options.dataDir);
@@ -602,7 +751,6 @@ export const launchRuntime = async (options = {}) => {
   await ensurePrivateDirectory(resolvedDataDir);
 
   return withRuntimeLock(resolvedDataDir, async () => {
-    const hostIdentity = await ensureHostIdentity(resolvedDataDir);
     const lifecyclePath = join(resolvedDataDir, "runtime-lifecycle.json");
     const lifecycle = await readLifecycle(resolvedDataDir);
     const statePath = join(resolvedDataDir, "runtime-state.json");
@@ -610,25 +758,139 @@ export const launchRuntime = async (options = {}) => {
     const rawPid = rawExisting && typeof rawExisting === "object" && "pid" in rawExisting
       ? Number(rawExisting.pid)
       : Number.NaN;
-    const existing = runtimeStateSchema.safeParse(rawExisting);
+    const existingState = runtimeStateSchema.safeParse(rawExisting);
+    const actualRevision = existingState.success && pidIsRunning(rawPid)
+      ? existingState.data.revision
+      : lifecycle?.revision ?? 0;
+    const expectedRevision = options.expectedRevision ?? actualRevision;
+    const idempotencyKey = options.idempotencyKey ?? randomBytes(32).toString("hex");
+    const validContract = typeof idempotencyKey === "string"
+      && idempotencyKey.length > 0
+      && idempotencyKey.length <= 256
+      && Number.isSafeInteger(expectedRevision)
+      && expectedRevision >= 0;
+    const idempotencyKeyHash = validContract
+      ? `sha256:${createHash("sha256").update(idempotencyKey).digest("hex")}`
+      : null;
+    const auditDetails = {
+      authorizationClass: "user_runtime_lifecycle",
+      idempotencyKeyHash,
+      expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+      actualRevision,
+    };
+
+    if (!validContract || !idempotencyKeyHash) {
+      const auditId = await recordLifecycleAudit(
+        resolvedDataDir,
+        "runtime.start",
+        "rejected",
+        { ...auditDetails, code: "mutation_contract_invalid" },
+      );
+      return {
+        type: "mutation_failure",
+        code: "mutation_contract_invalid",
+        retryable: true,
+        started: false,
+        expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
+        actualRevision,
+        auditId,
+      };
+    }
+
+    const outcomes = await readLaunchOutcomes(resolvedDataDir);
+    const existingOutcome = outcomes.find((outcome) =>
+      outcome.idempotencyKeyHash === idempotencyKeyHash);
+    if (existingOutcome) {
+      if (existingOutcome.expectedRevision !== expectedRevision) {
+        const auditId = await recordLifecycleAudit(
+          resolvedDataDir,
+          "runtime.start",
+          "rejected",
+          { ...auditDetails, code: "idempotency_key_conflict" },
+        );
+        return {
+          type: "mutation_failure",
+          code: "idempotency_key_conflict",
+          retryable: true,
+          started: false,
+          expectedRevision,
+          actualRevision,
+          auditId,
+        };
+      }
+      const originalAuditId = existingOutcome.response?.mutation?.auditId
+        ?? existingOutcome.failure?.auditId
+        ?? existingOutcome.response?.auditId;
+      await recordLifecycleAudit(resolvedDataDir, "runtime.start", "observed", {
+        ...auditDetails,
+        idempotentReplay: true,
+        originalAuditId,
+      });
+      if (existingOutcome.failure) {
+        throw new RuntimeStartupError(
+          existingOutcome.failure.code,
+          existingOutcome.failure.auditId,
+        );
+      }
+      if (!existingOutcome.response) {
+        throw new Error("runtime_launch_outcomes_invalid");
+      }
+      const replay = structuredClone(existingOutcome.response);
+      if (replay.mutation) {
+        replay.mutation.idempotentReplay = true;
+      } else {
+        replay.idempotentReplay = true;
+      }
+      if (existingOutcome.bootstrapRuntime) {
+        replay.bootstrapUrl = await replayBootstrapUrl(
+          resolvedDataDir,
+          existingOutcome.bootstrapRuntime,
+          idempotencyKey,
+        );
+      }
+      return replay;
+    }
+
+    if (expectedRevision !== actualRevision) {
+      const auditId = await recordLifecycleAudit(
+        resolvedDataDir,
+        "runtime.start",
+        "rejected",
+        { ...auditDetails, code: "mutation_revision_conflict" },
+      );
+      const response = {
+        type: "mutation_failure",
+        code: "mutation_revision_conflict",
+        retryable: true,
+        started: false,
+        expectedRevision,
+        actualRevision,
+        auditId,
+      };
+      outcomes.push({ idempotencyKeyHash, expectedRevision, response });
+      await writeLaunchOutcomes(resolvedDataDir, outcomes);
+      return response;
+    }
+
+    const hostBinding = await ensureControllerHostBinding(resolvedDataDir);
 
     let runtimeState;
     let reused = false;
     if (pidIsRunning(rawPid)) {
-      if (!existing.success) {
+      if (!existingState.success) {
         throw new Error("runtime_state_invalid");
       }
       if (
-        existing.data.compatibilityKey !== COMPATIBILITY_KEY
-        || existing.data.version !== releaseVersion
-        || existing.data.host.hostId !== hostIdentity.hostId
+        existingState.data.compatibilityKey !== COMPATIBILITY_KEY
+        || existingState.data.version !== releaseVersion
+        || existingState.data.host.hostId !== hostBinding.hostId
       ) {
         throw new Error("runtime_incompatible");
       }
-      if (!(await probeRuntime(existing.data))) {
+      if (!(await probeRuntime(existingState.data))) {
         throw new Error("runtime_not_ready");
       }
-      runtimeState = existing.data;
+      runtimeState = existingState.data;
       reused = true;
       if (
         !lifecycle
@@ -644,12 +906,36 @@ export const launchRuntime = async (options = {}) => {
       }
     } else {
       await removePrivateFile(statePath);
-      const lifecycleRevision = (lifecycle?.revision ?? 0) + 1;
-      runtimeState = await spawnRuntime(resolvedDataDir, {
-        ...options,
-        expectedHostId: hostIdentity.hostId,
-        lifecycleRevision,
-      });
+      const lifecycleRevision = actualRevision + 1;
+      try {
+        runtimeState = await spawnRuntime(resolvedDataDir, {
+          ...options,
+          expectedHostId: hostBinding.hostId,
+          lifecycleRevision,
+        });
+      } catch (error) {
+        const startupError = asRuntimeStartupError(error);
+        const runtimeStartAuditId = await recordLifecycleAudit(
+          resolvedDataDir,
+          "runtime.start",
+          "rejected",
+          {
+            ...auditDetails,
+            code: startupError.diagnosis.code,
+            negotiationAuditId: startupError.diagnosis.auditId,
+          },
+        );
+        outcomes.push({
+          idempotencyKeyHash,
+          expectedRevision,
+          failure: {
+            code: startupError.diagnosis.code,
+            auditId: startupError.diagnosis.auditId ?? runtimeStartAuditId,
+          },
+        });
+        await writeLaunchOutcomes(resolvedDataDir, outcomes);
+        throw startupError;
+      }
       await writePrivateJson(lifecyclePath, {
         revision: lifecycleRevision,
         status: "running",
@@ -657,8 +943,25 @@ export const launchRuntime = async (options = {}) => {
       });
     }
 
-    const bootstrap = await createBootstrap(resolvedDataDir, runtimeState, bootstrapTtlMs);
-    return {
+    const bootstrap = await createBootstrap(
+      resolvedDataDir,
+      runtimeState,
+      bootstrapTtlMs,
+      idempotencyKey,
+    );
+    const resultingRevision = runtimeState.revision;
+    const runtimeStartAuditId = await recordLifecycleAudit(
+      resolvedDataDir,
+      "runtime.start",
+      "accepted",
+      {
+        ...auditDetails,
+        resultingRevision,
+        runtimeId: runtimeState.runtimeId,
+        reused,
+      },
+    );
+    const response = {
       runtime: {
         identity: runtimeState.identity,
         runtimeId: runtimeState.runtimeId,
@@ -670,10 +973,34 @@ export const launchRuntime = async (options = {}) => {
       },
       host: runtimeState.host,
       protocol: runtimeState.protocol,
-      audit: { negotiationId: runtimeState.negotiationAuditId },
+      audit: {
+        negotiationId: runtimeState.negotiationAuditId,
+        runtimeStartId: runtimeStartAuditId,
+      },
       bootstrapUrl: bootstrap.url,
       bootstrap: bootstrap.metadata,
+      mutation: {
+        type: "mutation_result",
+        code: reused ? "runtime_reused" : "runtime_started",
+        authorizationClass: "user_runtime_lifecycle",
+        expectedRevision,
+        revision: resultingRevision,
+        idempotentReplay: false,
+        auditId: runtimeStartAuditId,
+      },
     };
+    const { bootstrapUrl: _unretainedBootstrapUrl, ...retainedResponse } = response;
+    outcomes.push({
+      idempotencyKeyHash,
+      expectedRevision,
+      response: retainedResponse,
+      bootstrapRuntime: {
+        runtimeId: runtimeState.runtimeId,
+        port: runtimeState.port,
+      },
+    });
+    await writeLaunchOutcomes(resolvedDataDir, outcomes);
+    return response;
   });
 };
 
