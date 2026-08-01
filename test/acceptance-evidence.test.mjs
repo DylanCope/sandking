@@ -78,6 +78,21 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
     maxFrameBytes: 65_536,
     maxBulkChunkBytes: 16_384,
   });
+  assert.deepEqual({
+    authorizationClass: evidence.hostIdentityMutationEvidence.authorizationClass,
+    expectedRevision: evidence.hostIdentityMutationEvidence.expectedRevision,
+    actualRevision: evidence.hostIdentityMutationEvidence.actualRevision,
+    resultingRevision: evidence.hostIdentityMutationEvidence.resultingRevision,
+    launchOutcomeReferencesSameAudit:
+      evidence.hostIdentityMutationEvidence.launchOutcomeReferencesSameAudit,
+  }, {
+    authorizationClass: "controller_host_identity_binding",
+    expectedRevision: 0,
+    actualRevision: 0,
+    resultingRevision: 1,
+    launchOutcomeReferencesSameAudit: true,
+  });
+  assert.match(evidence.hostIdentityMutationEvidence.auditId, /^audit-/);
   assert.equal(evidence.browserNegotiation.identity, "cockpit");
   assert.equal(evidence.browserNegotiation.runtimeIdentity, "controller-runtime");
   assert.equal(evidence.browserNegotiation.mismatchReloadRequired, true);
@@ -228,6 +243,15 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
     expectedHostId: evidence.host.reference,
     hostId: evidence.host.reference,
   });
+  const acceptedHostIdentity = evidence.auditReferences.find((entry) =>
+    entry.auditId === evidence.hostIdentityMutationEvidence.auditId);
+  assert.equal(acceptedHostIdentity.action, "host.identity.accept");
+  assert.equal(acceptedHostIdentity.outcome, "accepted");
+  assert.equal(
+    acceptedHostIdentity.details.authorizationClass,
+    "controller_host_identity_binding",
+  );
+  assert.match(acceptedHostIdentity.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
   const acceptedRuntimeStop = evidence.auditReferences.find((entry) =>
     entry.auditId === evidence.runtimeStopEvidence.auditId);
   assert.equal(acceptedRuntimeStop.action, "runtime.stop");
