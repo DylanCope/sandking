@@ -64,7 +64,9 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
   assert.equal(evidence.listener.address, "127.0.0.1");
   assert.equal(evidence.runtime.identity, "controller-runtime");
   assert.match(evidence.runtime.reference, /^runtime-/);
+  assert.equal(evidence.runtime.revision, 1);
   assert.equal(evidence.host.identity, "local-host");
+  assert.match(evidence.host.reference, /^host-[a-f0-9]{24}$/);
   assert.deepEqual(evidence.host.negotiatedCapabilities, [
     "sandking.control.slice-1",
     "sandking.bulk-stream.v1",
@@ -116,6 +118,25 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
   assert.equal(evidence.sessionMutationEvidence.resultingRevision, 2);
   assert.equal(evidence.sessionMutationEvidence.replayReturnedSameAudit, true);
   assert.equal(evidence.sessionMutationEvidence.staleCode, "mutation_revision_conflict");
+  assert.equal(evidence.sessionMutationEvidence.socketRevoked, true);
+  assert.equal(evidence.sessionMutationEvidence.socketCloseCode, 1008);
+  assert.equal(evidence.sessionMutationEvidence.socketCloseReason, "session_ended");
+  assert.equal(evidence.sessionMutationEvidence.postEndPong, false);
+  assert.deepEqual({
+    authorizationClass: evidence.runtimeStopEvidence.authorizationClass,
+    initialRevision: evidence.runtimeStopEvidence.initialRevision,
+    resultingRevision: evidence.runtimeStopEvidence.resultingRevision,
+    stoppedRuntimeId: evidence.runtimeStopEvidence.stoppedRuntimeId,
+    replayReturnedSameAudit: evidence.runtimeStopEvidence.replayReturnedSameAudit,
+    lifecycleStatus: evidence.runtimeStopEvidence.lifecycleStatus,
+  }, {
+    authorizationClass: "user_runtime_lifecycle",
+    initialRevision: 1,
+    resultingRevision: 2,
+    stoppedRuntimeId: evidence.runtime.reference,
+    replayReturnedSameAudit: true,
+    lifecycleStatus: "stopped",
+  });
   assert.ok(evidence.auditReferences.length >= 5);
   assert.ok(evidence.auditReferences.every((entry) => /^audit-/.test(entry.auditId)));
   const mutationAudits = evidence.auditReferences.filter((entry) =>
@@ -127,6 +148,42 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
   assert.ok(mutationAudits.some((entry) =>
     entry.details.authorizationClass === "runtime_browser_session"
     && Number.isSafeInteger(entry.details.resultingRevision)));
+  const acceptedHostNegotiation = evidence.auditReferences.find((entry) =>
+    entry.action === "host.negotiate" && entry.outcome === "accepted");
+  assert.deepEqual({
+    controllerId: acceptedHostNegotiation.details.controllerId,
+    expectedHostId: acceptedHostNegotiation.details.expectedHostId,
+    hostId: acceptedHostNegotiation.details.hostId,
+  }, {
+    controllerId: evidence.runtime.reference,
+    expectedHostId: evidence.host.reference,
+    hostId: evidence.host.reference,
+  });
+  const acceptedRuntimeStop = evidence.auditReferences.find((entry) =>
+    entry.auditId === evidence.runtimeStopEvidence.auditId);
+  assert.equal(acceptedRuntimeStop.action, "runtime.stop");
+  assert.equal(acceptedRuntimeStop.outcome, "accepted");
+  assert.match(acceptedRuntimeStop.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+  assert.deepEqual({
+    authorizationClass: acceptedRuntimeStop.details.authorizationClass,
+    expectedRevision: acceptedRuntimeStop.details.expectedRevision,
+    actualRevision: acceptedRuntimeStop.details.actualRevision,
+    resultingRevision: acceptedRuntimeStop.details.resultingRevision,
+  }, {
+    authorizationClass: "user_runtime_lifecycle",
+    expectedRevision: 1,
+    actualRevision: 1,
+    resultingRevision: 2,
+  });
+  const durableIdentityMismatch = evidence.typedMismatchEvidence.host.find((result) =>
+    result.diagnosis.code === "host_identity_mismatch");
+  const mismatchAudit = durableIdentityMismatch.auditReferences.find((entry) =>
+    entry.auditId === durableIdentityMismatch.diagnosis.auditId);
+  assert.equal(mismatchAudit.details.expectedHostIdentity, "local-host");
+  assert.match(mismatchAudit.details.controllerId, /^runtime-[a-f0-9]{24}$/);
+  assert.match(mismatchAudit.details.expectedHostId, /^host-[a-f0-9]{24}$/);
+  assert.match(mismatchAudit.details.observedHostId, /^host-[a-f0-9]{24}$/);
+  assert.notEqual(mismatchAudit.details.expectedHostId, mismatchAudit.details.observedHostId);
   assert.ok(Object.values(evidence.securityAssertions).every(Boolean));
   assert.ok(Object.values(evidence.prohibitedSideEffectAssertions).every(
     (observed) => observed === false,
