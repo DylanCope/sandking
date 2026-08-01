@@ -204,11 +204,41 @@ test("retained issue 119 evidence proves authorization, idempotency, and termina
   });
   assert.match(evidence.sessionCreation.canonicalSessionId,
     /^controller-session-[a-f0-9]{24}$/);
-  assert.deepEqual(evidence.invalidPreparation, {
+  assert.deepEqual({
+    code: evidence.sessionCreation.failedAttempt.code,
+    replayCode: evidence.sessionCreation.failedAttempt.replayCode,
+    replayIdempotent: evidence.sessionCreation.failedAttempt.replayIdempotent,
+    replayReturnedOriginalAudit:
+      evidence.sessionCreation.failedAttempt.replayReturnedOriginalAudit,
+    changedContentCode: evidence.sessionCreation.failedAttempt.changedContentCode,
+    noSessionCreated: evidence.sessionCreation.failedAttempt.noSessionCreated,
+  }, {
+    code: "mutation_revision_conflict",
+    replayCode: "mutation_revision_conflict",
+    replayIdempotent: true,
+    replayReturnedOriginalAudit: true,
+    changedContentCode: "idempotency_key_conflict",
+    noSessionCreated: true,
+  });
+  assert.match(evidence.sessionCreation.failedAttempt.auditId, /^audit-[a-f0-9]{24}$/);
+  assert.match(evidence.sessionCreation.failedAttempt.replayAuditId, /^audit-[a-f0-9]{24}$/);
+  assert.deepEqual({
+    code: evidence.invalidPreparation.code,
+    issueNumber: evidence.invalidPreparation.issueNumber,
+    retainedHostOutcome: evidence.invalidPreparation.retainedHostOutcome,
+    replayIdempotent: evidence.invalidPreparation.replayIdempotent,
+    replayReturnedOriginalAudit: evidence.invalidPreparation.replayReturnedOriginalAudit,
+    delegatedWorkStarted: evidence.invalidPreparation.delegatedWorkStarted,
+  }, {
     code: "bounded_configuration_invalid",
+    issueNumber: 1_000_000_000,
     retainedHostOutcome: true,
+    replayIdempotent: true,
+    replayReturnedOriginalAudit: true,
     delegatedWorkStarted: false,
   });
+  assert.match(evidence.invalidPreparation.auditId, /^audit-[a-f0-9]{24}$/);
+  assert.match(evidence.invalidPreparation.replayAuditId, /^audit-[a-f0-9]{24}$/);
   assert.deepEqual({
     kind: evidence.materialDeviation.kind,
     code: evidence.materialDeviation.code,
