@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -248,6 +248,85 @@ test("session termination declares authorization, idempotency, revision, audit, 
       resultingRevision: 2,
     });
     assert.match(accepted.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+  } finally {
+    await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
+      cwd: tmpdir(),
+      env: process.env,
+    }).catch(() => undefined);
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("browser credentials are non-persistent and expire in the runtime", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-session-expiry-"));
+
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [
+      cliPath,
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--browser-session-ttl-ms",
+      "250",
+      "--json",
+      "--no-open",
+    ], { cwd: tmpdir(), env: process.env });
+    const runtime = JSON.parse(stdout);
+    const bootstrap = await fetch(runtime.bootstrapUrl, { redirect: "manual" });
+    assert.equal(bootstrap.status, 302);
+    const setCookie = bootstrap.headers.get("set-cookie");
+    assert.ok(setCookie);
+    assert.doesNotMatch(setCookie, /(?:max-age|expires)=/i);
+    const cookie = setCookie.split(";")[0];
+
+    const socket = await connect(runtime.runtime.port, cookie);
+    socket.send(JSON.stringify(browserHello()));
+    assert.equal((await nextControl(socket)).type, "runtime.hello-ack");
+    const socketClosed = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("session_expiry_not_enforced")), 2_000);
+      socket.once("close", (code, reason) => {
+        clearTimeout(timeout);
+        resolve({ code, reason: reason.toString() });
+      });
+    });
+    assert.deepEqual(await socketClosed, { code: 1008, reason: "session_expired" });
+
+    const expiredRequest = await fetch(`http://127.0.0.1:${runtime.runtime.port}/`, {
+      headers: { cookie },
+    });
+    assert.equal(expiredRequest.status, 401);
+    assert.deepEqual(await expiredRequest.json(), { code: "session_expired" });
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const expiryAudit = audits.find((entry) => entry.action === "browser.session.expire");
+    assert.equal(expiryAudit.outcome, "observed");
+    assert.equal(expiryAudit.details.authorizationClass, "runtime_browser_session");
+    assert.match(expiryAudit.details.sessionAuditId, /^audit-/);
+    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
+      await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, {
+        recursive: true,
+        mode: 0o700,
+      });
+      await writeFile(
+        join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "browser-session-expiry.json"),
+        `${JSON.stringify({
+          kind: "browser_session_expiry",
+          ttlMs: 250,
+          persistentCookieAttributesIssued: /(?:max-age|expires)=/i.test(setCookie),
+          socketCloseCode: 1008,
+          socketCloseReason: "session_expired",
+          expiredHttpStatus: expiredRequest.status,
+          expiredHttpCode: "session_expired",
+          expiryAudit: {
+            auditId: expiryAudit.auditId,
+            action: expiryAudit.action,
+            outcome: expiryAudit.outcome,
+            details: expiryAudit.details,
+          },
+        }, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+    }
   } finally {
     await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
       cwd: tmpdir(),

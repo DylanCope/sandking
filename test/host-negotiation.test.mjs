@@ -97,6 +97,71 @@ const failureCases = [
   }],
 ];
 
+test("a clean incompatible Host launch does not accept either durable identity", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-clean-host-failure-"));
+
+  try {
+    const commandFailure = await runFailingCli([
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--host-mode",
+      "incompatible-major",
+      "--idempotency-key",
+      "clean-incompatible-host",
+      "--expected-revision",
+      "0",
+      "--json",
+      "--no-open",
+    ]);
+    const publicOutcome = JSON.parse(commandFailure.stdout);
+
+    assert.equal(publicOutcome.diagnosis.code, "host_protocol_major_mismatch");
+    await assert.rejects(access(join(dataDir, "host-identity.json")));
+    await assert.rejects(access(join(dataDir, "controller-host-binding.json")));
+    await assert.rejects(access(join(dataDir, "runtime-lifecycle.json")));
+    await assert.rejects(access(join(dataDir, "runtime-state.json")));
+    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
+      const productStateFiles = [
+        "host-identity.json",
+        "controller-host-binding.json",
+        "runtime-lifecycle.json",
+        "runtime-state.json",
+      ];
+      const presentFiles = (await Promise.all(productStateFiles.map(async (file) => [
+        file,
+        await access(join(dataDir, file)).then(() => true, () => false),
+      ]))).filter(([, present]) => present).map(([file]) => file);
+      const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line));
+      await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, {
+        recursive: true,
+        mode: 0o700,
+      });
+      await writeFile(
+        join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "clean-host-incompatible-major.json"),
+        `${JSON.stringify({
+          kind: "clean_host_negotiation_failure",
+          mode: "incompatible-major",
+          diagnosis: publicOutcome.diagnosis,
+          productStateFiles,
+          presentFiles,
+          acceptedIdentityStateCreated: presentFiles.length > 0,
+          auditReferences: audits.map((entry) => ({
+            auditId: entry.auditId,
+            action: entry.action,
+            outcome: entry.outcome,
+            details: entry.details,
+          })),
+        }, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 for (const [mode, expectedDiagnosis] of failureCases) {
   test(`${mode} Host negotiation returns a typed diagnosis before readiness`, async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "sandking-host-failure-"));

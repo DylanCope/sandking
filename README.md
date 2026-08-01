@@ -50,7 +50,7 @@ npm run cockpit -- --no-open --json
 This starts or reuses one loopback-only Controller runtime, prints a short-lived
 bootstrap URL for the Cockpit, and negotiates with the local Host over the
 framed stdio protocol. The handshake binds the generated runtime ID to a
-private, persisted Host ID. Stop the runtime with:
+private Host ID only after compatible negotiation succeeds. Stop the runtime with:
 
 ```bash
 npm run cockpit:stop
@@ -74,9 +74,10 @@ flags lets the local CLI generate a one-shot key and use the current lifecycle
 revision. Until readiness is acknowledged, the runtime and Host remain owned by
 the launcher and shut down if it is killed. The Host inherits no Controller
 environment or credentials. Browser control is a versioned typed same-origin
-WebSocket protocol; ending a browser session serializes concurrent retries,
-revokes its existing WebSockets, and keeps opaque stream bytes on a separate
-bounded binary channel.
+WebSocket protocol. Its HttpOnly cookie is non-persistent, and the runtime
+expires the session after at most 15 minutes and revokes its existing
+WebSockets. Explicitly ending a browser session serializes concurrent retries;
+opaque stream bytes remain on a separate bounded binary channel.
 
 Run the executable issue-117 acceptance manifest, including its npm-pinned real
 Chromium gate, with:

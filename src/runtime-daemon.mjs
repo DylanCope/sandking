@@ -42,7 +42,7 @@ import {
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
-  /** @type {{dataDir?: string, hostMode?: string, expectedHostId?: string, lifecycleRevision?: number, startupId?: string}} */
+  /** @type {{dataDir?: string, hostMode?: string, expectedHostId?: string, allowHostIdentityCreate?: boolean, lifecycleRevision?: number, startupId?: string, browserSessionTtlMs?: number}} */
   const result = {};
   for (let index = 0; index < argv.length; index += 1) {
     const current = argv[index];
@@ -55,11 +55,16 @@ const parseArgs = (argv) => {
     } else if (current === "--expected-host-id") {
       result.expectedHostId = argv[index + 1];
       index += 1;
+    } else if (current === "--allow-host-identity-create") {
+      result.allowHostIdentityCreate = true;
     } else if (current === "--lifecycle-revision") {
       result.lifecycleRevision = Number(argv[index + 1]);
       index += 1;
     } else if (current === "--startup-id") {
       result.startupId = argv[index + 1];
+      index += 1;
+    } else if (current === "--browser-session-ttl-ms") {
+      result.browserSessionTtlMs = Number(argv[index + 1]);
       index += 1;
     }
   }
@@ -75,7 +80,14 @@ const parseArgs = (argv) => {
   if (!result.startupId || !/^[a-f0-9]{24}$/.test(result.startupId)) {
     throw new Error("runtime_startup_id_missing");
   }
-  return /** @type {{dataDir: string, hostMode?: string, expectedHostId: string, lifecycleRevision: number, startupId: string}} */ (result);
+  if (
+    !Number.isSafeInteger(result.browserSessionTtlMs)
+    || Number(result.browserSessionTtlMs) < 1
+    || Number(result.browserSessionTtlMs) > 15 * 60_000
+  ) {
+    throw new Error("runtime_browser_session_ttl_missing");
+  }
+  return /** @type {{dataDir: string, hostMode?: string, expectedHostId: string, allowHostIdentityCreate?: boolean, lifecycleRevision: number, startupId: string, browserSessionTtlMs: number}} */ (result);
 };
 
 const args = parseArgs(process.argv.slice(2));
@@ -88,10 +100,15 @@ const runtimeErrorPath = join(args.dataDir, "runtime-error.log");
 const auditPath = join(args.dataDir, "audit.jsonl");
 const sessionCookieName = "sandking_session";
 
-/** @type {Map<string, {createdAt: number, runtimeId: string, csrfToken: string, auditId: string, revision: number}>} */
+/** @typedef {{createdAt: number, expiresAt: number, runtimeId: string, csrfToken: string, auditId: string, revision: number}} BrowserSession */
+/** @type {Map<string, BrowserSession>} */
 const sessions = new Map();
-/** @type {Map<string, {createdAt: number, runtimeId: string, csrfToken: string, auditId: string, revision: number, termination: {idempotencyKeyHash: string, expectedRevision: number, auditId: string}}>} */
+/** @type {Map<string, BrowserSession & {termination: {idempotencyKeyHash: string, expectedRevision: number, auditId: string}}>} */
 const endedSessions = new Map();
+/** @type {Map<string, BrowserSession>} */
+const expiredSessions = new Map();
+/** @type {Map<string, ReturnType<typeof setTimeout>>} */
+const sessionExpiryTimers = new Map();
 /** @type {Map<string, Set<WebSocket>>} */
 const sessionSockets = new Map();
 /** @type {Map<string, Promise<any>>} */
@@ -409,6 +426,7 @@ const exchangeBootstrapToken = async (token, idempotencyKey, expectedRevision) =
 const createSession = async (contract) => {
   const sessionId = randomBytes(32).toString("hex");
   const csrfToken = randomBytes(24).toString("hex");
+  const expiresAt = Date.now() + args.browserSessionTtlMs;
   const auditId = await recordAudit("browser.session.create", "accepted", {
     runtimeId: state.runtimeId,
     authorizationClass: "bootstrap_token",
@@ -419,12 +437,14 @@ const createSession = async (contract) => {
   });
   sessions.set(sessionId, {
     createdAt: Date.now(),
+    expiresAt,
     runtimeId: state.runtimeId,
     csrfToken,
     auditId,
     revision: 1,
   });
-  return { sessionId, csrfToken, auditId, revision: 1 };
+  scheduleBrowserSessionExpiry(sessionId, expiresAt);
+  return { sessionId, csrfToken, auditId, revision: 1, expiresAt };
 };
 
 /** @param {unknown} error */
@@ -486,6 +506,10 @@ const shutdown = async () => {
     return;
   }
   shuttingDown = true;
+  for (const timer of sessionExpiryTimers.values()) {
+    clearTimeout(timer);
+  }
+  sessionExpiryTimers.clear();
   for (const client of websocketServer?.clients ?? []) {
     client.close(1001, "runtime_shutdown");
   }
@@ -508,6 +532,9 @@ const shutdown = async () => {
 /** @param {string} runtimeId */
 const launchHost = async (runtimeId) => {
   const hostArgs = [localHostPath, "--data-dir", args.dataDir];
+  if (args.allowHostIdentityCreate) {
+    hostArgs.push("--allow-host-identity-create");
+  }
   if (args.hostMode) {
     hostArgs.push("--mode", args.hostMode);
   }
@@ -641,13 +668,62 @@ const rejectBrowserProtocol = (socket, code, reloadRequired) => {
   }), () => socket.close(1002, "protocol_mismatch"));
 };
 
-/** @param {string} sessionId */
-const revokeBrowserSession = (sessionId) => {
+/** @param {string} sessionId @param {string} reason */
+const revokeBrowserSession = (sessionId, reason) => {
   for (const socket of sessionSockets.get(sessionId) ?? []) {
     if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-      socket.close(1008, "session_ended");
+      socket.close(1008, reason);
     }
   }
+};
+
+/** @param {string} sessionId @param {number} expiresAt */
+const scheduleBrowserSessionExpiry = (sessionId, expiresAt) => {
+  const timer = setTimeout(() => {
+    sessionExpiryTimers.delete(sessionId);
+    expireBrowserSessionIfDue(sessionId).catch(logSanitizedRuntimeError);
+  }, Math.max(1, expiresAt - Date.now()));
+  timer.unref();
+  sessionExpiryTimers.set(sessionId, timer);
+};
+
+/** @param {string} sessionId */
+const expireBrowserSessionIfDue = async (sessionId) => {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return session;
+  }
+  if (session.expiresAt > Date.now()) {
+    if (!sessionExpiryTimers.has(sessionId)) {
+      scheduleBrowserSessionExpiry(sessionId, session.expiresAt);
+    }
+    return session;
+  }
+  sessions.delete(sessionId);
+  const timer = sessionExpiryTimers.get(sessionId);
+  if (timer) {
+    clearTimeout(timer);
+    sessionExpiryTimers.delete(sessionId);
+  }
+  expiredSessions.set(sessionId, session);
+  if (expiredSessions.size > 128) {
+    const oldestSessionId = expiredSessions.keys().next().value;
+    if (oldestSessionId) {
+      expiredSessions.delete(oldestSessionId);
+    }
+  }
+  try {
+    await recordAudit("browser.session.expire", "observed", {
+      code: "session_expired",
+      authorizationClass: "runtime_browser_session",
+      sessionAuditId: session.auditId,
+      revision: session.revision,
+      expiresAt: new Date(session.expiresAt).toISOString(),
+    });
+  } finally {
+    revokeBrowserSession(sessionId, "session_expired");
+  }
+  return undefined;
 };
 
 /**
@@ -656,11 +732,13 @@ const revokeBrowserSession = (sessionId) => {
  * @param {string} sessionId
  */
 const endBrowserSession = async (request, response, sessionId) => {
-  const activeSession = sessions.get(sessionId);
+  const activeSession = await expireBrowserSessionIfDue(sessionId);
   const endedSession = endedSessions.get(sessionId);
   const session = activeSession ?? endedSession;
   if (!session) {
-    sendJson(response, 401, { code: "session_required" });
+    sendJson(response, 401, {
+      code: expiredSessions.has(sessionId) ? "session_expired" : "session_required",
+    });
     return;
   }
 
@@ -744,12 +822,17 @@ const endBrowserSession = async (request, response, sessionId) => {
     resultingRevision,
   });
   sessions.delete(sessionId);
+  const expiryTimer = sessionExpiryTimers.get(sessionId);
+  if (expiryTimer) {
+    clearTimeout(expiryTimer);
+    sessionExpiryTimers.delete(sessionId);
+  }
   endedSessions.set(sessionId, {
     ...activeSession,
     revision: resultingRevision,
     termination: { idempotencyKeyHash, expectedRevision, auditId },
   });
-  revokeBrowserSession(sessionId);
+  revokeBrowserSession(sessionId, "session_ended");
   sendJson(response, 200, {
     type: "mutation_result",
     code: "session_ended",
@@ -762,7 +845,7 @@ const endBrowserSession = async (request, response, sessionId) => {
 /**
  * @param {WebSocket} socket
  * @param {string} sessionId
- * @param {{csrfToken: string, auditId: string, revision: number}} session
+ * @param {BrowserSession} session
  */
 const handleBrowserConnection = (socket, sessionId, session) => {
   const authenticatedSockets = sessionSockets.get(sessionId) ?? new Set();
@@ -808,11 +891,12 @@ const handleBrowserConnection = (socket, sessionId, session) => {
     if (phase === "rejected") {
       return;
     }
+    await expireBrowserSessionIfDue(sessionId);
     if (sessions.get(sessionId) !== session) {
       phase = "rejected";
       clearTimeout(handshakeTimeout);
       if (socket.readyState === WebSocket.OPEN) {
-        socket.close(1008, "session_ended");
+        socket.close(1008, expiredSessions.has(sessionId) ? "session_expired" : "session_ended");
       }
       return;
     }
@@ -1010,7 +1094,7 @@ const main = async () => {
           response.writeHead(302, {
             ...securityHeaders,
             location: "/",
-            "set-cookie": `${sessionCookieName}=${exchange.session.sessionId}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`,
+            "set-cookie": `${sessionCookieName}=${exchange.session.sessionId}; HttpOnly; SameSite=Strict; Path=/`,
           });
           response.end();
           return;
@@ -1030,8 +1114,14 @@ const main = async () => {
           return;
         }
 
-        const activeSession = sessionId ? sessions.get(sessionId) : undefined;
+        const activeSession = sessionId
+          ? await expireBrowserSessionIfDue(sessionId)
+          : undefined;
         if (!activeSession) {
+          if (sessionId && expiredSessions.has(sessionId)) {
+            sendJson(response, 401, { code: "session_expired" });
+            return;
+          }
           if (sessionId && endedSessions.has(sessionId)) {
             sendJson(response, 401, { code: "session_ended" });
             return;
@@ -1096,14 +1186,17 @@ const main = async () => {
         return;
       }
       const cookies = parseCookies(request.headers.cookie);
-      const session = sessions.get(cookies[sessionCookieName]);
+      const sessionId = cookies[sessionCookieName];
+      const session = sessionId
+        ? await expireBrowserSessionIfDue(sessionId)
+        : undefined;
       if (!session) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
       }
       websocketServer?.handleUpgrade(request, socket, head, (websocket) => {
-        handleBrowserConnection(websocket, cookies[sessionCookieName], session);
+        handleBrowserConnection(websocket, sessionId, session);
       });
     });
 

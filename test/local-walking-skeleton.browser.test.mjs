@@ -184,10 +184,14 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         (cookie) => cookie.name === "sandking_session",
       );
       assert.ok(sessionCookie);
+      assert.equal(sessionCookie.expires, -1);
       const bootstrapReplay = await fetch(launch.bootstrapUrl, { redirect: "manual" });
       assert.equal(bootstrapReplay.status, 302);
+      const replaySetCookie = bootstrapReplay.headers.get("set-cookie");
+      assert.ok(replaySetCookie);
+      assert.doesNotMatch(replaySetCookie, /(?:max-age|expires)=/i);
       assert.equal(
-        bootstrapReplay.headers.get("set-cookie")?.split(";")[0],
+        replaySetCookie.split(";")[0],
         `sandking_session=${sessionCookie.value}`,
       );
       const staleBootstrapUrl = new URL(launch.bootstrapUrl);
@@ -614,6 +618,10 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
             idempotentReplay: launch.mutation.idempotentReplay,
           },
           sessionMutationEvidence,
+          browserCredentialEvidence: {
+            browserCookieExpires: sessionCookie.expires,
+            persistentCookieAttributesIssued: /(?:max-age|expires)=/i.test(replaySetCookie),
+          },
           runtimeStopEvidence,
           browserMismatchEvidence,
           prohibitedSideEffectObservations,
@@ -627,6 +635,9 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
             endedSessionSocketsRevoked:
               sessionSocketRevocation.closeCode === 1008
               && sessionSocketRevocation.postEndPong === false,
+            nonPersistentBrowserCredential:
+              sessionCookie.expires === -1
+              && !/(?:max-age|expires)=/i.test(replaySetCookie),
             sanitizedBrowserModel: !/credential|unrestricted\.filesystem|process\.env/i
               .test(publicBoundary),
             controllerSecretAbsent: !publicBoundary.includes(controllerSecret),

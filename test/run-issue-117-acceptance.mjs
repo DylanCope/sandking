@@ -52,15 +52,29 @@ try {
       "utf8",
     ));
     const resultFiles = await readdir(observationDirectory);
+    /** @param {string} file */
+    const readResult = async (file) => JSON.parse(
+      await readFile(join(observationDirectory, file), "utf8"),
+    );
     const hostResults = await Promise.all(
       resultFiles
         .filter((file) => file.startsWith("host-") && file.endsWith(".json"))
-        .map(async (file) => JSON.parse(await readFile(join(observationDirectory, file), "utf8"))),
+        .map(readResult),
     );
     const hostFailures = hostResults.filter((result) =>
       result.kind === "host_negotiation_failure");
     const hostCredentialBoundary = hostResults.find((result) =>
       result.kind === "host_credential_boundary");
+    const cleanHostFailure = resultFiles.includes("clean-host-incompatible-major.json")
+      ? await readResult("clean-host-incompatible-major.json")
+      : null;
+    const browserSessionExpiry = resultFiles.includes("browser-session-expiry.json")
+      ? await readResult("browser-session-expiry.json")
+      : null;
+    const runtimeReuseFailures = await Promise.all([
+      "runtime-live-incompatible.json",
+      "runtime-live-not-ready.json",
+    ].map(async (file) => resultFiles.includes(file) ? readResult(file) : null));
     const hostFailuresByCode = new Map(hostFailures.map((result) => [
       result.diagnosis.code,
       result,
@@ -78,6 +92,27 @@ try {
     }
     if (!hostCredentialBoundary || hostCredentialBoundary.controllerSecretForwarded) {
       throw new Error("host_credential_boundary_evidence_invalid");
+    }
+    if (
+      !cleanHostFailure
+      || cleanHostFailure.acceptedIdentityStateCreated
+      || cleanHostFailure.presentFiles.length > 0
+    ) {
+      throw new Error("clean_host_failure_evidence_invalid");
+    }
+    if (
+      !browserSessionExpiry
+      || browserSessionExpiry.persistentCookieAttributesIssued
+      || browserSessionExpiry.socketCloseReason !== "session_expired"
+    ) {
+      throw new Error("browser_session_expiry_evidence_invalid");
+    }
+    if (
+      runtimeReuseFailures.some((result) => !result)
+      || JSON.stringify(runtimeReuseFailures.map((result) => result.diagnosis.code))
+        !== JSON.stringify(["runtime_incompatible", "runtime_not_ready"])
+    ) {
+      throw new Error("runtime_reuse_failure_evidence_invalid");
     }
 
     const { stdout: liveSpecificationOutput } = await execFileAsync(
@@ -134,6 +169,9 @@ try {
           result.acceptedState.preserved),
         mutationOccurred: orderedHostFailures.some((result) => result.mutationOccurred),
       },
+      preAcceptanceHostFailureEvidence: cleanHostFailure,
+      runtimeReuseFailureEvidence: runtimeReuseFailures,
+      browserSessionExpiryEvidence: browserSessionExpiry,
       hostCredentialBoundary,
       verificationCommands: manifest.verification.commands,
     };

@@ -9,7 +9,7 @@ const execFileAsync = promisify(execFile);
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
   const [command = "launch", ...rest] = argv;
-  /** @type {{command: string, noOpen: boolean, json: boolean, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
+  /** @type {{command: string, noOpen: boolean, json: boolean, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
   const options = { command, noOpen: false, json: false };
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -39,6 +39,16 @@ const parseArgs = (argv) => {
         || options.bootstrapTtlMs > 60_000
       ) {
         throw new Error("Invalid --bootstrap-ttl-ms value.");
+      }
+    } else if (current === "--browser-session-ttl-ms") {
+      options.browserSessionTtlMs = Number(rest[index + 1]);
+      index += 1;
+      if (
+        !Number.isSafeInteger(options.browserSessionTtlMs)
+        || options.browserSessionTtlMs < 1
+        || options.browserSessionTtlMs > 15 * 60_000
+      ) {
+        throw new Error("Invalid --browser-session-ttl-ms value.");
       }
     } else if (current === "--idempotency-key") {
       options.idempotencyKey = rest[index + 1];
@@ -80,6 +90,7 @@ const main = async () => {
       hostMode: options.hostMode,
       startupTimeoutMs: options.startupTimeoutMs,
       bootstrapTtlMs: options.bootstrapTtlMs,
+      browserSessionTtlMs: options.browserSessionTtlMs,
       idempotencyKey: options.idempotencyKey,
       expectedRevision: options.expectedRevision,
     });

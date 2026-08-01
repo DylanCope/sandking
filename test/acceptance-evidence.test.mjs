@@ -100,6 +100,19 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
   ]);
   assert.equal(evidence.typedMismatchEvidence.acceptedStatePreserved, true);
   assert.equal(evidence.typedMismatchEvidence.mutationOccurred, false);
+  assert.equal(
+    evidence.preAcceptanceHostFailureEvidence.diagnosis.code,
+    "host_protocol_major_mismatch",
+  );
+  assert.equal(
+    evidence.preAcceptanceHostFailureEvidence.acceptedIdentityStateCreated,
+    false,
+  );
+  assert.deepEqual(evidence.preAcceptanceHostFailureEvidence.presentFiles, []);
+  assert.ok(evidence.preAcceptanceHostFailureEvidence.auditReferences.some((entry) =>
+    entry.auditId === evidence.preAcceptanceHostFailureEvidence.diagnosis.auditId
+    && entry.action === "host.negotiate"
+    && entry.outcome === "rejected"));
   assert.ok(evidence.typedMismatchEvidence.host.every((result) =>
     result.acceptedState.beforeSha256 === result.acceptedState.afterSha256
     && result.acceptedState.files.includes("controller-host-binding.json")
@@ -132,6 +145,39 @@ test("retained issue 117 evidence is sanitized and covers negotiation and prohib
   assert.equal(evidence.sessionMutationEvidence.acceptedOutcomeCount, 1);
   assert.equal(evidence.sessionMutationEvidence.replayOutcomeCount, 7);
   assert.equal(evidence.sessionMutationEvidence.concurrentSameAudit, true);
+  assert.deepEqual(evidence.browserCredentialEvidence, {
+    browserCookieExpires: -1,
+    persistentCookieAttributesIssued: false,
+  });
+  assert.deepEqual({
+    ttlMs: evidence.browserSessionExpiryEvidence.ttlMs,
+    persistentCookieAttributesIssued:
+      evidence.browserSessionExpiryEvidence.persistentCookieAttributesIssued,
+    socketCloseCode: evidence.browserSessionExpiryEvidence.socketCloseCode,
+    socketCloseReason: evidence.browserSessionExpiryEvidence.socketCloseReason,
+    expiredHttpStatus: evidence.browserSessionExpiryEvidence.expiredHttpStatus,
+    expiredHttpCode: evidence.browserSessionExpiryEvidence.expiredHttpCode,
+  }, {
+    ttlMs: 250,
+    persistentCookieAttributesIssued: false,
+    socketCloseCode: 1008,
+    socketCloseReason: "session_expired",
+    expiredHttpStatus: 401,
+    expiredHttpCode: "session_expired",
+  });
+  assert.equal(evidence.browserSessionExpiryEvidence.expiryAudit.action, "browser.session.expire");
+  assert.equal(evidence.browserSessionExpiryEvidence.expiryAudit.outcome, "observed");
+  assert.deepEqual(
+    evidence.runtimeReuseFailureEvidence.map((result) => result.diagnosis.code),
+    ["runtime_incompatible", "runtime_not_ready"],
+  );
+  assert.ok(evidence.runtimeReuseFailureEvidence.every((result) =>
+    result.mutationOutcome.failure.code === result.diagnosis.code
+    && result.mutationOutcome.failure.auditId === result.diagnosis.auditId
+    && result.lifecycleAudit.auditId === result.diagnosis.auditId
+    && result.lifecycleAudit.action === "runtime.start"
+    && result.lifecycleAudit.outcome === "rejected"
+    && result.competingRuntimeSpawned === false));
   assert.deepEqual({
     authorizationClass: evidence.runtimeStartEvidence.authorizationClass,
     initialRevision: evidence.runtimeStartEvidence.initialRevision,

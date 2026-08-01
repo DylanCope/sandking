@@ -13,12 +13,13 @@ import {
   releaseVersion,
   writeFrame,
 } from "./protocol.mjs";
-import { ensureHostIdentity } from "./host-identity.mjs";
+import { acceptHostIdentity, readHostIdentity } from "./host-identity.mjs";
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
   let mode = "normal";
   let dataDir = process.cwd();
+  let allowHostIdentityCreate = false;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--mode") {
       mode = argv[index + 1] ?? mode;
@@ -26,12 +27,14 @@ const parseArgs = (argv) => {
     } else if (argv[index] === "--data-dir") {
       dataDir = argv[index + 1] ?? dataDir;
       index += 1;
+    } else if (argv[index] === "--allow-host-identity-create") {
+      allowHostIdentityCreate = true;
     }
   }
-  return { mode, dataDir };
+  return { mode, dataDir, allowHostIdentityCreate };
 };
 
-const { mode, dataDir } = parseArgs(process.argv.slice(2));
+const { mode, dataDir, allowHostIdentityCreate } = parseArgs(process.argv.slice(2));
 
 const writeMalformedFrame = () => {
   const header = Buffer.alloc(4);
@@ -73,7 +76,6 @@ const main = async () => {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
-  const persistedHostIdentity = await ensureHostIdentity(dataDir);
   if (
     hello.identity !== "controller-runtime"
     || !/^runtime-[a-f0-9]{24}$/.test(hello.controllerId)
@@ -82,7 +84,13 @@ const main = async () => {
     rejectHandshake("controller_identity_invalid");
     return;
   }
-  if (hello.expectedHostId !== persistedHostIdentity.hostId) {
+  const persistedHostIdentity = await readHostIdentity(dataDir);
+  if (!persistedHostIdentity && !allowHostIdentityCreate) {
+    rejectHandshake("controller_host_identity_mismatch");
+    return;
+  }
+  const negotiatedHostId = persistedHostIdentity?.hostId ?? hello.expectedHostId;
+  if (hello.expectedHostId !== negotiatedHostId) {
     rejectHandshake("controller_host_identity_mismatch");
     return;
   }
@@ -114,7 +122,7 @@ const main = async () => {
   const identity = "local-host";
   const hostId = mode === "unexpected-identity"
     ? `host-${"0".repeat(24)}`
-    : persistedHostIdentity.hostId;
+    : negotiatedHostId;
   const requiredCapabilities = mode === "unknown-required-capability"
     ? ["sandking.control.slice-1", "sandking.future-required"]
     : ["sandking.control.slice-1"];
@@ -159,6 +167,9 @@ const main = async () => {
       continue;
     }
     if (frame.message.type === "ping") {
+      if (!persistedHostIdentity) {
+        await acceptHostIdentity(dataDir, negotiatedHostId);
+      }
       writeFrame(process.stdout, {
         type: "pong",
         requestId: frame.message.requestId,

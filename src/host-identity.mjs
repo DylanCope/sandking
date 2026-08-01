@@ -35,43 +35,53 @@ export const readHostIdentity = async (dataDir) => {
   return value === null ? null : validateHostIdentity(value);
 };
 
-/**
- * Create the Host-owned durable identity once. A partial write fails closed on
- * the next launch rather than silently adopting another Host identity.
- * @param {string} dataDir
- */
-export const ensureHostIdentity = async (dataDir) => {
-  await ensurePrivateDirectory(dataDir);
-  const existing = await readHostIdentity(dataDir);
-  if (existing) {
-    return existing;
-  }
-
-  const identityPath = join(dataDir, "host-identity.json");
-  const identity = {
-    hostId: `host-${randomBytes(12).toString("hex")}`,
-    createdAt: new Date().toISOString(),
-  };
+/** @param {string} filePath @param {{hostId: string, createdAt: string}} identity @param {() => Promise<{hostId: string, createdAt: string} | null>} readRacedIdentity @param {string} invalidCode */
+const writeIdentityOnce = async (filePath, identity, readRacedIdentity, invalidCode) => {
   try {
-    const handle = await open(identityPath, "wx", PRIVATE_FILE_MODE);
+    const handle = await open(filePath, "wx", PRIVATE_FILE_MODE);
     try {
       await handle.writeFile(`${JSON.stringify(identity, null, 2)}\n`, "utf8");
       await handle.sync();
     } finally {
       await handle.close();
     }
-    await chmod(identityPath, PRIVATE_FILE_MODE);
+    await chmod(filePath, PRIVATE_FILE_MODE);
     return identity;
   } catch (error) {
     if (!hasErrorCode(error, "EEXIST")) {
       throw error;
     }
-    const racedIdentity = await readHostIdentity(dataDir);
-    if (!racedIdentity) {
-      throw new Error("host_identity_state_invalid");
+    const racedIdentity = await readRacedIdentity();
+    if (!racedIdentity || racedIdentity.hostId !== identity.hostId) {
+      throw new Error(invalidCode);
     }
     return racedIdentity;
   }
+};
+
+/**
+ * Commit a Host identity proposed during negotiation. The local Host calls this
+ * only after the Controller validates its hello acknowledgement and sends the
+ * first authenticated protocol request.
+ * @param {string} dataDir
+ * @param {string} hostId
+ */
+export const acceptHostIdentity = async (dataDir, hostId) => {
+  await ensurePrivateDirectory(dataDir);
+  const identity = validateHostIdentity({ hostId, createdAt: new Date().toISOString() });
+  const existing = await readHostIdentity(dataDir);
+  if (existing) {
+    if (existing.hostId !== identity.hostId) {
+      throw new Error("host_identity_state_invalid");
+    }
+    return existing;
+  }
+  return writeIdentityOnce(
+    join(dataDir, "host-identity.json"),
+    identity,
+    () => readHostIdentity(dataDir),
+    "host_identity_state_invalid",
+  );
 };
 
 /** @param {string} dataDir */
@@ -81,42 +91,45 @@ export const readControllerHostBinding = async (dataDir) => {
 };
 
 /**
- * Pin the first accepted local Host identity in Controller-owned state. Later
- * launches read this binding independently from the Host-owned identity file,
- * so replacing the Host identity cannot silently change Controller trust.
+ * Resolve the expected Host identity without accepting new durable state.
+ * A new identity remains an in-memory proposal until negotiation succeeds.
  * @param {string} dataDir
  */
-export const ensureControllerHostBinding = async (dataDir) => {
+export const prepareControllerHostBinding = async (dataDir) => {
   await ensurePrivateDirectory(dataDir);
+  const binding = await readControllerHostBinding(dataDir);
+  if (binding) {
+    return { hostId: binding.hostId, allowHostIdentityCreate: false };
+  }
+  const hostIdentity = await readHostIdentity(dataDir);
+  if (hostIdentity) {
+    return { hostId: hostIdentity.hostId, allowHostIdentityCreate: false };
+  }
+  return {
+    hostId: `host-${randomBytes(12).toString("hex")}`,
+    allowHostIdentityCreate: true,
+  };
+};
+
+/**
+ * Pin a Host identity only after the full local negotiation has succeeded.
+ * @param {string} dataDir
+ * @param {string} hostId
+ */
+export const acceptControllerHostBinding = async (dataDir, hostId) => {
+  await ensurePrivateDirectory(dataDir);
+  const binding = validateHostIdentity({ hostId, createdAt: new Date().toISOString() });
   const existing = await readControllerHostBinding(dataDir);
   if (existing) {
-    return existing;
-  }
-
-  const hostIdentity = await ensureHostIdentity(dataDir);
-  const binding = {
-    hostId: hostIdentity.hostId,
-    createdAt: new Date().toISOString(),
-  };
-  const bindingFile = join(dataDir, controllerBindingPath);
-  try {
-    const handle = await open(bindingFile, "wx", PRIVATE_FILE_MODE);
-    try {
-      await handle.writeFile(`${JSON.stringify(binding, null, 2)}\n`, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await chmod(bindingFile, PRIVATE_FILE_MODE);
-    return binding;
-  } catch (error) {
-    if (!hasErrorCode(error, "EEXIST")) {
-      throw error;
-    }
-    const racedBinding = await readControllerHostBinding(dataDir);
-    if (!racedBinding) {
+    if (existing.hostId !== binding.hostId) {
       throw new Error("controller_host_binding_state_invalid");
     }
-    return racedBinding;
+    return existing;
   }
+  return writeIdentityOnce(
+    join(dataDir, controllerBindingPath),
+    binding,
+    () => readControllerHostBinding(dataDir),
+    "controller_host_binding_state_invalid",
+  );
 };

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -74,6 +74,19 @@ const terminateMatchingProcesses = async (dataDir) => {
       // The scoped test process exited before cleanup.
     }
   }
+};
+
+/** @param {string} file @param {unknown} value */
+const writeAcceptanceResult = async (file, value) => {
+  if (!process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
+    return;
+  }
+  await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, { recursive: true, mode: 0o700 });
+  await writeFile(
+    join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, file),
+    `${JSON.stringify(value, null, 2)}\n`,
+    { mode: 0o600 },
+  );
 };
 
 test("concurrent launches reuse one ready runtime and retain full Host negotiation", async () => {
@@ -483,7 +496,7 @@ test("killing launch before readiness cannot orphan its runtime and Host", async
   }
 });
 
-test("a live incompatible runtime blocks a competing spawn", async () => {
+test("a live incompatible runtime returns an idempotent typed audited launch failure", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-incompatible-runtime-"));
 
   try {
@@ -494,10 +507,66 @@ test("a live incompatible runtime blocks a competing spawn", async () => {
       mode: 0o600,
     });
 
-    await assert.rejects(
-      runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]),
-      /runtime_incompatible/,
-    );
+    const failedLaunchArgs = [
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--idempotency-key",
+      "live-incompatible-runtime",
+      "--expected-revision",
+      "1",
+      "--json",
+      "--no-open",
+    ];
+    const failure = await runFailingCli(failedLaunchArgs);
+    assert.equal(failure.stderr, "");
+    const publicOutcome = JSON.parse(failure.stdout);
+    assert.deepEqual(publicOutcome, {
+      ok: false,
+      diagnosis: {
+        type: "runtime_startup_failure",
+        code: "runtime_incompatible",
+        retryable: true,
+        explanation: "The running Controller runtime is incompatible with this launcher.",
+        retryGuidance: "Stop the existing Controller runtime, update Sand-King, then retry the launch.",
+        auditId: publicOutcome.diagnosis.auditId,
+      },
+    });
+    assert.match(publicOutcome.diagnosis.auditId, /^audit-/);
+
+    const replay = JSON.parse((await runFailingCli(failedLaunchArgs)).stdout);
+    assert.equal(replay.diagnosis.auditId, publicOutcome.diagnosis.auditId);
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const rejectedAudit = audits.find((entry) => entry.auditId === publicOutcome.diagnosis.auditId);
+    assert.deepEqual({
+      action: rejectedAudit.action,
+      outcome: rejectedAudit.outcome,
+      code: rejectedAudit.details.code,
+      authorizationClass: rejectedAudit.details.authorizationClass,
+      expectedRevision: rejectedAudit.details.expectedRevision,
+      actualRevision: rejectedAudit.details.actualRevision,
+    }, {
+      action: "runtime.start",
+      outcome: "rejected",
+      code: "runtime_incompatible",
+      authorizationClass: "user_runtime_lifecycle",
+      expectedRevision: 1,
+      actualRevision: 1,
+    });
+    const outcomes = JSON.parse(
+      await readFile(join(dataDir, "runtime-launch-outcomes.json"), "utf8"),
+    ).outcomes;
+    assert.equal(outcomes.at(-1).failure.code, "runtime_incompatible");
+    assert.equal(outcomes.at(-1).failure.auditId, publicOutcome.diagnosis.auditId);
+    await writeAcceptanceResult("runtime-live-incompatible.json", {
+      kind: "runtime_reuse_failure",
+      mode: "live-incompatible",
+      diagnosis: publicOutcome.diagnosis,
+      mutationOutcome: outcomes.at(-1),
+      lifecycleAudit: rejectedAudit,
+      competingRuntimeSpawned: false,
+    });
     const after = JSON.parse(await readFile(statePath, "utf8"));
     assert.equal(after.pid, original.pid);
     assert.equal(after.runtimeId, original.runtimeId);
@@ -508,24 +577,68 @@ test("a live incompatible runtime blocks a competing spawn", async () => {
   }
 });
 
-test("PID existence without an authenticated health response is not readiness", async () => {
+test("an unauthenticated live runtime returns a typed audited launch failure", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-unready-runtime-"));
+  const statePath = join(dataDir, "runtime-state.json");
+  let original;
 
   try {
-    await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]);
-    const statePath = join(dataDir, "runtime-state.json");
-    const original = JSON.parse(await readFile(statePath, "utf8"));
-    await runCli(["stop", "--data-dir", dataDir, "--json"]);
-    const fake = { ...original, pid: process.pid, port: 9 };
-    await writeFile(statePath, `${JSON.stringify(fake)}\n`, { mode: 0o600 });
+    const launched = await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]);
+    original = JSON.parse(await readFile(statePath, "utf8"));
+    const unauthenticated = { ...original, readinessToken: "0".repeat(48) };
+    await writeFile(statePath, `${JSON.stringify(unauthenticated)}\n`, { mode: 0o600 });
 
-    await assert.rejects(
-      runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]),
-      /runtime_not_ready/,
-    );
-    assert.equal(JSON.parse(await readFile(statePath, "utf8")).pid, process.pid);
+    const failure = await runFailingCli([
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--idempotency-key",
+      "live-runtime-authentication-failure",
+      "--expected-revision",
+      "1",
+      "--json",
+      "--no-open",
+    ]);
+    assert.equal(failure.stderr, "");
+    const publicOutcome = JSON.parse(failure.stdout);
+    assert.deepEqual(publicOutcome, {
+      ok: false,
+      diagnosis: {
+        type: "runtime_startup_failure",
+        code: "runtime_not_ready",
+        retryable: true,
+        explanation: "The running Controller runtime did not pass authenticated readiness.",
+        retryGuidance: "Stop the unready Controller runtime, then retry the launch.",
+        auditId: publicOutcome.diagnosis.auditId,
+      },
+    });
+    assert.match(publicOutcome.diagnosis.auditId, /^audit-/);
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const rejectedAudit = audits.find((entry) => entry.auditId === publicOutcome.diagnosis.auditId);
+    assert.equal(rejectedAudit.action, "runtime.start");
+    assert.equal(rejectedAudit.outcome, "rejected");
+    assert.equal(rejectedAudit.details.code, "runtime_not_ready");
+    assert.equal(rejectedAudit.details.authorizationClass, "user_runtime_lifecycle");
+    assert.equal(JSON.parse(await readFile(statePath, "utf8")).pid, launched.runtime.pid);
+    const outcomes = JSON.parse(
+      await readFile(join(dataDir, "runtime-launch-outcomes.json"), "utf8"),
+    ).outcomes;
+    assert.equal(outcomes.at(-1).failure.code, "runtime_not_ready");
+    assert.equal(outcomes.at(-1).failure.auditId, publicOutcome.diagnosis.auditId);
+    await writeAcceptanceResult("runtime-live-not-ready.json", {
+      kind: "runtime_reuse_failure",
+      mode: "live-unauthenticated-readiness",
+      diagnosis: publicOutcome.diagnosis,
+      mutationOutcome: outcomes.at(-1),
+      lifecycleAudit: rejectedAudit,
+      competingRuntimeSpawned: false,
+    });
   } finally {
-    await rm(dataDir, { recursive: true, force: true });
+    if (original) {
+      await writeFile(statePath, `${JSON.stringify(original)}\n`, { mode: 0o600 });
+    }
+    await stopAndRemove(dataDir);
   }
 });
 

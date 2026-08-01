@@ -16,11 +16,15 @@ import {
   removePrivateFile,
   writePrivateJson,
 } from "./private-state.mjs";
-import { ensureControllerHostBinding } from "./host-identity.mjs";
+import {
+  acceptControllerHostBinding,
+  prepareControllerHostBinding,
+} from "./host-identity.mjs";
 import { capabilitySetSchema, framingSchema, releaseVersion, versionSchema } from "./protocol.mjs";
 
 const COMPATIBILITY_KEY = "runtime-v1";
 export const BOOTSTRAP_TTL_MS = 60_000;
+export const BROWSER_SESSION_TTL_MS = 15 * 60_000;
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 const LOCK_TIMEOUT_MS = 5_000;
 const daemonPath = fileURLToPath(new URL("./runtime-daemon.mjs", import.meta.url));
@@ -127,6 +131,18 @@ const startupDiagnosisDetails = Object.freeze({
     retryable: true,
     explanation: "The Controller runtime could not start safely.",
     retryGuidance: "Check the local Sand-King installation and retry the launch.",
+  },
+  runtime_incompatible: {
+    type: "runtime_startup_failure",
+    retryable: true,
+    explanation: "The running Controller runtime is incompatible with this launcher.",
+    retryGuidance: "Stop the existing Controller runtime, update Sand-King, then retry the launch.",
+  },
+  runtime_not_ready: {
+    type: "runtime_startup_failure",
+    retryable: true,
+    explanation: "The running Controller runtime did not pass authenticated readiness.",
+    retryGuidance: "Stop the unready Controller runtime, then retry the launch.",
   },
 });
 
@@ -686,7 +702,7 @@ const commitRuntimeStartup = async (child, startupId) => new Promise((resolve, r
 
 /**
  * @param {string} dataDir
- * @param {{hostMode?: string, startupTimeoutMs?: number, expectedHostId: string, lifecycleRevision: number}} options
+ * @param {{hostMode?: string, startupTimeoutMs?: number, browserSessionTtlMs: number, expectedHostId: string, allowHostIdentityCreate: boolean, lifecycleRevision: number, acceptHostBinding: (hostId: string) => Promise<unknown>}} options
  */
 const spawnRuntime = async (dataDir, options) => {
   const statePath = join(dataDir, "runtime-state.json");
@@ -696,8 +712,12 @@ const spawnRuntime = async (dataDir, options) => {
   const startupId = randomBytes(12).toString("hex");
   const daemonArgs = [daemonPath, "--data-dir", dataDir];
   daemonArgs.push("--expected-host-id", options.expectedHostId);
+  if (options.allowHostIdentityCreate) {
+    daemonArgs.push("--allow-host-identity-create");
+  }
   daemonArgs.push("--lifecycle-revision", String(options.lifecycleRevision));
   daemonArgs.push("--startup-id", startupId);
+  daemonArgs.push("--browser-session-ttl-ms", String(options.browserSessionTtlMs));
   if (options.hostMode) {
     daemonArgs.push("--host-mode", options.hostMode);
   }
@@ -714,6 +734,7 @@ const spawnRuntime = async (dataDir, options) => {
       child,
       options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
     );
+    await options.acceptHostBinding(runtimeState.host.hostId);
     await commitRuntimeStartup(child, startupId);
     if (child.connected) {
       child.disconnect();
@@ -740,13 +761,21 @@ const spawnRuntime = async (dataDir, options) => {
 export const resolveDataDir = (provided) => resolve(provided ?? defaultDataDir());
 
 /**
- * @param {{dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} options
+ * @param {{dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} options
  */
 export const launchRuntime = async (options = {}) => {
   const resolvedDataDir = resolveDataDir(options.dataDir);
   const bootstrapTtlMs = options.bootstrapTtlMs ?? BOOTSTRAP_TTL_MS;
+  const browserSessionTtlMs = options.browserSessionTtlMs ?? BROWSER_SESSION_TTL_MS;
   if (!Number.isSafeInteger(bootstrapTtlMs) || bootstrapTtlMs < 1 || bootstrapTtlMs > BOOTSTRAP_TTL_MS) {
     throw new Error("bootstrap_ttl_invalid");
+  }
+  if (
+    !Number.isSafeInteger(browserSessionTtlMs)
+    || browserSessionTtlMs < 1
+    || browserSessionTtlMs > BROWSER_SESSION_TTL_MS
+  ) {
+    throw new Error("browser_session_ttl_invalid");
   }
   await ensurePrivateDirectory(resolvedDataDir);
 
@@ -872,7 +901,24 @@ export const launchRuntime = async (options = {}) => {
       return response;
     }
 
-    const hostBinding = await ensureControllerHostBinding(resolvedDataDir);
+    const hostBinding = await prepareControllerHostBinding(resolvedDataDir);
+
+    /** @param {"runtime_incompatible" | "runtime_not_ready"} code */
+    const rejectLiveRuntime = async (code) => {
+      const auditId = await recordLifecycleAudit(
+        resolvedDataDir,
+        "runtime.start",
+        "rejected",
+        { ...auditDetails, code },
+      );
+      outcomes.push({
+        idempotencyKeyHash,
+        expectedRevision,
+        failure: { code, auditId },
+      });
+      await writeLaunchOutcomes(resolvedDataDir, outcomes);
+      throw new RuntimeStartupError(code, auditId);
+    };
 
     let runtimeState;
     let reused = false;
@@ -885,13 +931,14 @@ export const launchRuntime = async (options = {}) => {
         || existingState.data.version !== releaseVersion
         || existingState.data.host.hostId !== hostBinding.hostId
       ) {
-        throw new Error("runtime_incompatible");
+        await rejectLiveRuntime("runtime_incompatible");
       }
       if (!(await probeRuntime(existingState.data))) {
-        throw new Error("runtime_not_ready");
+        await rejectLiveRuntime("runtime_not_ready");
       }
       runtimeState = existingState.data;
       reused = true;
+      await acceptControllerHostBinding(resolvedDataDir, runtimeState.host.hostId);
       if (
         !lifecycle
         || lifecycle.revision !== runtimeState.revision
@@ -910,8 +957,11 @@ export const launchRuntime = async (options = {}) => {
       try {
         runtimeState = await spawnRuntime(resolvedDataDir, {
           ...options,
+          browserSessionTtlMs,
           expectedHostId: hostBinding.hostId,
+          allowHostIdentityCreate: hostBinding.allowHostIdentityCreate,
           lifecycleRevision,
+          acceptHostBinding: (hostId) => acceptControllerHostBinding(resolvedDataDir, hostId),
         });
       } catch (error) {
         const startupError = asRuntimeStartupError(error);
