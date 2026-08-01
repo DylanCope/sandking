@@ -9,7 +9,7 @@ const execFileAsync = promisify(execFile);
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
   const [command = "launch", ...rest] = argv;
-  /** @type {{command: string, noOpen: boolean, json: boolean, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number}} */
+  /** @type {{command: string, noOpen: boolean, json: boolean, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
   const options = { command, noOpen: false, json: false };
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -40,6 +40,12 @@ const parseArgs = (argv) => {
       ) {
         throw new Error("Invalid --bootstrap-ttl-ms value.");
       }
+    } else if (current === "--idempotency-key") {
+      options.idempotencyKey = rest[index + 1];
+      index += 1;
+    } else if (current === "--expected-revision") {
+      options.expectedRevision = Number(rest[index + 1]);
+      index += 1;
     } else {
       throw new Error(`Unsupported option: ${current}`);
     }
@@ -79,7 +85,11 @@ const main = async () => {
       await openBrowser(output.bootstrapUrl);
     }
   } else if (options.command === "stop") {
-    output = await stopRuntime({ dataDir: options.dataDir });
+    output = await stopRuntime({
+      dataDir: options.dataDir,
+      idempotencyKey: options.idempotencyKey,
+      expectedRevision: options.expectedRevision,
+    });
   } else {
     throw new Error(`Unsupported command: ${options.command}`);
   }

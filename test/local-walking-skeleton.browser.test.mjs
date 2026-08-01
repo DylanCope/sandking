@@ -172,6 +172,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       assert.equal(acknowledgement.channel, "control");
       assert.equal(acknowledgement.message.viewModel.kind, "cockpit.connection");
       assert.equal(acknowledgement.message.viewModel.host.identity, "local-host");
+      assert.equal(acknowledgement.message.viewModel.host.hostId, launch.host.hostId);
       assert.deepEqual(acknowledgement.message.viewModel.negotiation.capabilities, [
         "sandking.control.slice-1",
         "sandking.bulk-stream.v1",
@@ -358,6 +359,41 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       const hostMismatch = await page.goto(`http://localhost:${launch.runtime.port}/`);
       assert.equal(hostMismatch?.status(), 403);
 
+      const revocationPage = await browserContext.newPage();
+      await revocationPage.goto(`http://127.0.0.1:${launch.runtime.port}/`, {
+        waitUntil: "domcontentloaded",
+      });
+      await revocationPage.waitForFunction(
+        () => document.querySelector("#app")?.textContent?.includes("Connected to local-host"),
+        { timeout: 10_000 },
+      );
+      await revocationPage.evaluate((browserHello) => new Promise((resolve, reject) => {
+        const probe = {
+          closeCode: null,
+          closeReason: null,
+          messages: [],
+          socket: new WebSocket(`ws://${location.host}/ws`),
+        };
+        window.__sandkingRevocationProbe = probe;
+        const timeout = setTimeout(() => reject(new Error("session_revocation_probe_timeout")), 5_000);
+        probe.socket.addEventListener("open", () => {
+          probe.socket.send(JSON.stringify(browserHello));
+        });
+        probe.socket.addEventListener("message", (event) => {
+          const message = JSON.parse(event.data).message;
+          probe.messages.push(message);
+          if (message.type === "runtime.hello-ack") {
+            clearTimeout(timeout);
+            resolve(undefined);
+          }
+        });
+        probe.socket.addEventListener("close", (event) => {
+          probe.closeCode = event.code;
+          probe.closeReason = event.reason;
+        });
+        probe.socket.addEventListener("error", reject);
+      }), hello);
+
       const mutationHeaders = {
         cookie: `sandking_session=${sessionCookie.value}`,
         origin: `http://127.0.0.1:${launch.runtime.port}`,
@@ -371,6 +407,32 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       const sessionEndOutcome = await sessionEnd.json();
       assert.equal(sessionEndOutcome.code, "session_ended");
       assert.equal(sessionEndOutcome.idempotentReplay, false);
+      const sessionSocketRevocation = await revocationPage.evaluate(async () => {
+        const probe = window.__sandkingRevocationProbe;
+        if (probe.socket.readyState === WebSocket.OPEN) {
+          probe.socket.send(JSON.stringify({
+            channel: "control",
+            message: { type: "browser.ping", requestId: "acceptance-ping-after-session-end" },
+          }));
+        }
+        const deadline = Date.now() + 2_000;
+        while (probe.closeCode === null && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return {
+          closeCode: probe.closeCode,
+          closeReason: probe.closeReason,
+          postEndPong: probe.messages.some((message) =>
+            message.type === "runtime.pong"
+            && message.requestId === "acceptance-ping-after-session-end"),
+        };
+      });
+      assert.deepEqual(sessionSocketRevocation, {
+        closeCode: 1008,
+        closeReason: "session_ended",
+        postEndPong: false,
+      });
+      await revocationPage.close();
       const sessionEndReplay = await fetch(sessionEndUrl, {
         method: "POST",
         headers: mutationHeaders,
@@ -398,6 +460,50 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         replayReturnedSameAudit: sessionEndReplayOutcome.auditId === sessionEndOutcome.auditId,
         staleStatus: staleSessionEnd.status,
         staleCode: staleSessionEndOutcome.code,
+        socketRevoked: sessionSocketRevocation.closeCode === 1008,
+        socketCloseCode: sessionSocketRevocation.closeCode,
+        socketCloseReason: sessionSocketRevocation.closeReason,
+        postEndPong: sessionSocketRevocation.postEndPong,
+      };
+
+      const runtimeStopArgs = [
+        "stop",
+        "--data-dir",
+        dataDir,
+        "--idempotency-key",
+        "acceptance-runtime-stop-key",
+        "--expected-revision",
+        String(launch.runtime.revision),
+        "--json",
+      ];
+      const { stdout: runtimeStopOutput } = await execFileAsync(
+        installed.command,
+        runtimeStopArgs,
+        { cwd: executionDirectory, env: productEnvironment },
+      );
+      const runtimeStopOutcome = JSON.parse(runtimeStopOutput);
+      assert.equal(runtimeStopOutcome.code, "runtime_stopped");
+      assert.equal(runtimeStopOutcome.stopped, true);
+      assert.equal(runtimeStopOutcome.idempotentReplay, false);
+      const { stdout: runtimeStopReplayOutput } = await execFileAsync(
+        installed.command,
+        runtimeStopArgs,
+        { cwd: executionDirectory, env: productEnvironment },
+      );
+      const runtimeStopReplay = JSON.parse(runtimeStopReplayOutput);
+      assert.equal(runtimeStopReplay.auditId, runtimeStopOutcome.auditId);
+      assert.equal(runtimeStopReplay.idempotentReplay, true);
+      const runtimeLifecycle = JSON.parse(
+        await readFile(join(dataDir, "runtime-lifecycle.json"), "utf8"),
+      );
+      const runtimeStopEvidence = {
+        authorizationClass: "user_runtime_lifecycle",
+        initialRevision: launch.runtime.revision,
+        resultingRevision: runtimeStopOutcome.revision,
+        stoppedRuntimeId: runtimeStopOutcome.runtimeId,
+        auditId: runtimeStopOutcome.auditId,
+        replayReturnedSameAudit: runtimeStopReplay.auditId === runtimeStopOutcome.auditId,
+        lifecycleStatus: runtimeLifecycle.status,
       };
 
       const protectedFixtureAfterSha256 = sha256(await readFile(protectedFixture));
@@ -444,10 +550,12 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
           runtime: {
             identity: launch.runtime.identity,
             reference: launch.runtime.runtimeId,
+            revision: launch.runtime.revision,
             browserReloadReusedRuntime: true,
           },
           host: {
             identity: launch.host.identity,
+            reference: launch.host.hostId,
             release: launch.host.release,
             capabilities: launch.host.capabilities,
             negotiatedCapabilities: launch.host.negotiatedCapabilities,
@@ -476,6 +584,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
           })),
           bootstrapMutationEvidence,
           sessionMutationEvidence,
+          runtimeStopEvidence,
           browserMismatchEvidence,
           prohibitedSideEffectObservations,
           securityAssertions: {
@@ -485,6 +594,9 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
               && (await hostilePage.textContent("#websocket")) === "blocked",
             corsAbsent: (await hostilePage.textContent("#cors")) === "blocked",
             csrfRejected: csrfStatus === 403,
+            endedSessionSocketsRevoked:
+              sessionSocketRevocation.closeCode === 1008
+              && sessionSocketRevocation.postEndPong === false,
             sanitizedBrowserModel: !/credential|unrestricted\.filesystem|process\.env/i
               .test(publicBoundary),
             controllerSecretAbsent: !publicBoundary.includes(controllerSecret),

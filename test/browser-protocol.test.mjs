@@ -124,6 +124,7 @@ test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and 
     assert.deepEqual(ack.negotiatedCapabilities, browserCapabilities);
     assert.equal(ack.observation.mode, "snapshot");
     assert.equal(ack.viewModel.host.identity, "local-host");
+    assert.equal(ack.viewModel.host.hostId, runtime.host.hostId);
     assert.deepEqual(Object.keys(ack.viewModel).sort(), ["host", "kind", "negotiation", "runtime"]);
     assert.doesNotMatch(JSON.stringify(ack), new RegExp(secret));
     assert.doesNotMatch(JSON.stringify(ack), /bootstrap|credential|filesystem|dataDir|process\.env/i);
@@ -168,6 +169,15 @@ test("session termination declares authorization, idempotency, revision, audit, 
       "x-sandking-idempotency-key": idempotencyKey,
       "x-sandking-expected-revision": "1",
     };
+    const socketClosed = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("session_socket_not_revoked")), 2_000);
+      socket.once("close", (code, reason) => {
+        clearTimeout(timeout);
+        resolve({ code, reason: reason.toString() });
+      });
+    });
+    const postTerminationMessages = [];
+    socket.on("message", (message) => postTerminationMessages.push(message.toString()));
 
     const first = await fetch(url, { method: "POST", headers: mutationHeaders });
     assert.equal(first.status, 200);
@@ -180,6 +190,15 @@ test("session termination declares authorization, idempotency, revision, audit, 
       auditId: firstOutcome.auditId,
     });
     assert.match(firstOutcome.auditId, /^audit-/);
+    socket.send(JSON.stringify({
+      channel: "control",
+      message: { type: "browser.ping", requestId: "ping-after-session-end" },
+    }));
+    assert.deepEqual(await socketClosed, { code: 1008, reason: "session_ended" });
+    assert.equal(
+      postTerminationMessages.some((message) => message.includes("ping-after-session-end")),
+      false,
+    );
 
     const replay = await fetch(url, { method: "POST", headers: mutationHeaders });
     assert.equal(replay.status, 200);
@@ -219,7 +238,6 @@ test("session termination declares authorization, idempotency, revision, audit, 
       resultingRevision: 2,
     });
     assert.match(accepted.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
-    socket.close();
   } finally {
     await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
       cwd: tmpdir(),

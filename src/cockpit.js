@@ -11,7 +11,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:adbdc80471c8b7d79d1a4d04ace4ed935e31cc7ed07f5e1b7b4ab53b8a98b0b7",
+  schemaDigest: "sha256:3ba0a4236a6f336750e7e545b286dbcf18d28606d827f203ce98bca41b1e9d7f",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -96,6 +96,9 @@ socket.addEventListener("message", (event) => {
     && message.framing.maxOpaqueStreamChunkBytes > 0
     && message.framing.maxOpaqueStreamChunkBytes
       <= browserProtocol.framing.maxOpaqueStreamChunkBytes;
+  const durableIdentitiesCompatible = /^runtime-[a-f0-9]{24}$/
+    .test(message?.viewModel?.runtime?.runtimeId ?? "")
+    && /^host-[a-f0-9]{24}$/.test(message?.viewModel?.host?.hostId ?? "");
 
   if (
     message?.type !== "runtime.hello-ack"
@@ -105,6 +108,7 @@ socket.addEventListener("message", (event) => {
     || message.schemaDigest !== browserProtocol.schemaDigest
     || !capabilitiesCompatible
     || !framingCompatible
+    || !durableIdentitiesCompatible
     || message.viewModel?.kind !== "cockpit.connection"
   ) {
     requireReload("browser_runtime_handshake_mismatch");
@@ -115,7 +119,8 @@ socket.addEventListener("message", (event) => {
   document.documentElement.dataset.observationMode = message.observation.mode;
   document.documentElement.dataset.protocolVersion = message.protocol.version;
   app.textContent =
-    `Connected to ${message.viewModel.host.identity} with protocol ${message.protocol.version}`;
+    `Connected to ${message.viewModel.host.identity} with protocol ${message.protocol.version}`
+    + ` (${message.viewModel.host.hostId})`;
 });
 
 socket.addEventListener("close", (event) => {

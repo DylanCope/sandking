@@ -22,13 +22,17 @@ export const hostCapabilities = Object.freeze([
   "sandking.bulk-stream.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-sanitized-diagnostics")
+  .update("sandking-host-control-schema-v1-with-durable-peer-identities")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
   controller_identity_invalid: {
     explanation: "The Host rejected the Controller identity.",
     retryGuidance: "Verify the Controller and Host installation identities, then retry.",
+  },
+  controller_host_identity_mismatch: {
+    explanation: "The Host rejected the Controller's expected durable Host identity.",
+    retryGuidance: "Verify or explicitly adopt the intended Host identity, then retry.",
   },
   controller_protocol_major_mismatch: {
     explanation: "The Host rejected an incompatible Controller protocol major version.",
@@ -57,6 +61,8 @@ export const protocolErrorForCode = (code) => ({
 });
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
+const runtimeIdSchema = z.string().regex(/^runtime-[a-f0-9]{24}$/);
+const hostIdSchema = z.string().regex(/^host-[a-f0-9]{24}$/);
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
 // Known fields remain validated, while additive same-major fields are ignored
@@ -86,7 +92,9 @@ const helloSchema = z.object({
   protocol: versionSchema,
   release: z.string().min(1).max(64),
   identity: identifierSchema,
+  controllerId: runtimeIdSchema,
   expectedPeerIdentity: identifierSchema,
+  expectedHostId: hostIdSchema,
   capabilities: capabilitySetSchema,
   schemaDigest: digestSchema,
   framing: framingSchema,
@@ -98,7 +106,9 @@ const helloAckSchema = z.object({
   protocol: versionSchema,
   release: z.string().min(1).max(64),
   identity: identifierSchema,
+  hostId: hostIdSchema,
   peerIdentity: identifierSchema,
+  peerControllerId: runtimeIdSchema,
   capabilities: capabilitySetSchema,
   negotiatedCapabilities: z.array(identifierSchema).max(32),
   schemaDigest: digestSchema,

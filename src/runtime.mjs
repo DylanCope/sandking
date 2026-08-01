@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import {
+  appendPrivateJsonLine,
   ensurePrivateDirectory,
   hasErrorCode,
   PRIVATE_FILE_MODE,
@@ -15,6 +16,7 @@ import {
   removePrivateFile,
   writePrivateJson,
 } from "./private-state.mjs";
+import { ensureHostIdentity } from "./host-identity.mjs";
 import { capabilitySetSchema, framingSchema, releaseVersion, versionSchema } from "./protocol.mjs";
 
 const COMPATIBILITY_KEY = "runtime-v1";
@@ -90,6 +92,12 @@ const startupDiagnosisDetails = Object.freeze({
     explanation: "The local Host rejected the Controller identity.",
     retryGuidance: "Verify the Controller and Host installation identities, then retry the launch.",
   },
+  controller_host_identity_mismatch: {
+    type: "host_negotiation_failure",
+    retryable: true,
+    explanation: "The local Host rejected the expected durable Host identity.",
+    retryGuidance: "Verify or explicitly adopt the intended local Host identity, then retry the launch.",
+  },
   controller_protocol_major_mismatch: {
     type: "host_negotiation_failure",
     retryable: true,
@@ -152,6 +160,7 @@ const asRuntimeStartupError = (error) => error instanceof RuntimeStartupError
 const runtimeStateSchema = z.object({
   pid: z.number().int().positive(),
   runtimeId: z.string().min(1).max(128),
+  revision: z.number().int().positive(),
   port: z.number().int().min(1).max(65_535),
   readinessToken: z.string().regex(/^[a-f0-9]{48}$/),
   compatibilityKey: z.string().min(1).max(128),
@@ -159,6 +168,7 @@ const runtimeStateSchema = z.object({
   identity: z.literal("controller-runtime"),
   host: z.object({
     identity: z.string().min(1).max(128),
+    hostId: z.string().regex(/^host-[a-f0-9]{24}$/),
     capabilities: capabilitySetSchema,
     negotiatedCapabilities: z.array(z.string()).max(32),
     schemaDigest: z.string(),
@@ -174,6 +184,73 @@ const runtimeStateSchema = z.object({
   negotiationAuditId: z.string().min(1).max(128),
   startedAt: z.string(),
 }).strict();
+
+const runtimeLifecycleSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  status: z.enum(["running", "stopped"]),
+  runtimeId: z.string().regex(/^runtime-[a-f0-9]{24}$/),
+}).strict();
+
+/** @typedef {{idempotencyKeyHash: string, expectedRevision: number, response: Record<string, any>}} StopOutcome */
+
+/** @param {string} dataDir @param {string} action @param {"accepted" | "rejected" | "observed"} outcome @param {Record<string, unknown>} details */
+const recordLifecycleAudit = async (dataDir, action, outcome, details) => {
+  const auditId = `audit-${randomBytes(12).toString("hex")}`;
+  await appendPrivateJsonLine(join(dataDir, "audit.jsonl"), {
+    auditId,
+    action,
+    outcome,
+    details,
+    recordedAt: new Date().toISOString(),
+  });
+  return auditId;
+};
+
+/** @param {string} dataDir */
+const readLifecycle = async (dataDir) => {
+  const raw = await readJson(join(dataDir, "runtime-lifecycle.json"), null);
+  if (raw === null) {
+    return null;
+  }
+  const parsed = runtimeLifecycleSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error("runtime_lifecycle_state_invalid");
+  }
+  return parsed.data;
+};
+
+/** @param {string} dataDir @returns {Promise<StopOutcome[]>} */
+const readStopOutcomes = async (dataDir) => {
+  const raw = await readJson(join(dataDir, "runtime-stop-outcomes.json"), { outcomes: [] });
+  if (!raw || typeof raw !== "object" || !("outcomes" in raw) || !Array.isArray(raw.outcomes)) {
+    throw new Error("runtime_stop_outcomes_invalid");
+  }
+  /** @type {StopOutcome[]} */
+  const outcomes = [];
+  for (const outcome of /** @type {unknown[]} */ (raw.outcomes)) {
+    if (
+      outcome
+      && typeof outcome === "object"
+      && "idempotencyKeyHash" in outcome
+      && /^sha256:[a-f0-9]{64}$/.test(String(outcome.idempotencyKeyHash))
+      && "expectedRevision" in outcome
+      && Number.isSafeInteger(outcome.expectedRevision)
+      && "response" in outcome
+      && outcome.response
+      && typeof outcome.response === "object"
+    ) {
+      outcomes.push(/** @type {StopOutcome} */ (outcome));
+    }
+  }
+  return outcomes;
+};
+
+/** @param {string} dataDir @param {StopOutcome[]} outcomes */
+const writeStopOutcomes = async (dataDir, outcomes) => {
+  await writePrivateJson(join(dataDir, "runtime-stop-outcomes.json"), {
+    outcomes: outcomes.slice(-128),
+  });
+};
 
 /** @param {number} pid */
 export const pidIsRunning = (pid) => {
@@ -233,7 +310,7 @@ const releaseOwnedLock = async (lockPath, lockId) => {
  * @param {() => Promise<T>} operation
  * @returns {Promise<T>}
  */
-const withLaunchLock = async (dataDir, operation) => {
+const withRuntimeLock = async (dataDir, operation) => {
   const lockPath = join(dataDir, "runtime.lock");
   const recoveryPath = join(dataDir, "runtime.lock.recovery");
   const lockId = randomBytes(12).toString("hex");
@@ -466,7 +543,7 @@ const waitForStartup = async (dataDir, child, startupTimeoutMs) => {
 
 /**
  * @param {string} dataDir
- * @param {{hostMode?: string, startupTimeoutMs?: number}} options
+ * @param {{hostMode?: string, startupTimeoutMs?: number, expectedHostId: string, lifecycleRevision: number}} options
  */
 const spawnRuntime = async (dataDir, options) => {
   const statePath = join(dataDir, "runtime-state.json");
@@ -474,6 +551,8 @@ const spawnRuntime = async (dataDir, options) => {
   await Promise.all([removePrivateFile(statePath), removePrivateFile(errorPath)]);
 
   const daemonArgs = [daemonPath, "--data-dir", dataDir];
+  daemonArgs.push("--expected-host-id", options.expectedHostId);
+  daemonArgs.push("--lifecycle-revision", String(options.lifecycleRevision));
   if (options.hostMode) {
     daemonArgs.push("--host-mode", options.hostMode);
   }
@@ -522,7 +601,10 @@ export const launchRuntime = async (options = {}) => {
   }
   await ensurePrivateDirectory(resolvedDataDir);
 
-  return withLaunchLock(resolvedDataDir, async () => {
+  return withRuntimeLock(resolvedDataDir, async () => {
+    const hostIdentity = await ensureHostIdentity(resolvedDataDir);
+    const lifecyclePath = join(resolvedDataDir, "runtime-lifecycle.json");
+    const lifecycle = await readLifecycle(resolvedDataDir);
     const statePath = join(resolvedDataDir, "runtime-state.json");
     const rawExisting = await readJson(statePath, null);
     const rawPid = rawExisting && typeof rawExisting === "object" && "pid" in rawExisting
@@ -539,6 +621,7 @@ export const launchRuntime = async (options = {}) => {
       if (
         existing.data.compatibilityKey !== COMPATIBILITY_KEY
         || existing.data.version !== releaseVersion
+        || existing.data.host.hostId !== hostIdentity.hostId
       ) {
         throw new Error("runtime_incompatible");
       }
@@ -547,9 +630,31 @@ export const launchRuntime = async (options = {}) => {
       }
       runtimeState = existing.data;
       reused = true;
+      if (
+        !lifecycle
+        || lifecycle.revision !== runtimeState.revision
+        || lifecycle.status !== "running"
+        || lifecycle.runtimeId !== runtimeState.runtimeId
+      ) {
+        await writePrivateJson(lifecyclePath, {
+          revision: runtimeState.revision,
+          status: "running",
+          runtimeId: runtimeState.runtimeId,
+        });
+      }
     } else {
       await removePrivateFile(statePath);
-      runtimeState = await spawnRuntime(resolvedDataDir, options);
+      const lifecycleRevision = (lifecycle?.revision ?? 0) + 1;
+      runtimeState = await spawnRuntime(resolvedDataDir, {
+        ...options,
+        expectedHostId: hostIdentity.hostId,
+        lifecycleRevision,
+      });
+      await writePrivateJson(lifecyclePath, {
+        revision: lifecycleRevision,
+        status: "running",
+        runtimeId: runtimeState.runtimeId,
+      });
     }
 
     const bootstrap = await createBootstrap(resolvedDataDir, runtimeState, bootstrapTtlMs);
@@ -557,6 +662,7 @@ export const launchRuntime = async (options = {}) => {
       runtime: {
         identity: runtimeState.identity,
         runtimeId: runtimeState.runtimeId,
+        revision: runtimeState.revision,
         reused,
         pid: runtimeState.pid,
         port: runtimeState.port,
@@ -571,20 +677,172 @@ export const launchRuntime = async (options = {}) => {
   });
 };
 
-/** @param {{dataDir?: string}} options */
+/** @param {{dataDir?: string, idempotencyKey?: string, expectedRevision?: number}} options */
 export const stopRuntime = async (options = {}) => {
   const resolvedDataDir = resolveDataDir(options.dataDir);
-  const statePath = join(resolvedDataDir, "runtime-state.json");
-  const parsed = runtimeStateSchema.safeParse(await readJson(statePath, null));
-  if (!parsed.success || !pidIsRunning(parsed.data.pid)) {
-    await removePrivateFile(statePath);
-    return { stopped: false };
-  }
-  if (!(await probeRuntime(parsed.data))) {
-    return { stopped: false, code: "runtime_not_ready" };
-  }
+  await ensurePrivateDirectory(resolvedDataDir);
+  return withRuntimeLock(resolvedDataDir, async () => {
+    const statePath = join(resolvedDataDir, "runtime-state.json");
+    const rawState = await readJson(statePath, null);
+    const parsed = runtimeStateSchema.safeParse(rawState);
+    const lifecycle = await readLifecycle(resolvedDataDir);
+    const actualRevision = parsed.success
+      ? parsed.data.revision
+      : lifecycle?.revision ?? 0;
+    const expectedRevision = options.expectedRevision ?? actualRevision;
+    const idempotencyKey = options.idempotencyKey ?? randomBytes(32).toString("hex");
+    const validContract = idempotencyKey.length > 0
+      && idempotencyKey.length <= 256
+      && Number.isSafeInteger(expectedRevision)
+      && expectedRevision >= 0;
+    const idempotencyKeyHash = validContract
+      ? `sha256:${createHash("sha256").update(idempotencyKey).digest("hex")}`
+      : null;
+    const auditDetails = {
+      authorizationClass: "user_runtime_lifecycle",
+      idempotencyKeyHash,
+      expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+      actualRevision,
+    };
 
-  await terminateProcessTree(parsed.data.pid);
-  await removePrivateFile(statePath);
-  return { stopped: true };
+    if (!validContract || !idempotencyKeyHash) {
+      const auditId = await recordLifecycleAudit(
+        resolvedDataDir,
+        "runtime.stop",
+        "rejected",
+        { ...auditDetails, code: "mutation_contract_invalid" },
+      );
+      return {
+        type: "mutation_failure",
+        code: "mutation_contract_invalid",
+        retryable: true,
+        stopped: false,
+        expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
+        actualRevision,
+        auditId,
+      };
+    }
+
+    const outcomes = await readStopOutcomes(resolvedDataDir);
+    const existing = outcomes.find((outcome) =>
+      outcome.idempotencyKeyHash === idempotencyKeyHash);
+    if (existing) {
+      if (existing.expectedRevision !== expectedRevision) {
+        const auditId = await recordLifecycleAudit(
+          resolvedDataDir,
+          "runtime.stop",
+          "rejected",
+          { ...auditDetails, code: "idempotency_key_conflict" },
+        );
+        return {
+          type: "mutation_failure",
+          code: "idempotency_key_conflict",
+          retryable: true,
+          stopped: false,
+          expectedRevision,
+          actualRevision,
+          auditId,
+        };
+      }
+      await recordLifecycleAudit(resolvedDataDir, "runtime.stop", "observed", {
+        ...auditDetails,
+        idempotentReplay: true,
+        originalAuditId: existing.response.auditId,
+      });
+      return { ...existing.response, idempotentReplay: true };
+    }
+
+    if (expectedRevision !== actualRevision) {
+      const auditId = await recordLifecycleAudit(
+        resolvedDataDir,
+        "runtime.stop",
+        "rejected",
+        { ...auditDetails, code: "mutation_revision_conflict" },
+      );
+      const response = {
+        type: "mutation_failure",
+        code: "mutation_revision_conflict",
+        retryable: true,
+        stopped: false,
+        expectedRevision,
+        actualRevision,
+        auditId,
+      };
+      outcomes.push({ idempotencyKeyHash, expectedRevision, response });
+      await writeStopOutcomes(resolvedDataDir, outcomes);
+      return response;
+    }
+
+    if (!parsed.success || !pidIsRunning(parsed.data.pid)) {
+      await removePrivateFile(statePath);
+      const auditId = await recordLifecycleAudit(
+        resolvedDataDir,
+        "runtime.stop",
+        "observed",
+        { ...auditDetails, resultingRevision: actualRevision, code: "runtime_not_running" },
+      );
+      const response = {
+        type: "mutation_result",
+        code: "runtime_not_running",
+        stopped: false,
+        revision: actualRevision,
+        idempotentReplay: false,
+        auditId,
+      };
+      outcomes.push({ idempotencyKeyHash, expectedRevision, response });
+      await writeStopOutcomes(resolvedDataDir, outcomes);
+      return response;
+    }
+    if (!(await probeRuntime(parsed.data))) {
+      const auditId = await recordLifecycleAudit(
+        resolvedDataDir,
+        "runtime.stop",
+        "rejected",
+        { ...auditDetails, code: "runtime_not_ready" },
+      );
+      const response = {
+        type: "mutation_failure",
+        code: "runtime_not_ready",
+        retryable: true,
+        stopped: false,
+        expectedRevision,
+        actualRevision,
+        auditId,
+      };
+      outcomes.push({ idempotencyKeyHash, expectedRevision, response });
+      await writeStopOutcomes(resolvedDataDir, outcomes);
+      return response;
+    }
+
+    await terminateProcessTree(parsed.data.pid);
+    await removePrivateFile(statePath);
+    const resultingRevision = actualRevision + 1;
+    await writePrivateJson(join(resolvedDataDir, "runtime-lifecycle.json"), {
+      revision: resultingRevision,
+      status: "stopped",
+      runtimeId: parsed.data.runtimeId,
+    });
+    const auditId = await recordLifecycleAudit(
+      resolvedDataDir,
+      "runtime.stop",
+      "accepted",
+      {
+        ...auditDetails,
+        resultingRevision,
+        runtimeId: parsed.data.runtimeId,
+      },
+    );
+    const response = {
+      type: "mutation_result",
+      code: "runtime_stopped",
+      stopped: true,
+      runtimeId: parsed.data.runtimeId,
+      revision: resultingRevision,
+      idempotentReplay: false,
+      auditId,
+    };
+    outcomes.push({ idempotencyKeyHash, expectedRevision, response });
+    await writeStopOutcomes(resolvedDataDir, outcomes);
+    return response;
+  });
 };

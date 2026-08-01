@@ -49,7 +49,8 @@ npm run cockpit -- --no-open --json
 
 This starts or reuses one loopback-only Controller runtime, prints a short-lived
 bootstrap URL for the Cockpit, and negotiates with the local Host over the
-framed stdio protocol. Stop the runtime with:
+framed stdio protocol. The handshake binds the generated runtime ID to a
+private, persisted Host ID. Stop the runtime with:
 
 ```bash
 npm run cockpit:stop
@@ -64,11 +65,13 @@ sandking launch --no-open
 sandking stop
 ```
 
-The runtime stores its lock, bootstrap claims, audit records, and readiness
-state in a private user directory (`~/.sandking` by default). The Host inherits
+The runtime stores its lifecycle revision, shared launch/stop lock, durable Host
+identity, bootstrap claims, audit records, and readiness state in a private user
+directory (`~/.sandking` by default). Stop uses the same lock and records its
+idempotency key hash, expected revision, outcome, and audit ID. The Host inherits
 no Controller environment or credentials. Browser control is a versioned typed
-same-origin WebSocket protocol; opaque stream bytes use a separate bounded
-binary channel.
+same-origin WebSocket protocol; ending a browser session revokes its existing
+WebSockets, while opaque stream bytes use a separate bounded binary channel.
 
 Run the executable issue-117 acceptance manifest, including its npm-pinned real
 Chromium gate, with:

@@ -73,7 +73,9 @@ test("same-major control frames ignore additive optional fields", async () => {
     protocol: { ...futureSameMajorProtocol, optionalRevisionLabel: "future-compatible" },
     release: releaseVersion,
     identity: "local-host",
+    hostId: `host-${"1".repeat(24)}`,
     peerIdentity: "controller-runtime",
+    peerControllerId: `runtime-${"2".repeat(24)}`,
     capabilities: {
       required: ["sandking.control.slice-1"],
       optional: ["sandking.bulk-stream.v1"],
@@ -96,7 +98,9 @@ test("same-major control frames ignore additive optional fields", async () => {
     protocol: futureSameMajorProtocol,
     release: releaseVersion,
     identity: "local-host",
+    hostId: `host-${"1".repeat(24)}`,
     peerIdentity: "controller-runtime",
+    peerControllerId: `runtime-${"2".repeat(24)}`,
     capabilities: {
       required: ["sandking.control.slice-1"],
       optional: ["sandking.bulk-stream.v1"],

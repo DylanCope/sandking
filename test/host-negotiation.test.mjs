@@ -121,6 +121,15 @@ for (const [mode, expectedDiagnosis] of failureCases) {
       assert.equal(negotiationAudit.auditId, publicOutcome.diagnosis.auditId);
       assert.equal(negotiationAudit.details.code, expectedDiagnosis.code);
       assert.equal(negotiationAudit.details.mutationOccurred, false);
+      if (mode === "unexpected-identity") {
+        assert.equal(negotiationAudit.details.expectedHostIdentity, "local-host");
+        assert.match(negotiationAudit.details.expectedHostId, /^host-[a-f0-9]{24}$/);
+        assert.equal(negotiationAudit.details.observedHostId, `host-${"0".repeat(24)}`);
+        assert.notEqual(
+          negotiationAudit.details.observedHostId,
+          negotiationAudit.details.expectedHostId,
+        );
+      }
       if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
         const acceptedStateAfterSha256 = sha256(await readFile(acceptedStatePath));
         const runtimeStatePresent = await access(join(dataDir, "runtime-state.json"))
@@ -178,6 +187,7 @@ test("Controller credentials are not inherited by the local Host process", async
     });
     const launch = JSON.parse(stdout);
     assert.equal(launch.host.identity, "local-host");
+    assert.match(launch.host.hostId, /^host-[a-f0-9]{24}$/);
     assert.doesNotMatch(stdout, new RegExp(secret));
     if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
       await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, { recursive: true, mode: 0o700 });

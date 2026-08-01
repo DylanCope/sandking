@@ -42,7 +42,7 @@ import {
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
-  /** @type {{dataDir?: string, hostMode?: string}} */
+  /** @type {{dataDir?: string, hostMode?: string, expectedHostId?: string, lifecycleRevision?: number}} */
   const result = {};
   for (let index = 0; index < argv.length; index += 1) {
     const current = argv[index];
@@ -52,12 +52,24 @@ const parseArgs = (argv) => {
     } else if (current === "--host-mode") {
       result.hostMode = argv[index + 1];
       index += 1;
+    } else if (current === "--expected-host-id") {
+      result.expectedHostId = argv[index + 1];
+      index += 1;
+    } else if (current === "--lifecycle-revision") {
+      result.lifecycleRevision = Number(argv[index + 1]);
+      index += 1;
     }
   }
   if (!result.dataDir) {
     throw new Error("runtime_data_dir_missing");
   }
-  return /** @type {{dataDir: string, hostMode?: string}} */ (result);
+  if (!result.expectedHostId || !/^host-[a-f0-9]{24}$/.test(result.expectedHostId)) {
+    throw new Error("runtime_expected_host_id_missing");
+  }
+  if (!Number.isSafeInteger(result.lifecycleRevision) || Number(result.lifecycleRevision) < 1) {
+    throw new Error("runtime_lifecycle_revision_missing");
+  }
+  return /** @type {{dataDir: string, hostMode?: string, expectedHostId: string, lifecycleRevision: number}} */ (result);
 };
 
 const args = parseArgs(process.argv.slice(2));
@@ -74,6 +86,8 @@ const sessionCookieName = "sandking_session";
 const sessions = new Map();
 /** @type {Map<string, {createdAt: number, runtimeId: string, csrfToken: string, auditId: string, revision: number, termination: {idempotencyKeyHash: string, expectedRevision: number, auditId: string}}>} */
 const endedSessions = new Map();
+/** @type {Map<string, Set<WebSocket>>} */
+const sessionSockets = new Map();
 /** @type {Map<string, Promise<any>>} */
 const bootstrapExchanges = new Map();
 /** @type {import("node:child_process").ChildProcessWithoutNullStreams | undefined} */
@@ -402,6 +416,7 @@ const sanitizedRuntimeCode = (error) => {
       "host_framing_invalid",
       "host_unavailable",
       "controller_identity_invalid",
+      "controller_host_identity_mismatch",
       "controller_protocol_major_mismatch",
       "controller_capability_unsupported",
       "controller_schema_mismatch",
@@ -461,8 +476,9 @@ const shutdown = async () => {
   }
 };
 
-const launchHost = async () => {
-  const hostArgs = [localHostPath];
+/** @param {string} runtimeId */
+const launchHost = async (runtimeId) => {
+  const hostArgs = [localHostPath, "--data-dir", args.dataDir];
   if (args.hostMode) {
     hostArgs.push("--mode", args.hostMode);
   }
@@ -505,7 +521,9 @@ const launchHost = async () => {
       protocol: controllerProtocol,
       release: releaseVersion,
       identity: "controller-runtime",
+      controllerId: runtimeId,
       expectedPeerIdentity: "local-host",
+      expectedHostId: args.expectedHostId,
       capabilities: {
         required: controllerRequiredCapabilities,
         optional: [],
@@ -528,8 +546,18 @@ const launchHost = async () => {
     if (response.protocol.major !== protocolVersion.major) {
       throw new Error("host_protocol_major_mismatch");
     }
-    if (response.identity !== "local-host" || response.peerIdentity !== "controller-runtime") {
-      throw new Error("host_identity_mismatch");
+    if (
+      response.identity !== "local-host"
+      || response.hostId !== args.expectedHostId
+      || response.peerIdentity !== "controller-runtime"
+      || response.peerControllerId !== runtimeId
+    ) {
+      throw Object.assign(new Error("host_identity_mismatch"), {
+        expectedHostId: args.expectedHostId,
+        observedHostId: response.hostId,
+        controllerId: runtimeId,
+        observedControllerId: response.peerControllerId,
+      });
     }
     const unknownRequired = response.capabilities.required.filter(
       (capability) => !hostCapabilities.includes(capability),
@@ -584,8 +612,30 @@ const rejectBrowserProtocol = (socket, code, reloadRequired) => {
   }), () => socket.close(1002, "protocol_mismatch"));
 };
 
-/** @param {WebSocket} socket @param {{csrfToken: string, auditId: string, revision: number}} session */
-const handleBrowserConnection = (socket, session) => {
+/** @param {string} sessionId */
+const revokeBrowserSession = (sessionId) => {
+  for (const socket of sessionSockets.get(sessionId) ?? []) {
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      socket.close(1008, "session_ended");
+    }
+  }
+};
+
+/**
+ * @param {WebSocket} socket
+ * @param {string} sessionId
+ * @param {{csrfToken: string, auditId: string, revision: number}} session
+ */
+const handleBrowserConnection = (socket, sessionId, session) => {
+  const authenticatedSockets = sessionSockets.get(sessionId) ?? new Set();
+  authenticatedSockets.add(socket);
+  sessionSockets.set(sessionId, authenticatedSockets);
+  socket.once("close", () => {
+    authenticatedSockets.delete(socket);
+    if (authenticatedSockets.size === 0) {
+      sessionSockets.delete(sessionId);
+    }
+  });
   /** @type {"awaiting-hello" | "negotiated" | "rejected"} */
   let phase = "awaiting-hello";
   const handshakeTimeout = setTimeout(() => {
@@ -618,6 +668,14 @@ const handleBrowserConnection = (socket, session) => {
   /** @param {import("ws").RawData} data @param {boolean} isBinary */
   const processMessage = async (data, isBinary) => {
     if (phase === "rejected") {
+      return;
+    }
+    if (sessions.get(sessionId) !== session) {
+      phase = "rejected";
+      clearTimeout(handshakeTimeout);
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.close(1008, "session_ended");
+      }
       return;
     }
     const wasAwaitingHello = phase === "awaiting-hello";
@@ -717,6 +775,7 @@ const handleBrowserConnection = (socket, session) => {
           },
           host: {
             identity: state.host.identity,
+            hostId: state.host.hostId,
             release: state.host.release,
             status: "connected",
           },
@@ -732,6 +791,7 @@ const handleBrowserConnection = (socket, session) => {
       await recordAudit("browser.negotiate", "accepted", {
         runtimeId: state.runtimeId,
         hostIdentity: state.host.identity,
+        hostId: state.host.hostId,
         observationMode: observation.mode,
         sessionAuditId: session.auditId,
       });
@@ -763,10 +823,14 @@ const main = async () => {
   const cockpitScript = await readFile(cockpitScriptPath, "utf8");
 
   try {
-    const host = await launchHost();
+    const runtimeId = `runtime-${randomBytes(12).toString("hex")}`;
+    const host = await launchHost(runtimeId);
     const negotiationAuditId = await recordAudit("host.negotiate", "accepted", {
       controllerIdentity: "controller-runtime",
+      controllerId: runtimeId,
+      expectedHostId: args.expectedHostId,
       hostIdentity: host.identity,
+      hostId: host.hostId,
       protocolVersion: host.protocol.version,
       capabilities: host.negotiatedCapabilities,
       schemaDigest: host.schemaDigest,
@@ -943,6 +1007,7 @@ const main = async () => {
             revision: resultingRevision,
             termination: { idempotencyKeyHash, expectedRevision, auditId },
           });
+          revokeBrowserSession(sessionId);
           sendJson(response, 200, {
             type: "mutation_result",
             code: "session_ended",
@@ -990,7 +1055,7 @@ const main = async () => {
         return;
       }
       websocketServer?.handleUpgrade(request, socket, head, (websocket) => {
-        handleBrowserConnection(websocket, session);
+        handleBrowserConnection(websocket, cookies[sessionCookieName], session);
       });
     });
 
@@ -1005,7 +1070,8 @@ const main = async () => {
 
     state = {
       pid: process.pid,
-      runtimeId: `runtime-${randomBytes(12).toString("hex")}`,
+      runtimeId,
+      revision: args.lifecycleRevision,
       port: address.port,
       readinessToken: randomBytes(24).toString("hex"),
       compatibilityKey: "runtime-v1",
@@ -1013,6 +1079,7 @@ const main = async () => {
       identity: "controller-runtime",
       host: {
         identity: host.identity,
+        hostId: host.hostId,
         capabilities: host.capabilities,
         negotiatedCapabilities: host.negotiatedCapabilities,
         schemaDigest: host.schemaDigest,
@@ -1040,6 +1107,13 @@ const main = async () => {
       code,
       controllerIdentity: "controller-runtime",
       expectedHostIdentity: "local-host",
+      expectedHostId: args.expectedHostId,
+      ...(error instanceof Error && "controllerId" in error
+        ? { controllerId: error.controllerId }
+        : {}),
+      ...(error instanceof Error && "observedHostId" in error
+        ? { observedHostId: error.observedHostId }
+        : {}),
       mutationOccurred: false,
     });
     await recordAudit("runtime.start", "rejected", { code, negotiationAuditId });

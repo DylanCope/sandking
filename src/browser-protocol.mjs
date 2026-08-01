@@ -18,7 +18,7 @@ export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-session-revision")
+  .update("sandking-browser-runtime-schema-v1-with-durable-host-identity")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -77,11 +77,12 @@ export const runtimeHelloAckSchema = z.object({
     kind: z.literal("cockpit.connection"),
     runtime: z.object({
       identity: z.literal("controller-runtime"),
-      runtimeId: identifierSchema,
+      runtimeId: z.string().regex(/^runtime-[a-f0-9]{24}$/),
       release: z.string().min(1).max(64),
     }).strict(),
     host: z.object({
       identity: identifierSchema,
+      hostId: z.string().regex(/^host-[a-f0-9]{24}$/),
       release: z.string().min(1).max(64),
       status: z.literal("connected"),
     }).strict(),

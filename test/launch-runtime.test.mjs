@@ -51,7 +51,9 @@ test("concurrent launches reuse one ready runtime and retain full Host negotiati
     assert.deepEqual([first.runtime.reused, second.runtime.reused].sort(), [false, true]);
     assert.deepEqual(first.runtime.listener, { address: "127.0.0.1", class: "loopback" });
     assert.equal(first.runtime.identity, "controller-runtime");
+    assert.equal(first.runtime.revision, 1);
     assert.equal(first.host.identity, "local-host");
+    assert.match(first.host.hostId, /^host-[a-f0-9]{24}$/);
     assert.deepEqual(first.host.capabilities.required, ["sandking.control.slice-1"]);
     assert.deepEqual(first.host.negotiatedCapabilities, [
       "sandking.control.slice-1",
@@ -75,6 +77,7 @@ test("concurrent launches reuse one ready runtime and retain full Host negotiati
 
     const state = JSON.parse(await readFile(join(dataDir, "runtime-state.json"), "utf8"));
     assert.equal(state.host.identity, "local-host");
+    assert.equal(state.host.hostId, first.host.hostId);
     assert.equal(state.protocol.version, "1.0.0");
     assert.match(state.negotiationAuditId, /^audit-/);
 
@@ -82,6 +85,159 @@ test("concurrent launches reuse one ready runtime and retain full Host negotiati
     assert.equal((await stat(join(dataDir, "runtime-state.json"))).mode & 0o777, 0o600);
     assert.equal((await stat(join(dataDir, "audit.jsonl"))).mode & 0o777, 0o600);
     assert.equal((await stat(join(dataDir, "bootstrap-tokens"))).mode & 0o777, 0o700);
+  } finally {
+    await stopAndRemove(dataDir);
+  }
+});
+
+test("Host negotiation binds an ephemeral runtime ID to one persisted Host ID", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-durable-host-identity-"));
+
+  try {
+    const first = await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]);
+    const persistedIdentity = JSON.parse(
+      await readFile(join(dataDir, "host-identity.json"), "utf8"),
+    );
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const negotiation = audits.find((entry) =>
+      entry.action === "host.negotiate" && entry.outcome === "accepted");
+
+    assert.match(first.runtime.runtimeId, /^runtime-[a-f0-9]{24}$/);
+    assert.match(first.host.hostId, /^host-[a-f0-9]{24}$/);
+    assert.equal(persistedIdentity.hostId, first.host.hostId);
+    assert.equal(negotiation.details.controllerId, first.runtime.runtimeId);
+    assert.equal(negotiation.details.expectedHostId, first.host.hostId);
+    assert.equal(negotiation.details.hostId, first.host.hostId);
+
+    const stopped = await runCli(["stop", "--data-dir", dataDir, "--json"]);
+    assert.equal(stopped.stopped, true);
+    const second = await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]);
+    assert.notEqual(second.runtime.runtimeId, first.runtime.runtimeId);
+    assert.equal(second.host.hostId, first.host.hostId);
+  } finally {
+    await stopAndRemove(dataDir);
+  }
+});
+
+test("a stop queued behind startup uses the runtime lock and stops the launched runtime", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-runtime-stop-race-"));
+
+  try {
+    const launchPromise = runCli([
+      "launch",
+      "--data-dir",
+      dataDir,
+      "--host-mode",
+      "delayed-ack",
+      "--json",
+      "--no-open",
+    ]);
+    const lockPath = join(dataDir, "runtime.lock");
+    const lockDeadline = Date.now() + 2_000;
+    while (Date.now() < lockDeadline) {
+      if (await readFile(lockPath, "utf8").then(() => true, () => false)) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(await readFile(lockPath, "utf8").then(() => true, () => false), true);
+
+    const stopPromise = runCli(["stop", "--data-dir", dataDir, "--json"]);
+    const [launch, stopped] = await Promise.all([launchPromise, stopPromise]);
+
+    assert.equal(launch.runtime.reused, false);
+    assert.equal(stopped.stopped, true);
+    await assert.rejects(fetch(`http://127.0.0.1:${launch.runtime.port}/health`));
+  } finally {
+    await stopAndRemove(dataDir);
+  }
+});
+
+test("runtime stop is revisioned, idempotent, and audited", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-runtime-stop-contract-"));
+
+  try {
+    const launch = await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"]);
+    assert.equal(launch.runtime.revision, 1);
+
+    const staleArgs = [
+      "stop",
+      "--data-dir",
+      dataDir,
+      "--idempotency-key",
+      "runtime-stop-stale-1",
+      "--expected-revision",
+      "0",
+      "--json",
+    ];
+    const stale = await runCli(staleArgs);
+    assert.deepEqual(stale, {
+      type: "mutation_failure",
+      code: "mutation_revision_conflict",
+      retryable: true,
+      stopped: false,
+      expectedRevision: 0,
+      actualRevision: 1,
+      auditId: stale.auditId,
+    });
+    assert.match(stale.auditId, /^audit-/);
+    assert.equal(
+      (await runCli(["launch", "--data-dir", dataDir, "--json", "--no-open"])).runtime.reused,
+      true,
+    );
+
+    const stopArgs = [
+      "stop",
+      "--data-dir",
+      dataDir,
+      "--idempotency-key",
+      "runtime-stop-success-1",
+      "--expected-revision",
+      "1",
+      "--json",
+    ];
+    const first = await runCli(stopArgs);
+    assert.deepEqual(first, {
+      type: "mutation_result",
+      code: "runtime_stopped",
+      stopped: true,
+      runtimeId: launch.runtime.runtimeId,
+      revision: 2,
+      idempotentReplay: false,
+      auditId: first.auditId,
+    });
+    assert.match(first.auditId, /^audit-/);
+    assert.deepEqual(await runCli(stopArgs), { ...first, idempotentReplay: true });
+    assert.deepEqual(await runCli(staleArgs), { ...stale, idempotentReplay: true });
+
+    const lifecycle = JSON.parse(
+      await readFile(join(dataDir, "runtime-lifecycle.json"), "utf8"),
+    );
+    assert.deepEqual(lifecycle, {
+      revision: 2,
+      status: "stopped",
+      runtimeId: launch.runtime.runtimeId,
+    });
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const accepted = audits.find((entry) => entry.auditId === first.auditId);
+    assert.equal(accepted.action, "runtime.stop");
+    assert.equal(accepted.outcome, "accepted");
+    assert.deepEqual({
+      authorizationClass: accepted.details.authorizationClass,
+      expectedRevision: accepted.details.expectedRevision,
+      actualRevision: accepted.details.actualRevision,
+      resultingRevision: accepted.details.resultingRevision,
+      runtimeId: accepted.details.runtimeId,
+    }, {
+      authorizationClass: "user_runtime_lifecycle",
+      expectedRevision: 1,
+      actualRevision: 1,
+      resultingRevision: 2,
+      runtimeId: launch.runtime.runtimeId,
+    });
+    assert.match(accepted.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
   } finally {
     await stopAndRemove(dataDir);
   }

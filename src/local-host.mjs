@@ -13,20 +13,25 @@ import {
   releaseVersion,
   writeFrame,
 } from "./protocol.mjs";
+import { ensureHostIdentity } from "./host-identity.mjs";
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
   let mode = "normal";
+  let dataDir = process.cwd();
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--mode") {
       mode = argv[index + 1] ?? mode;
       index += 1;
+    } else if (argv[index] === "--data-dir") {
+      dataDir = argv[index + 1] ?? dataDir;
+      index += 1;
     }
   }
-  return { mode };
+  return { mode, dataDir };
 };
 
-const { mode } = parseArgs(process.argv.slice(2));
+const { mode, dataDir } = parseArgs(process.argv.slice(2));
 
 const writeMalformedFrame = () => {
   const header = Buffer.alloc(4);
@@ -37,6 +42,7 @@ const writeMalformedFrame = () => {
 /**
  * @param {
  *   | "controller_identity_invalid"
+ *   | "controller_host_identity_mismatch"
  *   | "controller_protocol_major_mismatch"
  *   | "controller_capability_unsupported"
  *   | "controller_schema_mismatch"
@@ -63,9 +69,21 @@ const main = async () => {
     await new Promise(() => {});
     return;
   }
+  if (mode === "delayed-ack") {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 
-  if (hello.identity !== "controller-runtime" || hello.expectedPeerIdentity !== "local-host") {
+  const persistedHostIdentity = await ensureHostIdentity(dataDir);
+  if (
+    hello.identity !== "controller-runtime"
+    || !/^runtime-[a-f0-9]{24}$/.test(hello.controllerId)
+    || hello.expectedPeerIdentity !== "local-host"
+  ) {
     rejectHandshake("controller_identity_invalid");
+    return;
+  }
+  if (hello.expectedHostId !== persistedHostIdentity.hostId) {
+    rejectHandshake("controller_host_identity_mismatch");
     return;
   }
   if (hello.protocol.major !== protocolVersion.major) {
@@ -93,7 +111,10 @@ const main = async () => {
   const major = mode === "incompatible-major"
     ? protocolVersion.major + 1
     : protocolVersion.major;
-  const identity = mode === "unexpected-identity" ? "unexpected-host" : "local-host";
+  const identity = "local-host";
+  const hostId = mode === "unexpected-identity"
+    ? `host-${"0".repeat(24)}`
+    : persistedHostIdentity.hostId;
   const requiredCapabilities = mode === "unknown-required-capability"
     ? ["sandking.control.slice-1", "sandking.future-required"]
     : ["sandking.control.slice-1"];
@@ -113,7 +134,9 @@ const main = async () => {
     },
     release: releaseVersion,
     identity: secretLeaked ? "controller-secret-leaked" : identity,
+    hostId,
     peerIdentity: "controller-runtime",
+    peerControllerId: hello.controllerId,
     capabilities: {
       required: requiredCapabilities,
       optional: ["sandking.bulk-stream.v1"],

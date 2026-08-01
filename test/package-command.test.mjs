@@ -26,6 +26,7 @@ test("the stable sandking command is public, executable, and contains module-rel
     "src/runtime.mjs",
     "src/runtime-daemon.mjs",
     "src/local-host.mjs",
+    "src/host-identity.mjs",
     "src/protocol.mjs",
     "src/browser-protocol.mjs",
     "src/cockpit.js",
