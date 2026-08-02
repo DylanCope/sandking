@@ -33,6 +33,18 @@ const capabilities = Object.freeze([
   "controller.session.stable-identity",
   "controller.session.typed-exit",
 ]);
+const baseSessionCapabilities = Object.freeze([
+  "controller.session.start",
+  "controller.session.interactive",
+  "controller.session.terminate",
+]);
+const pluginCapabilities = Object.freeze([
+  "controller.work-context.inspect",
+  "controller.launch-request.prepare",
+  "controller.launch-request.decide",
+  "controller.harness-run.start",
+  "controller.session.typed-exit",
+]);
 const adapterPath = fileURLToPath(import.meta.url);
 const pluginDirectory = fileURLToPath(new URL("./claude-controller-plugin", import.meta.url));
 const controllerSessionPattern = /^controller-session-[a-f0-9]{24}$/;
@@ -45,6 +57,7 @@ const claudeStopFailureTypes = new Set([
   "oauth_org_not_allowed",
   "billing_error",
   "rate_limit",
+  "overloaded",
   "server_error",
   "network_error",
   "invalid_request",
@@ -77,7 +90,7 @@ export const classifyClaudeStopFailure = (input) => {
       source: "claude-stop-failure",
     };
   }
-  if (input.error === "server_error") {
+  if (input.error === "overloaded" || input.error === "server_error") {
     return { code: "provider_outage", retryable: true, source: "claude-stop-failure" };
   }
   const details = "error_details" in input && typeof input.error_details === "string"
@@ -167,12 +180,13 @@ const invokeClaudeMetadataCommand = async (executable, args) => execFileAsync(
   },
 );
 
-const baseProbe = () => ({
+/** @param {string[]} detectedCapabilities */
+const baseProbe = (detectedCapabilities) => ({
   type: "provider.adapter.probe",
   adapterProtocol,
   adapterId,
   provider,
-  capabilities,
+  capabilities: detectedCapabilities,
   terminal: {
     ptyRequired: true,
     runtimeOwnershipRequired: true,
@@ -180,10 +194,44 @@ const baseProbe = () => ({
   integration: {
     pluginId: "sandking-controller",
     pluginVersion: "1.0.0",
-    scope: "user",
+    scope: "session",
+    loading: "--plugin-dir",
+    boundary: "session-plugin-private-typed-shim",
     credentialsTransferred: false,
   },
 });
+
+/** @param {string} executable */
+const detectClaudeCapabilities = async (executable) => {
+  const detected = new Set();
+  let help;
+  try {
+    help = (await invokeClaudeMetadataCommand(executable, ["--help"])).stdout;
+  } catch {
+    return [];
+  }
+  for (const capability of baseSessionCapabilities) detected.add(capability);
+  if (/(?:^|\s)--session-id(?:[=\s,]|$)/m.test(help)) {
+    detected.add("controller.session.stable-identity");
+  }
+  if (/(?:^|\s)--plugin-dir(?:[=\s,]|$)/m.test(help)) {
+    try {
+      const result = await invokeClaudeMetadataCommand(executable, [
+        "--plugin-dir", pluginDirectory, "plugin", "list", "--json",
+      ]);
+      const pluginInventory = JSON.stringify(JSON.parse(result.stdout));
+      if (
+        pluginInventory.includes("sandking-controller")
+        && pluginInventory.includes("1.0.0")
+      ) {
+        for (const capability of pluginCapabilities) detected.add(capability);
+      }
+    } catch {
+      // A CLI that cannot load and enumerate the shipped plugin does not support its capabilities.
+    }
+  }
+  return capabilities.filter((capability) => detected.has(capability));
+};
 
 export const probeClaude = async () => {
   const executable = process.env.SANDKING_CLAUDE_EXECUTABLE ?? "claude";
@@ -198,7 +246,7 @@ export const probeClaude = async () => {
     const unavailable = error && typeof error === "object" && "code" in error
       && (error.code === "ENOENT" || error.code === "EACCES");
     return {
-      ...baseProbe(),
+      ...baseProbe([]),
       availability: {
         status: "unavailable",
         command: "claude",
@@ -212,6 +260,20 @@ export const probeClaude = async () => {
     };
   }
 
+  const detectedCapabilities = await detectClaudeCapabilities(executable);
+  if (detectedCapabilities.length !== capabilities.length) {
+    return {
+      ...baseProbe(detectedCapabilities),
+      availability: {
+        status: "unavailable",
+        command: "claude",
+        version,
+        authentication: { status: "unknown", source: "destination-local" },
+        failure: { code: "provider_cli_incompatible", retryable: false },
+      },
+    };
+  }
+
   try {
     const result = await invokeClaudeMetadataCommand(executable, ["auth", "status"]);
     const status = JSON.parse(result.stdout);
@@ -219,7 +281,7 @@ export const probeClaude = async () => {
       throw new Error("provider_authentication_missing");
     }
     return {
-      ...baseProbe(),
+      ...baseProbe(detectedCapabilities),
       availability: {
         status: "available",
         command: "claude",
@@ -230,7 +292,7 @@ export const probeClaude = async () => {
     };
   } catch {
     return {
-      ...baseProbe(),
+      ...baseProbe(detectedCapabilities),
       availability: {
         status: "unauthenticated",
         command: "claude",
@@ -296,7 +358,9 @@ const prepareClaude = async (argv) => {
       pluginDirectory,
       pluginId: "sandking-controller",
       pluginVersion: "1.0.0",
-      scope: "user",
+      scope: "session",
+      loading: "--plugin-dir",
+      boundary: "session-plugin-private-typed-shim",
       credentialsTransferred: false,
     },
     command: {
@@ -759,7 +823,7 @@ const main = async () => {
   throw new Error("provider_adapter_command_invalid");
 };
 
-if (process.argv[1] === new URL(import.meta.url).pathname) {
+if (process.argv[1] === adapterPath) {
   try {
     await main();
   } catch (error) {

@@ -213,6 +213,11 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       expectedRevision: 1,
       idempotencyKey: operations[3].input.idempotencyKey,
     });
+    const sessionStartAudit = audits.find((entry) =>
+      entry.action === "controller.session.start"
+      && entry.outcome === "accepted"
+      && entry.details.sessionId === session.sessionId);
+    assert.equal(sessionStartAudit?.details.controllerSessionId, session.sessionId);
     assert.ok(audits.some((entry) =>
       entry.action === "controller.provider.operation"
       && entry.outcome === "accepted"

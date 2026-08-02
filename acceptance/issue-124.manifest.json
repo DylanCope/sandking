@@ -24,7 +24,7 @@
       "transport": "served Cockpit -> shared focused-session HTTP and opaque WebSocket seams -> provider-neutral Controller runtime -> runtime-owned PTY -> production Claude adapter wrapper -> installed Claude Code CLI with bundled plugin -> private typed shim channel -> existing work-context, Launch-request, approval, Harness-run, and observation operations",
       "initialState": "one explicitly selected local Project and pinned conformance Harness; destination-local Claude installation/authentication may be absent during deterministic merge verification; no credentials are transferred",
       "actions": [
-        "probe installed Claude Code without invoking a model and report version, capabilities, destination-local authentication state, stable-session support, and typed availability",
+        "probe installed Claude Code without invoking a model, verify its session-ID and session-plugin loading surfaces, enumerate the bundled plugin, and report only demonstrated capabilities with destination-local authentication state and typed availability",
         "prepare a stable --session-id and --plugin-dir command with a sanitized environment that excludes credential-bearing variables and NODE_OPTIONS",
         "open the production Claude adapter through the same Cockpit Project-focused Controller action used by conformance",
         "launch the installed CLI in a runtime-owned PTY rooted at the selected Project and keep it alive across browser disconnection",
@@ -38,6 +38,7 @@
         "conformance remains the deterministic merge oracle while Claude uses the same public Cockpit, Controller-runtime, work-context, preview, approval, and observation interfaces",
         "the Controller runtime owns the PTY and provider lifecycle while the adapter owns only probe, command preparation, plugin shim forwarding, and typed provider reasons",
         "the controller-assigned supported CLI session UUID is stable and retained independently from the Sand-King Controller-session identity",
+        "the bundled plugin is truthfully identified as session-loaded through --plugin-dir with a runtime-private typed CLI shim; no user-installed plugin record is claimed",
         "only the owning focused Controller session can submit the exact request ID and expected revision",
         "approval remains separate from Harness-run start and browser interaction cannot assert approval",
         "browser disconnection detaches without terminating the Claude process",
@@ -88,6 +89,7 @@
     ],
     "typedProviderOutcomes": [
       "provider_cli_unavailable",
+      "provider_cli_incompatible",
       "provider_authentication_missing",
       "provider_authentication_failed",
       "provider_network_unavailable",

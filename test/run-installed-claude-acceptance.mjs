@@ -186,6 +186,13 @@ try {
       credentialSource: "destination-local",
       credentialsTransferred: false,
       modelInteractionPerformedByHuman: true,
+      integration: {
+        pluginId: probe.integration.pluginId,
+        pluginVersion: probe.integration.pluginVersion,
+        pluginScope: probe.integration.scope,
+        pluginLoading: probe.integration.loading,
+        shimBoundary: probe.integration.boundary,
+      },
     },
     observations: {
       projectFocusedControllerSessionOpened: true,

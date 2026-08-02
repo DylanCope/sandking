@@ -83,6 +83,7 @@ test("issue 124 manifest traces the installed Claude Controller slice", () => {
   assert.ok(scenario.prohibitedSideEffects.includes("dangerous mode"));
   assert.deepEqual(manifest.verification.typedProviderOutcomes, [
     "provider_cli_unavailable",
+    "provider_cli_incompatible",
     "provider_authentication_missing",
     "provider_authentication_failed",
     "provider_network_unavailable",
@@ -151,9 +152,23 @@ test("retained issue 124 evidence proves the provider-neutral installed-CLI cont
     adapterProtocol: "1.0.0",
     reportedVersion: "2.1.141",
     destinationLocalAuthentication: true,
+    capabilityProbe: "non-model-cli-help-and-session-plugin-inventory",
+    reportedCapabilities: [
+      "controller.session.start",
+      "controller.session.interactive",
+      "controller.session.terminate",
+      "controller.work-context.inspect",
+      "controller.launch-request.prepare",
+      "controller.launch-request.decide",
+      "controller.harness-run.start",
+      "controller.session.stable-identity",
+      "controller.session.typed-exit",
+    ],
     pluginId: "sandking-controller",
     pluginVersion: "1.0.0",
-    pluginScope: "user",
+    pluginScope: "session",
+    pluginLoading: "--plugin-dir",
+    shimBoundary: "session-plugin-private-typed-shim",
   });
   assert.match(evidence.focusedSession.sessionId, /^controller-session-[a-f0-9]{24}$/);
   assert.match(evidence.focusedSession.providerSessionId,

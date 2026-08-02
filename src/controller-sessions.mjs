@@ -54,7 +54,7 @@ const providerSchema = z.discriminatedUnion("providerId", [
     fixture: z.literal(false),
   }).strict(),
 ]);
-const capabilitiesSchema = z.array(z.enum([
+const reportedCapabilitiesSchema = z.array(z.enum([
   "controller.session.start",
   "controller.session.interactive",
   "controller.session.terminate",
@@ -64,7 +64,8 @@ const capabilitiesSchema = z.array(z.enum([
   "controller.harness-run.start",
   "controller.session.stable-identity",
   "controller.session.typed-exit",
-])).min(3).max(9).refine((capabilities) =>
+])).max(9).refine((capabilities) => new Set(capabilities).size === capabilities.length);
+const operationalCapabilitiesSchema = reportedCapabilitiesSchema.refine((capabilities) =>
   capabilities.includes("controller.session.start")
   && capabilities.includes("controller.session.interactive")
   && capabilities.includes("controller.session.terminate"));
@@ -80,6 +81,7 @@ const availabilitySchema = z.object({
     code: z.enum([
       "provider_cli_unavailable",
       "provider_cli_probe_failed",
+      "provider_cli_incompatible",
       "provider_authentication_missing",
     ]),
     retryable: z.boolean(),
@@ -88,7 +90,9 @@ const availabilitySchema = z.object({
 const integrationSchema = z.object({
   pluginId: z.literal("sandking-controller"),
   pluginVersion: z.literal("1.0.0"),
-  scope: z.literal("user"),
+  scope: z.literal("session"),
+  loading: z.literal("--plugin-dir"),
+  boundary: z.literal("session-plugin-private-typed-shim"),
   credentialsTransferred: z.literal(false),
 }).strict();
 const probeSchema = z.object({
@@ -97,7 +101,7 @@ const probeSchema = z.object({
   adapterId: adapterIdSchema,
   provider: providerSchema,
   availability: availabilitySchema.optional(),
-  capabilities: capabilitiesSchema,
+  capabilities: reportedCapabilitiesSchema,
   terminal: z.object({
     ptyRequired: z.literal(true),
     runtimeOwnershipRequired: z.literal(true),
@@ -111,6 +115,12 @@ const probeSchema = z.object({
   if (probe.provider.providerId === "claude-code" && !probe.availability) {
     context.addIssue({ code: "custom", message: "Claude availability missing" });
   }
+  if (
+    probe.availability?.status === "available"
+    && probe.capabilities.length !== 9
+  ) {
+    context.addIssue({ code: "custom", message: "available provider capabilities incomplete" });
+  }
 });
 const sessionIdentitySchema = z.object({
   stable: z.literal(true),
@@ -122,7 +132,7 @@ const preparedSchema = z.object({
   adapterId: adapterIdSchema,
   provider: providerSchema,
   providerSessionId: providerSessionIdSchema,
-  capabilities: capabilitiesSchema,
+  capabilities: operationalCapabilitiesSchema,
   terminal: z.object({
     ptyRequired: z.literal(true),
     columns: z.number().int().min(20).max(500),
@@ -176,6 +186,7 @@ const providerExitReasonSchema = z.object({
   code: z.enum([
     "provider_session_completed",
     "provider_cli_unavailable",
+    "provider_cli_incompatible",
     "provider_authentication_missing",
     "provider_authentication_failed",
     "provider_network_unavailable",
@@ -246,7 +257,7 @@ const retainedSessionSchema = z.object({
   providerId: providerIdSchema,
   providerAdapterId: adapterIdSchema,
   adapterProtocol: z.string().regex(/^1\.[0-9]+\.[0-9]+$/),
-  capabilities: capabilitiesSchema,
+  capabilities: operationalCapabilitiesSchema,
   providerAvailability: availabilitySchema.optional(),
   sessionIdentity: sessionIdentitySchema.optional(),
   workContextId: identifierSchema,
@@ -350,6 +361,7 @@ const invokeAdapter = async (
       const typedCode = new Set([
         "provider_cli_unavailable",
         "provider_cli_probe_failed",
+        "provider_cli_incompatible",
         "provider_authentication_missing",
       ]).has(diagnostic) ? diagnostic : "provider_adapter_failed";
       finish(new ControllerSessionError(typedCode));
@@ -750,6 +762,7 @@ export const createControllerSessionManager = async (options) => {
           ? error.code
           : "provider_adapter_protocol_invalid",
         sessionId,
+        controllerSessionId: sessionId,
         workContextId: selectedWorkContext.workContextId,
         providerId: selectedProviderId,
         providerAdapterId: definition.adapterId,
@@ -965,6 +978,7 @@ export const createControllerSessionManager = async (options) => {
     await persist();
     await options.recordAudit("controller.session.start", "accepted", {
       sessionId,
+      controllerSessionId: sessionId,
       providerSessionId,
       providerId: prepared.provider.providerId,
       providerAdapterId: prepared.adapterId,

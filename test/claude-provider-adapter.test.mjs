@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,10 @@ test("the Claude adapter probes destination-local CLI readiness without invoking
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--version") {
   process.stdout.write("2.1.141 (Claude Code)\\n");
+} else if (args.length === 1 && args[0] === "--help") {
+  process.stdout.write("Usage: claude [options]\\n  --session-id <uuid>\\n  --plugin-dir <path>\\n");
+} else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
+  process.stdout.write(JSON.stringify([{ name: "sandking-controller", version: "1.0.0" }]));
 } else if (args.join(" ") === "auth status") {
   process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }));
 } else {
@@ -79,11 +83,48 @@ if (args.length === 1 && args[0] === "--version") {
       integration: {
         pluginId: "sandking-controller",
         pluginVersion: "1.0.0",
-        scope: "user",
+        scope: "session",
+        loading: "--plugin-dir",
+        boundary: "session-plugin-private-typed-shim",
         credentialsTransferred: false,
       },
     });
     assert.doesNotMatch(stdout, /probe-secret-must-not-be-used/);
+  } finally {
+    await rm(fixtureDirectory, { recursive: true, force: true });
+  }
+});
+
+test("the Claude adapter does not advertise capabilities an installed CLI cannot prove", async () => {
+  const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-incompatible-"));
+  const fakeClaudePath = join(fixtureDirectory, "claude");
+  await writeFile(fakeClaudePath, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.length === 1 && args[0] === "--version") {
+  process.stdout.write("2.1.141 (Claude Code)\\n");
+} else if (args.join(" ") === "auth status") {
+  process.stdout.write('{"loggedIn":true}');
+} else {
+  process.stderr.write("unsupported CLI surface\\n");
+  process.exitCode = 97;
+}
+`, { mode: 0o700 });
+  await chmod(fakeClaudePath, 0o700);
+
+  try {
+    const probe = JSON.parse((await execFileAsync(process.execPath, [adapterPath, "probe"], {
+      env: {
+        LANG: "C.UTF-8",
+        PATH: process.env.PATH,
+        SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
+      },
+    })).stdout);
+    assert.equal(probe.availability.status, "unavailable");
+    assert.deepEqual(probe.availability.failure, {
+      code: "provider_cli_incompatible",
+      retryable: false,
+    });
+    assert.deepEqual(probe.capabilities, []);
   } finally {
     await rm(fixtureDirectory, { recursive: true, force: true });
   }
@@ -95,7 +136,11 @@ test("the Claude adapter prepares a stable plugin-backed session with a sanitize
   await writeFile(fakeClaudePath, `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");
-else if (args.join(" ") === "auth status") process.stdout.write('{"loggedIn":true}');
+else if (args[0] === "--help") {
+  process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+} else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
+  process.stdout.write('[{"name":"sandking-controller","version":"1.0.0"}]');
+} else if (args.join(" ") === "auth status") process.stdout.write('{"loggedIn":true}');
 else process.exitCode = 97;
 `, { mode: 0o700 });
   await chmod(fakeClaudePath, 0o700);
@@ -143,6 +188,9 @@ else process.exitCode = 97;
     assert.equal(prepared.command.environment.NODE_OPTIONS, undefined);
     assert.match(prepared.integration.pluginDirectory,
       /src\/claude-controller-plugin$/);
+    assert.equal(prepared.integration.scope, "session");
+    assert.equal(prepared.integration.loading, "--plugin-dir");
+    assert.equal(prepared.integration.boundary, "session-plugin-private-typed-shim");
     assert.deepEqual(prepared.command.providerArgs, [
       "--session-id", providerSessionId,
       "--plugin-dir", prepared.integration.pluginDirectory,
@@ -160,6 +208,7 @@ test("the Claude adapter keeps provider failures distinct from adapter failure",
     [{ error: "oauth_org_not_allowed" }, "provider_authentication_failed", false],
     [{ error: "rate_limit" }, "provider_quota_unavailable", true],
     [{ error: "billing_error" }, "provider_quota_unavailable", false],
+    [{ error: "overloaded" }, "provider_outage", true],
     [{ error: "server_error" }, "provider_outage", true],
     [{ error: "network_error" }, "provider_network_unavailable", true],
     [{ error: "unknown", error_details: "DNS lookup failed" },
@@ -186,8 +235,12 @@ test("the Claude adapter reports missing CLI and destination-local authenticatio
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-unavailable-"));
   const unauthenticatedClaude = join(fixtureDirectory, "claude");
   await writeFile(unauthenticatedClaude, `#!/usr/bin/env node
-if (process.argv[2] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");
-else if (process.argv.slice(2).join(" ") === "auth status") {
+const args = process.argv.slice(2);
+if (args[0] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");
+else if (args[0] === "--help") process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
+  process.stdout.write('[{"name":"sandking-controller","version":"1.0.0"}]');
+} else if (args.join(" ") === "auth status") {
   process.stdout.write('{"loggedIn":false}');
   process.exitCode = 1;
 } else process.exitCode = 97;
@@ -220,6 +273,7 @@ else if (process.argv.slice(2).join(" ") === "auth status") {
       authentication: { status: "unknown", source: "destination-local" },
       failure: { code: "provider_cli_unavailable", retryable: true },
     });
+    assert.deepEqual(missing.capabilities, []);
     assert.deepEqual(unauthenticated.availability, {
       status: "unauthenticated",
       command: "claude",
@@ -227,6 +281,37 @@ else if (process.argv.slice(2).join(" ") === "auth status") {
       authentication: { status: "missing", source: "destination-local" },
       failure: { code: "provider_authentication_missing", retryable: false },
     });
+    assert.equal(unauthenticated.capabilities.length, 9);
+  } finally {
+    await rm(fixtureDirectory, { recursive: true, force: true });
+  }
+});
+
+test("the Claude adapter entry point executes from a URL-encoded filesystem path", async () => {
+  const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-path-"));
+  const copiedAdapterPath = join(fixtureDirectory, "adapter with spaces.mjs");
+  const fakeClaudePath = join(fixtureDirectory, "claude");
+  await copyFile(adapterPath, copiedAdapterPath);
+  await writeFile(fakeClaudePath, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");
+else if (args[0] === "--help") process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
+  process.stdout.write('[{"name":"sandking-controller","version":"1.0.0"}]');
+} else if (args.join(" ") === "auth status") process.stdout.write('{"loggedIn":true}');
+else process.exitCode = 97;
+`, { mode: 0o700 });
+  await chmod(fakeClaudePath, 0o700);
+
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [copiedAdapterPath, "probe"], {
+      env: {
+        LANG: "C.UTF-8",
+        PATH: process.env.PATH,
+        SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
+      },
+    });
+    assert.equal(JSON.parse(stdout).availability.status, "available");
   } finally {
     await rm(fixtureDirectory, { recursive: true, force: true });
   }

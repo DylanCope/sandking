@@ -28,6 +28,10 @@ test("local-walking-skeleton/operates-installed-claude-controller uses the share
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--version") {
   process.stdout.write("2.1.141 (Claude Code)\\n");
+} else if (args.length === 1 && args[0] === "--help") {
+  process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+} else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
+  process.stdout.write('[{"name":"sandking-controller","version":"1.0.0"}]');
 } else if (args.join(" ") === "auth status") {
   process.stdout.write('{"loggedIn":true}');
 } else {
@@ -139,9 +143,13 @@ if (args.length === 1 && args[0] === "--version") {
             adapterProtocol: retained.adapterProtocol,
             reportedVersion: "2.1.141",
             destinationLocalAuthentication: true,
+            capabilityProbe: "non-model-cli-help-and-session-plugin-inventory",
+            reportedCapabilities: retained.capabilities,
             pluginId: "sandking-controller",
             pluginVersion: "1.0.0",
-            pluginScope: "user",
+            pluginScope: "session",
+            pluginLoading: "--plugin-dir",
+            shimBoundary: "session-plugin-private-typed-shim",
           },
           focusedSession: {
             sessionId: controllerSessionId,
@@ -165,6 +173,7 @@ if (args.length === 1 && args[0] === "--version") {
           ],
           typedProviderOutcomesTested: [
             "provider_cli_unavailable",
+            "provider_cli_incompatible",
             "provider_authentication_missing",
             "provider_authentication_failed",
             "provider_network_unavailable",
