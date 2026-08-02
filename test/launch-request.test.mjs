@@ -63,6 +63,7 @@ test("preparation durably freezes a sanitized immutable Launch request without d
         return {
           adapterId: "conformance-harness-adapter-v1",
           adapterProtocol: "1.0.0",
+          adapterEntryPoint: "adapter.mjs",
           negotiatedCapabilities: ["harness.launch.prepare.v1"],
           suppliedCapabilities: ["github.issues.read", "project.git.read"],
           sanitizedPreview: {
@@ -174,6 +175,7 @@ test("only the owning focused Controller decides the exact revision idempotently
       prepareHarness: async () => ({
         adapterId: "conformance-harness-adapter-v1",
         adapterProtocol: "1.0.0",
+        adapterEntryPoint: "adapter.mjs",
         negotiatedCapabilities: ["harness.launch.prepare.v1"],
         suppliedCapabilities: ["github.issues.read", "project.git.read"],
         sanitizedPreview: { summary: "Delegate issue #119", secretFree: true },
@@ -441,6 +443,7 @@ test("the pinned conformance Harness negotiates a side-effect-free preparation s
     assert.deepEqual(result, {
       adapterId: "conformance-harness-adapter-v1",
       adapterProtocol: "1.0.0",
+      adapterEntryPoint: "adapters/conformance.mjs",
       negotiatedCapabilities: ["harness.launch.prepare.v1"],
       suppliedCapabilities: ["github.issues.read", "project.git.read"],
       sanitizedPreview: {
@@ -479,11 +482,11 @@ test("the pinned conformance Harness negotiates a side-effect-free preparation s
       expectedRevision: 0,
       expiresInSeconds: 300,
     });
-    const adapterPath = join(context.harnessWorkspacePath, "run.mjs");
+    const adapterPath = join(context.harnessWorkspacePath, "adapters", "conformance.mjs");
     const adapterSource = await readFile(adapterPath, "utf8");
     await execFileAsync("git", [
       "-C", context.harnessWorkspacePath,
-      "update-index", "--assume-unchanged", "--", "run.mjs",
+      "update-index", "--assume-unchanged", "--", "adapters/conformance.mjs",
     ]);
     await writeFile(adapterPath, `${adapterSource}\n// hidden material adapter drift\n`);
     assert.equal((await execFileAsync("git", [
@@ -527,6 +530,7 @@ test("expiry, rejection, and material change are terminal and require a new Laun
       prepareHarness: async () => ({
         adapterId: "conformance-harness-adapter-v1",
         adapterProtocol: "1.0.0",
+        adapterEntryPoint: "adapter.mjs",
         negotiatedCapabilities: ["harness.launch.prepare.v1"],
         suppliedCapabilities: structuredClone(currentSuppliedCapabilities),
         sanitizedPreview: { summary: "Sanitized conformance preview", secretFree: true },
@@ -675,6 +679,7 @@ test("durable Launch requests and preparation outcomes are never silently evicte
     prepareHarness: async (_context, parameters) => ({
       adapterId: "conformance-harness-adapter-v1",
       adapterProtocol: "1.0.0",
+      adapterEntryPoint: "adapter.mjs",
       negotiatedCapabilities: ["harness.launch.prepare.v1"],
       suppliedCapabilities: ["github.issues.read", "project.git.read"],
       sanitizedPreview: {

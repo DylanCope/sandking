@@ -13,6 +13,7 @@ import {
   readFrame,
   readProtocolFrame,
   releaseVersion,
+  writeBulkFrame,
   writeFrame,
 } from "./protocol.mjs";
 import { acceptHostIdentity, readHostIdentity } from "./host-identity.mjs";
@@ -22,6 +23,7 @@ import {
   createLaunchRequestManager,
   prepareConformanceHarnessLaunch,
 } from "./launch-requests.mjs";
+import { createHarnessRunManager } from "./harness-runs.mjs";
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
@@ -347,6 +349,13 @@ const main = async () => {
     loadLaunchContext: projectRegistry.loadLaunchContext,
     prepareHarness: prepareConformanceHarnessLaunch,
   });
+  const harnessRuns = await createHarnessRunManager({
+    dataDir,
+    hostId: negotiatedHostId,
+    recordAudit: recordProjectAudit,
+    launchRequests,
+    loadLaunchContext: projectRegistry.loadLaunchContext,
+  });
 
   // The Host is a durable process boundary. It remains available after
   // negotiation and keeps control and opaque bulk frames structurally distinct.
@@ -395,6 +404,42 @@ const main = async () => {
     }
     if (frame.message.type === "launch.request.decision") {
       writeFrame(process.stdout, await launchRequests.decide(frame.message));
+      continue;
+    }
+    if (frame.message.type === "harness.run.start") {
+      writeFrame(process.stdout, await harnessRuns.start(frame.message));
+      continue;
+    }
+    if (frame.message.type === "harness.run.lookup") {
+      writeFrame(process.stdout, await harnessRuns.lookup(frame.message));
+      continue;
+    }
+    if (frame.message.type === "harness.run.observe") {
+      writeFrame(process.stdout, await harnessRuns.observe(frame.message));
+      continue;
+    }
+    if (frame.message.type === "harness.run.logs.get") {
+      try {
+        const logRange = await harnessRuns.readLogs(frame.message);
+        writeFrame(process.stdout, logRange.response);
+        writeBulkFrame(process.stdout, {
+          streamId: logRange.response.streamId,
+          sequence: logRange.response.range.start,
+          eof: logRange.response.range.eof,
+          data: logRange.data,
+        });
+      } catch (error) {
+        const code = error instanceof Error && error.message === "harness_log_range_invalid"
+          ? "harness_log_range_invalid"
+          : "harness_run_not_found";
+        writeFrame(process.stdout, {
+          type: "harness.run.operation.failure",
+          requestId: frame.message.requestId,
+          operation: frame.message.type,
+          code,
+          retryable: code === "harness_run_not_found",
+        });
+      }
       continue;
     }
     rejectHandshake("host_protocol_unexpected_message");

@@ -29,7 +29,8 @@ const capabilitiesSchema = z.array(z.enum([
   "controller.work-context.inspect",
   "controller.launch-request.prepare",
   "controller.launch-request.decide",
-])).min(3).max(6).refine((capabilities) =>
+  "controller.harness-run.start",
+])).min(3).max(7).refine((capabilities) =>
   capabilities.includes("controller.session.start")
   && capabilities.includes("controller.session.interactive")
   && capabilities.includes("controller.session.terminate"));
@@ -113,6 +114,8 @@ const providerOperationRequestSchema = z.object({
     "work-context.inspect",
     "launch-request.prepare",
     "launch-request.decide",
+    "harness-run.start",
+    "harness-run.lookup",
   ]),
   input: z.unknown(),
 }).strict();

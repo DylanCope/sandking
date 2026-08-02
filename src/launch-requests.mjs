@@ -1,9 +1,15 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
+import {
+  harnessAdapterProbeSchema,
+  harnessAdapterEntryPointSchema,
+  harnessPreparedEnvelopeSchema,
+  loadPinnedHarnessAdapter,
+  readHarnessAdapterFrame,
+} from "./harness-adapter-protocol.mjs";
 import { readJson, writePrivateJson } from "./private-state.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -75,6 +81,8 @@ export const launchRequestSchema = z.object({
   harness: z.object({
     harnessId: harnessIdSchema,
     adapterId: z.literal("conformance-harness-adapter-v1"),
+    adapterProtocol: z.literal("1.0.0"),
+    adapterEntryPoint: harnessAdapterEntryPointSchema,
     pinnedRevision: commitSchema,
   }).strict(),
   parameters: launchParametersSchema,
@@ -93,11 +101,23 @@ export const launchRequestSchema = z.object({
   }).strict(),
   preview: launchPreviewSchema,
   decision: decisionSchema.nullable(),
-  execution: z.object({
-    status: z.literal("not_started"),
-    harnessRunId: z.null(),
-    outcomeReference: z.null(),
-  }).strict(),
+  execution: z.discriminatedUnion("status", [
+    z.object({
+      status: z.literal("not_started"),
+      harnessRunId: z.null(),
+      outcomeReference: z.null(),
+    }).strict(),
+    z.object({
+      status: z.literal("running"),
+      harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
+      outcomeReference: z.null(),
+    }).strict(),
+    z.object({
+      status: z.enum(["succeeded", "failed", "cancelled"]),
+      harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
+      outcomeReference: z.string().regex(/^harness-outcome-[a-f0-9]{24}$/),
+    }).strict(),
+  ]),
 }).strict();
 
 const launchContextSchema = z.object({
@@ -126,6 +146,7 @@ const launchContextSchema = z.object({
 const harnessPreparationSchema = z.object({
   adapterId: z.literal("conformance-harness-adapter-v1"),
   adapterProtocol: z.literal("1.0.0"),
+  adapterEntryPoint: harnessAdapterEntryPointSchema,
   negotiatedCapabilities: z.array(z.literal("harness.launch.prepare.v1")).length(1),
   suppliedCapabilities: z.array(capabilitySchema).min(1).max(8),
   sanitizedPreview: z.object({
@@ -137,16 +158,6 @@ const harnessPreparationSchema = z.object({
     projectWrite: z.literal(false),
     harnessWorkspaceWrite: z.literal(false),
   }).strict(),
-}).strict();
-
-const harnessProbeSchema = z.object({
-  type: z.literal("harness.adapter.probe"),
-  adapterProtocol: z.literal("1.0.0"),
-  adapterId: z.literal("conformance-harness-adapter-v1"),
-  capabilities: z.tuple([z.literal("harness.launch.prepare.v1")]),
-}).strict();
-const harnessPreparedEnvelopeSchema = harnessPreparationSchema.extend({
-  type: z.literal("harness.launch.prepared"),
 }).strict();
 
 const retainedOutcomeSchema = z.object({
@@ -206,7 +217,6 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
   if (!workspacePath || !commitSchema.safeParse(pinnedRevision).success) {
     throw new Error("harness_workspace_invalid");
   }
-  const adapterPath = join(workspacePath, "run.mjs");
   const environment = { LANG: "C.UTF-8" };
   /** @param {...string} args */
   const git = async (...args) => (await execFileAsync("git", ["-C", workspacePath, ...args], {
@@ -214,35 +224,48 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
     timeout: 3_000,
     maxBuffer: 32_768,
   })).stdout.trim();
-  const assertPinnedAdapterBytes = async () => {
-    const [{ stdout: pinnedAdapterSource }, workspaceAdapterSource] = await Promise.all([
-      execFileAsync("git", [
-        "-C", workspacePath,
-        "show", `${pinnedRevision}:run.mjs`,
-      ], {
-        env: environment,
-        timeout: 3_000,
-        maxBuffer: 32_768,
-      }),
-      readFile(adapterPath, "utf8"),
-    ]);
-    if (workspaceAdapterSource !== pinnedAdapterSource) {
-      throw new Error("harness_workspace_invalid");
-    }
-  };
   /** @param {string[]} args */
   const invoke = async (args) => {
-    await assertPinnedAdapterBytes();
-    const { stdout } = await execFileAsync(process.execPath, [adapterPath, ...args], {
+    const pinnedAdapter = await loadPinnedHarnessAdapter({ workspacePath, pinnedRevision });
+    if (
+      pinnedAdapter.compatibility.adapterId !== context.harness.adapterId
+      || pinnedAdapter.compatibility.adapterProtocol
+        !== context.project.harness.boundedConfiguration.adapterProtocol
+    ) {
+      throw new Error("harness_adapter_protocol_invalid");
+    }
+    const child = spawn(process.execPath, [
+      "--input-type=module",
+      "--eval", pinnedAdapter.pinnedEntryPointSource,
+      pinnedAdapter.compatibility.entryPoint,
+      ...args,
+    ], {
       cwd: workspacePath,
       env: environment,
-      timeout: 3_000,
-      maxBuffer: 32_768,
+      stdio: ["ignore", "pipe", "pipe", "pipe"],
     });
+    const adapterChannel = child.stdio[3];
+    if (!adapterChannel || !("readable" in adapterChannel)) {
+      child.kill("SIGKILL");
+      throw new Error("harness_adapter_protocol_invalid");
+    }
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 3_000);
     try {
-      return JSON.parse(stdout);
+      const [message, exit] = await Promise.all([
+        readHarnessAdapterFrame(adapterChannel),
+        new Promise((resolve, reject) => {
+          child.once("error", reject);
+          child.once("exit", (code, signal) => resolve({ code, signal }));
+        }),
+      ]);
+      if (exit.code !== 0 || exit.signal !== null) {
+        throw new Error("harness_adapter_protocol_invalid");
+      }
+      return { message, compatibility: pinnedAdapter.compatibility };
     } catch {
       throw new Error("harness_adapter_protocol_invalid");
+    } finally {
+      clearTimeout(timeout);
     }
   };
   const observedRevision = await git("rev-parse", "HEAD");
@@ -250,23 +273,41 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
   if (observedRevision !== pinnedRevision || statusBefore !== "") {
     throw new Error("harness_workspace_invalid");
   }
-  const probe = harnessProbeSchema.parse(await invoke(["probe"]));
+  const probeInvocation = await invoke(["probe"]);
+  const probe = harnessAdapterProbeSchema.parse(probeInvocation.message);
+  if (
+    probe.adapterId !== probeInvocation.compatibility.adapterId
+    || probe.adapterProtocol !== probeInvocation.compatibility.adapterProtocol
+  ) {
+    throw new Error("harness_adapter_protocol_invalid");
+  }
   if (!probe.capabilities.includes("harness.launch.prepare.v1")) {
     throw new Error("harness_capability_unsupported");
   }
   const encodedParameters = Buffer.from(JSON.stringify(parsedParameters), "utf8")
     .toString("base64url");
-  const prepared = harnessPreparedEnvelopeSchema.parse(
-    await invoke(["prepare", encodedParameters]),
-  );
+  const preparedInvocation = await invoke(["prepare", encodedParameters]);
+  const prepared = harnessPreparedEnvelopeSchema.parse(preparedInvocation.message);
+  if (
+    prepared.adapterId !== preparedInvocation.compatibility.adapterId
+    || prepared.adapterProtocol !== preparedInvocation.compatibility.adapterProtocol
+  ) {
+    throw new Error("harness_adapter_protocol_invalid");
+  }
   const statusAfter = await git("status", "--porcelain");
   if (statusAfter !== statusBefore) {
     throw new Error("harness_preparation_side_effect_detected");
   }
-  await assertPinnedAdapterBytes();
+  const finalAdapter = await loadPinnedHarnessAdapter({ workspacePath, pinnedRevision });
+  if (finalAdapter.compatibility.entryPoint !== preparedInvocation.compatibility.entryPoint) {
+    throw new Error("harness_workspace_invalid");
+  }
   const { type, ...result } = prepared;
   void type;
-  return harnessPreparationSchema.parse(result);
+  return harnessPreparationSchema.parse({
+    ...result,
+    adapterEntryPoint: finalAdapter.compatibility.entryPoint,
+  });
 };
 
 /**
@@ -497,6 +538,8 @@ export const createLaunchRequestManager = async (options) => {
       harness: {
         harnessId: context.harness.harnessId,
         adapterId: context.harness.adapterId,
+        adapterProtocol: harnessPreparation.adapterProtocol,
+        adapterEntryPoint: harnessPreparation.adapterEntryPoint,
         pinnedRevision: context.harness.immutableRevision,
       },
       parameters: parameters.data,
@@ -552,6 +595,7 @@ export const createLaunchRequestManager = async (options) => {
       controllerSessionId: owner.data.controllerSessionId,
       adapterId: harnessPreparation.adapterId,
       adapterProtocol: harnessPreparation.adapterProtocol,
+      adapterEntryPoint: harnessPreparation.adapterEntryPoint,
       negotiatedCapabilities: harnessPreparation.negotiatedCapabilities,
       suppliedCapabilities: harnessPreparation.suppliedCapabilities,
       expiresAt,
@@ -930,7 +974,128 @@ export const createLaunchRequestManager = async (options) => {
     return response;
   });
 
-  return { prepare, decide };
+  /** @param {string} launchRequestId */
+  const get = async (launchRequestId) => {
+    const state = await readState();
+    const launchRequest = state.launchRequests.find((candidate) =>
+      candidate.launchRequestId === launchRequestId);
+    return launchRequest ? structuredClone(launchRequest) : null;
+  };
+
+  /**
+   * Permanently invalidate an approved, not-yet-started request when execution
+   * revalidation observes expiry or material drift. The earlier decision stays
+   * in history, but its single-use authorization can never become executable
+   * again if the observed state later returns to its approved shape.
+   * @param {{launchRequestId: string, expectedRevision: number, reason: "launch_request_expired" | "launch_request_stale", observedAt: string}} request
+   */
+  const expireExecutionAuthorization = (request) => withMutationLock(async () => {
+    const state = await readState();
+    const launchRequest = state.launchRequests.find((candidate) =>
+      candidate.launchRequestId === request.launchRequestId);
+    if (!launchRequest) {
+      throw new Error("launch_request_not_found");
+    }
+    if (launchRequest.status === "expired") {
+      return structuredClone(launchRequest);
+    }
+    if (launchRequest.status !== "approved" || launchRequest.execution.status !== "not_started") {
+      throw new Error("launch_request_terminal");
+    }
+    if (launchRequest.revision !== request.expectedRevision) {
+      throw new Error("mutation_revision_conflict");
+    }
+    const expiredAt = z.string().datetime().parse(request.observedAt);
+    launchRequest.status = "expired";
+    launchRequest.revision += 1;
+    await options.recordAudit("launch.request.expire", "observed", {
+      code: request.reason,
+      launchRequestId: launchRequest.launchRequestId,
+      hostId: launchRequest.host.hostId,
+      projectId: launchRequest.project.projectId,
+      harnessId: launchRequest.harness.harnessId,
+      controllerId: launchRequest.owner.controllerId,
+      controllerSessionId: launchRequest.owner.controllerSessionId,
+      expectedRevision: request.expectedRevision,
+      resultingRevision: launchRequest.revision,
+      expiredAt,
+      decision: "expired",
+      parameters: structuredClone(launchRequest.parameters),
+      executionOutcome: "not_started",
+      outcomeReference: null,
+    });
+    await writePrivateJson(statePath(options.dataDir), state);
+    return structuredClone(launchRequest);
+  });
+
+  /**
+   * Link the single approved Launch request to its canonical Harness run before
+   * supervision begins. This is an internal Host seam, not a second approval.
+   * @param {{launchRequestId: string, expectedRevision: number, harnessRunId: string}} request
+   */
+  const claimExecution = (request) => withMutationLock(async () => {
+    const state = await readState();
+    const launchRequest = state.launchRequests.find((candidate) =>
+      candidate.launchRequestId === request.launchRequestId);
+    if (!launchRequest) {
+      throw new Error("launch_request_not_found");
+    }
+    if (launchRequest.status !== "approved") {
+      throw new Error(launchRequest.status === "pending"
+        ? "launch_request_unapproved"
+        : "launch_request_terminal");
+    }
+    if (launchRequest.execution.status !== "not_started") {
+      if (launchRequest.execution.harnessRunId === request.harnessRunId) {
+        return structuredClone(launchRequest);
+      }
+      throw new Error("launch_request_already_started");
+    }
+    if (launchRequest.revision !== request.expectedRevision) {
+      throw new Error("mutation_revision_conflict");
+    }
+    launchRequest.revision += 1;
+    launchRequest.execution = {
+      status: "running",
+      harnessRunId: request.harnessRunId,
+      outcomeReference: null,
+    };
+    await writePrivateJson(statePath(options.dataDir), state);
+    return structuredClone(launchRequest);
+  });
+
+  /**
+   * Retain the structured terminal linkage without interpreting diagnostics.
+   * @param {{launchRequestId: string, harnessRunId: string, status: "succeeded" | "failed" | "cancelled", outcomeReference: string}} request
+   */
+  const completeExecution = (request) => withMutationLock(async () => {
+    const state = await readState();
+    const launchRequest = state.launchRequests.find((candidate) =>
+      candidate.launchRequestId === request.launchRequestId);
+    if (!launchRequest || launchRequest.execution.harnessRunId !== request.harnessRunId) {
+      throw new Error("launch_execution_link_invalid");
+    }
+    if (launchRequest.execution.status !== "running") {
+      return structuredClone(launchRequest);
+    }
+    launchRequest.revision += 1;
+    launchRequest.execution = {
+      status: request.status,
+      harnessRunId: request.harnessRunId,
+      outcomeReference: request.outcomeReference,
+    };
+    await writePrivateJson(statePath(options.dataDir), state);
+    return structuredClone(launchRequest);
+  });
+
+  return {
+    prepare,
+    decide,
+    get,
+    expireExecutionAuthorization,
+    claimExecution,
+    completeExecution,
+  };
 };
 
 export const launchRequestInternals = Object.freeze({ statePath });

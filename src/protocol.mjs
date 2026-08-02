@@ -7,6 +7,11 @@ import {
 import {
   launchRequestSchema,
 } from "./launch-requests.mjs";
+import {
+  harnessRunEventSchema,
+  harnessRunOutcomeSchema,
+  harnessRunSchema,
+} from "./harness-runs.mjs";
 
 const FRAME_HEADER_BYTES = 4;
 const CONTROL_CHANNEL = 1;
@@ -30,9 +35,10 @@ export const hostCapabilities = Object.freeze([
   "sandking.project-registration.v1",
   "sandking.conformance-harness-registration.v1",
   "sandking.launch-request.v1",
+  "sandking.harness-run.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-durable-launch-idempotency")
+  .update("sandking-host-control-schema-v1-with-supervised-harness-runs")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -442,6 +448,143 @@ const launchRequestDecisionFailureSchema = z.object({
   }).strict(),
 }).strip();
 
+const harnessRunAuthorizationClassSchema = z.literal("approved_launch_request_execution");
+const harnessRunStartSchema = z.object({
+  type: z.literal("harness.run.start"),
+  requestId: identifierSchema,
+  launchRequestId: z.string().regex(/^launch-request-[a-f0-9]{24}$/),
+  controllerId: runtimeIdSchema,
+  controllerSessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
+  authorizationClass: harnessRunAuthorizationClassSchema,
+  idempotencyKey: z.string().min(1).max(256),
+  expectedRevision: z.number().int().positive(),
+}).strip();
+const harnessRunStartResultSchema = z.object({
+  type: z.literal("harness.run.start.result"),
+  requestId: identifierSchema,
+  code: z.enum(["harness_run_created", "harness_run_found"]),
+  authorizationClass: harnessRunAuthorizationClassSchema,
+  idempotencyKeyHash: digestSchema,
+  expectedRevision: z.number().int().positive(),
+  launchRequestRevision: z.number().int().positive(),
+  revision: z.number().int().positive(),
+  idempotentReplay: z.boolean(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  run: harnessRunSchema,
+}).strip();
+const harnessRunStartFailureSchema = z.object({
+  type: z.literal("harness.run.start.failure"),
+  requestId: identifierSchema,
+  code: z.enum([
+    "mutation_contract_invalid",
+    "idempotency_key_conflict",
+    "mutation_revision_conflict",
+    "authorization_failed",
+    "launch_request_not_found",
+    "launch_request_unapproved",
+    "launch_request_terminal",
+    "launch_request_expired",
+    "launch_request_stale",
+    "launch_request_already_started",
+  ]),
+  retryable: z.boolean(),
+  authorizationClass: harnessRunAuthorizationClassSchema,
+  idempotencyKeyHash: digestSchema.nullable(),
+  expectedRevision: z.number().int().nonnegative().nullable(),
+  actualRevision: z.number().int().nonnegative(),
+  idempotentReplay: z.boolean(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  current: launchRequestSchema.nullable(),
+  prohibitedSideEffects: z.object({
+    harnessRunStarted: z.literal(false),
+    projectWrite: z.literal(false),
+  }).strict(),
+}).strip();
+const harnessRunLookupSchema = z.object({
+  type: z.literal("harness.run.lookup"),
+  requestId: identifierSchema,
+  idempotencyKey: z.string().min(1).max(256),
+}).strip();
+const harnessRunLookupResultSchema = z.object({
+  type: z.literal("harness.run.lookup.result"),
+  requestId: identifierSchema,
+  code: z.enum([
+    "harness_run_start_outcome_found",
+    "harness_run_start_outcome_absent",
+  ]),
+  idempotencyKeyHash: digestSchema.nullable(),
+  found: z.boolean(),
+  startOutcome: z.union([
+    harnessRunStartResultSchema,
+    harnessRunStartFailureSchema,
+  ]).nullable(),
+}).strip();
+const harnessRunObserveSchema = z.object({
+  type: z.literal("harness.run.observe"),
+  requestId: identifierSchema,
+  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/).nullable(),
+  afterSequence: z.number().int().nonnegative(),
+}).strip();
+const harnessLogStreamProjectionSchema = z.object({
+  streamId: z.string().regex(/^harness-log-[a-f0-9]{24}$/),
+  producer: z.enum(["stdout", "stderr"]),
+  availableStart: z.literal(0),
+  availableEnd: z.number().int().nonnegative(),
+  explicitRetrievalRequired: z.literal(true),
+  insertedIntoControllerConversation: z.literal(false),
+}).strict();
+const terminalEnvelopeValidationSchema = z.object({
+  adapterReadyObserved: z.boolean(),
+  validTerminalEnvelopeCount: z.number().int().nonnegative(),
+  exactlyOne: z.boolean(),
+  adapterChannelClosedObserved: z.boolean(),
+  processExitObserved: z.boolean(),
+}).strict();
+const harnessRunObserveResultSchema = z.object({
+  type: z.literal("harness.run.observe.result"),
+  requestId: identifierSchema,
+  code: z.enum(["harness_run_absent", "harness_run_observed"]),
+  mode: z.enum(["snapshot", "resume"]),
+  run: harnessRunSchema.nullable(),
+  events: z.array(harnessRunEventSchema).max(1_024),
+  nextSequence: z.number().int().nonnegative(),
+  outcome: harnessRunOutcomeSchema.nullable(),
+  logStreams: z.array(harnessLogStreamProjectionSchema).max(2),
+  terminalEnvelopeValidation: terminalEnvelopeValidationSchema.nullable(),
+}).strip();
+const harnessRunLogsGetSchema = z.object({
+  type: z.literal("harness.run.logs.get"),
+  requestId: identifierSchema,
+  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
+  producer: z.enum(["stdout", "stderr"]),
+  offset: z.number().int().nonnegative(),
+  limit: z.number().int().min(1).max(MAX_BULK_CHUNK_BYTES),
+}).strip();
+const harnessRunLogsResultSchema = z.object({
+  type: z.literal("harness.run.logs.result"),
+  requestId: identifierSchema,
+  code: z.literal("harness_log_range"),
+  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
+  producer: z.enum(["stdout", "stderr"]),
+  streamId: z.string().regex(/^harness-log-[a-f0-9]{24}$/),
+  range: z.object({
+    start: z.number().int().nonnegative(),
+    end: z.number().int().nonnegative(),
+    availableEnd: z.number().int().nonnegative(),
+    eof: z.boolean(),
+  }).strict(),
+  byteLength: z.number().int().nonnegative().max(MAX_BULK_CHUNK_BYTES),
+  sha256: digestSchema,
+  insertedIntoControllerConversation: z.literal(false),
+}).strip();
+const harnessRunOperationFailureSchema = z.object({
+  type: z.literal("harness.run.operation.failure"),
+  requestId: identifierSchema,
+  operation: z.enum(["harness.run.observe", "harness.run.logs.get"]),
+  code: z.enum(["harness_run_not_found", "harness_log_range_invalid"]),
+  retryable: z.boolean(),
+}).strip();
+
 export const controlMessageSchema = z.discriminatedUnion("type", [
   helloSchema,
   helloAckSchema,
@@ -468,6 +611,16 @@ export const controlMessageSchema = z.discriminatedUnion("type", [
   launchRequestDecisionSchema,
   launchRequestDecisionResultSchema,
   launchRequestDecisionFailureSchema,
+  harnessRunStartSchema,
+  harnessRunStartResultSchema,
+  harnessRunStartFailureSchema,
+  harnessRunLookupSchema,
+  harnessRunLookupResultSchema,
+  harnessRunObserveSchema,
+  harnessRunObserveResultSchema,
+  harnessRunLogsGetSchema,
+  harnessRunLogsResultSchema,
+  harnessRunOperationFailureSchema,
 ]);
 
 export class ProtocolError extends Error {

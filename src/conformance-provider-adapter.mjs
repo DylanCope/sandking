@@ -24,6 +24,7 @@ const capabilities = Object.freeze([
   "controller.work-context.inspect",
   "controller.launch-request.prepare",
   "controller.launch-request.decide",
+  "controller.harness-run.start",
 ]);
 const identifierPattern = /^[a-zA-Z0-9._:-]{1,160}$/;
 const providerSessionPattern = /^conformance-provider-session-[a-f0-9]{24}$/;
@@ -335,7 +336,40 @@ const run = async (argv) => {
       }
       process.stdout.write(
         `Launch request ${launchRequestId} ${decision} at revision ${outcome.revision}. `
-          + "No Harness run was started.\r\ncontroller> ",
+          + "No Harness run was started. "
+          + (decision === "approved"
+            ? `Start it exactly: start ${launchRequestId} ${outcome.revision}.`
+            : "")
+          + "\r\ncontroller> ",
+      );
+      return;
+    }
+    const startMatch = /^start (launch-request-[a-f0-9]{24}) ([1-9][0-9]*)$/.exec(line);
+    if (startMatch) {
+      const launchRequestId = startMatch[1];
+      const expectedRevision = Number(startMatch[2]);
+      const idempotencyKey =
+        `provider:${sessionId}:harness-run:start:${launchRequestId}:${expectedRevision}`;
+      let outcome;
+      try {
+        outcome = await control.request("harness-run.start", {
+          launchRequestId,
+          expectedRevision,
+          idempotencyKey,
+        });
+      } catch {
+        const lookup = await control.request("harness-run.lookup", { idempotencyKey });
+        outcome = lookup?.found ? lookup.startOutcome : null;
+      }
+      if (outcome?.type !== "harness.run.start.result") {
+        process.stdout.write(
+          `Harness run did not start: ${outcome?.code ?? "harness_run_start_indeterminate"}.\r\ncontroller> `,
+        );
+        return;
+      }
+      process.stdout.write(
+        `Harness run ${outcome.run.harnessRunId} ${outcome.code === "harness_run_created" ? "created" : "found"}. `
+          + "Terminal observation continues asynchronously in the Cockpit.\r\ncontroller> ",
       );
       return;
     }

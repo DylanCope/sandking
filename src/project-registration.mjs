@@ -16,6 +16,7 @@ const pathSchema = z.string().min(1).max(4_096).refine((value) => !value.include
 const commandSchema = z.string().min(1).max(256)
   .refine((value) => !/[\r\n\0]/.test(value));
 const checkIdSchema = z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9._-]*$/);
+const conformanceAdapterEntryPoint = "adapters/conformance.mjs";
 
 export const projectConfigurationSchema = z.object({
   issueWorkflow: z.object({
@@ -439,22 +440,35 @@ const initializeConformanceWorkspace = async (workspacePath) => {
     await writeFile(join(workspacePath, "harness.json"), `${JSON.stringify({
       schemaVersion: 1,
       name: "Sand-King Conformance Harness",
-      adapter: "conformance-harness-adapter-v1",
-      adapterProtocol: "1.0.0",
+      compatibility: {
+        adapterId: "conformance-harness-adapter-v1",
+        adapterProtocol: "1.0.0",
+        entryPoint: conformanceAdapterEntryPoint,
+      },
     }, null, 2)}\n`, { mode: 0o600 });
+    await mkdir(join(workspacePath, "adapters"), { mode: 0o700 });
     await writeFile(
-      join(workspacePath, "run.mjs"),
-      `const adapterProtocol = "1.0.0";
+      join(workspacePath, conformanceAdapterEntryPoint),
+      `import { writeSync } from "node:fs";
+
+const adapterProtocol = "1.0.0";
 const adapterId = "conformance-harness-adapter-v1";
-const capabilities = ["harness.launch.prepare.v1"];
+const capabilities = ["harness.launch.prepare.v1", "harness.run.v1"];
+const writeFrame = (message) => {
+  const body = Buffer.from(JSON.stringify(message), "utf8");
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(body.byteLength, 0);
+  writeSync(3, header);
+  writeSync(3, body);
+};
 const [command, encodedParameters] = process.argv.slice(2);
 if (command === "probe") {
-  process.stdout.write(JSON.stringify({
+  writeFrame({
     type: "harness.adapter.probe",
     adapterProtocol,
     adapterId,
     capabilities,
-  }));
+  });
 } else if (command === "prepare") {
   let parameters;
   try {
@@ -470,11 +484,11 @@ if (command === "probe") {
   ) {
     throw new Error("bounded_configuration_invalid");
   }
-  process.stdout.write(JSON.stringify({
+  writeFrame({
     type: "harness.launch.prepared",
     adapterProtocol,
     adapterId,
-    negotiatedCapabilities: capabilities,
+    negotiatedCapabilities: ["harness.launch.prepare.v1"],
     suppliedCapabilities: ["github.issues.read", "project.git.read"],
     sanitizedPreview: {
       summary: \`Delegate GitHub issue #\${parameters.issueNumber} on \${parameters.targetBranch} using the pinned conformance Harness.\`,
@@ -485,14 +499,97 @@ if (command === "probe") {
       projectWrite: false,
       harnessWorkspaceWrite: false,
     },
-  }));
+  });
+} else if (command === "run") {
+  let execution;
+  try {
+    execution = JSON.parse(Buffer.from(encodedParameters ?? "", "base64url").toString("utf8"));
+  } catch {
+    throw new Error("bounded_configuration_invalid");
+  }
+  if (
+    !/^harness-run-[a-f0-9]{24}$/.test(execution?.harnessRunId ?? "")
+    || !Number.isSafeInteger(execution?.parameters?.issueNumber)
+    || execution.parameters.issueNumber < 1
+    || execution.parameters.issueNumber > 999999999
+    || execution.parameters.targetBranch
+      !== \`sandcastle/issue-\${execution.parameters.issueNumber}\`
+  ) {
+    throw new Error("bounded_configuration_invalid");
+  }
+  const now = () => new Date().toISOString();
+  process.stdout.write(
+    \`Conformance diagnostic stdout for issue #\${execution.parameters.issueNumber}.\\n\`,
+  );
+  process.stderr.write(
+    \`Conformance diagnostic stderr for \${execution.parameters.targetBranch}.\\n\`,
+  );
+  writeFrame({
+    type: "harness.run.ready",
+    adapterProtocol,
+    adapterId,
+    harnessRunId: execution.harnessRunId,
+    capabilities: ["harness.run.v1"],
+    readyAt: now(),
+  });
+  if (execution.parameters.issueNumber === 999999999) {
+    process.stdout.write("SUCCESS: process exited cleanly without a terminal envelope.\\n");
+  } else {
+    const progressRecordCount = execution.parameters.issueNumber === 999999997 ? 1023 : 1;
+    if (progressRecordCount === 1) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    for (let index = 0; index < progressRecordCount; index += 1) {
+      writeFrame({
+        type: "harness.run.progress",
+        adapterProtocol,
+        adapterId,
+        harnessRunId: execution.harnessRunId,
+        record: {
+          recordId: execution.parameters.issueNumber === 999999997
+            ? \`progress-\${index.toString(16).padStart(24, "0")}\`
+            : \`progress-\${"1".repeat(24)}\`,
+          schemaVersion: "1.0.0",
+          type: "conformance.step",
+          parentRecordId: execution.parameters.issueNumber === 999999998
+            ? \`progress-\${"9".repeat(24)}\`
+            : null,
+          label: "Exercise approved conformance Launch",
+          summary: "The deterministic conformance workflow crossed its pinned adapter boundary.",
+          status: "complete",
+          timestamp: now(),
+          payload: { issueNumber: execution.parameters.issueNumber, index },
+        },
+      });
+    }
+    if (progressRecordCount === 1) {
+      await new Promise((resolve) => setTimeout(resolve, 140));
+    }
+    writeFrame({
+      type: "harness.run.terminal",
+      adapterProtocol,
+      adapterId,
+      harnessRunId: execution.harnessRunId,
+      terminalId: \`harness-terminal-\${"2".repeat(24)}\`,
+      status: "succeeded",
+      completedAt: now(),
+      result: {
+        kind: "conformance-result",
+        issueNumber: execution.parameters.issueNumber,
+        targetBranch: execution.parameters.targetBranch,
+      },
+    });
+  }
 } else {
   throw new Error("harness_adapter_command_invalid");
 }
 `,
       { mode: 0o700 },
     );
-    await execFileAsync("git", ["-C", workspacePath, "add", "--", "harness.json", "run.mjs"]);
+    await execFileAsync("git", [
+      "-C", workspacePath,
+      "add", "--", "harness.json", conformanceAdapterEntryPoint,
+    ]);
     await execFileAsync("git", [
       "-C", workspacePath,
       "-c", "user.name=Sand-King Conformance",
