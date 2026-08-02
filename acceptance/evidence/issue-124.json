@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 2,
+  "issue": 124,
+  "parentPrd": 125,
+  "sourceSpecification": {
+    "issue": 116,
+    "githubBodyUtf8Sha256": "34ebbde096564621b14a68d4bc64cdbd8ba9e448a42cb75c084d80c0e201308a",
+    "parentApprovedTextExportSha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23",
+    "parentApprovedHashBasis": "exact GitHub body UTF-8 plus one terminal LF",
+    "normalizationDifference": "one terminal LF",
+    "exactContentEquivalentAfterApprovedExportNormalization": true
+  },
+  "generatedFromCommit": "6f84024b6d338ac18520592769949a36d69e7b9f",
+  "recordedAt": "2026-08-02T02:26:57.851Z",
+  "scenario": "local-walking-skeleton/operates-installed-claude-controller",
+  "packagedPublicSeam": {
+    "command": "sandking",
+    "installed": true,
+    "launchedOutsideCheckout": true,
+    "tarballSha256": "96a3debaa5ad5a06cfba62809e9ff543f7c1ee9240c0ded726f61b91b690af02"
+  },
+  "runtime": {
+    "runtimeId": "runtime-5147b9e21c514c0fbf21ae79",
+    "hostId": "host-1530e45091c3eb17ffb29525"
+  },
+  "automatedClaudeContract": {
+    "executable": "no-model contract fixture",
+    "authenticatedInteractionFabricated": false,
+    "providerId": "claude-code",
+    "providerAdapterId": "claude-code-controller-adapter-v1",
+    "adapterProtocol": "1.0.0",
+    "reportedVersion": "2.1.141",
+    "destinationLocalAuthentication": true,
+    "pluginId": "sandking-controller",
+    "pluginVersion": "1.0.0",
+    "pluginScope": "user"
+  },
+  "focusedSession": {
+    "sessionId": "controller-session-83b9cb835ac34e4efc6c9806",
+    "providerSessionId": "2a84d4bc-d656-4176-9e9f-d45b1e475f66",
+    "stableProviderSessionIdentity": true,
+    "workContextId": "project-7fd50e9ee8fd4c4cd9aa422c",
+    "terminalStreamId": "controller-terminal-a4c28351043fc75004d68d54",
+    "ptyRuntimeOwned": true,
+    "survivedBrowserDisconnection": true,
+    "oneWritableAttachmentContractTested": true,
+    "readOnlyObserverContractTested": true
+  },
+  "sharedInterfaces": [
+    "cockpit.project-focused-session",
+    "controller-runtime.provider-session",
+    "controller.work-context.inspect",
+    "controller.launch-request.prepare",
+    "controller.launch-request.decide",
+    "controller.harness-run.start",
+    "cockpit.harness-run.observe"
+  ],
+  "typedProviderOutcomesTested": [
+    "provider_cli_unavailable",
+    "provider_authentication_missing",
+    "provider_authentication_failed",
+    "provider_network_unavailable",
+    "provider_outage",
+    "provider_quota_unavailable",
+    "provider_model_behavior_unconfirmed",
+    "provider_adapter_failed"
+  ],
+  "auditReferences": [
+    {
+      "auditId": "audit-5cd79d2a2fd899c530cfcac4",
+      "action": "controller.session.start",
+      "outcome": "accepted",
+      "details": {
+        "sessionId": "controller-session-83b9cb835ac34e4efc6c9806",
+        "providerSessionId": "2a84d4bc-d656-4176-9e9f-d45b1e475f66",
+        "providerId": "claude-code",
+        "providerAdapterId": "claude-code-controller-adapter-v1",
+        "adapterProtocol": "1.0.0",
+        "capabilities": [
+          "controller.session.start",
+          "controller.session.interactive",
+          "controller.session.terminate",
+          "controller.work-context.inspect",
+          "controller.launch-request.prepare",
+          "controller.launch-request.decide",
+          "controller.harness-run.start",
+          "controller.session.stable-identity",
+          "controller.session.typed-exit"
+        ],
+        "workContextId": "project-7fd50e9ee8fd4c4cd9aa422c",
+        "canonicalReference": "sandking:project:project-7fd50e9ee8fd4c4cd9aa422c",
+        "streamId": "controller-terminal-a4c28351043fc75004d68d54",
+        "providerControlProtocol": "1.0.0",
+        "providerReadySignal": "provider.session.ready",
+        "providerObservedTty": true,
+        "ptyRuntimeOwned": true,
+        "terminalKind": "pty"
+      }
+    }
+  ],
+  "securityAssertions": {
+    "commandEnvironmentRedacted": true,
+    "destinationCredentialStoreUsedInPlace": true,
+    "credentialTransferAbsent": true,
+    "promptCredentialAbsent": true,
+    "logCredentialAbsent": true,
+    "stateCredentialAbsent": true,
+    "evidenceCredentialAbsent": true,
+    "projectPathOmittedFromEvidence": true
+  },
+  "prohibitedSideEffectAssertions": {
+    "browserApprovalAssertion": false,
+    "credentialTransfer": false,
+    "projectSandKingStateWrite": false,
+    "dangerousMode": false,
+    "externalWritableAttachmentTransfer": false,
+    "sudo": false,
+    "systemPackageInstall": false,
+    "shellProfileMutation": false,
+    "serviceConfiguration": false
+  },
+  "software": {
+    "sandking": "0.1.0",
+    "providerAdapterProtocol": "1.0.0",
+    "browserProtocol": "1.0.0"
+  },
+  "environmentGateDiagnostic": {
+    "status": "unavailable",
+    "version": null,
+    "authentication": "unknown",
+    "authenticationSource": "destination-local",
+    "failureCode": "provider_cli_unavailable",
+    "capabilities": [
+      "controller.session.start",
+      "controller.session.interactive",
+      "controller.session.terminate",
+      "controller.work-context.inspect",
+      "controller.launch-request.prepare",
+      "controller.launch-request.decide",
+      "controller.harness-run.start",
+      "controller.session.stable-identity",
+      "controller.session.typed-exit"
+    ],
+    "modelInvoked": false,
+    "credentialsTransferred": false
+  },
+  "realClaudeExecution": {
+    "status": "reserved-for-final-human-environment-acceptance-child",
+    "deterministicMergeOracle": false,
+    "executionCommand": "SANDKING_REAL_CLAUDE_ACCEPTANCE=1 SANDKING_REAL_CLAUDE_PROJECT=/absolute/path npm run acceptance:issue-124:real"
+  },
+  "verificationCommands": [
+    [
+      "node",
+      "--test",
+      "test/claude-provider-adapter.test.mjs",
+      "test/claude-controller-plugin.test.mjs",
+      "test/claude-controller-session.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/browser-protocol.test.mjs",
+      "test/claude-controller.browser.test.mjs"
+    ]
+  ]
+}
