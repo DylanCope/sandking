@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { openBrowser } from "./browser-launch.mjs";
 import { RuntimeStartupError, launchRuntime, stopRuntime } from "./runtime.mjs";
-
-const execFileAsync = promisify(execFile);
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
@@ -64,22 +61,6 @@ const parseArgs = (argv) => {
   return options;
 };
 
-/** @param {string} url */
-const openBrowser = async (url) => {
-  const command = process.platform === "darwin"
-    ? "open"
-    : process.platform === "win32"
-      ? "cmd"
-      : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-
-  try {
-    await execFileAsync(command, args);
-  } catch {
-    // Best-effort open only; the bootstrap URL is still printed.
-  }
-};
-
 const main = async () => {
   const options = parseArgs(process.argv.slice(2));
   let output;
@@ -95,7 +76,7 @@ const main = async () => {
       expectedRevision: options.expectedRevision,
     });
     if (!options.noOpen && "bootstrapUrl" in output) {
-      await openBrowser(output.bootstrapUrl);
+      await openBrowser(output.bootstrapUrl).catch(() => undefined);
     }
   } else if (options.command === "stop") {
     output = await stopRuntime({
