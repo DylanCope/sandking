@@ -61,44 +61,54 @@ const claudeStopFailureTypes = new Set([
   "server_error",
   "network_error",
   "invalid_request",
+  "model_not_found",
   "max_output_tokens",
   "unknown",
 ]);
 
 /** @param {unknown} input */
 export const classifyClaudeStopFailure = (input) => {
+  const error = input && typeof input === "object" && "error" in input
+    && typeof input.error === "string"
+    ? input.error
+    : null;
+  const type = input && typeof input === "object" && "type" in input
+    && typeof input.type === "string"
+    ? input.type
+    : null;
+  const failureType = error ?? type;
   if (
     !input
     || typeof input !== "object"
-    || !("error" in input)
-    || typeof input.error !== "string"
-    || !claudeStopFailureTypes.has(input.error)
+    || (error !== null && type !== null && error !== type)
+    || failureType === null
+    || !claudeStopFailureTypes.has(failureType)
   ) {
     return { code: "provider_adapter_failed", retryable: true, source: "sandking-adapter" };
   }
-  if (input.error === "authentication_failed" || input.error === "oauth_org_not_allowed") {
+  if (failureType === "authentication_failed" || failureType === "oauth_org_not_allowed") {
     return {
       code: "provider_authentication_failed",
       retryable: false,
       source: "claude-stop-failure",
     };
   }
-  if (input.error === "rate_limit" || input.error === "billing_error") {
+  if (failureType === "rate_limit" || failureType === "billing_error") {
     return {
       code: "provider_quota_unavailable",
-      retryable: input.error === "rate_limit",
+      retryable: failureType === "rate_limit",
       source: "claude-stop-failure",
     };
   }
-  if (input.error === "overloaded" || input.error === "server_error") {
+  if (failureType === "overloaded" || failureType === "server_error") {
     return { code: "provider_outage", retryable: true, source: "claude-stop-failure" };
   }
   const details = "error_details" in input && typeof input.error_details === "string"
     ? input.error_details.slice(0, 512)
     : "";
   if (
-    input.error === "network_error"
-    || (input.error === "unknown"
+    failureType === "network_error"
+    || (failureType === "unknown"
       && /\b(?:network|dns|connect(?:ion)?|socket|tls|timed?\s*out|unreachable)\b/i.test(details))
   ) {
     return {
@@ -109,7 +119,7 @@ export const classifyClaudeStopFailure = (input) => {
   }
   return {
     code: "provider_model_behavior_unconfirmed",
-    retryable: input.error !== "invalid_request",
+    retryable: failureType !== "invalid_request" && failureType !== "model_not_found",
     source: "claude-stop-failure",
   };
 };
@@ -180,6 +190,20 @@ const invokeClaudeMetadataCommand = async (executable, args) => execFileAsync(
   },
 );
 
+/** @param {unknown} inventory */
+const hasLoadedControllerPlugin = (inventory) => {
+  const records = Array.isArray(inventory)
+    ? inventory
+    : inventory && typeof inventory === "object" && "plugins" in inventory
+      && Array.isArray(inventory.plugins)
+      ? inventory.plugins
+      : [];
+  return records.some((record) => record && typeof record === "object"
+    && (record.name === "sandking-controller" || record.id === "sandking-controller")
+    && record.version === "1.0.0"
+    && record.enabled !== false);
+};
+
 /** @param {string[]} detectedCapabilities */
 const baseProbe = (detectedCapabilities) => ({
   type: "provider.adapter.probe",
@@ -196,6 +220,7 @@ const baseProbe = (detectedCapabilities) => ({
     pluginVersion: "1.0.0",
     scope: "session",
     loading: "--plugin-dir",
+    installed: false,
     boundary: "session-plugin-private-typed-shim",
     credentialsTransferred: false,
   },
@@ -216,14 +241,13 @@ const detectClaudeCapabilities = async (executable) => {
   }
   if (/(?:^|\s)--plugin-dir(?:[=\s,]|$)/m.test(help)) {
     try {
+      await invokeClaudeMetadataCommand(executable, [
+        "plugin", "validate", pluginDirectory, "--strict",
+      ]);
       const result = await invokeClaudeMetadataCommand(executable, [
         "--plugin-dir", pluginDirectory, "plugin", "list", "--json",
       ]);
-      const pluginInventory = JSON.stringify(JSON.parse(result.stdout));
-      if (
-        pluginInventory.includes("sandking-controller")
-        && pluginInventory.includes("1.0.0")
-      ) {
+      if (hasLoadedControllerPlugin(JSON.parse(result.stdout))) {
         for (const capability of pluginCapabilities) detected.add(capability);
       }
     } catch {
@@ -360,6 +384,7 @@ const prepareClaude = async (argv) => {
       pluginVersion: "1.0.0",
       scope: "session",
       loading: "--plugin-dir",
+      installed: false,
       boundary: "session-plugin-private-typed-shim",
       credentialsTransferred: false,
     },

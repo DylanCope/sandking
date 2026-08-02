@@ -152,7 +152,8 @@ test("retained issue 124 evidence proves the provider-neutral installed-CLI cont
     adapterProtocol: "1.0.0",
     reportedVersion: "2.1.141",
     destinationLocalAuthentication: true,
-    capabilityProbe: "non-model-cli-help-and-session-plugin-inventory",
+    capabilityProbe:
+      "non-model-cli-help-strict-plugin-validation-and-session-plugin-inventory",
     reportedCapabilities: [
       "controller.session.start",
       "controller.session.interactive",
@@ -168,6 +169,7 @@ test("retained issue 124 evidence proves the provider-neutral installed-CLI cont
     pluginVersion: "1.0.0",
     pluginScope: "session",
     pluginLoading: "--plugin-dir",
+    pluginInstalled: false,
     shimBoundary: "session-plugin-private-typed-shim",
   });
   assert.match(evidence.focusedSession.sessionId, /^controller-session-[a-f0-9]{24}$/);

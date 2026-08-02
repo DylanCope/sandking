@@ -139,8 +139,9 @@ session.
 For an explicitly selected Project, the same focused-session Cockpit action can
 also operate an installed Claude Code CLI. Without invoking a model, the runtime
 probes the destination-local version and authentication, checks the installed
-CLI's session-ID and plugin-loading surfaces, and loads and enumerates the
-bundled plugin before advertising its negotiated capabilities. It reports a
+CLI's session-ID and plugin-loading surfaces, and strictly validates, loads, and
+exactly enumerates the bundled plugin before advertising its negotiated
+capabilities. It reports a
 typed unavailable, incompatible, or unauthenticated state and enables **Open
 installed Claude Code** only when the complete minimal surface is ready.
 Sand-King launches Claude in its runtime-owned PTY with a stable

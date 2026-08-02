@@ -21,6 +21,8 @@ export const ISSUE_124_DEMONSTRATED_PATHS = Object.freeze([
   "test/claude-provider-adapter.test.mjs",
   "test/claude-acceptance-evidence.test.mjs",
   "test/issue-124-evidence-source.mjs",
+  "test/installed-claude-acceptance-audits.mjs",
+  "test/installed-claude-acceptance-audits.test.mjs",
   "test/run-installed-claude-acceptance.mjs",
   "test/run-issue-124-acceptance.mjs"
 ]);

@@ -24,7 +24,7 @@
       "transport": "served Cockpit -> shared focused-session HTTP and opaque WebSocket seams -> provider-neutral Controller runtime -> runtime-owned PTY -> production Claude adapter wrapper -> installed Claude Code CLI with bundled plugin -> private typed shim channel -> existing work-context, Launch-request, approval, Harness-run, and observation operations",
       "initialState": "one explicitly selected local Project and pinned conformance Harness; destination-local Claude installation/authentication may be absent during deterministic merge verification; no credentials are transferred",
       "actions": [
-        "probe installed Claude Code without invoking a model, verify its session-ID and session-plugin loading surfaces, enumerate the bundled plugin, and report only demonstrated capabilities with destination-local authentication state and typed availability",
+        "probe installed Claude Code without invoking a model, verify its session-ID and session-plugin loading surfaces, strictly validate and exactly enumerate the bundled session plugin, and report only demonstrated capabilities with destination-local authentication state and typed availability",
         "prepare a stable --session-id and --plugin-dir command with a sanitized environment that excludes credential-bearing variables and NODE_OPTIONS",
         "open the production Claude adapter through the same Cockpit Project-focused Controller action used by conformance",
         "launch the installed CLI in a runtime-owned PTY rooted at the selected Project and keep it alive across browser disconnection",
@@ -78,7 +78,8 @@
         "--test",
         "test/claude-provider-adapter.test.mjs",
         "test/claude-controller-plugin.test.mjs",
-        "test/claude-controller-session.test.mjs"
+        "test/claude-controller-session.test.mjs",
+        "test/installed-claude-acceptance-audits.test.mjs"
       ],
       [
         "node",

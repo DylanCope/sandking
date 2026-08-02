@@ -92,6 +92,7 @@ const integrationSchema = z.object({
   pluginVersion: z.literal("1.0.0"),
   scope: z.literal("session"),
   loading: z.literal("--plugin-dir"),
+  installed: z.literal(false),
   boundary: z.literal("session-plugin-private-typed-shim"),
   credentialsTransferred: z.literal(false),
 }).strict();

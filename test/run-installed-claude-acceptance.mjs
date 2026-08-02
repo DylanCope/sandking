@@ -15,6 +15,8 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { probeClaude } from "../src/claude-provider-adapter.mjs";
+import { selectInstalledClaudeAcceptanceAuditChain } from
+  "./installed-claude-acceptance-audits.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -149,21 +151,12 @@ try {
     throw new Error("issue_124_real_acceptance_requires_one_structured_harness_outcome");
   }
   const audits = auditText.trim().split("\n").map((line) => JSON.parse(line));
-  const sessionAudits = [
-    "controller.session.start",
-    "launch.request.prepare",
-    "launch.request.decision",
-    "harness.run.start",
-  ].map((action) => audits.find((entry) =>
-    entry.action === action
-    && entry.details?.controllerSessionId === session.sessionId));
-  const outcomeAudit = audits.find((entry) =>
-    entry.action === "harness.run.outcome"
-    && entry.details?.harnessRunId === runs[0].harnessRunId);
-  const requiredAudits = [...sessionAudits, outcomeAudit];
-  if (requiredAudits.some((entry) => !entry)) {
-    throw new Error("issue_124_real_acceptance_audit_chain_incomplete");
-  }
+  const requiredAudits = selectInstalledClaudeAcceptanceAuditChain({
+    audits,
+    session,
+    launchRequest,
+    run: runs[0],
+  });
   const projectStatusAfter = (await execFileAsync("git", [
     "-C", projectPath, "status", "--porcelain=v1", "--untracked-files=all",
   ], { env: { PATH: process.env.PATH, LANG: "C.UTF-8" } })).stdout;
@@ -191,6 +184,7 @@ try {
         pluginVersion: probe.integration.pluginVersion,
         pluginScope: probe.integration.scope,
         pluginLoading: probe.integration.loading,
+        pluginInstalled: probe.integration.installed,
         shimBoundary: probe.integration.boundary,
       },
     },

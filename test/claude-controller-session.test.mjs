@@ -28,6 +28,8 @@ if (args.length === 1 && args[0] === "--version") {
   process.stdout.write("2.1.141 (Claude Code)\\n");
 } else if (args.length === 1 && args[0] === "--help") {
   process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+} else if (args[0] === "plugin" && args[1] === "validate" && args.at(-1) === "--strict") {
+  process.stdout.write("Validated plugin\\n");
 } else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
   process.stdout.write('[{"name":"sandking-controller","version":"1.0.0"}]');
 } else if (args.join(" ") === "auth status") {
