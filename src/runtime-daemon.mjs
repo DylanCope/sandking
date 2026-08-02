@@ -165,7 +165,7 @@ let hostMutationFailureQueue = Promise.resolve();
 /** @type {Map<string, {fingerprint: string, status: number, response: any}>} */
 const projectSessionOutcomes = new Map();
 /** @type {Map<string, {fingerprint: string, status: number, response: any}>} */
-const hostMutationFailureOutcomes = new Map();
+const hostMutationOutcomes = new Map();
 /** @type {Map<string, {fingerprint: string, response: any}>} */
 const focusedHostMutationOutcomes = new Map();
 
@@ -327,6 +327,115 @@ const mutationFailure = (code, authorizationClass, expectedRevision, actualRevis
 });
 
 /**
+ * @param {string} action
+ * @param {string} authorizationClass
+ * @param {number} expectedRevision
+ * @param {string} idempotencyKeyHash
+ * @param {unknown} requestContent
+ * @param {number} actualRevision
+ * @param {Record<string, boolean>} prohibitedSideEffects
+ */
+const replayHostMutationOutcome = async (
+  action,
+  authorizationClass,
+  expectedRevision,
+  idempotencyKeyHash,
+  requestContent,
+  actualRevision,
+  prohibitedSideEffects,
+) => {
+  const fingerprint = mutationRequestFingerprint({
+    expectedRevision,
+    requestContent,
+  });
+  const outcomeKey = `${action}\0${idempotencyKeyHash}`;
+  const existing = hostMutationOutcomes.get(outcomeKey);
+  if (!existing) {
+    return null;
+  }
+  if (existing.fingerprint !== fingerprint) {
+    const auditId = await recordAudit(action, "rejected", {
+      code: "idempotency_key_conflict",
+      hostId: state.host.hostId,
+      authorizationClass,
+      idempotencyKeyHash,
+      expectedRevision,
+      actualRevision,
+      originalAuditId: existing.response.auditId,
+      projectId: existing.response.project?.projectId ?? null,
+      harnessId: existing.response.harness?.harnessId
+        ?? existing.response.project?.harness?.harnessId
+        ?? null,
+      ...prohibitedSideEffects,
+    });
+    return {
+      status: 409,
+      body: {
+        ...mutationFailure(
+          "idempotency_key_conflict",
+          authorizationClass,
+          expectedRevision,
+          actualRevision,
+          auditId,
+        ),
+        retryable: false,
+        idempotentReplay: false,
+        ...(state.host.status === "disconnected" ? {
+          hostId: state.host.hostId,
+          freshness: "stale",
+        } : {}),
+        prohibitedSideEffects,
+      },
+    };
+  }
+  await recordAudit(action, "observed", {
+    code: existing.response.code,
+    hostId: state.host.hostId,
+    authorizationClass,
+    idempotencyKeyHash,
+    expectedRevision,
+    actualRevision,
+    idempotentReplay: true,
+    originalAuditId: existing.response.auditId,
+    projectId: existing.response.project?.projectId ?? null,
+    harnessId: existing.response.harness?.harnessId
+      ?? existing.response.project?.harness?.harnessId
+      ?? null,
+    projectRegistrationAuditId:
+      existing.response.mutations?.projectRegistration?.auditId ?? null,
+    harnessRegistrationAuditId:
+      existing.response.mutations?.harnessRegistration?.auditId ?? null,
+    harnessPinAuditId: existing.response.mutations?.harnessPin?.auditId ?? null,
+    ...existing.response.prohibitedSideEffects,
+  });
+  return {
+    status: existing.status,
+    body: { ...structuredClone(existing.response), idempotentReplay: true },
+  };
+};
+
+/**
+ * @param {string} action
+ * @param {string} idempotencyKeyHash
+ * @param {number} expectedRevision
+ * @param {unknown} requestContent
+ * @param {{status: number, body: any}} outcome
+ */
+const retainHostMutationOutcome = (
+  action,
+  idempotencyKeyHash,
+  expectedRevision,
+  requestContent,
+  outcome,
+) => {
+  hostMutationOutcomes.set(`${action}\0${idempotencyKeyHash}`, {
+    fingerprint: mutationRequestFingerprint({ expectedRevision, requestContent }),
+    status: outcome.status,
+    response: structuredClone(outcome.body),
+  });
+};
+
+/**
  * @param {"host_disconnected" | "host_protocol_invalid"} failureCode
  * @param {string} action
  * @param {string} authorizationClass
@@ -405,65 +514,17 @@ const hostMutationFailure = async (
       },
     };
   }
-  const fingerprint = mutationRequestFingerprint({
+  const retained = await replayHostMutationOutcome(
+    action,
+    authorizationClass,
     expectedRevision,
+    idempotencyKeyHash,
     requestContent,
-  });
-  const outcomeKey = `${action}\0${idempotencyKeyHash}`;
-  const existing = hostMutationFailureOutcomes.get(outcomeKey);
-  if (existing) {
-    if (existing.fingerprint !== fingerprint) {
-      const auditId = await recordAudit(action, "rejected", {
-        code: "idempotency_key_conflict",
-        hostId: state.host.hostId,
-        authorizationClass,
-        idempotencyKeyHash,
-        expectedRevision,
-        actualRevision,
-        ...prohibitedSideEffects,
-      });
-      return {
-        status: 409,
-        body: {
-          ...mutationFailure(
-            "idempotency_key_conflict",
-            authorizationClass,
-            expectedRevision,
-            actualRevision,
-            auditId,
-          ),
-          retryable: false,
-          idempotentReplay: false,
-          hostId: state.host.hostId,
-          freshness: "stale",
-          prohibitedSideEffects,
-        },
-      };
-    }
-    await recordAudit(action, "observed", {
-      code: existing.response.code,
-      hostId: state.host.hostId,
-      authorizationClass,
-      idempotencyKeyHash,
-      expectedRevision,
-      actualRevision,
-      idempotentReplay: true,
-      originalAuditId: existing.response.auditId,
-      projectId: existing.response.project?.projectId ?? null,
-      harnessId: existing.response.harness?.harnessId
-        ?? existing.response.project?.harness?.harnessId
-        ?? null,
-      projectRegistrationAuditId:
-        existing.response.mutations?.projectRegistration?.auditId ?? null,
-      harnessRegistrationAuditId:
-        existing.response.mutations?.harnessRegistration?.auditId ?? null,
-      harnessPinAuditId: existing.response.mutations?.harnessPin?.auditId ?? null,
-      ...existing.response.prohibitedSideEffects,
-    });
-    return {
-      status: existing.status,
-      body: { ...structuredClone(existing.response), idempotentReplay: true },
-    };
+    actualRevision,
+    prohibitedSideEffects,
+  );
+  if (retained) {
+    return retained;
   }
   const auditId = await recordAudit(action, "rejected", {
     code: failureCode,
@@ -493,11 +554,13 @@ const hostMutationFailure = async (
     status: 503,
     body,
   };
-  hostMutationFailureOutcomes.set(outcomeKey, {
-    fingerprint,
-    status: outcome.status,
-    response: structuredClone(body),
-  });
+  retainHostMutationOutcome(
+    action,
+    idempotencyKeyHash,
+    expectedRevision,
+    requestContent,
+    outcome,
+  );
   return outcome;
 });
 
@@ -1359,6 +1422,40 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     };
   }
 
+  const requestContent = {
+    path: request.path,
+    configuration: request.configuration,
+  };
+  const prohibitedSideEffects = {
+    directoryScan: false,
+    projectFileWrite: false,
+    trackedSandKingFileWrite: false,
+    approvalRequest: false,
+  };
+  const retained = await replayHostMutationOutcome(
+    "project.prepare",
+    "host_local_project_preparation",
+    request.expectedRevision,
+    /** @type {string} */ (request.idempotencyKeyHash),
+    requestContent,
+    currentProjectPreparation.current?.revision ?? 0,
+    prohibitedSideEffects,
+  );
+  if (retained) {
+    return retained;
+  }
+  /** @param {{status: number, body: any}} outcome */
+  const retainProjectPreparation = (outcome) => {
+    retainHostMutationOutcome(
+      "project.prepare",
+      /** @type {string} */ (request.idempotencyKeyHash),
+      request.expectedRevision,
+      requestContent,
+      outcome,
+    );
+    return outcome;
+  };
+
   /** @param {string} label */
   const requestId = (label) => `${label}-${randomBytes(8).toString("hex")}`;
   const inspection = await requestHostOperation({
@@ -1367,10 +1464,10 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     path: typeof request.path === "string" ? request.path : "",
   });
   if (inspection.type === "project.operation.failure") {
-    return {
+    return retainProjectPreparation({
       status: projectFailureStatus[inspection.code] ?? 409,
       body: inspection,
-    };
+    });
   }
   if (inspection.type !== "project.inspect.result") {
     throw new Error("host_protocol_error");
@@ -1390,10 +1487,10 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     expectedRevision: request.expectedRevision,
   });
   if (projectRegistration.type === "project.operation.failure") {
-    return {
+    return retainProjectPreparation({
       status: projectFailureStatus[projectRegistration.code] ?? 409,
       body: projectRegistration,
-    };
+    });
   }
   if (projectRegistration.type !== "project.register.result") {
     throw new Error("host_protocol_error");
@@ -1429,10 +1526,10 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
         expectedRevision: 0,
       });
       if (harnessRegistration.type === "project.operation.failure") {
-        return {
+        return retainProjectPreparation({
           status: projectFailureStatus[harnessRegistration.code] ?? 409,
           body: harnessRegistration,
-        };
+        });
       }
       if (harnessRegistration.type !== "harness.conformance.register.result") {
         throw new Error("host_protocol_error");
@@ -1463,7 +1560,10 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
         expectedRevision: project.revision,
       });
       if (pin.type === "project.operation.failure") {
-        return { status: projectFailureStatus[pin.code] ?? 409, body: pin };
+        return retainProjectPreparation({
+          status: projectFailureStatus[pin.code] ?? 409,
+          body: pin,
+        });
       }
       if (pin.type !== "project.harness.pin.result") {
         throw new Error("host_protocol_error");
@@ -1513,7 +1613,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     projectFileWrite: false,
     separateApprovalRequired: false,
   });
-  return {
+  return retainProjectPreparation({
     status: 200,
     body: {
       type: "project_preparation_result",
@@ -1522,6 +1622,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       expectedRevision: request.expectedRevision,
       revision: project.revision,
       auditId: preparationAuditId,
+      idempotentReplay: false,
       project: currentProjectPreparation.current,
       mutations: {
         projectRegistration: projectMutationSummary(projectRegistration),
@@ -1535,7 +1636,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
         approvalRequest: false,
       },
     },
-  };
+  });
 });
 
 /** @param {{sessionId: string, providerSessionId: string, workContext: any, operation: string, input: unknown}} request */

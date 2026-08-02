@@ -67,6 +67,7 @@ try {
     const [
       observation,
       activeHostLoss,
+      acceptedProjectOpenReplay,
       acceptedProjectHostLoss,
       postNegotiationHostProtocol,
       harnessFailure,
@@ -75,6 +76,7 @@ try {
     ] = await Promise.all([
       readFile(observationPath, "utf8").then(JSON.parse),
       readResult("active-host-loss-contract.json"),
+      readResult("accepted-project-open-replay-contract.json"),
       readResult("accepted-project-host-loss-contract.json"),
       readResult("post-negotiation-host-protocol-contract.json"),
       readResult("harness-run-failure-contract.json"),
@@ -90,6 +92,20 @@ try {
       || activeHostLoss.typedFailure?.body?.code !== "host_disconnected"
       || activeHostLoss.idempotency?.replayReturnedOriginalAudit !== true
       || activeHostLoss.idempotency?.changedContentCode !== "idempotency_key_conflict"
+      || acceptedProjectOpenReplay.kind !== "accepted_project_open_replay_contract"
+      || acceptedProjectOpenReplay.accepted?.status !== 200
+      || acceptedProjectOpenReplay.accepted?.body?.code !== "project_ready"
+      || acceptedProjectOpenReplay.accepted?.body?.idempotentReplay !== false
+      || acceptedProjectOpenReplay.replay?.status !== 200
+      || acceptedProjectOpenReplay.replay?.body?.code !== "project_ready"
+      || acceptedProjectOpenReplay.replay?.body?.idempotentReplay !== true
+      || acceptedProjectOpenReplay.replay?.body?.auditId
+        !== acceptedProjectOpenReplay.accepted?.body?.auditId
+      || acceptedProjectOpenReplay.replay?.body?.project?.projectId
+        !== acceptedProjectOpenReplay.accepted?.body?.project?.projectId
+      || acceptedProjectOpenReplay.replay?.body?.project?.harness?.harnessId
+        !== acceptedProjectOpenReplay.accepted?.body?.project?.harness?.harnessId
+      || acceptedProjectOpenReplay.changedUse?.body?.code !== "idempotency_key_conflict"
       || acceptedProjectHostLoss.kind !== "accepted_project_host_loss_contract"
       || acceptedProjectHostLoss.typedFailure?.body?.code !== "host_disconnected"
       || acceptedProjectHostLoss.typedFailure?.body?.project?.projectId
@@ -174,6 +190,7 @@ try {
       contractEvidence: {
         protocolFailures,
         activeHostLoss,
+        acceptedProjectOpenReplay,
         acceptedProjectHostLoss,
         postNegotiationHostProtocol,
         launchDecision,

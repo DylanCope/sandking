@@ -165,8 +165,9 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
       });
       assert.equal(replay.status, 200);
       assert.equal(replay.body.code, "project_ready");
+      assert.equal(replay.body.idempotentReplay, true);
       assert.equal(replay.body.project.projectId, projectId);
-      assert.equal(replay.body.mutations.projectRegistration.idempotentReplay, true);
+      assert.equal(replay.body.mutations.projectRegistration.idempotentReplay, false);
       assert.match(replay.body.mutations.projectRegistration.auditId, /^audit-/);
 
       const changedUse = await exerciseProjectOpen({
@@ -289,8 +290,7 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
           replayReturnsOriginalAudit:
             replay.body.mutations.projectRegistration.auditId
               === acceptedRegistrationAudit.auditId,
-          replayIdempotent:
-            replay.body.mutations.projectRegistration.idempotentReplay,
+          replayIdempotent: replay.body.idempotentReplay,
         },
         failureOutcomes: {
           invalidPath: "project_path_invalid",

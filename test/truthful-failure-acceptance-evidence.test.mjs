@@ -269,6 +269,37 @@ test("retained issue 122 evidence scopes Host loss and preserves canonical ident
 });
 
 test("retained issue 122 evidence preserves an accepted Project across composite Host loss", () => {
+  const replayed = evidence.contractEvidence.acceptedProjectOpenReplay;
+  assert.equal(replayed.kind, "accepted_project_open_replay_contract");
+  assert.deepEqual({
+    command: replayed.packagedPublicSeam.command,
+    installed: replayed.packagedPublicSeam.installed,
+    launchedOutsideCheckout: replayed.packagedPublicSeam.launchedOutsideCheckout,
+  }, { command: "sandking", installed: true, launchedOutsideCheckout: true });
+  assert.equal(replayed.accepted.status, 200);
+  assert.equal(replayed.accepted.body.code, "project_ready");
+  assert.equal(replayed.accepted.body.idempotentReplay, false);
+  assert.equal(replayed.replay.status, 200);
+  assert.equal(replayed.replay.body.code, "project_ready");
+  assert.equal(replayed.replay.body.idempotentReplay, true);
+  assert.equal(replayed.replay.body.auditId, replayed.accepted.body.auditId);
+  assert.deepEqual(replayed.replay.body.project, replayed.accepted.body.project);
+  assert.deepEqual(replayed.replay.body.mutations, replayed.accepted.body.mutations);
+  assert.equal(replayed.changedUse.status, 409);
+  assert.equal(replayed.changedUse.body.code, "idempotency_key_conflict");
+  assert.equal(replayed.changedUse.body.idempotentReplay, false);
+  assert.deepEqual(replayed.canonicalState, {
+    projectCount: 1,
+    projectId: replayed.accepted.body.project.projectId,
+  });
+  assert.equal(replayed.audit.accepted.auditId, replayed.accepted.body.auditId);
+  assert.equal(replayed.audit.replay.action, "project.prepare");
+  assert.equal(replayed.audit.replay.outcome, "observed");
+  assert.equal(replayed.audit.replay.details.originalAuditId,
+    replayed.accepted.body.auditId);
+  assert.equal(replayed.audit.conflict.auditId, replayed.changedUse.body.auditId);
+  assert.equal(replayed.audit.conflict.details.code, "idempotency_key_conflict");
+
   const retained = evidence.contractEvidence.acceptedProjectHostLoss;
   assert.equal(retained.kind, "accepted_project_host_loss_contract");
   assert.deepEqual({
