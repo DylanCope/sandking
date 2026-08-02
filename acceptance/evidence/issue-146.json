@@ -15,14 +15,14 @@
     "variant": "A — Workbench",
     "immutableCommit": "2467a8d"
   },
-  "generatedFromCommit": "d40c9c34ce58a7e807a9bfaeb4b190f479ed8fb7",
-  "recordedAt": "2026-08-02T21:48:15.165Z",
+  "generatedFromCommit": "62f54881c12018443d4b237fd39e2f35e9e6ee4f",
+  "recordedAt": "2026-08-02T22:15:51.215Z",
   "scenario": "cockpit-workbench/operates-interactive-controller-terminal",
   "packagedPublicSeam": {
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "adffa4e571686c864ab0f2864cb93f88d5238b3914af1d7649d0427be64be0bc"
+    "tarballSha256": "4a0fe9c8d95320b12fe60290b96def2b20c535aa7ffd3cb898d2c24dd666845c"
   },
   "layout": {
     "referenceViewport": {
@@ -106,6 +106,7 @@
     "boundedRetainedOutputResynchronization": true,
     "attachmentDelivery": {
       "regression": "test/controller-terminal-attachment.test.mjs",
+      "publicBrowserRegression": "test/workbench-terminal.browser.test.mjs",
       "acknowledgementBeforeOutput": true,
       "replayBeforeLive": true,
       "duplicateSequenceDelivery": false
@@ -113,40 +114,40 @@
   },
   "auditReferences": [
     {
-      "auditId": "audit-28beac9da3b2239814cb07b6",
+      "auditId": "audit-efa30e1c30000d23748d34d2",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-cd8f26e006382468de1006e5",
-        "providerSessionId": "conformance-provider-session-edf9118051abe0ed2e0270c9",
-        "streamId": "controller-terminal-2822c8e6b6694145e08e8076",
+        "sessionId": "controller-session-3971baa3ea0613fdd038baf4",
+        "providerSessionId": "conformance-provider-session-67ae80869f31bf3cbab285b1",
+        "streamId": "controller-terminal-08fc56278197b227f73165a8",
         "sequence": 50,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-c58918890c304ef004a4b8bf",
+      "auditId": "audit-25f8c9abc37b3a8c052f4776",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-cd8f26e006382468de1006e5",
-        "providerSessionId": "conformance-provider-session-edf9118051abe0ed2e0270c9",
-        "streamId": "controller-terminal-2822c8e6b6694145e08e8076",
+        "sessionId": "controller-session-3971baa3ea0613fdd038baf4",
+        "providerSessionId": "conformance-provider-session-67ae80869f31bf3cbab285b1",
+        "streamId": "controller-terminal-08fc56278197b227f73165a8",
         "sequence": 51,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-e2299e6022a8491b6977cdf4",
+      "auditId": "audit-1b6bd9ee50d548fc1168d610",
       "action": "controller.terminal.resize",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-cd8f26e006382468de1006e5",
-        "providerSessionId": "conformance-provider-session-edf9118051abe0ed2e0270c9",
-        "streamId": "controller-terminal-2822c8e6b6694145e08e8076",
-        "attachmentId": "terminal-attachment-645aa722fca46799bb6189e8",
+        "sessionId": "controller-session-3971baa3ea0613fdd038baf4",
+        "providerSessionId": "conformance-provider-session-67ae80869f31bf3cbab285b1",
+        "streamId": "controller-terminal-08fc56278197b227f73165a8",
+        "attachmentId": "terminal-attachment-b1a3bf4fd889d878606a2d1a",
         "sequence": 2,
         "columns": 53,
         "rows": 20,
@@ -154,14 +155,14 @@
       }
     },
     {
-      "auditId": "audit-5acbe5368b06104967b2dec8",
+      "auditId": "audit-d40238d8f3429f256efab002",
       "action": "controller.terminal.resize",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-cd8f26e006382468de1006e5",
-        "providerSessionId": "conformance-provider-session-edf9118051abe0ed2e0270c9",
-        "streamId": "controller-terminal-2822c8e6b6694145e08e8076",
-        "attachmentId": "terminal-attachment-645aa722fca46799bb6189e8",
+        "sessionId": "controller-session-3971baa3ea0613fdd038baf4",
+        "providerSessionId": "conformance-provider-session-67ae80869f31bf3cbab285b1",
+        "streamId": "controller-terminal-08fc56278197b227f73165a8",
+        "attachmentId": "terminal-attachment-b1a3bf4fd889d878606a2d1a",
         "sequence": 3,
         "columns": 68,
         "rows": 33,

@@ -10,18 +10,18 @@
     "normalizationDifference": "one terminal LF",
     "exactContentEquivalentAfterApprovedExportNormalization": true
   },
-  "generatedFromCommit": "d40c9c34ce58a7e807a9bfaeb4b190f479ed8fb7",
-  "recordedAt": "2026-08-02T21:55:30.178Z",
+  "generatedFromCommit": "62f54881c12018443d4b237fd39e2f35e9e6ee4f",
+  "recordedAt": "2026-08-02T22:22:34.622Z",
   "scenario": "planning-spine/projects-an-optional-journey",
   "packagedPublicSeam": {
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "adffa4e571686c864ab0f2864cb93f88d5238b3914af1d7649d0427be64be0bc"
+    "tarballSha256": "4a0fe9c8d95320b12fe60290b96def2b20c535aa7ffd3cb898d2c24dd666845c"
   },
   "runtime": {
-    "runtimeId": "runtime-ad3e947b49337d7125ad47ef",
-    "hostId": "host-eb0a375303aa2563ca686a83"
+    "runtimeId": "runtime-5fc6eb0f282c9284cc13008b",
+    "hostId": "host-0c02ab2d106e9b64f63117af"
   },
   "projectionProvenance": {
     "adapter": {
@@ -61,15 +61,15 @@
     "allMutationControlsDisabled": true
   },
   "focusedSession": {
-    "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
+    "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
     "workContextId": "work-context-speccing-optional-planning",
     "canonicalReference": "github:fixture:issue:116",
     "providerId": "conformance-controller-v1",
     "providerAdapterId": "conformance-controller-adapter-v1",
-    "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
+    "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
     "providerControlProtocol": "1.0.0",
     "providerReadySignal": "provider.session.ready",
-    "terminalStreamId": "controller-terminal-2e129140fefc31b919dace84",
+    "terminalStreamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
     "ptyRuntimeOwned": true,
     "providerObservedTty": true,
     "terminalDisplayedTtyObservation": true,
@@ -77,7 +77,7 @@
     "competingWritableAttachmentRejectedAs": "terminal_write_attachment_conflict",
     "inspectedSelectedContext": true,
     "retainedLifecycle": {
-      "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
+      "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
       "providerAdapterId": "conformance-controller-adapter-v1",
       "providerControlProtocol": "1.0.0",
       "providerReadySignal": "provider.session.ready",
@@ -91,7 +91,7 @@
     "authorizationClass": "planning_stage_status",
     "expectedRevision": 1,
     "resultingRevision": 2,
-    "auditId": "audit-953b827948b1696b5ea23bb4",
+    "auditId": "audit-fd9d137e571e24c19dddf361",
     "replayReturnedSameAudit": true,
     "replayIdempotent": true,
     "ordinaryWorkBlocked": false
@@ -125,13 +125,13 @@
   ],
   "auditReferences": [
     {
-      "auditId": "audit-a2d78f0678ee16e13a7bb15f",
+      "auditId": "audit-062fc056b9fc5d5267dc24dd",
       "action": "controller.session.start",
       "outcome": "accepted",
       "details": {
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "controllerSessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "controllerSessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
         "providerId": "conformance-controller-v1",
         "providerAdapterId": "conformance-controller-adapter-v1",
         "adapterProtocol": "1.0.0",
@@ -146,7 +146,7 @@
         ],
         "workContextId": "work-context-speccing-optional-planning",
         "canonicalReference": "github:fixture:issue:116",
-        "streamId": "controller-terminal-2e129140fefc31b919dace84",
+        "streamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
         "providerControlProtocol": "1.0.0",
         "providerReadySignal": "provider.session.ready",
         "providerObservedTty": true,
@@ -155,12 +155,12 @@
       }
     },
     {
-      "auditId": "audit-659711fed3309bfb1a845325",
+      "auditId": "audit-8bdeb1c60c6922dcdaeb3667",
       "action": "planning.session.open",
       "outcome": "accepted",
       "details": {
         "authorizationClass": "planning_focused_session",
-        "idempotencyKeyHash": "sha256:3e3e5b671e2ee37e49a26f0a11651b8f1b56577864a2ee21c6b8867329c2915a",
+        "idempotencyKeyHash": "sha256:ba4327fe1dfb4486d8a82af60bc87ae5a5947456bba568f18e86fa39369112ed",
         "expectedRevision": 0,
         "actualRevision": 0,
         "workContextId": "work-context-speccing-optional-planning",
@@ -169,24 +169,24 @@
         "skillInvocation": false,
         "projectFileWrite": false,
         "resultingRevision": 1,
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
         "providerAdapterId": "conformance-controller-adapter-v1",
         "providerControlProtocol": "1.0.0",
         "providerReadySignal": "provider.session.ready",
         "providerObservedTty": true,
-        "streamId": "controller-terminal-2e129140fefc31b919dace84",
+        "streamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
         "ptyRuntimeOwned": true
       }
     },
     {
-      "auditId": "audit-3b015dd9329446768a4507bf",
+      "auditId": "audit-7df22c0909824a4a0f4061ec",
       "action": "controller.terminal.attach",
       "outcome": "accepted",
       "details": {
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
-        "streamId": "controller-terminal-2e129140fefc31b919dace84",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
+        "streamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
         "mode": "read-write",
         "exclusive": true,
         "requestedOutputCursor": 0,
@@ -195,14 +195,14 @@
       }
     },
     {
-      "auditId": "audit-adbd0a46c942320c960dd9b3",
+      "auditId": "audit-8cd1e6b18b1dc3a397fbd98f",
       "action": "controller.terminal.resize",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
-        "streamId": "controller-terminal-2e129140fefc31b919dace84",
-        "attachmentId": "terminal-attachment-e6f6191c01e2284f0f5428e5",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
+        "streamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
+        "attachmentId": "terminal-attachment-5be509ea130a3e4646c10d42",
         "sequence": 0,
         "columns": 21,
         "rows": 16,
@@ -210,116 +210,116 @@
       }
     },
     {
-      "auditId": "audit-f3766b48f2f778322612c8b1",
+      "auditId": "audit-b4d2298eb947891048098e64",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
-        "streamId": "controller-terminal-2e129140fefc31b919dace84",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
+        "streamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
         "sequence": 0,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-480e4805ef96de35d5b26e79",
+      "auditId": "audit-9320b05d4588fd0af05e5142",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
-        "streamId": "controller-terminal-2e129140fefc31b919dace84",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
+        "streamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
         "sequence": 1,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-8886ff9ef2b5cfc00096be23",
+      "auditId": "audit-a9486b21a6f03afcda48ee6b",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
-        "streamId": "controller-terminal-2e129140fefc31b919dace84",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
+        "streamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
         "sequence": 2,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-1a4064fa7acf3f37dea68f0d",
+      "auditId": "audit-c69aaa2a8e261a4f79137956",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
-        "streamId": "controller-terminal-2e129140fefc31b919dace84",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
+        "streamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
         "sequence": 3,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-2b57358b5b00b36346a723fc",
+      "auditId": "audit-02aa4a8d694a5f5bab2370f4",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
-        "streamId": "controller-terminal-2e129140fefc31b919dace84",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
+        "streamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
         "sequence": 4,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-0755013b48993a436befb289",
+      "auditId": "audit-b69922dddc81ec6069130b08",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
-        "streamId": "controller-terminal-2e129140fefc31b919dace84",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
+        "streamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
         "sequence": 5,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-51567d9aee056c23620a9e9a",
+      "auditId": "audit-685f2db0efd8a0fadd1841d9",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
-        "streamId": "controller-terminal-2e129140fefc31b919dace84",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
+        "streamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
         "sequence": 6,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-38ba29e2e484c6656d138ea9",
+      "auditId": "audit-1bbf8e4c84a7e8566d73df3c",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
-        "streamId": "controller-terminal-2e129140fefc31b919dace84",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
+        "streamId": "controller-terminal-1f0ea6ce48de5a31b88a37bd",
         "sequence": 7,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-7aac3028c21764ea980ddb0d",
+      "auditId": "audit-a8d0be48df4e080718406ce0",
       "action": "controller.provider.operation",
       "outcome": "accepted",
       "details": {
-        "sessionId": "controller-session-1eaa661aff95c39d8e5797b3",
-        "providerSessionId": "conformance-provider-session-a7181f0ab7f0dea52f17f530",
+        "sessionId": "controller-session-4eaff20f042a20f3bbb0d3b9",
+        "providerSessionId": "conformance-provider-session-b2faba696d337e95304b715c",
         "workContextId": "work-context-speccing-optional-planning",
         "operation": "work-context.inspect",
         "operationId": "provider-operation-0",
@@ -328,12 +328,12 @@
       }
     },
     {
-      "auditId": "audit-953b827948b1696b5ea23bb4",
+      "auditId": "audit-fd9d137e571e24c19dddf361",
       "action": "planning.stage.not-used",
       "outcome": "accepted",
       "details": {
         "authorizationClass": "planning_stage_status",
-        "idempotencyKeyHash": "sha256:358d5551158a3218604d0d639bbb4a2a19e449fda43b08f50d74a08cb0aca72d",
+        "idempotencyKeyHash": "sha256:1cdebaeb6580037758621c842938406ddb7c72769f9de485c3f99fef3146e327",
         "expectedRevision": 1,
         "actualRevision": 1,
         "journeyId": "journey-fixture-optional-planning",
@@ -347,12 +347,12 @@
       }
     },
     {
-      "auditId": "audit-72849a88ce52a971deefc2c1",
+      "auditId": "audit-367b61860ff00a344a2365df",
       "action": "planning.stage.not-used",
       "outcome": "observed",
       "details": {
         "authorizationClass": "planning_stage_status",
-        "idempotencyKeyHash": "sha256:358d5551158a3218604d0d639bbb4a2a19e449fda43b08f50d74a08cb0aca72d",
+        "idempotencyKeyHash": "sha256:1cdebaeb6580037758621c842938406ddb7c72769f9de485c3f99fef3146e327",
         "expectedRevision": 1,
         "actualRevision": 2,
         "journeyId": "journey-fixture-optional-planning",
@@ -362,16 +362,16 @@
         "skillInvocation": false,
         "projectFileWrite": false,
         "idempotentReplay": true,
-        "originalAuditId": "audit-953b827948b1696b5ea23bb4"
+        "originalAuditId": "audit-fd9d137e571e24c19dddf361"
       }
     },
     {
-      "auditId": "audit-9b0308d770f65f197e37f08b",
+      "auditId": "audit-8780462d482dcd76d97ea300",
       "action": "planning.stage.not-used",
       "outcome": "rejected",
       "details": {
         "authorizationClass": "planning_stage_status",
-        "idempotencyKeyHash": "sha256:358d5551158a3218604d0d639bbb4a2a19e449fda43b08f50d74a08cb0aca72d",
+        "idempotencyKeyHash": "sha256:1cdebaeb6580037758621c842938406ddb7c72769f9de485c3f99fef3146e327",
         "expectedRevision": 1,
         "actualRevision": 1,
         "journeyId": "journey-fixture-optional-planning",
@@ -384,7 +384,7 @@
       }
     },
     {
-      "auditId": "audit-5b5800ff38f7f8795f647bb3",
+      "auditId": "audit-3d9dba735935c6d83a97a381",
       "action": "planning.stage.not-used",
       "outcome": "rejected",
       "details": {
@@ -402,7 +402,7 @@
       }
     },
     {
-      "auditId": "audit-b3631ed873cbf83f38ee17fa",
+      "auditId": "audit-6a4f6c006c25e93ee3879f59",
       "action": "planning.stage.not-used",
       "outcome": "rejected",
       "details": {
@@ -421,7 +421,7 @@
       }
     },
     {
-      "auditId": "audit-8a88a1641dcd9f42d61abfad",
+      "auditId": "audit-2c6cae5a4e30539181e93473",
       "action": "planning.stage.not-used",
       "outcome": "rejected",
       "details": {
