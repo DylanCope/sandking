@@ -10,19 +10,19 @@
     "normalizationDifference": "one terminal LF",
     "exactContentEquivalentAfterApprovedExportNormalization": true
   },
-  "generatedFromCommit": "f94c2554b7848ff2c1ecd972aaeac645068b3d09",
-  "recordedAt": "2026-08-02T03:01:13.197Z",
+  "generatedFromCommit": "cb5e1ae3e28d787f2c934c7ead8834df25d960e2",
+  "recordedAt": "2026-08-02T03:17:44.015Z",
   "scenario": "local-walking-skeleton/completes-approved-run",
   "packagedPublicSeam": {
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "9a150dd4761d0945abd67d8c0662e161584a1fe51c264cf4c93591ca8cbf4260"
+    "tarballSha256": "ee3d3a63daf2ce55cc59fdcf81574f897beb975774e85ae762c194079b839a71"
   },
   "identities": {
-    "hostId": "host-06b73cc3620ea88228d67996",
-    "projectId": "project-4cfe0d1f844273e459d337d5",
-    "harnessId": "harness-1b55086875dbc8da728e7ebc"
+    "hostId": "host-10bcd388e66ca66ffde9c087",
+    "projectId": "project-c548b45a3abfde575e1396d2",
+    "harnessId": "harness-13c83bae42c269342aa8ab03"
   },
   "pinnedCommit": "a653c0428ffd1e6e7a84883f22e0e7d6ea3a48de",
   "revisions": {
@@ -41,9 +41,9 @@
     "diagnostics": []
   },
   "idempotency": {
-    "registrationAuditId": "audit-4cba757608a37c1ba29c98d2",
-    "harnessRegistrationAuditId": "audit-0f3fc1d2dc751c462e65f963",
-    "pinAuditId": "audit-29f86790cbc54628ccde6807",
+    "registrationAuditId": "audit-251be74b1bfac642dac79381",
+    "harnessRegistrationAuditId": "audit-6fd65297de593618058f99cb",
+    "pinAuditId": "audit-07cfeff4ebe89a1a1b54558e",
     "mismatchedPayloadCode": "idempotency_key_conflict",
     "replayCode": "project_registered",
     "replayReturnsOriginalAudit": true,
@@ -84,7 +84,7 @@
   },
   "auditReferences": [
     {
-      "auditId": "audit-478a9f2d8a0b05dfd0fb75d4",
+      "auditId": "audit-7e6a6566b6faf6fec32e072e",
       "action": "project.inspect",
       "outcome": "rejected",
       "details": {
@@ -95,16 +95,16 @@
       }
     },
     {
-      "auditId": "audit-4cba757608a37c1ba29c98d2",
+      "auditId": "audit-251be74b1bfac642dac79381",
       "action": "project.register",
       "outcome": "accepted",
       "details": {
         "authorizationClass": "host_local_project_registration",
-        "idempotencyKeyHash": "sha256:62b5c75ed3e6d1b21dd007374a9165fe432ace8ded3acf595f8cf4ee74c429c5",
+        "idempotencyKeyHash": "sha256:f1cb3d63b9067f519ca79e0ab3e4b5ed762b630b2b8e0176340fbc1c9ce4e85d",
         "expectedRevision": 0,
         "actualRevision": 0,
         "resultingRevision": 1,
-        "projectId": "project-4cfe0d1f844273e459d337d5",
+        "projectId": "project-c548b45a3abfde575e1396d2",
         "versionControlDetected": true,
         "issueWorkflowReady": true,
         "checkCount": 2,
@@ -114,16 +114,16 @@
       }
     },
     {
-      "auditId": "audit-0f3fc1d2dc751c462e65f963",
+      "auditId": "audit-6fd65297de593618058f99cb",
       "action": "harness.conformance.register",
       "outcome": "accepted",
       "details": {
         "authorizationClass": "host_local_harness_registration",
-        "idempotencyKeyHash": "sha256:a2c2f5237604144e4364497bcbae83a93389eb41c3b3e80dccbe597af52174c9",
+        "idempotencyKeyHash": "sha256:6f05286f1a184753b4536a4a63424da70b9301dcf7937689a0332271b07d80c2",
         "expectedRevision": 0,
         "actualRevision": 0,
         "resultingRevision": 1,
-        "harnessId": "harness-1b55086875dbc8da728e7ebc",
+        "harnessId": "harness-13c83bae42c269342aa8ab03",
         "immutableRevision": "a653c0428ffd1e6e7a84883f22e0e7d6ea3a48de",
         "independentWorkspace": true,
         "workspaceOutsideProject": true,
@@ -131,17 +131,17 @@
       }
     },
     {
-      "auditId": "audit-29f86790cbc54628ccde6807",
+      "auditId": "audit-07cfeff4ebe89a1a1b54558e",
       "action": "project.harness.pin",
       "outcome": "accepted",
       "details": {
         "authorizationClass": "host_local_project_configuration",
-        "idempotencyKeyHash": "sha256:085b509f7686e0c25cabd3dfd68642046f4d2995133120f762276b90f676f8fe",
+        "idempotencyKeyHash": "sha256:5e45a5c815d239a58f05f7b7b2ea108338fb51235bd5d966d2ecb891b5306d2b",
         "expectedRevision": 1,
         "actualRevision": 1,
         "resultingRevision": 2,
-        "projectId": "project-4cfe0d1f844273e459d337d5",
-        "harnessId": "harness-1b55086875dbc8da728e7ebc",
+        "projectId": "project-c548b45a3abfde575e1396d2",
+        "harnessId": "harness-13c83bae42c269342aa8ab03",
         "immutableRevision": "a653c0428ffd1e6e7a84883f22e0e7d6ea3a48de",
         "projectFileWrite": false,
         "pinWrite": true,
@@ -149,16 +149,16 @@
       }
     },
     {
-      "auditId": "audit-8e9f52d9515fbb0a79046f52",
+      "auditId": "audit-7cff6b27a648b7ac1db26606",
       "action": "project.prepare",
       "outcome": "observed",
       "details": {
         "authorizationClass": "host_local_project_preparation",
-        "idempotencyKeyHash": "sha256:09d392448be1c8ef8dd9fce155f01ed157f2586fac84b016d73cccde429b83c9",
+        "idempotencyKeyHash": "sha256:30d5a1400b2ac759ec19aea2d3614f570961ba1d0e72693e98f5a89646f845c2",
         "expectedRevision": 0,
         "resultingRevision": 2,
-        "projectId": "project-4cfe0d1f844273e459d337d5",
-        "harnessId": "harness-1b55086875dbc8da728e7ebc",
+        "projectId": "project-c548b45a3abfde575e1396d2",
+        "harnessId": "harness-13c83bae42c269342aa8ab03",
         "pinnedRevision": "a653c0428ffd1e6e7a84883f22e0e7d6ea3a48de",
         "checksReady": true,
         "configurationReady": true,
@@ -169,30 +169,30 @@
       }
     },
     {
-      "auditId": "audit-9dfa516050ef21afb47046a4",
+      "auditId": "audit-6132b0398629baf49b877847",
       "action": "project.register",
       "outcome": "observed",
       "details": {
         "authorizationClass": "host_local_project_registration",
-        "idempotencyKeyHash": "sha256:62b5c75ed3e6d1b21dd007374a9165fe432ace8ded3acf595f8cf4ee74c429c5",
+        "idempotencyKeyHash": "sha256:f1cb3d63b9067f519ca79e0ab3e4b5ed762b630b2b8e0176340fbc1c9ce4e85d",
         "expectedRevision": 0,
         "idempotentReplay": true,
-        "originalAuditId": "audit-4cba757608a37c1ba29c98d2",
+        "originalAuditId": "audit-251be74b1bfac642dac79381",
         "directoryScanPerformed": false,
         "projectFileWrite": false
       }
     },
     {
-      "auditId": "audit-a7d832514f117d59a7d66ed4",
+      "auditId": "audit-54c7118d26b607d3e0cf13e8",
       "action": "project.prepare",
       "outcome": "observed",
       "details": {
         "authorizationClass": "host_local_project_preparation",
-        "idempotencyKeyHash": "sha256:09d392448be1c8ef8dd9fce155f01ed157f2586fac84b016d73cccde429b83c9",
+        "idempotencyKeyHash": "sha256:30d5a1400b2ac759ec19aea2d3614f570961ba1d0e72693e98f5a89646f845c2",
         "expectedRevision": 0,
         "resultingRevision": 2,
-        "projectId": "project-4cfe0d1f844273e459d337d5",
-        "harnessId": "harness-1b55086875dbc8da728e7ebc",
+        "projectId": "project-c548b45a3abfde575e1396d2",
+        "harnessId": "harness-13c83bae42c269342aa8ab03",
         "pinnedRevision": "a653c0428ffd1e6e7a84883f22e0e7d6ea3a48de",
         "checksReady": true,
         "configurationReady": true,
@@ -203,13 +203,13 @@
       }
     },
     {
-      "auditId": "audit-3af7e580e2e2eab51aaa58bf",
+      "auditId": "audit-cf552b81e5e83c38ef4a76ad",
       "action": "project.register",
       "outcome": "rejected",
       "details": {
         "code": "idempotency_key_conflict",
         "authorizationClass": "host_local_project_registration",
-        "idempotencyKeyHash": "sha256:62b5c75ed3e6d1b21dd007374a9165fe432ace8ded3acf595f8cf4ee74c429c5",
+        "idempotencyKeyHash": "sha256:f1cb3d63b9067f519ca79e0ab3e4b5ed762b630b2b8e0176340fbc1c9ce4e85d",
         "expectedRevision": 0,
         "actualRevision": 1,
         "directoryScanPerformed": false,
@@ -217,7 +217,7 @@
       }
     },
     {
-      "auditId": "audit-e6f4684d311613a1e85789a1",
+      "auditId": "audit-9707061106993ffe5b8ab221",
       "action": "project.register",
       "outcome": "rejected",
       "details": {
@@ -231,12 +231,12 @@
       }
     },
     {
-      "auditId": "audit-d5ee7bc7cf28f721c0e9abd2",
+      "auditId": "audit-b9deeefd3417a9ec09642fc3",
       "action": "project.inspect",
       "outcome": "rejected",
       "details": {
         "code": "project_path_missing",
-        "selectedPathHash": "sha256:81436c30fe9a7342d29de77f85277c4d53a338ff2672b6a711adc936a727c12a",
+        "selectedPathHash": "sha256:5e08c6ffa46e5e0bbea19c26f1b3e922cf91ff9bf52237cc0c2323664a37c6ce",
         "actualRevision": 2,
         "directoryScanPerformed": false
       }
@@ -323,7 +323,7 @@
             "expectedRevision": 0,
             "actualRevision": 0,
             "resultingRevision": 1,
-            "projectId": "project-520b871c9087bf64351e1f8a",
+            "projectId": "project-0bd1e69538405157c349a443",
             "versionControlDetected": true,
             "issueWorkflowReady": true,
             "checkCount": 2,
@@ -338,7 +338,7 @@
           "outcome": "rejected",
           "details": {
             "code": "project_path_missing",
-            "selectedPathHash": "sha256:47fa014fc7354f1b1d84a5db20e85ac0b96a6f4056facd6698e71ffd2ad72796",
+            "selectedPathHash": "sha256:9dee3ffd6c28fad3b79c20b0b5c11fab2dd00e0470c7726c6f466c557ea776d2",
             "actualRevision": 1,
             "directoryScanPerformed": false
           }
@@ -349,7 +349,7 @@
           "outcome": "rejected",
           "details": {
             "code": "project_path_moved",
-            "selectedPathHash": "sha256:8619d351dfa0c007e2f129a0b655c512a6331584e937c213372a6ab62a65b619",
+            "selectedPathHash": "sha256:4163099fb363f9417a91f092d2fc064d619b1769b01459237e81b5ce80197225",
             "actualRevision": 1,
             "directoryScanPerformed": false
           }
@@ -360,7 +360,7 @@
           "outcome": "rejected",
           "details": {
             "code": "project_path_replaced",
-            "selectedPathHash": "sha256:47fa014fc7354f1b1d84a5db20e85ac0b96a6f4056facd6698e71ffd2ad72796",
+            "selectedPathHash": "sha256:9dee3ffd6c28fad3b79c20b0b5c11fab2dd00e0470c7726c6f466c557ea776d2",
             "actualRevision": 1,
             "directoryScanPerformed": false
           }
@@ -371,7 +371,7 @@
           "outcome": "rejected",
           "details": {
             "code": "project_path_tombstoned",
-            "selectedPathHash": "sha256:47fa014fc7354f1b1d84a5db20e85ac0b96a6f4056facd6698e71ffd2ad72796",
+            "selectedPathHash": "sha256:9dee3ffd6c28fad3b79c20b0b5c11fab2dd00e0470c7726c6f466c557ea776d2",
             "actualRevision": 1,
             "directoryScanPerformed": false
           }
@@ -382,7 +382,7 @@
           "outcome": "rejected",
           "details": {
             "code": "project_path_conflict",
-            "selectedPathHash": "sha256:47fa014fc7354f1b1d84a5db20e85ac0b96a6f4056facd6698e71ffd2ad72796",
+            "selectedPathHash": "sha256:9dee3ffd6c28fad3b79c20b0b5c11fab2dd00e0470c7726c6f466c557ea776d2",
             "actualRevision": 1,
             "directoryScanPerformed": false
           }
@@ -392,7 +392,7 @@
     "mutationContract": {
       "kind": "project_mutation_contract",
       "registration": {
-        "projectId": "project-03b1ecce44afc27482b8c081",
+        "projectId": "project-516b7da43ab66247ec1b2b43",
         "expectedRevision": 0,
         "revision": 1,
         "auditId": "audit-000000000000000000000004"
@@ -448,7 +448,7 @@
             "idempotencyKeyHash": "sha256:924a7e2b93138115b3f061289e0a6d8d250711777e95e42f83ebc9d0303a68cc",
             "expectedRevision": 0,
             "actualRevision": 0,
-            "selectedPathHash": "sha256:795bdf9eb4b8a38a93cabbb640df24e6bb5a4c96891578fc439149925e5fe0aa",
+            "selectedPathHash": "sha256:47ea81b4d219cbbd0ea9eaf4b524fbe8fa9d259c1d52f5c9e66395a0190b4f26",
             "directoryScanPerformed": false,
             "projectFileWrite": false
           }
@@ -463,7 +463,7 @@
             "idempotencyKeyHash": "sha256:da8b26bbcab69f4b91d87b321f4d45e5316ce8a57cd893238242e83439c8e558",
             "expectedRevision": 0,
             "actualRevision": 0,
-            "selectedPathHash": "sha256:795bdf9eb4b8a38a93cabbb640df24e6bb5a4c96891578fc439149925e5fe0aa",
+            "selectedPathHash": "sha256:47ea81b4d219cbbd0ea9eaf4b524fbe8fa9d259c1d52f5c9e66395a0190b4f26",
             "directoryScanPerformed": false,
             "projectFileWrite": false
           }
@@ -478,7 +478,7 @@
             "expectedRevision": 0,
             "actualRevision": 0,
             "resultingRevision": 1,
-            "projectId": "project-03b1ecce44afc27482b8c081",
+            "projectId": "project-516b7da43ab66247ec1b2b43",
             "versionControlDetected": true,
             "issueWorkflowReady": true,
             "checkCount": 2,
@@ -525,7 +525,7 @@
             "expectedRevision": 0,
             "actualRevision": 0,
             "resultingRevision": 1,
-            "harnessId": "harness-f72acba3ccea0e50c49f0742",
+            "harnessId": "harness-9b1aa25e9d5bb79f0e120160",
             "immutableRevision": "a653c0428ffd1e6e7a84883f22e0e7d6ea3a48de",
             "independentWorkspace": true,
             "workspaceOutsideProject": true,
@@ -542,8 +542,8 @@
             "idempotencyKeyHash": "sha256:036823c4c63e63e72d62d8d01fd49190457ae020f1ba9c042cba25e0da08cbe4",
             "expectedRevision": 1,
             "actualRevision": 1,
-            "projectId": "project-03b1ecce44afc27482b8c081",
-            "harnessId": "harness-f72acba3ccea0e50c49f0742",
+            "projectId": "project-516b7da43ab66247ec1b2b43",
+            "harnessId": "harness-9b1aa25e9d5bb79f0e120160",
             "projectFileWrite": false,
             "pinWrite": false
           }
@@ -558,8 +558,8 @@
             "idempotencyKeyHash": "sha256:718a203ae415a3d400b98bd3a5456cdb408c59269e1fbd50dce5e65cea98d00b",
             "expectedRevision": 1,
             "actualRevision": 1,
-            "projectId": "project-03b1ecce44afc27482b8c081",
-            "harnessId": "harness-f72acba3ccea0e50c49f0742",
+            "projectId": "project-516b7da43ab66247ec1b2b43",
+            "harnessId": "harness-9b1aa25e9d5bb79f0e120160",
             "projectFileWrite": false,
             "pinWrite": false
           }
@@ -574,8 +574,8 @@
             "idempotencyKeyHash": "sha256:f4c204c14dd4c2f0806469f6c00b13739879d05685db2b80fa1e4b82bff2cc62",
             "expectedRevision": 1,
             "actualRevision": 1,
-            "projectId": "project-03b1ecce44afc27482b8c081",
-            "harnessId": "harness-f72acba3ccea0e50c49f0742",
+            "projectId": "project-516b7da43ab66247ec1b2b43",
+            "harnessId": "harness-9b1aa25e9d5bb79f0e120160",
             "projectFileWrite": false,
             "pinWrite": false
           }
@@ -590,8 +590,8 @@
             "expectedRevision": 1,
             "actualRevision": 1,
             "resultingRevision": 2,
-            "projectId": "project-03b1ecce44afc27482b8c081",
-            "harnessId": "harness-f72acba3ccea0e50c49f0742",
+            "projectId": "project-516b7da43ab66247ec1b2b43",
+            "harnessId": "harness-9b1aa25e9d5bb79f0e120160",
             "immutableRevision": "a653c0428ffd1e6e7a84883f22e0e7d6ea3a48de",
             "projectFileWrite": false,
             "pinWrite": true,

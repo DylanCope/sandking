@@ -10,18 +10,18 @@
     "normalizationDifference": "one terminal LF",
     "exactContentEquivalentAfterApprovedExportNormalization": true
   },
-  "generatedFromCommit": "f94c2554b7848ff2c1ecd972aaeac645068b3d09",
-  "recordedAt": "2026-08-02T02:59:25.147Z",
+  "generatedFromCommit": "cb5e1ae3e28d787f2c934c7ead8834df25d960e2",
+  "recordedAt": "2026-08-02T03:17:01.370Z",
   "scenario": "local-walking-skeleton/operates-installed-claude-controller",
   "packagedPublicSeam": {
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "9a150dd4761d0945abd67d8c0662e161584a1fe51c264cf4c93591ca8cbf4260"
+    "tarballSha256": "ee3d3a63daf2ce55cc59fdcf81574f897beb975774e85ae762c194079b839a71"
   },
   "runtime": {
-    "runtimeId": "runtime-46056147a60e5246002855a9",
-    "hostId": "host-b4c7e066c7acfdfaa2cbcbc1"
+    "runtimeId": "runtime-7539ef9caa9d4668fed7b395",
+    "hostId": "host-380ec16c359b4dbca8b50f8a"
   },
   "automatedClaudeContract": {
     "executable": "no-model contract fixture",
@@ -31,7 +31,7 @@
     "adapterProtocol": "1.0.0",
     "reportedVersion": "2.1.141",
     "destinationLocalAuthentication": true,
-    "capabilityProbe": "non-model-cli-help-and-session-plugin-inventory",
+    "capabilityProbe": "non-model-cli-help-strict-plugin-validation-and-session-plugin-inventory",
     "reportedCapabilities": [
       "controller.session.start",
       "controller.session.interactive",
@@ -47,14 +47,15 @@
     "pluginVersion": "1.0.0",
     "pluginScope": "session",
     "pluginLoading": "--plugin-dir",
+    "pluginInstalled": false,
     "shimBoundary": "session-plugin-private-typed-shim"
   },
   "focusedSession": {
-    "sessionId": "controller-session-52b4c38c629c9a6a28cfadef",
-    "providerSessionId": "ee0e082a-07a7-4065-b54e-0302cc798e17",
+    "sessionId": "controller-session-549a02d347bded40c8009ec8",
+    "providerSessionId": "808b11f9-16d9-4ff5-8bfa-39d9b51d0d6e",
     "stableProviderSessionIdentity": true,
-    "workContextId": "project-1dc444aa4073009f4437aa17",
-    "terminalStreamId": "controller-terminal-76a59abd6ea5220e0f3c1d91",
+    "workContextId": "project-806e0bd0edbf56c326600ce3",
+    "terminalStreamId": "controller-terminal-0cec789651089bcc412b5bb6",
     "ptyRuntimeOwned": true,
     "survivedBrowserDisconnection": true,
     "oneWritableAttachmentContractTested": true,
@@ -82,13 +83,13 @@
   ],
   "auditReferences": [
     {
-      "auditId": "audit-6855ae5a824d63d37ecf3b33",
+      "auditId": "audit-9e82d91b235fcafc64c40d97",
       "action": "controller.session.start",
       "outcome": "accepted",
       "details": {
-        "sessionId": "controller-session-52b4c38c629c9a6a28cfadef",
-        "controllerSessionId": "controller-session-52b4c38c629c9a6a28cfadef",
-        "providerSessionId": "ee0e082a-07a7-4065-b54e-0302cc798e17",
+        "sessionId": "controller-session-549a02d347bded40c8009ec8",
+        "controllerSessionId": "controller-session-549a02d347bded40c8009ec8",
+        "providerSessionId": "808b11f9-16d9-4ff5-8bfa-39d9b51d0d6e",
         "providerId": "claude-code",
         "providerAdapterId": "claude-code-controller-adapter-v1",
         "adapterProtocol": "1.0.0",
@@ -103,9 +104,9 @@
           "controller.session.stable-identity",
           "controller.session.typed-exit"
         ],
-        "workContextId": "project-1dc444aa4073009f4437aa17",
-        "canonicalReference": "sandking:project:project-1dc444aa4073009f4437aa17",
-        "streamId": "controller-terminal-76a59abd6ea5220e0f3c1d91",
+        "workContextId": "project-806e0bd0edbf56c326600ce3",
+        "canonicalReference": "sandking:project:project-806e0bd0edbf56c326600ce3",
+        "streamId": "controller-terminal-0cec789651089bcc412b5bb6",
         "providerControlProtocol": "1.0.0",
         "providerReadySignal": "provider.session.ready",
         "providerObservedTty": true,
@@ -161,7 +162,8 @@
       "--test",
       "test/claude-provider-adapter.test.mjs",
       "test/claude-controller-plugin.test.mjs",
-      "test/claude-controller-session.test.mjs"
+      "test/claude-controller-session.test.mjs",
+      "test/installed-claude-acceptance-audits.test.mjs"
     ],
     [
       "node",
