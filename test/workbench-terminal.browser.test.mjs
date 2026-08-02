@@ -107,6 +107,8 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       accent: "#9333ea",
     });
     assert.equal(await page.locator("main#workbench-main").count(), 1);
+    assert.equal(await page.locator("main").count(), 1);
+    assert.equal(await page.locator("main main").count(), 0);
     assert.equal(await page.locator("aside#workbench-navigation").count(), 1);
     assert.equal(await page.locator("aside#workbench-context").count(), 1);
     assert.equal(await page.locator(".prototype-switcher, [data-prototype-variant]").count(), 0);
@@ -217,6 +219,12 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth);
     assert.equal(await page.locator("#workbench-navigation-toggle").isVisible(), true);
     assert.equal(await page.locator("#workbench-context-toggle").isVisible(), true);
+    assert.equal(await page.locator("#connection-status").isVisible(), true);
+    assert.match(await page.locator("#connection-status").textContent(), /Connected/);
+    assert.equal(await page.locator("#external-provider-escape").isVisible(), true);
+    await page.locator("#external-provider-escape").click();
+    assert.match(await page.locator("#external-provider-feedback").textContent(),
+      /destination-local provider CLI directly/);
     await page.locator("#workbench-navigation-toggle").click();
     assert.equal(await page.locator("#workbench-navigation-toggle").getAttribute(
       "aria-expanded",
@@ -427,10 +435,14 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
             width: narrowLayout.viewport,
             navigationDrawer: true,
             contextDrawer: true,
+            hostConnectionStatusVisible: true,
+            externalProviderEscapeReachable: true,
             horizontalPageOverflow: false,
           },
           visibleKeyboardFocus: true,
           semanticLandmarks: ["navigation", "main", "complementary"],
+          mainLandmarkCount: 1,
+          nestedMainLandmark: false,
         },
         terminal: {
           emulator: "@xterm/xterm@6.0.0",

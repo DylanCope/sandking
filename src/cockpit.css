@@ -477,10 +477,28 @@ button:disabled {
     padding: 0 10px;
   }
 
-  .workbench-breadcrumbs,
-  .workbench-button--secondary,
-  .workbench-status {
+  .workbench-breadcrumbs {
     display: none;
+  }
+
+  .workbench-status,
+  #external-provider-escape {
+    font-size: 0;
+  }
+
+  .workbench-status--connected::before {
+    content: "✓ Connected";
+    font-size: 11px;
+  }
+
+  .workbench-status--disconnected::before {
+    content: "! Disconnected";
+    font-size: 11px;
+  }
+
+  #external-provider-escape::after {
+    content: "Provider CLI";
+    font-size: 11px;
   }
 
   .workbench-stage {

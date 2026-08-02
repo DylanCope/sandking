@@ -227,6 +227,15 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       await page.waitForSelector("#connection-status[data-host-status='disconnected']", {
         timeout: 10_000,
       });
+      const disconnectedIndicator = await page.locator("#connection-status").evaluate((node) => ({
+        className: node.className,
+        marker: getComputedStyle(node, "::before").content,
+        text: node.textContent,
+      }));
+      assert.match(disconnectedIndicator.className, /workbench-status--disconnected/);
+      assert.doesNotMatch(disconnectedIndicator.className, /workbench-status--connected/);
+      assert.match(disconnectedIndicator.marker, /!/);
+      assert.match(disconnectedIndicator.text, /disconnected/i);
       assert.equal(await page.locator("#project-preparation")
         .getAttribute("data-host-freshness"), "stale");
       assert.equal(await page.locator("#harness-run-observation")

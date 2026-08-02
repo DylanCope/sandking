@@ -1116,7 +1116,7 @@ export const createControllerSessionManager = async (options) => {
     }
     if (mode === "read-write") {
       session.writableSocket = request.socket;
-      session.onOutput = request.onOutput;
+      session.onOutput = null;
       session.readOnlySockets.delete(request.socket);
       session.outputHandlers.delete(request.socket);
     } else {
@@ -1125,12 +1125,14 @@ export const createControllerSessionManager = async (options) => {
         session.onOutput = null;
       }
       session.readOnlySockets.add(request.socket);
-      session.outputHandlers.set(request.socket, request.onOutput);
+      session.outputHandlers.delete(request.socket);
     }
-    const availableOutputCursor = session.bufferedFrames[0]?.sequence
+    const availableOutputCursorAtAcceptance = session.bufferedFrames[0]?.sequence
       ?? session.outputSequence;
-    const outputCursor = Math.max(request.outputCursor, availableOutputCursor);
-    const resynchronized = outputCursor !== request.outputCursor;
+    const outputCursorAtAcceptance = Math.max(
+      request.outputCursor,
+      availableOutputCursorAtAcceptance,
+    );
     await options.recordAudit("controller.terminal.attach", "accepted", {
       sessionId: session.sessionId,
       providerSessionId: session.providerSessionId,
@@ -1138,9 +1140,19 @@ export const createControllerSessionManager = async (options) => {
       mode,
       exclusive: mode === "read-write",
       requestedOutputCursor: request.outputCursor,
-      outputCursor,
-      resynchronized,
+      outputCursor: outputCursorAtAcceptance,
+      resynchronized: outputCursorAtAcceptance !== request.outputCursor,
     });
+    const availableOutputCursor = session.bufferedFrames[0]?.sequence
+      ?? session.outputSequence;
+    const outputCursor = Math.max(request.outputCursor, availableOutputCursor);
+    const resynchronized = outputCursor !== request.outputCursor;
+    const frames = session.bufferedFrames.filter(
+      (/** @type {{sequence: number}} */ frame) => frame.sequence >= outputCursor,
+    );
+    const replayTail = frames.at(-1);
+    const nextOutputSequence = replayTail ? replayTail.sequence + 1 : outputCursor;
+    let activated = false;
     return {
       session,
       mode,
@@ -1149,9 +1161,24 @@ export const createControllerSessionManager = async (options) => {
       resizeSequence: session.expectedResizeSequence,
       outputCursor,
       resynchronized,
-      frames: session.bufferedFrames.filter(
-        (/** @type {{sequence: number}} */ frame) => frame.sequence >= outputCursor,
-      ),
+      frames,
+      activate: () => {
+        if (activated) return false;
+        activated = true;
+        if (mode === "read-write") {
+          if (session.writableSocket !== request.socket) return false;
+          session.onOutput = request.onOutput;
+        } else {
+          if (!session.readOnlySockets.has(request.socket)) return false;
+          session.outputHandlers.set(request.socket, request.onOutput);
+        }
+        for (const frame of session.bufferedFrames) {
+          if (frame.sequence >= nextOutputSequence) {
+            request.onOutput(request.socket, frame);
+          }
+        }
+        return true;
+      },
     };
   };
 

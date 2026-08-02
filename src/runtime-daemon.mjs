@@ -2394,6 +2394,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
             for (const frame of attached.frames) {
               socket.send(encodeBrowserOpaqueFrame(frame), { binary: true });
             }
+            attached.activate();
             return;
           } catch (error) {
             throw new BrowserProtocolError(error instanceof ControllerSessionError
@@ -2910,7 +2911,7 @@ const main = async () => {
     <link rel="stylesheet" href="/cockpit.css">
   </head>
   <body>
-    <main id="app">Connecting to local Host…</main>
+    <div id="app">Connecting to local Host…</div>
     <button id="reload-cockpit" type="button" hidden>Reload Cockpit</button>
     <script type="module" src="/cockpit.js"></script>
   </body>

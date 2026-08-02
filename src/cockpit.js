@@ -1205,6 +1205,11 @@ socket.addEventListener("message", (event) => {
     document.documentElement.dataset.hostConnectionStatus = message.status;
     const connectionStatus = document.getElementById("connection-status");
     if (connectionStatus) {
+      connectionStatus.classList.remove(
+        "workbench-status--connected",
+        "workbench-status--disconnected",
+      );
+      connectionStatus.classList.add(`workbench-status--${message.status}`);
       connectionStatus.dataset.hostStatus = message.status;
       connectionStatus.dataset.failureCode = message.failure.code;
       connectionStatus.dataset.connectionAuditId = message.failure.auditId;

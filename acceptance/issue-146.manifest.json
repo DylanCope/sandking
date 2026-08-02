@@ -31,13 +31,15 @@
         "send printable, Enter, Tab, Escape, arrow, navigation, deletion, and control-key data exactly once",
         "fit and resize the provider PTY initially and after meaningful container changes",
         "reject invalid dimensions, stale sequences, wrong correlations, read-only input, and a competing writer",
-        "reconnect to the same runtime-owned Controller with bounded retained-output resynchronization"
+        "reconnect to the same runtime-owned Controller with bounded retained-output resynchronization",
+        "acknowledge an attachment before ordered replay and live output without duplicate sequences"
       ],
       "expectedTypedOutcome": "interactive Workbench Controller terminal with accepted correlated resize acknowledgements and typed prohibited outcomes",
       "canonicalStateInvariants": [
         "terminal bytes remain opaque and are never parsed as product state",
         "the Controller runtime owns the PTY and exactly one attachment may write or resize",
         "browser detachment does not terminate the provider",
+        "attachment acknowledgement establishes the output cursor before replay and live delivery",
         "resizing is correlated by Controller session, stream, attachment, and monotonic sequence",
         "terminal input and resize audits retain byte counts and dimensions but no contents",
         "existing Project, Planning, Launch request, Harness run, diagnostics, failure, and reconnect state remains truthful"
@@ -104,6 +106,16 @@
         "test/browser-protocol.test.mjs",
         "test/controller-launch-session.test.mjs",
         "test/security-boundary.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/controller-terminal-attachment.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/claude-controller-session.test.mjs"
       ],
       [
         "node",

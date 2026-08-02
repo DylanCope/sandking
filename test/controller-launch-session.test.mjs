@@ -142,6 +142,7 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       onOutput: (_socket, frame) => output.push(frame.data.toString("utf8")),
     });
     output.push(...attached.frames.map((frame) => frame.data.toString("utf8")));
+    assert.equal(attached.activate(), true);
     const readOnlyOutput = [];
     const readOnlySocket = { readyState: 1 };
     const readOnly = await manager.attach({
@@ -153,6 +154,8 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       outputCursor: 0,
       onOutput: (_socket, frame) => readOnlyOutput.push(frame.data.toString("utf8")),
     });
+    readOnlyOutput.push(...readOnly.frames.map((frame) => frame.data.toString("utf8")));
+    assert.equal(readOnly.activate(), true);
     assert.equal(readOnly.mode, "read-only");
     assert.equal(readOnly.exclusive, false);
     assert.equal(typeof manager.resize, "function");
@@ -270,6 +273,7 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       outputCursor: 0,
       onOutput: (_socket, frame) => output.push(frame.data.toString("utf8")),
     });
+    assert.equal(downgraded.activate(), true);
     assert.equal(downgraded.mode, "read-only");
     assert.equal(downgraded.exclusive, false);
     await assert.rejects(manager.write({
@@ -323,6 +327,7 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       outputCursor: 0,
       onOutput: (_socket, frame) => output.push(frame.data.toString("utf8")),
     });
+    assert.equal(reattached.activate(), true);
     assert.equal(reattached.resizeSequence, 1);
     assert.deepEqual(await manager.resize({
       socket: reconnectSocket,

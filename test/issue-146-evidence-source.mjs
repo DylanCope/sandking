@@ -14,6 +14,8 @@ export const ISSUE_146_DEMONSTRATED_PATHS = Object.freeze([
   "src/runtime-daemon.mjs",
   "acceptance/issue-146.manifest.json",
   "test/browser-protocol.test.mjs",
+  "test/claude-controller-session.test.mjs",
+  "test/controller-terminal-attachment.test.mjs",
   "test/controller-launch-session.test.mjs",
   "test/security-boundary.test.mjs",
   "test/workbench-terminal.browser.test.mjs",

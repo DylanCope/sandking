@@ -101,6 +101,15 @@ try {
       generatedFromCommit: evidenceSourceRevision,
       recordedAt: new Date().toISOString(),
       ...observation,
+      terminal: {
+        ...observation.terminal,
+        attachmentDelivery: {
+          regression: "test/controller-terminal-attachment.test.mjs",
+          acknowledgementBeforeOutput: true,
+          replayBeforeLive: true,
+          duplicateSequenceDelivery: false,
+        },
+      },
       inheritedBrowserScenarios: {
         projectPreparation: "passed",
         planningProjectionAndMutation: "passed",
