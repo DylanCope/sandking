@@ -263,7 +263,6 @@ if (args.length === 1 && args[0] === "--version") {
       socket: writer,
       mode: "read-write",
     });
-    output.push(...writerAttachment.frames.map((frame) => frame.data.toString("utf8")));
     assert.equal(writerAttachment.activate(), true);
     const observerAttachment = await manager.attach({
       ...attachment,

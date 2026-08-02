@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { decodeBrowserOpaqueFrame } from "../src/browser-protocol.mjs";
 import { launchBrowser } from "./browser-launch.mjs";
 import { installCurrentPackage } from "./installed-package.mjs";
 
@@ -75,6 +76,10 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       };
     });
     const page = await context.newPage();
+    const receivedFrames = [];
+    page.on("websocket", (websocket) => {
+      websocket.on("framereceived", ({ payload }) => receivedFrames.push(payload));
+    });
     await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#project-preparation[data-host-freshness='current']", {
       timeout: 10_000,
@@ -154,6 +159,40 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       initialDimensions.columns,
       initialDimensions.rows,
     ]);
+    const terminalStreamId = await terminalPanel.getAttribute("data-terminal-stream-id");
+    const attachmentAcknowledgementIndex = receivedFrames.findIndex((payload) => {
+      if (typeof payload !== "string") return false;
+      try {
+        const message = JSON.parse(payload).message;
+        return message?.type === "runtime.terminal-attached"
+          && message.streamId === terminalStreamId;
+      } catch {
+        return false;
+      }
+    });
+    assert.ok(attachmentAcknowledgementIndex >= 0,
+      "the runtime must acknowledge the terminal cursor before output delivery");
+    const attachmentAcknowledgement = JSON.parse(
+      receivedFrames[attachmentAcknowledgementIndex],
+    ).message;
+    const receivedTerminalOutput = receivedFrames.flatMap((payload, index) => {
+      if (typeof payload === "string") return [];
+      try {
+        const frame = decodeBrowserOpaqueFrame(payload);
+        return frame.streamId === terminalStreamId ? [{ index, sequence: frame.sequence }] : [];
+      } catch {
+        return [];
+      }
+    });
+    assert.ok(receivedTerminalOutput.length > 0);
+    assert.ok(receivedTerminalOutput.every(({ index }) =>
+      index > attachmentAcknowledgementIndex));
+    assert.ok(receivedTerminalOutput.every(({ sequence }) =>
+      sequence >= attachmentAcknowledgement.outputCursor));
+    assert.deepEqual(receivedTerminalOutput.map(({ sequence }) => sequence),
+      [...new Set(receivedTerminalOutput.map(({ sequence }) => sequence))]
+        .toSorted((left, right) => left - right),
+      "public WebSocket output must be unique and ordered after attachment acknowledgement");
 
     await page.setViewportSize({ width: 1250, height: 1000 });
     await page.waitForFunction((previous) => {

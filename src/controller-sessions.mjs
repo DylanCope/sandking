@@ -1082,7 +1082,7 @@ export const createControllerSessionManager = async (options) => {
   };
 
   /**
-   * @param {{socket: any, sessionId: string, streamId: string, attachmentId: string, mode: "read-write" | "read-only" | "read-write-if-available", outputCursor: number, onOutput: (socket: any, frame: any) => void}} request
+   * @param {{socket: any, sessionId: string, streamId: string, attachmentId: string, mode: "read-write" | "read-only" | "read-write-if-available", outputCursor: number, onAttached?: (attachment: any) => void, onOutput: (socket: any, frame: any) => void}} request
    */
   const attach = async (request) => {
     const session = activeBySession.get(request.sessionId);
@@ -1152,8 +1152,8 @@ export const createControllerSessionManager = async (options) => {
     );
     const replayTail = frames.at(-1);
     const nextOutputSequence = replayTail ? replayTail.sequence + 1 : outputCursor;
-    let activated = false;
-    return {
+    let deliveryState = "staged";
+    const attachment = {
       session,
       mode,
       exclusive: mode === "read-write",
@@ -1163,23 +1163,37 @@ export const createControllerSessionManager = async (options) => {
       resynchronized,
       frames,
       activate: () => {
-        if (activated) return false;
-        activated = true;
+        if (deliveryState !== "staged") return false;
         if (mode === "read-write") {
           if (session.writableSocket !== request.socket) return false;
-          session.onOutput = request.onOutput;
         } else {
           if (!session.readOnlySockets.has(request.socket)) return false;
-          session.outputHandlers.set(request.socket, request.onOutput);
         }
-        for (const frame of session.bufferedFrames) {
-          if (frame.sequence >= nextOutputSequence) {
+        deliveryState = "activating";
+        try {
+          request.onAttached?.(attachment);
+          for (const frame of frames) {
             request.onOutput(request.socket, frame);
           }
+          for (const frame of session.bufferedFrames) {
+            if (frame.sequence >= nextOutputSequence) {
+              request.onOutput(request.socket, frame);
+            }
+          }
+          if (mode === "read-write") {
+            session.onOutput = request.onOutput;
+          } else {
+            session.outputHandlers.set(request.socket, request.onOutput);
+          }
+          deliveryState = "active";
+          return true;
+        } catch (error) {
+          deliveryState = "failed";
+          throw error;
         }
-        return true;
       },
     };
+    return attachment;
   };
 
   /** @param {{socket: any, streamId: string, sequence: number, eof: boolean, data: Buffer}} request */

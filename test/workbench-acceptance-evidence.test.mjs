@@ -121,6 +121,13 @@ test("retained issue 146 evidence proves the unchanged packaged public seam", {
     wrongCorrelation: "controller_terminal_not_found",
     staleCorrelation: "terminal_resize_sequence_conflict",
   });
+  assert.deepEqual(evidence.terminal.attachmentDelivery, {
+    regression: "test/controller-terminal-attachment.test.mjs",
+    publicBrowserRegression: "test/workbench-terminal.browser.test.mjs",
+    acknowledgementBeforeOutput: true,
+    replayBeforeLive: true,
+    duplicateSequenceDelivery: false,
+  });
   assert.ok(Object.values(evidence.inheritedBrowserScenarios).every((value) =>
     value === "passed"));
   assert.ok(Object.values(evidence.securityAssertions).every((value) => value === false));

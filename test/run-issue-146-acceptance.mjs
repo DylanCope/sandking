@@ -105,6 +105,7 @@ try {
         ...observation.terminal,
         attachmentDelivery: {
           regression: "test/controller-terminal-attachment.test.mjs",
+          publicBrowserRegression: "test/workbench-terminal.browser.test.mjs",
           acknowledgementBeforeOutput: true,
           replayBeforeLive: true,
           duplicateSequenceDelivery: false,

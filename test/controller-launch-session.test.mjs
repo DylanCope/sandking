@@ -141,7 +141,6 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       outputCursor: 0,
       onOutput: (_socket, frame) => output.push(frame.data.toString("utf8")),
     });
-    output.push(...attached.frames.map((frame) => frame.data.toString("utf8")));
     assert.equal(attached.activate(), true);
     const readOnlyOutput = [];
     const readOnlySocket = { readyState: 1 };
@@ -154,7 +153,6 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       outputCursor: 0,
       onOutput: (_socket, frame) => readOnlyOutput.push(frame.data.toString("utf8")),
     });
-    readOnlyOutput.push(...readOnly.frames.map((frame) => frame.data.toString("utf8")));
     assert.equal(readOnly.activate(), true);
     assert.equal(readOnly.mode, "read-only");
     assert.equal(readOnly.exclusive, false);

@@ -2369,6 +2369,21 @@ const handleBrowserConnection = (socket, sessionId, session) => {
               attachmentId: control.attachmentId,
               mode: control.mode,
               outputCursor: control.outputCursor,
+              onAttached: (attachment) => {
+                socket.send(serializeRuntimeControl({
+                  type: "runtime.terminal-attached",
+                  sessionId: control.sessionId,
+                  streamId: control.streamId,
+                  attachmentId: control.attachmentId,
+                  mode: attachment.mode,
+                  exclusive: attachment.exclusive,
+                  requestedOutputCursor: control.outputCursor,
+                  outputCursor: attachment.outputCursor,
+                  resynchronized: attachment.resynchronized,
+                  inputSequence: attachment.inputSequence,
+                  resizeSequence: attachment.resizeSequence,
+                }));
+              },
               onOutput: (target, frame) => {
                 if (target.readyState === WebSocket.OPEN) {
                   target.send(encodeBrowserOpaqueFrame(frame), { binary: true });
@@ -2378,23 +2393,9 @@ const handleBrowserConnection = (socket, sessionId, session) => {
             if (!attached) {
               throw new ControllerSessionError("controller_terminal_unavailable");
             }
-            socket.send(serializeRuntimeControl({
-              type: "runtime.terminal-attached",
-              sessionId: control.sessionId,
-              streamId: control.streamId,
-              attachmentId: control.attachmentId,
-              mode: attached.mode,
-              exclusive: attached.exclusive,
-              requestedOutputCursor: control.outputCursor,
-              outputCursor: attached.outputCursor,
-              resynchronized: attached.resynchronized,
-              inputSequence: attached.inputSequence,
-              resizeSequence: attached.resizeSequence,
-            }));
-            for (const frame of attached.frames) {
-              socket.send(encodeBrowserOpaqueFrame(frame), { binary: true });
+            if (!attached.activate()) {
+              throw new ControllerSessionError("controller_terminal_attachment_superseded");
             }
-            attached.activate();
             return;
           } catch (error) {
             throw new BrowserProtocolError(error instanceof ControllerSessionError

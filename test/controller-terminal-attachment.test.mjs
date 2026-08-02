@@ -47,6 +47,7 @@ test("terminal attachment acknowledges and replays before delivering live PTY ou
     }, { workingDirectory: root });
     const socket = { readyState: 1 };
     const liveFrames = [];
+    const deliveryEvents = [];
     const attachmentPromise = manager.attach({
       socket,
       sessionId: focused.sessionId,
@@ -54,7 +55,14 @@ test("terminal attachment acknowledges and replays before delivering live PTY ou
       attachmentId: focused.terminal.writableAttachment.attachmentId,
       mode: "read-write",
       outputCursor: 0,
-      onOutput: (_target, frame) => liveFrames.push(frame),
+      onAttached: (attachment) => deliveryEvents.push({
+        kind: "acknowledgement",
+        outputCursor: attachment.outputCursor,
+      }),
+      onOutput: (_target, frame) => {
+        liveFrames.push(frame);
+        deliveryEvents.push({ kind: "output", sequence: frame.sequence });
+      },
     });
 
     await attachmentAuditStarted;
@@ -81,6 +89,11 @@ test("terminal attachment acknowledges and replays before delivering live PTY ou
       /WORKBENCH VT FIXTURE/,
       "output emitted while attachment was pending must be present in retained replay");
     assert.equal(attached.activate(), true);
+    assert.deepEqual(deliveryEvents, [
+      { kind: "acknowledgement", outputCursor: attached.outputCursor },
+      ...replaySequences.map((sequence) => ({ kind: "output", sequence })),
+    ], "activation must atomically acknowledge the cursor before replaying retained output");
+    const replayDeliveryCount = liveFrames.length;
     await manager.write({
       socket,
       streamId: focused.terminal.streamId,
@@ -88,9 +101,9 @@ test("terminal attachment acknowledges and replays before delivering live PTY ou
       eof: false,
       data: Buffer.from("dimensions\r"),
     });
-    assert.equal(await waitFor(() => liveFrames.length > 0), true,
+    assert.equal(await waitFor(() => liveFrames.length > replayDeliveryCount), true,
       "PTY output emitted after activation must be delivered live");
-    const liveSequences = liveFrames.map(({ sequence }) => sequence);
+    const liveSequences = liveFrames.slice(replayDeliveryCount).map(({ sequence }) => sequence);
     assert.equal(new Set([...replaySequences, ...liveSequences]).size,
       replaySequences.length + liveSequences.length,
       "a replayed PTY frame must not be delivered live a second time");
