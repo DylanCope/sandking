@@ -201,8 +201,9 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
       });
       assert.equal(secondAttachmentOutcome, "terminal_write_attachment_conflict");
 
-      await page.locator("#controller-terminal-input").fill("inspect");
-      await page.locator("#send-controller-input").click();
+      await page.locator("#controller-terminal-output .xterm-helper-textarea").focus();
+      await page.keyboard.type("inspect");
+      await page.keyboard.press("Enter");
       await page.waitForFunction(() => document.querySelector("#controller-terminal-output")
         ?.textContent?.includes(
           "Inspected github:fixture:issue:116 for work-context-speccing-optional-planning",

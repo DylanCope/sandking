@@ -271,6 +271,25 @@ const run = async (argv) => {
   let processing = Promise.resolve();
   /** @param {string} line */
   const handleLine = async (line) => {
+    if (line === "dimensions") {
+      process.stdout.write(
+        `PTY DIMENSIONS: ${process.stdout.columns} × ${process.stdout.rows}.\r\ncontroller> `,
+      );
+      return;
+    }
+    if (line === "ansi-fixture") {
+      process.stdout.write("\u001b[?1049h\u001b[2");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      process.stdout.write("J\u001b[H\u001b[31mALT-SCREEN-DECOY\u001b[0m");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      process.stdout.write("\u001b[4;1HERASED-LINE");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      process.stdout.write("\u001b[?1049l\u001b[2J\u001b[H\u001b[35mWORKBENCH VT FIXTURE\u001b[0m");
+      process.stdout.write("\u001b[3;1HCursor movement: passed");
+      process.stdout.write("\u001b[4;1Hobsolete\u001b[2K\r\u001b[32mFINAL STATUS: READY\u001b[0m");
+      process.stdout.write("\u001b[5;1Hcontroller> ");
+      return;
+    }
     if (line === "inspect") {
       const inspected = await control.request("work-context.inspect", {});
       if (inspected?.type === "project.work-context") {

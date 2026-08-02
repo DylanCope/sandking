@@ -100,6 +100,12 @@ const parseArgs = (argv) => {
 const args = parseArgs(process.argv.slice(2));
 const localHostPath = fileURLToPath(new URL("./local-host.mjs", import.meta.url));
 const cockpitScriptPath = fileURLToPath(new URL("./cockpit.js", import.meta.url));
+const cockpitStylePath = fileURLToPath(new URL("./cockpit.css", import.meta.url));
+const xtermScriptPath = fileURLToPath(import.meta.resolve("@xterm/xterm/lib/xterm.mjs"));
+const xtermFitScriptPath = fileURLToPath(import.meta.resolve(
+  "@xterm/addon-fit/lib/addon-fit.mjs",
+));
+const xtermStylePath = fileURLToPath(import.meta.resolve("@xterm/xterm/css/xterm.css"));
 const statePath = join(args.dataDir, "runtime-state.json");
 const tokenDirectory = join(args.dataDir, "bootstrap-tokens");
 const startupErrorPath = join(args.dataDir, "startup-error.json");
@@ -2379,8 +2385,11 @@ const handleBrowserConnection = (socket, sessionId, session) => {
               attachmentId: control.attachmentId,
               mode: attached.mode,
               exclusive: attached.exclusive,
-              outputCursor: control.outputCursor,
+              requestedOutputCursor: control.outputCursor,
+              outputCursor: attached.outputCursor,
+              resynchronized: attached.resynchronized,
               inputSequence: attached.inputSequence,
+              resizeSequence: attached.resizeSequence,
             }));
             for (const frame of attached.frames) {
               socket.send(encodeBrowserOpaqueFrame(frame), { binary: true });
@@ -2390,6 +2399,31 @@ const handleBrowserConnection = (socket, sessionId, session) => {
             throw new BrowserProtocolError(error instanceof ControllerSessionError
               ? error.code
               : "controller_terminal_attach_failed");
+          }
+        }
+        if (control.type === "browser.terminal.resize") {
+          try {
+            const resized = await controllerSessions?.resize({
+              socket,
+              sessionId: control.sessionId,
+              streamId: control.streamId,
+              attachmentId: control.attachmentId,
+              sequence: control.sequence,
+              columns: control.columns,
+              rows: control.rows,
+            });
+            if (!resized) {
+              throw new ControllerSessionError("controller_terminal_unavailable");
+            }
+            socket.send(serializeRuntimeControl({
+              type: "runtime.terminal-resized",
+              ...resized,
+            }));
+            return;
+          } catch (error) {
+            throw new BrowserProtocolError(error instanceof ControllerSessionError
+              ? error.code
+              : "controller_terminal_resize_failed");
           }
         }
         if (control.type === "browser.harness-run.observe") {
@@ -2584,7 +2618,14 @@ const handleBrowserConnection = (socket, sessionId, session) => {
 const main = async () => {
   await ensurePrivateDirectory(args.dataDir);
   await ensurePrivateDirectory(tokenDirectory);
-  const cockpitScript = await readFile(cockpitScriptPath, "utf8");
+  const [cockpitScript, cockpitStyle, xtermScript, xtermFitScript, xtermStyle] =
+    await Promise.all([
+      readFile(cockpitScriptPath, "utf8"),
+      readFile(cockpitStylePath, "utf8"),
+      readFile(xtermScriptPath, "utf8"),
+      readFile(xtermFitScriptPath, "utf8"),
+      readFile(xtermStylePath, "utf8"),
+    ]);
 
   try {
     const runtimeId = `runtime-${randomBytes(12).toString("hex")}`;
@@ -2860,8 +2901,14 @@ const main = async () => {
             "content-type": "text/html; charset=utf-8",
           });
           response.end(`<!doctype html>
-<html>
-  <head><meta charset="utf-8"><title>Sand-King Cockpit</title></head>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sand-King Cockpit</title>
+    <link rel="stylesheet" href="/terminal/xterm.css">
+    <link rel="stylesheet" href="/cockpit.css">
+  </head>
   <body>
     <main id="app">Connecting to local Host…</main>
     <button id="reload-cockpit" type="button" hidden>Reload Cockpit</button>
@@ -2877,6 +2924,21 @@ const main = async () => {
             "content-type": "text/javascript; charset=utf-8",
           });
           response.end(cockpitScript);
+          return;
+        }
+
+        const localAsset = request.method === "GET" ? new Map([
+          ["/cockpit.css", ["text/css; charset=utf-8", cockpitStyle]],
+          ["/terminal/xterm.mjs", ["text/javascript; charset=utf-8", xtermScript]],
+          ["/terminal/addon-fit.mjs", ["text/javascript; charset=utf-8", xtermFitScript]],
+          ["/terminal/xterm.css", ["text/css; charset=utf-8", xtermStyle]],
+        ]).get(request.url ?? "") : undefined;
+        if (localAsset) {
+          response.writeHead(200, {
+            ...securityHeaders,
+            "content-type": localAsset[0],
+          });
+          response.end(localAsset[1]);
           return;
         }
 

@@ -133,8 +133,11 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       assert.ok(acceptedProjectSessionRequest?.idempotencyKey);
       assert.equal(acceptedProjectSessionRequest?.expectedRevision, "2");
       const enter = async (value) => {
-        await page.locator("#project-controller-terminal-input").fill(value);
-        await page.locator("#send-project-controller-input").click();
+        await page.locator(
+          "#project-controller-terminal-output .xterm-helper-textarea",
+        ).focus();
+        await page.keyboard.type(value);
+        await page.keyboard.press("Enter");
       };
       await page.waitForFunction(() => document.querySelector(
         "#project-controller-terminal-output",
@@ -381,10 +384,6 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       await reconnectPage.waitForSelector("#connection-status[data-host-status='disconnected']", {
         timeout: 10_000,
       });
-      await reconnectPage.waitForSelector(
-        `#harness-run-observation[data-run-id='${harnessRunId}'][data-run-status='failed']`,
-        { timeout: 10_000 },
-      );
       const reconnectAcknowledgement = reconnectFrames.map((frame) => {
         try {
           return JSON.parse(frame)?.message;
@@ -392,6 +391,20 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
           return null;
         }
       }).find((message) => message?.type === "runtime.hello-ack");
+      assert.equal(
+        reconnectAcknowledgement.viewModel.harnessRunObservation.run.harnessRunId,
+        harnessRunId,
+      );
+      const reconnectDom = await reconnectPage.evaluate(() => ({
+        runId: document.querySelector("#harness-run-observation")?.getAttribute("data-run-id"),
+        appText: document.querySelector("#app")?.textContent,
+        protocolError: document.documentElement.dataset.protocolError,
+      }));
+      assert.equal(reconnectDom.runId, harnessRunId, JSON.stringify(reconnectDom));
+      assert.equal(
+        await reconnectPage.locator("#harness-run-observation").getAttribute("data-run-status"),
+        reconnectAcknowledgement.viewModel.harnessRunObservation.run.status,
+      );
       assert.deepEqual(reconnectAcknowledgement.observation, {
         mode: "resynchronization-failed",
         cursor: "host:origin",

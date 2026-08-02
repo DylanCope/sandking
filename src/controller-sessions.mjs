@@ -866,6 +866,9 @@ export const createControllerSessionManager = async (options) => {
       bufferedFrames,
       outputSequence: 0,
       expectedInputSequence: 0,
+      expectedResizeSequence: 0,
+      columns: prepared.terminal.columns,
+      rows: prepared.terminal.rows,
       writableSocket: null,
       readOnlySockets: new Set(),
       outputHandlers: new Map(),
@@ -1124,21 +1127,30 @@ export const createControllerSessionManager = async (options) => {
       session.readOnlySockets.add(request.socket);
       session.outputHandlers.set(request.socket, request.onOutput);
     }
+    const availableOutputCursor = session.bufferedFrames[0]?.sequence
+      ?? session.outputSequence;
+    const outputCursor = Math.max(request.outputCursor, availableOutputCursor);
+    const resynchronized = outputCursor !== request.outputCursor;
     await options.recordAudit("controller.terminal.attach", "accepted", {
       sessionId: session.sessionId,
       providerSessionId: session.providerSessionId,
       streamId: session.streamId,
       mode,
       exclusive: mode === "read-write",
-      outputCursor: request.outputCursor,
+      requestedOutputCursor: request.outputCursor,
+      outputCursor,
+      resynchronized,
     });
     return {
       session,
       mode,
       exclusive: mode === "read-write",
       inputSequence: session.expectedInputSequence,
+      resizeSequence: session.expectedResizeSequence,
+      outputCursor,
+      resynchronized,
       frames: session.bufferedFrames.filter(
-        (/** @type {{sequence: number}} */ frame) => frame.sequence >= request.outputCursor,
+        (/** @type {{sequence: number}} */ frame) => frame.sequence >= outputCursor,
       ),
     };
   };
@@ -1166,6 +1178,66 @@ export const createControllerSessionManager = async (options) => {
       contentRetained: false,
     });
     return true;
+  };
+
+  /** @param {{socket: any, sessionId: string, streamId: string, attachmentId: string, sequence: number, columns: number, rows: number}} request */
+  const resize = async (request) => {
+    const session = activeBySession.get(request.sessionId);
+    if (
+      !session
+      || session.streamId !== request.streamId
+      || session.attachmentId !== request.attachmentId
+    ) {
+      throw new ControllerSessionError("controller_terminal_not_found");
+    }
+    if (session.writableSocket !== request.socket) {
+      throw new ControllerSessionError("terminal_resize_attachment_required");
+    }
+    if (
+      !Number.isSafeInteger(request.sequence)
+      || request.sequence !== session.expectedResizeSequence
+    ) {
+      throw new ControllerSessionError("terminal_resize_sequence_conflict");
+    }
+    if (
+      !Number.isSafeInteger(request.columns)
+      || request.columns < 20
+      || request.columns > 500
+      || !Number.isSafeInteger(request.rows)
+      || request.rows < 5
+      || request.rows > 200
+    ) {
+      throw new ControllerSessionError("terminal_resize_dimensions_invalid");
+    }
+    if (!session.running) {
+      throw new ControllerSessionError("terminal_resize_sequence_conflict");
+    }
+    try {
+      session.terminal.resize(request.columns, request.rows);
+    } catch {
+      throw new ControllerSessionError("provider_pty_resize_failed");
+    }
+    session.expectedResizeSequence += 1;
+    session.columns = request.columns;
+    session.rows = request.rows;
+    await options.recordAudit("controller.terminal.resize", "observed", {
+      sessionId: session.sessionId,
+      providerSessionId: session.providerSessionId,
+      streamId: session.streamId,
+      attachmentId: session.attachmentId,
+      sequence: request.sequence,
+      columns: request.columns,
+      rows: request.rows,
+      contentRetained: false,
+    });
+    return {
+      sessionId: session.sessionId,
+      streamId: session.streamId,
+      attachmentId: session.attachmentId,
+      sequence: request.sequence,
+      columns: session.columns,
+      rows: session.rows,
+    };
   };
 
   /** @param {any} socket */
@@ -1216,5 +1288,5 @@ export const createControllerSessionManager = async (options) => {
     return session ? structuredClone(session) : null;
   };
 
-  return { probeProvider, start, inspect, attach, write, detach, terminate, shutdown };
+  return { probeProvider, start, inspect, attach, write, resize, detach, terminate, shutdown };
 };

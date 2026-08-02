@@ -78,8 +78,11 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
       const providerSessionId = await page.locator("#project-focused-controller-session")
         .getAttribute("data-provider-session-id");
       const enter = async (value) => {
-        await page.locator("#project-controller-terminal-input").fill(value);
-        await page.locator("#send-project-controller-input").click();
+        await page.locator(
+          "#project-controller-terminal-output .xterm-helper-textarea",
+        ).focus();
+        await page.keyboard.type(value);
+        await page.keyboard.press("Enter");
       };
       await page.waitForFunction(() => document.querySelector(
         "#project-controller-terminal-output",

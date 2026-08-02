@@ -1,3 +1,6 @@
+import { FitAddon } from "/terminal/addon-fit.mjs";
+import { Terminal } from "/terminal/xterm.mjs";
+
 const browserProtocol = Object.freeze({
   protocol: { major: 1, minor: 0, patch: 0, version: "1.0.0" },
   release: "0.1.0",
@@ -10,13 +13,14 @@ const browserProtocol = Object.freeze({
       "cockpit.resynchronization.v1",
       "cockpit.planning-spine.v1",
       "cockpit.controller-terminal.v1",
+      "cockpit.controller-terminal-resize.v1",
       "cockpit.project-preparation.v1",
       "cockpit.launch-request.v1",
       "cockpit.harness-run-observation.v1",
     ],
     optional: [],
   },
-  schemaDigest: "sha256:607f457203e1296a9d8614d2131175cee7eb4c23ad2c0eb3c39be313a5693418",
+  schemaDigest: "sha256:3cf091a6f394b496f918e6fde1a62e0cf935aa76f240410788ff144cd17059ce",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -97,6 +101,170 @@ const element = (name, attributes = {}, text = "") => {
   }
   node.textContent = text;
   return node;
+};
+
+const scheduleTerminalFit = (terminal) => {
+  clearTimeout(terminal.fitTimer);
+  terminal.fitTimer = setTimeout(() => {
+    terminal.fitAddon.fit();
+    const columns = terminal.emulator.cols;
+    const rows = terminal.emulator.rows;
+    terminal.dimensions.textContent = `${columns} × ${rows}`;
+    if (
+      socket.readyState !== WebSocket.OPEN
+      || terminal.panel.dataset.terminalAttachment !== "read-write"
+      || columns < 20
+      || columns > 500
+      || rows < 5
+      || rows > 200
+      || (terminal.lastRequestedDimensions?.columns === columns
+        && terminal.lastRequestedDimensions?.rows === rows)
+    ) {
+      return;
+    }
+    const sequence = terminal.resizeSequence;
+    terminal.resizeSequence += 1;
+    terminal.lastRequestedDimensions = { columns, rows, sequence };
+    socket.send(JSON.stringify({
+      channel: "control",
+      message: {
+        type: "browser.terminal.resize",
+        sessionId: terminal.sessionId,
+        streamId: terminal.streamId,
+        attachmentId: terminal.attachmentId,
+        sequence,
+        columns,
+        rows,
+      },
+    }));
+  }, 80);
+};
+
+const attachTerminalSurface = ({
+  focused,
+  panel,
+  outputId,
+  accessibleLabel,
+  requestedMode,
+  description,
+}) => {
+  const terminalOutput = element("div", {
+    id: outputId,
+    class: "controller-terminal__output",
+    "data-terminal-output": focused.terminal.streamId,
+    role: "application",
+    "aria-label": accessibleLabel,
+  });
+  const attachmentStatus = element("span", {
+    class: "controller-terminal__attachment",
+    role: "status",
+  }, "Attaching…");
+  const dimensions = element("span", {
+    class: "controller-terminal__dimensions",
+    "aria-label": "Terminal dimensions",
+  }, "80 × 24");
+  const terminalChrome = element("section", {
+    class: "controller-terminal",
+    "aria-label": `${accessibleLabel} surface`,
+  });
+  const header = element("header", { class: "controller-terminal__header" });
+  header.append(
+    element("strong", {}, focused.provider.providerId === "claude-code"
+      ? "Claude Code Controller"
+      : "Conformance Controller"),
+    dimensions,
+    attachmentStatus,
+  );
+  const footer = element("footer", { class: "controller-terminal__footer" });
+  footer.append(
+    element("span", {}, "Provider PTY · browser attached"),
+    element("span", {}, "Terminal output is opaque product data"),
+  );
+  terminalChrome.append(header, terminalOutput, footer);
+  panel.replaceChildren(...description, terminalChrome);
+
+  const emulator = new Terminal({
+    cols: 80,
+    rows: 24,
+    cursorBlink: true,
+    cursorStyle: "block",
+    disableStdin: true,
+    screenReaderMode: true,
+    scrollback: 1_000,
+    fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+    fontSize: 13,
+    lineHeight: 1.2,
+    theme: {
+      background: "#05070c",
+      foreground: "#d4d4d8",
+      cursor: "#c084fc",
+      cursorAccent: "#05070c",
+      selectionBackground: "#6b21a866",
+      black: "#18181b",
+      red: "#fb7185",
+      green: "#34d399",
+      yellow: "#fbbf24",
+      blue: "#60a5fa",
+      magenta: "#c084fc",
+      cyan: "#67e8f9",
+      white: "#f4f4f5",
+    },
+  });
+  const fitAddon = new FitAddon();
+  emulator.loadAddon(fitAddon);
+  const terminalState = {
+    sessionId: focused.sessionId,
+    streamId: focused.terminal.streamId,
+    attachmentId: focused.terminal.writableAttachment.attachmentId,
+    inputSequence: 0,
+    resizeSequence: 0,
+    outputSequence: 0,
+    requestedMode,
+    emulator,
+    fitAddon,
+    output: terminalOutput,
+    panel,
+    attachmentStatus,
+    dimensions,
+    fitTimer: undefined,
+    lastRequestedDimensions: null,
+  };
+  terminalStreams.set(focused.terminal.streamId, terminalState);
+  queueMicrotask(() => {
+    if (!terminalOutput.isConnected) {
+      requireReload("runtime_terminal_container_unavailable");
+      return;
+    }
+    emulator.open(terminalOutput);
+    emulator.onData((data) => {
+      if (
+        socket.readyState !== WebSocket.OPEN
+        || panel.dataset.terminalAttachment !== "read-write"
+      ) {
+        return;
+      }
+      socket.send(encodeOpaqueFrame(
+        focused.terminal.streamId,
+        terminalState.inputSequence,
+        new TextEncoder().encode(data),
+      ));
+      terminalState.inputSequence += 1;
+    });
+    terminalState.resizeObserver = new ResizeObserver(() => scheduleTerminalFit(terminalState));
+    terminalState.resizeObserver.observe(terminalOutput);
+    socket.send(JSON.stringify({
+      channel: "control",
+      message: {
+        type: "browser.terminal.attach",
+        sessionId: focused.sessionId,
+        streamId: focused.terminal.streamId,
+        attachmentId: focused.terminal.writableAttachment.attachmentId,
+        mode: requestedMode,
+        outputCursor: 0,
+      },
+    }));
+  });
+  return terminalState;
 };
 
 const mutationKey = () => globalThis.crypto?.randomUUID?.()
@@ -329,72 +497,18 @@ const renderProjectPreparation = (
       focused.terminal.writableAttachment.attachmentId;
     controllerPanel.dataset.ptyRuntimeOwned = String(focused.terminal.runtimeOwned);
     controllerPanel.dataset.terminalAttachment = "attaching";
-    const terminalOutput = element("pre", {
-      id: "project-controller-terminal-output",
-      "data-terminal-output": focused.terminal.streamId,
-      "aria-live": "polite",
-    });
-    const terminalInput = element("input", {
-      id: "project-controller-terminal-input",
-      type: "text",
-      autocomplete: "off",
-      "aria-label": "Project Controller terminal input",
-    });
-    const sendInput = element("button", {
-      id: "send-project-controller-input",
-      type: "button",
-      disabled: true,
-    }, "Send to Controller");
-    const terminalState = {
-      attachmentId: focused.terminal.writableAttachment.attachmentId,
-      decoder: new TextDecoder(),
-      inputSequence: 0,
-      requestedMode: reconnected ? "read-write-if-available" : "read-write",
-      output: terminalOutput,
+    attachTerminalSurface({
+      focused,
       panel: controllerPanel,
-      sendInput,
-      terminalInput,
-    };
-    terminalStreams.set(focused.terminal.streamId, terminalState);
-    const submitTerminalInput = () => {
-      if (socket.readyState !== WebSocket.OPEN || sendInput.disabled) {
-        return;
-      }
-      const input = `${terminalInput.value}\n`;
-      terminalInput.value = "";
-      socket.send(encodeOpaqueFrame(
-        focused.terminal.streamId,
-        terminalState.inputSequence,
-        new TextEncoder().encode(input),
-      ));
-      terminalState.inputSequence += 1;
-    };
-    sendInput.addEventListener("click", submitTerminalInput);
-    terminalInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        submitTerminalInput();
-      }
+      outputId: "project-controller-terminal-output",
+      accessibleLabel: "Project Controller terminal",
+      requestedMode: reconnected ? "read-write-if-available" : "read-write",
+      description: [
+        element("p", {}, `Focused Controller session ${focused.sessionId} owns Launch decisions for ${focused.workContext.workContextId}.`),
+        element("p", { "data-browser-approval": "prohibited" },
+          "The Cockpit can navigate to this conversation but cannot submit a Launch approval assertion."),
+      ],
     });
-    controllerPanel.replaceChildren(
-      element("p", {}, `Focused Controller session ${focused.sessionId} owns Launch decisions for ${focused.workContext.workContextId}.`),
-      element("p", { "data-browser-approval": "prohibited" },
-        "The Cockpit can navigate to this conversation but cannot submit a Launch approval assertion."),
-      terminalOutput,
-      terminalInput,
-      sendInput,
-    );
-    socket.send(JSON.stringify({
-      channel: "control",
-      message: {
-        type: "browser.terminal.attach",
-        sessionId: focused.sessionId,
-        streamId: focused.terminal.streamId,
-        attachmentId: focused.terminal.writableAttachment.attachmentId,
-        mode: terminalState.requestedMode,
-        outputCursor: 0,
-      },
-    }));
     controllerFeedback.textContent = reconnected
       ? "Reconnected to the existing focused Controller and retained terminal output."
       : "Use the focused Controller conversation to inspect, prepare, approve, or reject.";
@@ -739,72 +853,18 @@ const renderPlanning = (planning, session) => {
           outcome.body.session.terminal.runtimeOwned,
         );
         sessionPanel.dataset.terminalAttachment = "attaching";
-        const terminalOutput = element("pre", {
-          id: "controller-terminal-output",
-          "data-terminal-output": outcome.body.session.terminal.streamId,
-          "aria-live": "polite",
-        });
-        const terminalInput = element("input", {
-          id: "controller-terminal-input",
-          type: "text",
-          autocomplete: "off",
-          "aria-label": "Controller terminal input",
-        });
-        const sendInput = element("button", {
-          id: "send-controller-input",
-          type: "button",
-          disabled: true,
-        }, "Send to Controller");
-        const terminalState = {
-          attachmentId: outcome.body.session.terminal.writableAttachment.attachmentId,
-          decoder: new TextDecoder(),
-          inputSequence: 0,
-          requestedMode: "read-write",
-          output: terminalOutput,
+        attachTerminalSurface({
+          focused: outcome.body.session,
           panel: sessionPanel,
-          sendInput,
-          terminalInput,
-        };
-        terminalStreams.set(outcome.body.session.terminal.streamId, terminalState);
-        const submitTerminalInput = () => {
-          if (socket.readyState !== WebSocket.OPEN || sendInput.disabled) {
-            return;
-          }
-          const input = `${terminalInput.value}\n`;
-          terminalInput.value = "";
-          socket.send(encodeOpaqueFrame(
-            outcome.body.session.terminal.streamId,
-            terminalState.inputSequence,
-            new TextEncoder().encode(input),
-          ));
-          terminalState.inputSequence += 1;
-        };
-        sendInput.addEventListener("click", submitTerminalInput);
-        terminalInput.addEventListener("keydown", (event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            submitTerminalInput();
-          }
+          outputId: "controller-terminal-output",
+          accessibleLabel: "Planning Controller terminal",
+          requestedMode: "read-write",
+          description: [
+            element("p", {}, "Focused conformance Controller session opened for "
+              + `${outcome.body.session.workContext.workContextId} `
+              + `(${outcome.body.session.sessionId}).`),
+          ],
         });
-        sessionPanel.replaceChildren(
-          element("p", {}, "Focused conformance Controller session opened for "
-            + `${outcome.body.session.workContext.workContextId} `
-            + `(${outcome.body.session.sessionId}).`),
-          terminalOutput,
-          terminalInput,
-          sendInput,
-        );
-        socket.send(JSON.stringify({
-          channel: "control",
-          message: {
-            type: "browser.terminal.attach",
-            sessionId: outcome.body.session.sessionId,
-            streamId: outcome.body.session.terminal.streamId,
-            attachmentId: outcome.body.session.terminal.writableAttachment.attachmentId,
-            mode: "read-write",
-            outputCursor: 0,
-          },
-        }));
         feedback.textContent = "Selected Planning work opened in an independently identified session.";
       });
       const notUsed = element("button", {
@@ -856,6 +916,213 @@ const renderPlanning = (planning, session) => {
   return section;
 };
 
+const workbenchLink = (label, destination, active = false) => element("a", {
+  class: `workbench-nav__link${active ? " is-active" : ""}`,
+  href: destination,
+  ...(active ? { "aria-current": "page" } : {}),
+}, label);
+
+const renderWorkbench = (message) => {
+  const viewModel = message.viewModel;
+  const focused = viewModel.focusedControllerSession;
+  const currentProject = viewModel.projectPreparation.current;
+  const observation = viewModel.harnessRunObservation;
+  const project = renderProjectPreparation(
+    viewModel.projectPreparation,
+    message.session,
+    viewModel.controllerProviders,
+    focused,
+  );
+  const planning = renderPlanning(viewModel.planning, message.session);
+  const harnessRun = renderHarnessRun(observation);
+  const shell = element("div", {
+    id: "workbench-shell",
+    class: "workbench-shell",
+    "data-layout": "workbench",
+  });
+  const navigation = element("aside", {
+    id: "workbench-navigation",
+    class: "workbench-navigation",
+    "aria-label": "Product and work context navigation",
+  });
+  const brand = element("a", {
+    class: "workbench-brand",
+    href: "#workbench-main",
+    "aria-label": "Sand-King Cockpit home",
+  }, "SAND—KING");
+  const productNavigation = element("nav", {
+    class: "workbench-nav",
+    "aria-label": "Product destinations",
+  });
+  productNavigation.append(
+    workbenchLink("Home", "#workbench-main"),
+    workbenchLink("Projects", "#project-preparation", true),
+    workbenchLink("Harnesses", "#harness-run-observation"),
+    workbenchLink("Hosts", "#connection-status"),
+  );
+  const projectNavigation = element("nav", {
+    class: "workbench-nav workbench-nav--project",
+    "aria-label": "Project workspace destinations",
+  });
+  projectNavigation.append(
+    element("p", { class: "workbench-eyebrow" }, "Selected Project"),
+    workbenchLink(currentProject?.displayName ?? "No Project selected", "#project-preparation", true),
+    element("p", { class: "workbench-eyebrow" }, "Project workspace"),
+    workbenchLink("Controller", "#project-focused-controller-session", Boolean(focused)),
+    workbenchLink("Planning", "#planning-spine"),
+    workbenchLink("Runs", "#harness-run-observation"),
+    workbenchLink("Project", "#project-readiness"),
+    element("p", { class: "workbench-eyebrow" }, "Work contexts"),
+    workbenchLink(
+      focused?.workContext?.workContextId ?? "No focused work context",
+      "#project-focused-controller-session",
+      Boolean(focused),
+    ),
+  );
+  navigation.append(brand, productNavigation, projectNavigation);
+
+  const main = element("main", { id: "workbench-main", class: "workbench-main" });
+  const topbar = element("header", { class: "workbench-topbar" });
+  const navigationToggle = element("button", {
+    id: "workbench-navigation-toggle",
+    class: "workbench-drawer-toggle workbench-drawer-toggle--navigation",
+    type: "button",
+    "aria-controls": "workbench-navigation",
+    "aria-expanded": "false",
+    "aria-label": "Open product navigation",
+  }, "Menu");
+  const connectionStatus = element(
+    "p",
+    {
+      id: "connection-status",
+      class: `workbench-status workbench-status--${hostConnectionStatus}`,
+      "data-host-status": hostConnectionStatus,
+      "data-failure-code": viewModel.host.failure?.code ?? "",
+      "data-connection-audit-id": viewModel.host.failure?.auditId ?? "",
+      ...(hostConnectionStatus === "disconnected" ? { role: "alert" } : { role: "status" }),
+    },
+    hostConnectionStatus === "connected"
+      ? `Connected to ${viewModel.host.identity} with protocol ${message.protocol.version}`
+      : `Disconnected · Host ${viewModel.host.hostId}; Project and Harness state is stale`,
+  );
+  const externalProviderFeedback = element("span", {
+    id: "external-provider-feedback",
+    class: "workbench-visually-hidden",
+    role: "status",
+  });
+  const externalProvider = element("button", {
+    id: "external-provider-escape",
+    class: "workbench-button workbench-button--secondary",
+    type: "button",
+    "aria-describedby": "external-provider-feedback",
+  }, "Provider CLI escape hatch");
+  externalProvider.addEventListener("click", () => {
+    externalProviderFeedback.textContent =
+      "Use the destination-local provider CLI directly. Sand-King did not copy credentials or mutate the Controller session.";
+  });
+  const contextToggle = element("button", {
+    id: "workbench-context-toggle",
+    class: "workbench-drawer-toggle workbench-drawer-toggle--context",
+    type: "button",
+    "aria-controls": "workbench-context",
+    "aria-expanded": "false",
+    "aria-label": "Open current context",
+  }, "Context");
+  topbar.append(
+    navigationToggle,
+    element("div", { class: "workbench-breadcrumbs" },
+      `Projects / ${currentProject?.displayName ?? "Select a Project"}`),
+    connectionStatus,
+    externalProvider,
+    externalProviderFeedback,
+    contextToggle,
+  );
+
+  const stage = element("div", { class: "workbench-stage" });
+  const stageHeader = element("header", { class: "workbench-stage__header" });
+  const title = element("div");
+  title.append(
+    element("p", { class: "workbench-eyebrow" }, "Focused Controller"),
+    element("h1", {}, focused
+      ? `Work context ${focused.workContext.workContextId}`
+      : "Open a Project and focused Controller"),
+  );
+  const workspaceDestinations = element("nav", {
+    class: "workbench-tabs",
+    "aria-label": "Project workspace",
+  });
+  workspaceDestinations.append(
+    workbenchLink("Controller", "#project-focused-controller-session", Boolean(focused)),
+    workbenchLink("Planning", "#planning-spine"),
+    workbenchLink("Runs", "#harness-run-observation"),
+    workbenchLink("Project", "#project-readiness"),
+  );
+  stageHeader.append(title, workspaceDestinations);
+  stage.append(stageHeader, project);
+  main.append(topbar, stage);
+
+  const context = element("aside", {
+    id: "workbench-context",
+    class: "workbench-context",
+    "aria-label": "Current work context and operational status",
+  });
+  const contextHeader = element("header", { class: "workbench-context__header" });
+  contextHeader.append(
+    element("p", { class: "workbench-eyebrow" }, "Current work context"),
+    element("h2", {}, focused?.workContext?.workContextId ?? "No focused context"),
+  );
+  const attachment = element("section", {
+    class: "workbench-context__section",
+    id: "workbench-attachment-status",
+    "data-provider": focused?.provider?.providerId ?? "none",
+    "data-attachment": focused ? "attaching" : "none",
+  });
+  attachment.append(
+    element("h3", {}, "Provider and attachment"),
+    element("p", {}, focused
+      ? `${focused.provider.providerId} · runtime-owned PTY · attachment negotiating`
+      : "No Controller provider is attached."),
+  );
+  const launchRequestPending = observation.launchRequest?.status === "pending";
+  const personAction = element("section", {
+    id: "workbench-person-action",
+    class: `workbench-context__section workbench-person-action${
+      launchRequestPending ? " is-pending" : ""}`,
+    "data-person-action": launchRequestPending ? "launch-approval" : "none",
+  });
+  personAction.append(
+    element("p", { class: "workbench-eyebrow" },
+      launchRequestPending ? "Person required" : "Person action"),
+    element("h3", {}, launchRequestPending
+      ? "Review Launch request in Controller"
+      : "No pending person action"),
+    element("p", {}, launchRequestPending
+      ? "Approval remains inside the focused Controller conversation."
+      : "The Cockpit cannot assert Launch approval."),
+  );
+  context.append(contextHeader, attachment, personAction, planning, harnessRun);
+  shell.append(navigation, main, context);
+
+  const setDrawer = (drawer, open) => {
+    shell.classList.toggle(`is-${drawer}-open`, open);
+    const toggle = drawer === "navigation" ? navigationToggle : contextToggle;
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.setAttribute("aria-label", `${open ? "Close" : "Open"} ${
+      drawer === "navigation" ? "product navigation" : "current context"}`);
+  };
+  navigationToggle.addEventListener("click", () =>
+    setDrawer("navigation", navigationToggle.getAttribute("aria-expanded") !== "true"));
+  contextToggle.addEventListener("click", () =>
+    setDrawer("context", contextToggle.getAttribute("aria-expanded") !== "true"));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      setDrawer("navigation", false);
+      setDrawer("context", false);
+    }
+  });
+  return shell;
+};
+
 const requireReload = (code) => {
   document.documentElement.dataset.reloadRequired = "true";
   document.documentElement.dataset.protocolError = code;
@@ -883,13 +1150,19 @@ socket.addEventListener("message", (event) => {
     const opaque = decodeOpaqueFrame(event.data);
     const terminal = opaque ? terminalStreams.get(opaque.streamId) : null;
     if (opaque && terminal) {
-      terminal.output.textContent += terminal.decoder.decode(opaque.data, {
-        stream: !opaque.eof,
-      });
+      if (opaque.sequence !== terminal.outputSequence) {
+        requireReload("runtime_terminal_output_sequence_mismatch");
+        return;
+      }
+      terminal.outputSequence += 1;
+      if (opaque.data.byteLength > 0) {
+        terminal.emulator.write(opaque.data);
+      }
       terminal.output.dataset.outputSequence = String(opaque.sequence);
       if (opaque.eof) {
         terminal.panel.dataset.sessionState = "exited";
-        terminal.sendInput.disabled = true;
+        terminal.emulator.options.disableStdin = true;
+        terminal.attachmentStatus.textContent = "Exited · read-only";
       }
     } else if (opaque) {
       const diagnostic = diagnosticStreams.get(opaque.streamId);
@@ -974,7 +1247,43 @@ socket.addEventListener("message", (event) => {
     }
     terminal.panel.dataset.terminalAttachment = message.mode;
     terminal.inputSequence = message.inputSequence;
-    terminal.sendInput.disabled = message.mode !== "read-write";
+    terminal.resizeSequence = message.resizeSequence;
+    terminal.outputSequence = message.outputCursor;
+    terminal.emulator.options.disableStdin = message.mode !== "read-write";
+    terminal.attachmentStatus.textContent = message.mode === "read-write"
+      ? `Connected · read-write${message.resynchronized ? " · retained tail" : ""}`
+      : `Connected · read-only${message.resynchronized ? " · retained tail" : ""}`;
+    terminal.panel.dataset.terminalOutputResynchronized = String(message.resynchronized);
+    const workbenchAttachment = document.getElementById("workbench-attachment-status");
+    if (workbenchAttachment && terminal.sessionId === message.sessionId) {
+      workbenchAttachment.dataset.attachment = message.mode;
+      const status = workbenchAttachment.querySelector("p");
+      if (status) {
+        status.textContent = `${terminal.panel.dataset.providerId} · runtime-owned PTY · ${
+          message.mode}`;
+      }
+    }
+    scheduleTerminalFit(terminal);
+    return;
+  }
+
+  if (message?.type === "runtime.terminal-resized") {
+    const terminal = terminalStreams.get(message.streamId);
+    if (
+      !runtimeNegotiated
+      || !terminal
+      || terminal.sessionId !== message.sessionId
+      || terminal.attachmentId !== message.attachmentId
+      || terminal.lastRequestedDimensions?.sequence !== message.sequence
+      || terminal.lastRequestedDimensions.columns !== message.columns
+      || terminal.lastRequestedDimensions.rows !== message.rows
+    ) {
+      requireReload("runtime_terminal_resize_mismatch");
+      return;
+    }
+    terminal.panel.dataset.terminalColumns = String(message.columns);
+    terminal.panel.dataset.terminalRows = String(message.rows);
+    terminal.panel.dataset.terminalResizeSequence = String(message.sequence);
     return;
   }
 
@@ -1127,31 +1436,7 @@ socket.addEventListener("message", (event) => {
   document.documentElement.dataset.protocolVersion = message.protocol.version;
   document.documentElement.dataset.hostConnectionStatus = hostConnectionStatus;
   app.textContent = "";
-  app.append(
-    element(
-      "p",
-      {
-        id: "connection-status",
-        "data-host-status": hostConnectionStatus,
-        "data-failure-code": message.viewModel.host.failure?.code ?? "",
-        "data-connection-audit-id": message.viewModel.host.failure?.auditId ?? "",
-        ...(hostConnectionStatus === "disconnected" ? { role: "alert" } : {}),
-      },
-      hostConnectionStatus === "connected"
-        ? `Connected to ${message.viewModel.host.identity} with protocol ${message.protocol.version}`
-          + ` (${message.viewModel.host.hostId})`
-        : `Host ${message.viewModel.host.hostId} is disconnected. Project and Harness views `
-          + "are stale; unaffected Controller and Planning views remain available.",
-    ),
-    renderProjectPreparation(
-      message.viewModel.projectPreparation,
-      message.session,
-      message.viewModel.controllerProviders,
-      message.viewModel.focusedControllerSession,
-    ),
-    renderHarnessRun(message.viewModel.harnessRunObservation),
-    renderPlanning(message.viewModel.planning, message.session),
-  );
+  app.append(renderWorkbench(message));
   currentHarnessRunObservation = message.viewModel.harnessRunObservation;
   harnessRunSection = document.getElementById("harness-run-observation");
   requestHarnessRunObservation();

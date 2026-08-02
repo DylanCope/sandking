@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 2,
+  "issue": 146,
+  "parentPrd": 125,
+  "sourceSpecification": {
+    "issue": 116,
+    "githubBodyUtf8Sha256": "34ebbde096564621b14a68d4bc64cdbd8ba9e448a42cb75c084d80c0e201308a",
+    "parentApprovedTextExportSha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23",
+    "parentApprovedHashBasis": "exact GitHub body UTF-8 plus one terminal LF"
+  },
+  "visualPrimarySource": {
+    "decisionIssue": 145,
+    "variant": "A — Workbench",
+    "immutableCommit": "2467a8d"
+  },
+  "scenarios": [
+    {
+      "id": "cockpit-workbench/operates-interactive-controller-terminal",
+      "requirements": [
+        "#146 Workbench shell, real terminal surface, acceptance criteria, and evidence requirements",
+        "#125 public-browser, canonical-state, audit, secret-safety, and user-space boundaries",
+        "#116 stories 21-32, 36-44",
+        "#145 selected Variant A — Workbench at immutable commit 2467a8d"
+      ],
+      "environment": "npm-packed Sand-King; npm-pinned real Chromium; locally bundled @xterm emulator and fit addon; deterministic conformance provider in a runtime-owned PTY; real Controller runtime and local Host",
+      "transport": "served loopback Cockpit -> negotiated typed same-origin WebSocket control plus opaque binary PTY stream -> Controller-session attachment authority -> runtime-owned PTY",
+      "initialState": "one explicit local Project, one focused conformance Controller, no browser approval authority, and no retained terminal transcript",
+      "actions": [
+        "render the production three-region Workbench at 1440×1000 and exercise both narrow drawers without horizontal page overflow",
+        "interpret split ANSI/VT cursor, erase, colour, alternate-screen, and redraw output into the intended final screen",
+        "send printable, Enter, Tab, Escape, arrow, navigation, deletion, and control-key data exactly once",
+        "fit and resize the provider PTY initially and after meaningful container changes",
+        "reject invalid dimensions, stale sequences, wrong correlations, read-only input, and a competing writer",
+        "reconnect to the same runtime-owned Controller with bounded retained-output resynchronization"
+      ],
+      "expectedTypedOutcome": "interactive Workbench Controller terminal with accepted correlated resize acknowledgements and typed prohibited outcomes",
+      "canonicalStateInvariants": [
+        "terminal bytes remain opaque and are never parsed as product state",
+        "the Controller runtime owns the PTY and exactly one attachment may write or resize",
+        "browser detachment does not terminate the provider",
+        "resizing is correlated by Controller session, stream, attachment, and monotonic sequence",
+        "terminal input and resize audits retain byte counts and dimensions but no contents",
+        "existing Project, Planning, Launch request, Harness run, diagnostics, failure, and reconnect state remains truthful"
+      ],
+      "prohibitedSideEffects": [
+        "browser approval assertion",
+        "terminal transcript retention",
+        "terminal-output parsing as canonical state",
+        "second writable attachment",
+        "stale or mismatched resize affecting a Controller session",
+        "CDN executable or style asset",
+        "prototype route, variant switcher, or fake product state",
+        "Project Sand-King state write",
+        "credential copy or transfer",
+        "sudo, system package install, shell profile mutation, or service configuration"
+      ],
+      "evidence": "acceptance/evidence/issue-146.json"
+    },
+    {
+      "id": "cockpit-workbench/preserves-slice-1-public-journeys",
+      "requirements": [
+        "#146 existing-surface preservation and real-browser state criteria",
+        "#125 named slice-1 scenarios",
+        "#116 stories 5-28 and 37-43"
+      ],
+      "environment": "the complete affected packaged-browser acceptance suites",
+      "transport": "the unchanged public Cockpit, Controller runtime, local Host, Planning, Launch-request, Harness-run, diagnostics, and reconnect boundaries",
+      "initialState": "the deterministic acceptance states owned by issues 118-124",
+      "actions": [
+        "open and prepare a Project",
+        "project and mutate optional Planning state",
+        "prepare and decide a Launch request only in the focused Controller",
+        "observe an active and terminal Harness run with separate diagnostics",
+        "show truthful failure and disconnected or stale state",
+        "reconnect without duplicate work"
+      ],
+      "expectedTypedOutcome": "all inherited affected browser acceptance scenarios pass through the Workbench",
+      "canonicalStateInvariants": [
+        "existing authorization, idempotency, expected-revision, audit, and canonical identity rules remain unchanged",
+        "diagnostic logs remain separate from structured outcomes",
+        "read-only state and failure presentation remain explicit in text as well as colour"
+      ],
+      "prohibitedSideEffects": [
+        "new product workflow",
+        "browser lifecycle controlling provider or Harness execution",
+        "secret or terminal transcript in browser models, logs, errors, screenshots, audits, or evidence"
+      ],
+      "evidence": "acceptance/evidence/issue-146.json"
+    }
+  ],
+  "environmentGate": {
+    "name": "SANDKING_REAL_CLAUDE_ACCEPTANCE",
+    "enabledValue": "1",
+    "executionCommand": "SANDCASTLE_REAL_CLAUDE_ISSUES=146 SANDKING_REAL_CLAUDE_ACCEPTANCE=1 SANDKING_REAL_CLAUDE_PROJECT=/absolute/path npm run acceptance:issue-146:real",
+    "deterministicMergeOracleRequiresAuthenticatedExecution": false,
+    "workerMayApproveLaunchRequest": false,
+    "missingNetworkQuotaOrProviderOutcome": "distinct typed environment failure, never deterministic product success"
+  },
+  "verification": {
+    "commands": [
+      [
+        "node",
+        "--test",
+        "test/browser-protocol.test.mjs",
+        "test/controller-launch-session.test.mjs",
+        "test/security-boundary.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/workbench-terminal.browser.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/project-preparation.browser.test.mjs",
+        "test/planning-spine.browser.test.mjs",
+        "test/launch-request.browser.test.mjs",
+        "test/harness-run.browser.test.mjs",
+        "test/reconnect-canonical.browser.test.mjs",
+        "test/truthful-failure.browser.test.mjs",
+        "test/claude-controller.browser.test.mjs",
+        "test/local-walking-skeleton.browser.test.mjs"
+      ]
+    ]
+  }
+}

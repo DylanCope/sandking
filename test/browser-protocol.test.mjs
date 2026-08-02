@@ -14,7 +14,9 @@ import {
   browserCapabilities,
   decodeBrowserOpaqueFrame,
   encodeBrowserOpaqueFrame,
+  parseBrowserControl,
   runtimeControlEnvelopeSchema,
+  serializeRuntimeControl,
 } from "../src/browser-protocol.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -513,4 +515,54 @@ test("browser opaque streams are binary, bounded, and distinct from control JSON
     (error) => error instanceof BrowserProtocolError
       && error.code === "browser_opaque_metadata_invalid",
   );
+});
+
+test("terminal resize control is bounded and correlated through the negotiated schema", () => {
+  assert.ok(browserCapabilities.includes("cockpit.controller-terminal-resize.v1"));
+  const resize = {
+    channel: "control",
+    message: {
+      type: "browser.terminal.resize",
+      sessionId: `controller-session-${"1".repeat(24)}`,
+      streamId: `controller-terminal-${"2".repeat(24)}`,
+      attachmentId: `terminal-attachment-${"3".repeat(24)}`,
+      sequence: 4,
+      columns: 120,
+      rows: 40,
+    },
+  };
+  assert.deepEqual(parseBrowserControl(resize), resize.message);
+  assert.throws(
+    () => parseBrowserControl({
+      ...resize,
+      message: { ...resize.message, columns: 19 },
+    }),
+    (error) => error instanceof BrowserProtocolError
+      && error.code === "browser_control_schema_invalid",
+  );
+  assert.throws(
+    () => parseBrowserControl({
+      ...resize,
+      message: { ...resize.message, rows: 201 },
+    }),
+    (error) => error instanceof BrowserProtocolError
+      && error.code === "browser_control_schema_invalid",
+  );
+  assert.deepEqual(JSON.parse(serializeRuntimeControl({
+    type: "runtime.terminal-resized",
+    sessionId: resize.message.sessionId,
+    streamId: resize.message.streamId,
+    attachmentId: resize.message.attachmentId,
+    sequence: resize.message.sequence,
+    columns: resize.message.columns,
+    rows: resize.message.rows,
+  })).message, {
+    type: "runtime.terminal-resized",
+    sessionId: resize.message.sessionId,
+    streamId: resize.message.streamId,
+    attachmentId: resize.message.attachmentId,
+    sequence: 4,
+    columns: 120,
+    rows: 40,
+  });
 });
