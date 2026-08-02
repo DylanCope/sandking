@@ -104,8 +104,12 @@ test("bootstrap URLs exchange once into a session and same-origin WebSockets req
     assert.equal(cockpit.status, 200);
     const cockpitHtml = await cockpit.text();
     assert.match(cockpit.headers.get("content-security-policy"), /script-src 'self'/);
+    assert.match(cockpit.headers.get("content-security-policy"), /style-src 'self'/);
     assert.match(cockpitHtml, /<script type="module" src="\/cockpit\.js"><\/script>/);
+    assert.match(cockpitHtml, /href="\/terminal\/xterm\.css"/);
+    assert.match(cockpitHtml, /href="\/cockpit\.css"/);
     assert.doesNotMatch(cockpitHtml, /<script type="module">/);
+    assert.doesNotMatch(cockpitHtml, /https?:\/\//);
     assert.match(cockpitHtml, /Connecting to local Host/);
     assert.match(cockpitHtml, /id="reload-cockpit"/);
 
@@ -116,6 +120,21 @@ test("bootstrap URLs exchange once into a session and same-origin WebSockets req
     assert.equal(cockpitScript.status, 200);
     assert.match(cockpitScript.headers.get("content-type"), /text\/javascript/);
     assert.match(await cockpitScript.text(), /new WebSocket/);
+
+    for (const [path, contentType, expectedSource] of [
+      ["/terminal/xterm.mjs", "text/javascript", "class"],
+      ["/terminal/addon-fit.mjs", "text/javascript", "FitAddon"],
+      ["/terminal/xterm.css", "text/css", ".xterm"],
+      ["/cockpit.css", "text/css", ".workbench-shell"],
+    ]) {
+      const asset = await request({
+        url: `http://127.0.0.1:${launch.runtime.port}${path}`,
+        headers: { cookie },
+      });
+      assert.equal(asset.status, 200);
+      assert.match(asset.headers.get("content-type"), new RegExp(contentType));
+      assert.match(await asset.text(), new RegExp(expectedSource.replace(".", "\\.")));
+    }
 
     const csrfRejected = await request({
       method: "POST",

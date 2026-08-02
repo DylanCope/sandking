@@ -1,0 +1,241 @@
+{
+  "schemaVersion": 2,
+  "issue": 146,
+  "parentPrd": 125,
+  "sourceSpecification": {
+    "issue": 116,
+    "githubBodyUtf8Sha256": "34ebbde096564621b14a68d4bc64cdbd8ba9e448a42cb75c084d80c0e201308a",
+    "parentApprovedTextExportSha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23",
+    "parentApprovedHashBasis": "exact GitHub body UTF-8 plus one terminal LF",
+    "normalizationDifference": "one terminal LF",
+    "exactContentEquivalentAfterApprovedExportNormalization": true
+  },
+  "visualPrimarySource": {
+    "decisionIssue": 145,
+    "variant": "A — Workbench",
+    "immutableCommit": "2467a8d"
+  },
+  "generatedFromCommit": "a53f2fc945ed8d8c5f199941e7d5aebfa90790b7",
+  "recordedAt": "2026-08-02T23:03:27.128Z",
+  "scenario": "cockpit-workbench/operates-interactive-controller-terminal",
+  "packagedPublicSeam": {
+    "command": "sandking",
+    "installed": true,
+    "launchedOutsideCheckout": true,
+    "tarballSha256": "8a171310bda5c632711b46bfd587bf52acdc730ad899a5e8fbe29f96e440aa79"
+  },
+  "layout": {
+    "referenceViewport": {
+      "width": 1440,
+      "height": 1000
+    },
+    "regions": {
+      "navigationWidth": "220px",
+      "contextWidth": "310px",
+      "terminalWorkspaceFlexible": true
+    },
+    "tokens": {
+      "background": "#030712",
+      "accent": "#9333ea"
+    },
+    "narrowViewport": {
+      "width": 700,
+      "navigationDrawer": true,
+      "contextDrawer": true,
+      "hostConnectionStatusVisible": true,
+      "externalProviderEscapeReachable": true,
+      "horizontalPageOverflow": false
+    },
+    "visibleKeyboardFocus": true,
+    "semanticLandmarks": [
+      "navigation",
+      "main",
+      "complementary"
+    ],
+    "mainLandmarkCount": 1,
+    "nestedMainLandmark": false
+  },
+  "workbenchChrome": {
+    "selectedProjectCurrent": true,
+    "focusedWorkContextCurrent": true,
+    "providerAndAttachmentCurrent": true,
+    "pendingPersonActionVisible": true,
+    "pendingPersonActionSurvivedReconnect": true,
+    "pendingPersonActionClearedAfterDecision": true
+  },
+  "terminal": {
+    "emulator": "@xterm/xterm@6.0.0",
+    "localAssetsOnly": true,
+    "ansiVtFixture": {
+      "cursorMovement": true,
+      "eraseAndRedraw": true,
+      "color": true,
+      "alternateScreen": true,
+      "splitEscapeSequence": true,
+      "intendedFinalScreen": true,
+      "transcriptRetained": false
+    },
+    "keyboard": {
+      "printable": true,
+      "enter": true,
+      "tab": true,
+      "escape": true,
+      "arrows": true,
+      "navigation": true,
+      "deletion": true,
+      "controlSequence": true,
+      "exactBytesOnce": true,
+      "observedInputAuditCount": 134
+    },
+    "resize": {
+      "initial": {
+        "columns": 68,
+        "rows": 33,
+        "sequence": 0
+      },
+      "containerDriven": {
+        "columns": 52,
+        "rows": 33,
+        "sequence": 1
+      },
+      "providerObservedAcceptedDimensions": true,
+      "feedbackLoopAbsent": true,
+      "reconnectedSequence": 3,
+      "observedResizeAuditCount": 4
+    },
+    "attachmentAuthority": {
+      "writable": "accepted",
+      "competingWriter": "terminal_write_attachment_conflict",
+      "readOnlyInput": "terminal_write_attachment_required",
+      "invalidBounds": "browser_control_schema_invalid",
+      "wrongCorrelation": "controller_terminal_not_found",
+      "staleCorrelation": "terminal_resize_sequence_conflict"
+    },
+    "boundedRetainedOutputResynchronization": true,
+    "attachmentDelivery": {
+      "regression": "test/controller-terminal-attachment.test.mjs",
+      "publicBrowserRegression": "test/workbench-terminal.browser.test.mjs",
+      "acknowledgementBeforeOutput": true,
+      "replayBeforeLive": true,
+      "duplicateSequenceDelivery": false
+    }
+  },
+  "auditReferences": [
+    {
+      "auditId": "audit-ad1d37eca7af412a562ce059",
+      "action": "controller.terminal.input",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-0f1d7601fda49aff6c33833d",
+        "providerSessionId": "conformance-provider-session-db7a04bb7ca0e72fab53af14",
+        "streamId": "controller-terminal-e4675fceaceecfeedd4d2372",
+        "sequence": 132,
+        "byteLength": 1,
+        "contentRetained": false
+      }
+    },
+    {
+      "auditId": "audit-a9315d0f6c6d537effde503f",
+      "action": "controller.terminal.input",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-0f1d7601fda49aff6c33833d",
+        "providerSessionId": "conformance-provider-session-db7a04bb7ca0e72fab53af14",
+        "streamId": "controller-terminal-e4675fceaceecfeedd4d2372",
+        "sequence": 133,
+        "byteLength": 1,
+        "contentRetained": false
+      }
+    },
+    {
+      "auditId": "audit-61dcdade494cbd0f460a3ce6",
+      "action": "controller.terminal.resize",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-0f1d7601fda49aff6c33833d",
+        "providerSessionId": "conformance-provider-session-db7a04bb7ca0e72fab53af14",
+        "streamId": "controller-terminal-e4675fceaceecfeedd4d2372",
+        "attachmentId": "terminal-attachment-2304d4c63b9b009971ef6fd5",
+        "sequence": 2,
+        "columns": 53,
+        "rows": 20,
+        "contentRetained": false
+      }
+    },
+    {
+      "auditId": "audit-de9d41428fa32cd86280f5cb",
+      "action": "controller.terminal.resize",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-0f1d7601fda49aff6c33833d",
+        "providerSessionId": "conformance-provider-session-db7a04bb7ca0e72fab53af14",
+        "streamId": "controller-terminal-e4675fceaceecfeedd4d2372",
+        "attachmentId": "terminal-attachment-2304d4c63b9b009971ef6fd5",
+        "sequence": 3,
+        "columns": 68,
+        "rows": 33,
+        "contentRetained": false
+      }
+    }
+  ],
+  "securityAssertions": {
+    "credentialValueRetained": false,
+    "terminalTranscriptRetained": false,
+    "recognizableSecretFixtureRetained": false,
+    "providerAccountMetadataRetained": false,
+    "browserApprovalAssertion": false,
+    "providerTerminationFromBrowserDetach": false
+  },
+  "inheritedBrowserScenarios": {
+    "projectPreparation": "passed",
+    "planningProjectionAndMutation": "passed",
+    "launchRequestInteraction": "passed",
+    "activeAndTerminalHarnessRunObservation": "passed",
+    "diagnosticsAndStructuredOutcome": "passed",
+    "truthfulFailure": "passed",
+    "disconnectedAndReadOnlyState": "passed",
+    "canonicalReconnection": "passed",
+    "installedClaudeContractFixture": "passed"
+  },
+  "realClaudeExecution": {
+    "deterministicMergeOracle": false,
+    "launchApprovalPermittedForWorker": false,
+    "executionCommand": "SANDCASTLE_REAL_CLAUDE_ISSUES=146 SANDKING_REAL_CLAUDE_ACCEPTANCE=1 SANDKING_REAL_CLAUDE_PROJECT=/absolute/path npm run acceptance:issue-146:real"
+  },
+  "verificationCommands": [
+    [
+      "node",
+      "--test",
+      "test/browser-protocol.test.mjs",
+      "test/controller-launch-session.test.mjs",
+      "test/security-boundary.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/controller-terminal-attachment.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/claude-controller-session.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/workbench-terminal.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/project-preparation.browser.test.mjs",
+      "test/planning-spine.browser.test.mjs",
+      "test/launch-request.browser.test.mjs",
+      "test/harness-run.browser.test.mjs",
+      "test/reconnect-canonical.browser.test.mjs",
+      "test/truthful-failure.browser.test.mjs",
+      "test/claude-controller.browser.test.mjs",
+      "test/local-walking-skeleton.browser.test.mjs"
+    ]
+  ]
+}

@@ -141,7 +141,7 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       outputCursor: 0,
       onOutput: (_socket, frame) => output.push(frame.data.toString("utf8")),
     });
-    output.push(...attached.frames.map((frame) => frame.data.toString("utf8")));
+    assert.equal(attached.activate(), true);
     const readOnlyOutput = [];
     const readOnlySocket = { readyState: 1 };
     const readOnly = await manager.attach({
@@ -153,8 +153,71 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       outputCursor: 0,
       onOutput: (_socket, frame) => readOnlyOutput.push(frame.data.toString("utf8")),
     });
+    assert.equal(readOnly.activate(), true);
     assert.equal(readOnly.mode, "read-only");
     assert.equal(readOnly.exclusive, false);
+    assert.equal(typeof manager.resize, "function");
+    assert.deepEqual(await manager.resize({
+      socket,
+      sessionId: session.sessionId,
+      streamId: session.terminal.streamId,
+      attachmentId: session.terminal.writableAttachment.attachmentId,
+      sequence: 0,
+      columns: 120,
+      rows: 40,
+    }), {
+      sessionId: session.sessionId,
+      streamId: session.terminal.streamId,
+      attachmentId: session.terminal.writableAttachment.attachmentId,
+      sequence: 0,
+      columns: 120,
+      rows: 40,
+    });
+    await assert.rejects(manager.resize({
+      socket: readOnlySocket,
+      sessionId: session.sessionId,
+      streamId: session.terminal.streamId,
+      attachmentId: session.terminal.writableAttachment.attachmentId,
+      sequence: 1,
+      columns: 100,
+      rows: 30,
+    }), (error) => error.code === "terminal_resize_attachment_required");
+    await assert.rejects(manager.resize({
+      socket,
+      sessionId: session.sessionId,
+      streamId: session.terminal.streamId,
+      attachmentId: session.terminal.writableAttachment.attachmentId,
+      sequence: 0,
+      columns: 100,
+      rows: 30,
+    }), (error) => error.code === "terminal_resize_sequence_conflict");
+    await assert.rejects(manager.resize({
+      socket,
+      sessionId: session.sessionId,
+      streamId: session.terminal.streamId,
+      attachmentId: `terminal-attachment-${"9".repeat(24)}`,
+      sequence: 1,
+      columns: 100,
+      rows: 30,
+    }), (error) => error.code === "controller_terminal_not_found");
+    await assert.rejects(manager.resize({
+      socket,
+      sessionId: `controller-session-${"8".repeat(24)}`,
+      streamId: session.terminal.streamId,
+      attachmentId: session.terminal.writableAttachment.attachmentId,
+      sequence: 1,
+      columns: 100,
+      rows: 30,
+    }), (error) => error.code === "controller_terminal_not_found");
+    await assert.rejects(manager.resize({
+      socket,
+      sessionId: session.sessionId,
+      streamId: session.terminal.streamId,
+      attachmentId: session.terminal.writableAttachment.attachmentId,
+      sequence: 1,
+      columns: 501,
+      rows: 30,
+    }), (error) => error.code === "terminal_resize_dimensions_invalid");
     await assert.rejects(manager.write({
       socket: readOnlySocket,
       streamId: session.terminal.streamId,
@@ -208,6 +271,7 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       outputCursor: 0,
       onOutput: (_socket, frame) => output.push(frame.data.toString("utf8")),
     });
+    assert.equal(downgraded.activate(), true);
     assert.equal(downgraded.mode, "read-only");
     assert.equal(downgraded.exclusive, false);
     await assert.rejects(manager.write({
@@ -250,6 +314,46 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       operations[4].input.idempotencyKey,
       operations[5].input.idempotencyKey,
     );
+    manager.detach(socket);
+    const reconnectSocket = { readyState: 1 };
+    const reattached = await manager.attach({
+      socket: reconnectSocket,
+      sessionId: session.sessionId,
+      streamId: session.terminal.streamId,
+      attachmentId: session.terminal.writableAttachment.attachmentId,
+      mode: "read-write",
+      outputCursor: 0,
+      onOutput: (_socket, frame) => output.push(frame.data.toString("utf8")),
+    });
+    assert.equal(reattached.activate(), true);
+    assert.equal(reattached.resizeSequence, 1);
+    assert.deepEqual(await manager.resize({
+      socket: reconnectSocket,
+      sessionId: session.sessionId,
+      streamId: session.terminal.streamId,
+      attachmentId: session.terminal.writableAttachment.attachmentId,
+      sequence: reattached.resizeSequence,
+      columns: 100,
+      rows: 32,
+    }), {
+      sessionId: session.sessionId,
+      streamId: session.terminal.streamId,
+      attachmentId: session.terminal.writableAttachment.attachmentId,
+      sequence: 1,
+      columns: 100,
+      rows: 32,
+    });
+    const resizeAudits = audits.filter((entry) =>
+      entry.action === "controller.terminal.resize" && entry.outcome === "observed");
+    assert.deepEqual(resizeAudits.map((entry) => ({
+      sequence: entry.details.sequence,
+      columns: entry.details.columns,
+      rows: entry.details.rows,
+      contentRetained: entry.details.contentRetained,
+    })), [
+      { sequence: 0, columns: 120, rows: 40, contentRetained: false },
+      { sequence: 1, columns: 100, rows: 32, contentRetained: false },
+    ]);
     const sessionStartAudit = audits.find((entry) =>
       entry.action === "controller.session.start"
       && entry.outcome === "accepted"

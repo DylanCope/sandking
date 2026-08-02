@@ -272,8 +272,11 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
       });
 
       const enter = async (value) => {
-        await page.locator("#project-controller-terminal-input").fill(value);
-        await page.locator("#send-project-controller-input").click();
+        await page.locator(
+          "#project-controller-terminal-output .xterm-helper-textarea",
+        ).focus();
+        await page.keyboard.type(value);
+        await page.keyboard.press("Enter");
       };
       await page.waitForFunction(() => document.querySelector(
         "#project-controller-terminal-output",
@@ -327,14 +330,15 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
       await enter(
         `prepare ${overlongIssueNumber} sandcastle/issue-${overlongIssueNumber}`,
       );
-      await page.waitForFunction(() => {
-        const output = document.querySelector("#project-controller-terminal-output")
-          ?.textContent ?? "";
-        return output.split(
-          "Launch preparation failed safely: bounded_configuration_invalid",
-        ).length >= 5;
-      });
-      const overlongPreparationState = JSON.parse(await readFile(launchStatePath, "utf8"));
+      let overlongPreparationState;
+      const overlongDeadline = Date.now() + 10_000;
+      while (Date.now() < overlongDeadline) {
+        overlongPreparationState = JSON.parse(await readFile(launchStatePath, "utf8"));
+        if (overlongPreparationState.preparationOutcomes.length === 2) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
       assert.equal(overlongPreparationState.launchRequests.length, 0);
       assert.equal(overlongPreparationState.preparationOutcomes.length, 2);
       assert.equal(overlongPreparationState.preparationOutcomes[1].response.code,
@@ -575,6 +579,13 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
         && entry.details.code === "launch_request_materially_changed"
         && entry.details.launchRequestId === replacementCandidate.launchRequestId);
       assert.ok(replacementExpiryAudit);
+      const retainedAuditReferences = replacementAudits.filter((entry) =>
+        (entry.action.startsWith("launch.request")
+          || entry.action.startsWith("controller.")
+          || entry.action === "project.session.open")
+        && entry.action !== "controller.terminal.input"
+        && entry.action !== "controller.terminal.resize");
+      assert.ok(retainedAuditReferences.length < 100);
       await rm(projectPath, { recursive: true, force: true });
       await rename(movedProjectPath, projectPath);
 
@@ -686,10 +697,7 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
           competingWritableRejectedAs: competingWriter.code,
           secondaryView: { mode: readOnlyView.mode, exclusive: readOnlyView.exclusive },
         },
-        auditReferences: replacementAudits.filter((entry) =>
-          entry.action.startsWith("launch.request")
-          || entry.action.startsWith("controller.")
-          || entry.action === "project.session.open"),
+        auditReferences: retainedAuditReferences,
         prohibitedSideEffectAssertions: {
           browserApprovalAccepted: false,
           delegatedWorkStarted: false,

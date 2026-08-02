@@ -36,11 +36,16 @@
     "acceptance:issue-124": "node test/run-issue-124-acceptance.mjs acceptance/issue-124.manifest.json",
     "acceptance:issue-124:update-evidence": "node test/run-issue-124-acceptance.mjs acceptance/issue-124.manifest.json --update-evidence",
     "acceptance:issue-124:real": "node test/run-installed-claude-acceptance.mjs acceptance/issue-124.manifest.json",
+    "acceptance:issue-146": "node test/run-issue-146-acceptance.mjs acceptance/issue-146.manifest.json",
+    "acceptance:issue-146:update-evidence": "node test/run-issue-146-acceptance.mjs acceptance/issue-146.manifest.json --update-evidence",
+    "acceptance:issue-146:real": "node test/run-issue-146-real-claude.mjs acceptance/issue-146.manifest.json",
     "typecheck": "tsc --noEmit -p tsconfig.sandcastle.json && tsc --noEmit -p tsconfig.json",
     "test": "node --test .sandcastle/*.test.mjs test/*.test.mjs"
   },
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.14",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "ws": "^8.21.1",
     "zod": "^4.4.3"
   },

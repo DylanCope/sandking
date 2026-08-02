@@ -258,8 +258,18 @@ if (args.length === 1 && args[0] === "--version") {
       outputCursor: 0,
       onOutput: (_socket, frame) => output.push(frame.data.toString("utf8")),
     };
-    await manager.attach({ ...attachment, socket: writer, mode: "read-write" });
-    await manager.attach({ ...attachment, socket: observer, mode: "read-only" });
+    const writerAttachment = await manager.attach({
+      ...attachment,
+      socket: writer,
+      mode: "read-write",
+    });
+    assert.equal(writerAttachment.activate(), true);
+    const observerAttachment = await manager.attach({
+      ...attachment,
+      socket: observer,
+      mode: "read-only",
+    });
+    assert.equal(observerAttachment.activate(), true);
     await assert.rejects(manager.attach({
       ...attachment,
       socket: observer,
@@ -286,7 +296,12 @@ if (args.length === 1 && args[0] === "--version") {
     await waitFor(() => output.join("").includes(`STARTED {"type":"harness.run.start.result"`));
     manager.detach(writer);
     assert.equal(manager.inspect(session.sessionId).terminal.status, "running");
-    await manager.attach({ ...attachment, socket: writer, mode: "read-write" });
+    const reattachment = await manager.attach({
+      ...attachment,
+      socket: writer,
+      mode: "read-write",
+    });
+    assert.equal(reattachment.activate(), true);
     await enter("network-fail");
     await waitFor(() => manager.inspect(session.sessionId).terminal.status === "exited");
     assert.deepEqual(manager.inspect(session.sessionId).terminal.exitReason, {

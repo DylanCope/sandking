@@ -134,6 +134,11 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       const page = await browserContext.newPage();
       const sentFrames = [];
       const receivedFrames = [];
+      const browserErrors = [];
+      page.on("pageerror", (error) => browserErrors.push(error.message));
+      page.on("requestfailed", (request) => browserErrors.push(
+        `${request.url()}: ${request.failure()?.errorText ?? "request failed"}`,
+      ));
       page.on("websocket", (socket) => {
         socket.on("framesent", (event) => sentFrames.push(String(event.payload)));
         socket.on("framereceived", (event) => receivedFrames.push(String(event.payload)));
@@ -145,8 +150,13 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       assert.equal(bootstrapResponse?.status(), 200);
       await page.waitForFunction(
         () => document.querySelector("#app")?.textContent?.includes("Connected to local-host"),
+        undefined,
         { timeout: 10_000 },
-      );
+      ).catch(async (error) => {
+        error.message += `\nBrowser errors: ${browserErrors.join(" | ") || "none"}`
+          + `\nCockpit text: ${(await page.textContent("#app"))?.slice(0, 2_000) ?? "missing"}`;
+        throw error;
+      });
       assert.match(
         await page.textContent("#app"),
         /Connected to local-host with protocol 1\.0\.0/,
@@ -163,6 +173,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         "cockpit.resynchronization.v1",
         "cockpit.planning-spine.v1",
         "cockpit.controller-terminal.v1",
+        "cockpit.controller-terminal-resize.v1",
         "cockpit.project-preparation.v1",
         "cockpit.launch-request.v1",
         "cockpit.harness-run-observation.v1",

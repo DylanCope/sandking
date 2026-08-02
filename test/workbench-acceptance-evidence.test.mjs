@@ -1,0 +1,172 @@
+import assert from "node:assert/strict";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import test from "node:test";
+import {
+  captureCleanIssue146EvidenceRevision,
+  ISSUE_146_DEMONSTRATED_PATHS,
+} from "./issue-146-evidence-source.mjs";
+
+const execFileAsync = promisify(execFile);
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+const manifest = JSON.parse(await readFile(
+  new URL("../acceptance/issue-146.manifest.json", import.meta.url),
+  "utf8",
+));
+const evidenceUrl = new URL("../acceptance/evidence/issue-146.json", import.meta.url);
+const realEvidenceUrl = new URL("../acceptance/evidence/issue-146.real.json", import.meta.url);
+const evidenceExists = await access(evidenceUrl).then(() => true, () => false);
+const realEvidenceExists = await access(realEvidenceUrl).then(() => true, () => false);
+const evidence = evidenceExists
+  ? JSON.parse(await readFile(evidenceUrl, "utf8"))
+  : null;
+const realEvidence = realEvidenceExists
+  ? JSON.parse(await readFile(realEvidenceUrl, "utf8"))
+  : null;
+
+test("issue 146 evidence source rejects dirty demonstrated paths", async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "sandking-issue-146-evidence-"));
+  try {
+    await execFileAsync("git", ["init", "--quiet"], { cwd: fixture });
+    await mkdir(join(fixture, "src"));
+    await writeFile(join(fixture, "src", "cockpit.js"), "export const ready = false;\n");
+    await execFileAsync("git", ["add", "src/cockpit.js"], { cwd: fixture });
+    await execFileAsync("git", [
+      "-c", "user.name=Sand-King Test",
+      "-c", "user.email=sandking-test@example.invalid",
+      "commit", "--quiet", "-m", "fixture",
+    ], { cwd: fixture });
+    assert.match(await captureCleanIssue146EvidenceRevision({
+      repositoryRoot: fixture,
+      demonstratedPaths: ["src/cockpit.js"],
+    }), /^[a-f0-9]{40}$/);
+    await writeFile(join(fixture, "src", "cockpit.js"), "export const ready = true;\n");
+    await assert.rejects(captureCleanIssue146EvidenceRevision({
+      repositoryRoot: fixture,
+      demonstratedPaths: ["src/cockpit.js"],
+    }), /issue_146_evidence_source_dirty/);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("issue 146 manifest traces Workbench, terminal, preservation, and real-Claude contracts", () => {
+  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.issue, 146);
+  assert.equal(manifest.parentPrd, 125);
+  assert.equal(manifest.sourceSpecification.issue, 116);
+  assert.deepEqual(manifest.visualPrimarySource, {
+    decisionIssue: 145,
+    variant: "A — Workbench",
+    immutableCommit: "2467a8d",
+  });
+  assert.deepEqual(manifest.scenarios.map(({ id }) => id), [
+    "cockpit-workbench/operates-interactive-controller-terminal",
+    "cockpit-workbench/preserves-slice-1-public-journeys",
+  ]);
+  const terminalScenario = manifest.scenarios[0];
+  for (const effect of [
+    "browser approval assertion",
+    "terminal transcript retention",
+    "second writable attachment",
+    "CDN executable or style asset",
+    "prototype route, variant switcher, or fake product state",
+  ]) {
+    assert.ok(terminalScenario.prohibitedSideEffects.includes(effect), effect);
+  }
+  assert.equal(manifest.environmentGate.name, "SANDKING_REAL_CLAUDE_ACCEPTANCE");
+  assert.equal(manifest.environmentGate.workerMayApproveLaunchRequest, false);
+  assert.match(manifest.environmentGate.executionCommand,
+    /SANDCASTLE_REAL_CLAUDE_ISSUES=146/);
+});
+
+test("issue 146 real-Claude acceptance fails closed without the explicit gate", async () => {
+  await assert.rejects(execFileAsync(process.execPath, [
+    fileURLToPath(new URL("./run-issue-146-real-claude.mjs", import.meta.url)),
+    fileURLToPath(new URL("../acceptance/issue-146.manifest.json", import.meta.url)),
+  ], {
+    cwd: repositoryRoot,
+    env: { PATH: process.env.PATH, LANG: "C.UTF-8" },
+  }), (error) => {
+    assert.match(error.stderr, /issue_146_real_acceptance_gate_closed/);
+    return true;
+  });
+});
+
+test("retained issue 146 evidence proves the unchanged packaged public seam", {
+  skip: evidenceExists ? false : "generated after the implementation commit",
+}, async () => {
+  assert.equal(evidence.issue, 146);
+  assert.equal(evidence.scenario,
+    "cockpit-workbench/operates-interactive-controller-terminal");
+  assert.equal(evidence.visualPrimarySource.immutableCommit, "2467a8d");
+  assert.equal(evidence.layout.referenceViewport.width, 1440);
+  assert.equal(evidence.layout.referenceViewport.height, 1000);
+  assert.equal(evidence.layout.regions.navigationWidth, "220px");
+  assert.equal(evidence.layout.regions.contextWidth, "310px");
+  assert.equal(evidence.layout.narrowViewport.horizontalPageOverflow, false);
+  assert.ok(Object.values(evidence.workbenchChrome).every((value) => value === true));
+  assert.equal(evidence.terminal.ansiVtFixture.intendedFinalScreen, true);
+  assert.equal(evidence.terminal.ansiVtFixture.transcriptRetained, false);
+  assert.equal(evidence.terminal.keyboard.exactBytesOnce, true);
+  assert.equal(evidence.terminal.resize.providerObservedAcceptedDimensions, true);
+  assert.deepEqual(evidence.terminal.attachmentAuthority, {
+    writable: "accepted",
+    competingWriter: "terminal_write_attachment_conflict",
+    readOnlyInput: "terminal_write_attachment_required",
+    invalidBounds: "browser_control_schema_invalid",
+    wrongCorrelation: "controller_terminal_not_found",
+    staleCorrelation: "terminal_resize_sequence_conflict",
+  });
+  assert.deepEqual(evidence.terminal.attachmentDelivery, {
+    regression: "test/controller-terminal-attachment.test.mjs",
+    publicBrowserRegression: "test/workbench-terminal.browser.test.mjs",
+    acknowledgementBeforeOutput: true,
+    replayBeforeLive: true,
+    duplicateSequenceDelivery: false,
+  });
+  assert.ok(Object.values(evidence.inheritedBrowserScenarios).every((value) =>
+    value === "passed"));
+  assert.ok(Object.values(evidence.securityAssertions).every((value) => value === false));
+  assert.equal(evidence.realClaudeExecution.launchApprovalPermittedForWorker, false);
+  assert.doesNotMatch(JSON.stringify(evidence),
+    /bootstrap\?token=|sandking_session=|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|ALT-SCREEN-DECOY|FINAL STATUS/i);
+  const { stdout: changes } = await execFileAsync("git", [
+    "diff", "--name-only", `${evidence.generatedFromCommit}..HEAD`, "--",
+    ...ISSUE_146_DEMONSTRATED_PATHS,
+  ], { cwd: repositoryRoot });
+  assert.equal(changes.trim(), "", `retained evidence predates demonstrated changes:\n${changes}`);
+});
+
+test("retained issue 146 real-Claude evidence is structural and prohibits Launch effects", {
+  skip: realEvidenceExists ? false : "real installed-Claude environment evidence unavailable",
+}, async () => {
+  assert.equal(realEvidence.issue, 146);
+  assert.equal(realEvidence.schemaVersion, 2);
+  assert.equal(realEvidence.environment.provider, "claude-code");
+  assert.equal(realEvidence.observations.productionPublicPath, true);
+  assert.equal(realEvidence.observations.workbenchChromeCurrent, true);
+  assert.equal(realEvidence.observations.ptyRuntimeOwned, true);
+  assert.equal(realEvidence.observations.browserReconnection, true);
+  assert.ok(Object.values(realEvidence.prohibitedEffects).every((value) => value === false));
+  assert.match(realEvidence.generatedFromCommit, /^[a-f0-9]{40}$/);
+  const { stdout: resolvedCommit } = await execFileAsync("git", [
+    "rev-parse", "--verify", `${realEvidence.generatedFromCommit}^{commit}`,
+  ], { cwd: repositoryRoot });
+  assert.equal(resolvedCommit.trim(), realEvidence.generatedFromCommit);
+  await execFileAsync("git", [
+    "merge-base", "--is-ancestor", realEvidence.generatedFromCommit, "HEAD",
+  ], { cwd: repositoryRoot });
+  const { stdout: changes } = await execFileAsync("git", [
+    "diff", "--name-only", `${realEvidence.generatedFromCommit}..HEAD`, "--",
+    ...ISSUE_146_DEMONSTRATED_PATHS,
+  ], { cwd: repositoryRoot });
+  assert.equal(changes.trim(), "",
+    `retained real-Claude evidence predates demonstrated changes:\n${changes}`);
+  assert.doesNotMatch(JSON.stringify(realEvidence),
+    /bootstrap\?token=|sandking_session=|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN/);
+});

@@ -866,6 +866,9 @@ export const createControllerSessionManager = async (options) => {
       bufferedFrames,
       outputSequence: 0,
       expectedInputSequence: 0,
+      expectedResizeSequence: 0,
+      columns: prepared.terminal.columns,
+      rows: prepared.terminal.rows,
       writableSocket: null,
       readOnlySockets: new Set(),
       outputHandlers: new Map(),
@@ -1079,7 +1082,7 @@ export const createControllerSessionManager = async (options) => {
   };
 
   /**
-   * @param {{socket: any, sessionId: string, streamId: string, attachmentId: string, mode: "read-write" | "read-only" | "read-write-if-available", outputCursor: number, onOutput: (socket: any, frame: any) => void}} request
+   * @param {{socket: any, sessionId: string, streamId: string, attachmentId: string, mode: "read-write" | "read-only" | "read-write-if-available", outputCursor: number, onAttached?: (attachment: any) => void, onOutput: (socket: any, frame: any) => void}} request
    */
   const attach = async (request) => {
     const session = activeBySession.get(request.sessionId);
@@ -1113,7 +1116,7 @@ export const createControllerSessionManager = async (options) => {
     }
     if (mode === "read-write") {
       session.writableSocket = request.socket;
-      session.onOutput = request.onOutput;
+      session.onOutput = null;
       session.readOnlySockets.delete(request.socket);
       session.outputHandlers.delete(request.socket);
     } else {
@@ -1122,25 +1125,75 @@ export const createControllerSessionManager = async (options) => {
         session.onOutput = null;
       }
       session.readOnlySockets.add(request.socket);
-      session.outputHandlers.set(request.socket, request.onOutput);
+      session.outputHandlers.delete(request.socket);
     }
+    const availableOutputCursorAtAcceptance = session.bufferedFrames[0]?.sequence
+      ?? session.outputSequence;
+    const outputCursorAtAcceptance = Math.max(
+      request.outputCursor,
+      availableOutputCursorAtAcceptance,
+    );
     await options.recordAudit("controller.terminal.attach", "accepted", {
       sessionId: session.sessionId,
       providerSessionId: session.providerSessionId,
       streamId: session.streamId,
       mode,
       exclusive: mode === "read-write",
-      outputCursor: request.outputCursor,
+      requestedOutputCursor: request.outputCursor,
+      outputCursor: outputCursorAtAcceptance,
+      resynchronized: outputCursorAtAcceptance !== request.outputCursor,
     });
-    return {
+    const availableOutputCursor = session.bufferedFrames[0]?.sequence
+      ?? session.outputSequence;
+    const outputCursor = Math.max(request.outputCursor, availableOutputCursor);
+    const resynchronized = outputCursor !== request.outputCursor;
+    const frames = session.bufferedFrames.filter(
+      (/** @type {{sequence: number}} */ frame) => frame.sequence >= outputCursor,
+    );
+    const replayTail = frames.at(-1);
+    const nextOutputSequence = replayTail ? replayTail.sequence + 1 : outputCursor;
+    let deliveryState = "staged";
+    const attachment = {
       session,
       mode,
       exclusive: mode === "read-write",
       inputSequence: session.expectedInputSequence,
-      frames: session.bufferedFrames.filter(
-        (/** @type {{sequence: number}} */ frame) => frame.sequence >= request.outputCursor,
-      ),
+      resizeSequence: session.expectedResizeSequence,
+      outputCursor,
+      resynchronized,
+      frames,
+      activate: () => {
+        if (deliveryState !== "staged") return false;
+        if (mode === "read-write") {
+          if (session.writableSocket !== request.socket) return false;
+        } else {
+          if (!session.readOnlySockets.has(request.socket)) return false;
+        }
+        deliveryState = "activating";
+        try {
+          request.onAttached?.(attachment);
+          for (const frame of frames) {
+            request.onOutput(request.socket, frame);
+          }
+          for (const frame of session.bufferedFrames) {
+            if (frame.sequence >= nextOutputSequence) {
+              request.onOutput(request.socket, frame);
+            }
+          }
+          if (mode === "read-write") {
+            session.onOutput = request.onOutput;
+          } else {
+            session.outputHandlers.set(request.socket, request.onOutput);
+          }
+          deliveryState = "active";
+          return true;
+        } catch (error) {
+          deliveryState = "failed";
+          throw error;
+        }
+      },
     };
+    return attachment;
   };
 
   /** @param {{socket: any, streamId: string, sequence: number, eof: boolean, data: Buffer}} request */
@@ -1166,6 +1219,66 @@ export const createControllerSessionManager = async (options) => {
       contentRetained: false,
     });
     return true;
+  };
+
+  /** @param {{socket: any, sessionId: string, streamId: string, attachmentId: string, sequence: number, columns: number, rows: number}} request */
+  const resize = async (request) => {
+    const session = activeBySession.get(request.sessionId);
+    if (
+      !session
+      || session.streamId !== request.streamId
+      || session.attachmentId !== request.attachmentId
+    ) {
+      throw new ControllerSessionError("controller_terminal_not_found");
+    }
+    if (session.writableSocket !== request.socket) {
+      throw new ControllerSessionError("terminal_resize_attachment_required");
+    }
+    if (
+      !Number.isSafeInteger(request.sequence)
+      || request.sequence !== session.expectedResizeSequence
+    ) {
+      throw new ControllerSessionError("terminal_resize_sequence_conflict");
+    }
+    if (
+      !Number.isSafeInteger(request.columns)
+      || request.columns < 20
+      || request.columns > 500
+      || !Number.isSafeInteger(request.rows)
+      || request.rows < 5
+      || request.rows > 200
+    ) {
+      throw new ControllerSessionError("terminal_resize_dimensions_invalid");
+    }
+    if (!session.running) {
+      throw new ControllerSessionError("terminal_resize_sequence_conflict");
+    }
+    try {
+      session.terminal.resize(request.columns, request.rows);
+    } catch {
+      throw new ControllerSessionError("provider_pty_resize_failed");
+    }
+    session.expectedResizeSequence += 1;
+    session.columns = request.columns;
+    session.rows = request.rows;
+    await options.recordAudit("controller.terminal.resize", "observed", {
+      sessionId: session.sessionId,
+      providerSessionId: session.providerSessionId,
+      streamId: session.streamId,
+      attachmentId: session.attachmentId,
+      sequence: request.sequence,
+      columns: request.columns,
+      rows: request.rows,
+      contentRetained: false,
+    });
+    return {
+      sessionId: session.sessionId,
+      streamId: session.streamId,
+      attachmentId: session.attachmentId,
+      sequence: request.sequence,
+      columns: session.columns,
+      rows: session.rows,
+    };
   };
 
   /** @param {any} socket */
@@ -1216,5 +1329,5 @@ export const createControllerSessionManager = async (options) => {
     return session ? structuredClone(session) : null;
   };
 
-  return { probeProvider, start, inspect, attach, write, detach, terminate, shutdown };
+  return { probeProvider, start, inspect, attach, write, resize, detach, terminate, shutdown };
 };

@@ -13,12 +13,17 @@ import { protocolVersion, releaseVersion, versionSchema } from "./protocol.mjs";
 export const BROWSER_PROTOCOL_VERSION = protocolVersion;
 export const MAX_BROWSER_CONTROL_BYTES = 32_768;
 export const MAX_BROWSER_OPAQUE_CHUNK_BYTES = 16_384;
+export const MIN_TERMINAL_COLUMNS = 20;
+export const MAX_TERMINAL_COLUMNS = 500;
+export const MIN_TERMINAL_ROWS = 5;
+export const MAX_TERMINAL_ROWS = 200;
 export const browserCapabilities = Object.freeze([
   "cockpit.structured-control.v1",
   "cockpit.opaque-stream.v1",
   "cockpit.resynchronization.v1",
   "cockpit.planning-spine.v1",
   "cockpit.controller-terminal.v1",
+  "cockpit.controller-terminal-resize.v1",
   "cockpit.project-preparation.v1",
   "cockpit.launch-request.v1",
   "cockpit.harness-run-observation.v1",
@@ -28,6 +33,7 @@ export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.resynchronization.v1",
   "cockpit.planning-spine.v1",
   "cockpit.controller-terminal.v1",
+  "cockpit.controller-terminal-resize.v1",
   "cockpit.project-preparation.v1",
   "cockpit.launch-request.v1",
   "cockpit.harness-run-observation.v1",
@@ -36,7 +42,7 @@ export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-canonical-run-reconnection")
+  .update("sandking-browser-runtime-schema-v1-with-workbench-terminal-resize-and-retained-tail")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -161,6 +167,16 @@ const browserTerminalAttachSchema = z.object({
   outputCursor: z.number().int().nonnegative(),
 }).strict();
 
+const browserTerminalResizeSchema = z.object({
+  type: z.literal("browser.terminal.resize"),
+  sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
+  streamId: z.string().regex(/^controller-terminal-[a-f0-9]{24}$/),
+  attachmentId: z.string().regex(/^terminal-attachment-[a-f0-9]{24}$/),
+  sequence: z.number().int().nonnegative(),
+  columns: z.number().int().min(MIN_TERMINAL_COLUMNS).max(MAX_TERMINAL_COLUMNS),
+  rows: z.number().int().min(MIN_TERMINAL_ROWS).max(MAX_TERMINAL_ROWS),
+}).strict();
+
 const browserHarnessRunObserveSchema = z.object({
   type: z.literal("browser.harness-run.observe"),
   requestId: identifierSchema,
@@ -183,6 +199,7 @@ const browserControlEnvelopeSchema = z.object({
     browserHelloSchema,
     browserPingSchema,
     browserTerminalAttachSchema,
+    browserTerminalResizeSchema,
     browserHarnessRunObserveSchema,
     browserHarnessRunLogsGetSchema,
   ]),
@@ -289,8 +306,21 @@ const runtimeTerminalAttachedSchema = z.object({
   attachmentId: z.string().regex(/^terminal-attachment-[a-f0-9]{24}$/),
   mode: z.enum(["read-write", "read-only"]),
   exclusive: z.boolean(),
+  requestedOutputCursor: z.number().int().nonnegative(),
   outputCursor: z.number().int().nonnegative(),
+  resynchronized: z.boolean(),
   inputSequence: z.number().int().nonnegative(),
+  resizeSequence: z.number().int().nonnegative(),
+}).strict();
+
+const runtimeTerminalResizedSchema = z.object({
+  type: z.literal("runtime.terminal-resized"),
+  sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
+  streamId: z.string().regex(/^controller-terminal-[a-f0-9]{24}$/),
+  attachmentId: z.string().regex(/^terminal-attachment-[a-f0-9]{24}$/),
+  sequence: z.number().int().nonnegative(),
+  columns: z.number().int().min(MIN_TERMINAL_COLUMNS).max(MAX_TERMINAL_COLUMNS),
+  rows: z.number().int().min(MIN_TERMINAL_ROWS).max(MAX_TERMINAL_ROWS),
 }).strict();
 
 const runtimeHarnessRunObservationSchema = z.object({
@@ -342,6 +372,7 @@ export const runtimeControlEnvelopeSchema = z.object({
     browserProtocolErrorSchema,
     runtimePongSchema,
     runtimeTerminalAttachedSchema,
+    runtimeTerminalResizedSchema,
     runtimeHarnessRunObservationSchema,
     runtimeHarnessRunLogsResultSchema,
     runtimeConnectionStateSchema,

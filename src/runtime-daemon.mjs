@@ -100,6 +100,12 @@ const parseArgs = (argv) => {
 const args = parseArgs(process.argv.slice(2));
 const localHostPath = fileURLToPath(new URL("./local-host.mjs", import.meta.url));
 const cockpitScriptPath = fileURLToPath(new URL("./cockpit.js", import.meta.url));
+const cockpitStylePath = fileURLToPath(new URL("./cockpit.css", import.meta.url));
+const xtermScriptPath = fileURLToPath(import.meta.resolve("@xterm/xterm/lib/xterm.mjs"));
+const xtermFitScriptPath = fileURLToPath(import.meta.resolve(
+  "@xterm/addon-fit/lib/addon-fit.mjs",
+));
+const xtermStylePath = fileURLToPath(import.meta.resolve("@xterm/xterm/css/xterm.css"));
 const statePath = join(args.dataDir, "runtime-state.json");
 const tokenDirectory = join(args.dataDir, "bootstrap-tokens");
 const startupErrorPath = join(args.dataDir, "startup-error.json");
@@ -255,6 +261,17 @@ const retainCanonicalHarnessRunObservation = (observation) => {
     events: [...eventsById.values()].sort(
       (/** @type {any} */ left, /** @type {any} */ right) => left.sequence - right.sequence,
     ),
+  };
+};
+
+/** @param {any} launchRequest */
+const retainCanonicalLaunchRequestProjection = (launchRequest) => {
+  if (!launchRequest) {
+    return;
+  }
+  currentHarnessRunObservation = {
+    ...currentHarnessRunObservation,
+    launchRequest: structuredClone(launchRequest),
   };
 };
 
@@ -1738,7 +1755,7 @@ const handleProviderOperation = async (request) => {
       expectedRevision: 0,
       expiresInSeconds: "expiresInSeconds" in input ? Number(input.expiresInSeconds) : 0,
     };
-    return requestFocusedHostMutation("launch.request.prepare", message, {
+    const outcome = await requestFocusedHostMutation("launch.request.prepare", message, {
       projectId: message.projectId,
       parameters: message.parameters,
       controllerId: message.controllerId,
@@ -1746,6 +1763,8 @@ const handleProviderOperation = async (request) => {
       authorizationClass: message.authorizationClass,
       expiresInSeconds: message.expiresInSeconds,
     });
+    retainCanonicalLaunchRequestProjection(outcome.launchRequest);
+    return outcome;
   }
   if (request.operation === "launch-request.decide") {
     const message = {
@@ -1759,13 +1778,15 @@ const handleProviderOperation = async (request) => {
       idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
       expectedRevision: "expectedRevision" in input ? Number(input.expectedRevision) : -1,
     };
-    return requestFocusedHostMutation("launch.request.decision", message, {
+    const outcome = await requestFocusedHostMutation("launch.request.decision", message, {
       launchRequestId: message.launchRequestId,
       decision: message.decision,
       controllerId: message.controllerId,
       controllerSessionId: message.controllerSessionId,
       authorizationClass: message.authorizationClass,
     });
+    retainCanonicalLaunchRequestProjection(outcome.launchRequest);
+    return outcome;
   }
   if (request.operation === "harness-run.start") {
     const message = {
@@ -2363,6 +2384,21 @@ const handleBrowserConnection = (socket, sessionId, session) => {
               attachmentId: control.attachmentId,
               mode: control.mode,
               outputCursor: control.outputCursor,
+              onAttached: (attachment) => {
+                socket.send(serializeRuntimeControl({
+                  type: "runtime.terminal-attached",
+                  sessionId: control.sessionId,
+                  streamId: control.streamId,
+                  attachmentId: control.attachmentId,
+                  mode: attachment.mode,
+                  exclusive: attachment.exclusive,
+                  requestedOutputCursor: control.outputCursor,
+                  outputCursor: attachment.outputCursor,
+                  resynchronized: attachment.resynchronized,
+                  inputSequence: attachment.inputSequence,
+                  resizeSequence: attachment.resizeSequence,
+                }));
+              },
               onOutput: (target, frame) => {
                 if (target.readyState === WebSocket.OPEN) {
                   target.send(encodeBrowserOpaqueFrame(frame), { binary: true });
@@ -2372,24 +2408,39 @@ const handleBrowserConnection = (socket, sessionId, session) => {
             if (!attached) {
               throw new ControllerSessionError("controller_terminal_unavailable");
             }
-            socket.send(serializeRuntimeControl({
-              type: "runtime.terminal-attached",
-              sessionId: control.sessionId,
-              streamId: control.streamId,
-              attachmentId: control.attachmentId,
-              mode: attached.mode,
-              exclusive: attached.exclusive,
-              outputCursor: control.outputCursor,
-              inputSequence: attached.inputSequence,
-            }));
-            for (const frame of attached.frames) {
-              socket.send(encodeBrowserOpaqueFrame(frame), { binary: true });
+            if (!attached.activate()) {
+              throw new ControllerSessionError("controller_terminal_attachment_superseded");
             }
             return;
           } catch (error) {
             throw new BrowserProtocolError(error instanceof ControllerSessionError
               ? error.code
               : "controller_terminal_attach_failed");
+          }
+        }
+        if (control.type === "browser.terminal.resize") {
+          try {
+            const resized = await controllerSessions?.resize({
+              socket,
+              sessionId: control.sessionId,
+              streamId: control.streamId,
+              attachmentId: control.attachmentId,
+              sequence: control.sequence,
+              columns: control.columns,
+              rows: control.rows,
+            });
+            if (!resized) {
+              throw new ControllerSessionError("controller_terminal_unavailable");
+            }
+            socket.send(serializeRuntimeControl({
+              type: "runtime.terminal-resized",
+              ...resized,
+            }));
+            return;
+          } catch (error) {
+            throw new BrowserProtocolError(error instanceof ControllerSessionError
+              ? error.code
+              : "controller_terminal_resize_failed");
           }
         }
         if (control.type === "browser.harness-run.observe") {
@@ -2402,11 +2453,18 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           if (observation.type !== "harness.run.observe.result") {
             throw new BrowserProtocolError("harness_run_observation_failed");
           }
-          retainCanonicalHarnessRunObservation(observation);
+          const visibleObservation = !observation.run
+            && currentHarnessRunObservation.launchRequest
+            ? {
+                ...observation,
+                launchRequest: structuredClone(currentHarnessRunObservation.launchRequest),
+              }
+            : observation;
+          retainCanonicalHarnessRunObservation(visibleObservation);
           socket.send(serializeRuntimeControl({
             type: "runtime.harness-run.observation",
             requestId: control.requestId,
-            observation,
+            observation: visibleObservation,
           }));
           return;
         }
@@ -2584,7 +2642,14 @@ const handleBrowserConnection = (socket, sessionId, session) => {
 const main = async () => {
   await ensurePrivateDirectory(args.dataDir);
   await ensurePrivateDirectory(tokenDirectory);
-  const cockpitScript = await readFile(cockpitScriptPath, "utf8");
+  const [cockpitScript, cockpitStyle, xtermScript, xtermFitScript, xtermStyle] =
+    await Promise.all([
+      readFile(cockpitScriptPath, "utf8"),
+      readFile(cockpitStylePath, "utf8"),
+      readFile(xtermScriptPath, "utf8"),
+      readFile(xtermFitScriptPath, "utf8"),
+      readFile(xtermStylePath, "utf8"),
+    ]);
 
   try {
     const runtimeId = `runtime-${randomBytes(12).toString("hex")}`;
@@ -2860,10 +2925,16 @@ const main = async () => {
             "content-type": "text/html; charset=utf-8",
           });
           response.end(`<!doctype html>
-<html>
-  <head><meta charset="utf-8"><title>Sand-King Cockpit</title></head>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sand-King Cockpit</title>
+    <link rel="stylesheet" href="/terminal/xterm.css">
+    <link rel="stylesheet" href="/cockpit.css">
+  </head>
   <body>
-    <main id="app">Connecting to local Host…</main>
+    <div id="app">Connecting to local Host…</div>
     <button id="reload-cockpit" type="button" hidden>Reload Cockpit</button>
     <script type="module" src="/cockpit.js"></script>
   </body>
@@ -2877,6 +2948,21 @@ const main = async () => {
             "content-type": "text/javascript; charset=utf-8",
           });
           response.end(cockpitScript);
+          return;
+        }
+
+        const localAsset = request.method === "GET" ? new Map([
+          ["/cockpit.css", ["text/css; charset=utf-8", cockpitStyle]],
+          ["/terminal/xterm.mjs", ["text/javascript; charset=utf-8", xtermScript]],
+          ["/terminal/addon-fit.mjs", ["text/javascript; charset=utf-8", xtermFitScript]],
+          ["/terminal/xterm.css", ["text/css; charset=utf-8", xtermStyle]],
+        ]).get(request.url ?? "") : undefined;
+        if (localAsset) {
+          response.writeHead(200, {
+            ...securityHeaders,
+            "content-type": localAsset[0],
+          });
+          response.end(localAsset[1]);
           return;
         }
 
