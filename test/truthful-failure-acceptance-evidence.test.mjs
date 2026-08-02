@@ -169,9 +169,21 @@ test("retained issue 122 evidence scopes Host loss and preserves canonical ident
   assert.equal(stale.typedHostMutationFailure.status, 503);
   assert.equal(stale.typedHostMutationFailure.body.code, "host_disconnected");
   assert.equal(stale.typedHostMutationFailure.body.retryable, true);
+  assert.equal(stale.typedHostMutationFailure.body.idempotentReplay, false);
   assert.ok(Object.values(
     stale.typedHostMutationFailure.body.prohibitedSideEffects,
   ).every((observed) => observed === false));
+  assert.deepEqual(stale.disconnectedMutationIdempotency, {
+    replayStatus: 503,
+    replayCode: "host_disconnected",
+    replayIdempotent: true,
+    replayReturnedOriginalAudit: true,
+    changedContentStatus: 409,
+    changedContentCode: "idempotency_key_conflict",
+  });
+  assert.equal(stale.typedControllerHostFailure.operation, "launch-request.prepare");
+  assert.equal(stale.typedControllerHostFailure.code, "host_disconnected");
+  assert.match(stale.typedControllerHostFailure.auditId, /^audit-[a-f0-9]{24}$/);
 
   assert.equal(evidence.canonicalStateBefore.runCount, 1);
   assert.deepEqual(evidence.canonicalStateAfter, {
@@ -196,6 +208,7 @@ test("retained issue 122 evidence scopes Host loss and preserves canonical ident
     { action: "harness.run.outcome", outcome: "observed" },
     { action: "host.connection", outcome: "observed" },
     { action: "project.prepare", outcome: "rejected" },
+    { action: "controller.provider.operation", outcome: "rejected" },
   ]);
 });
 
@@ -210,6 +223,41 @@ test("retained issue 122 evidence covers protocol and mutation failures", () => 
   assert.equal(launch.idempotency.replayIdempotent, true);
   assert.equal(launch.idempotency.replayReturnedOriginalAudit, true);
   assert.equal(launch.idempotency.changedContentCode, "idempotency_key_conflict");
+  const activeHostLoss = evidence.contractEvidence.activeHostLoss;
+  assert.equal(activeHostLoss.kind, "active_host_loss_contract");
+  assert.deepEqual({
+    command: activeHostLoss.packagedPublicSeam.command,
+    installed: activeHostLoss.packagedPublicSeam.installed,
+    launchedOutsideCheckout: activeHostLoss.packagedPublicSeam.launchedOutsideCheckout,
+  }, { command: "sandking", installed: true, launchedOutsideCheckout: true });
+  assert.equal(activeHostLoss.typedFailure.status, 503);
+  assert.equal(activeHostLoss.typedFailure.body.code, "host_disconnected");
+  assert.equal(activeHostLoss.typedFailure.body.idempotentReplay, false);
+  assert.deepEqual(activeHostLoss.idempotency, {
+    replayStatus: 503,
+    replayCode: "host_disconnected",
+    replayIdempotent: true,
+    replayReturnedOriginalAudit: true,
+    changedContentStatus: 409,
+    changedContentCode: "idempotency_key_conflict",
+  });
+  assert.equal(activeHostLoss.audit.failure.auditId, activeHostLoss.typedFailure.body.auditId);
+  assert.deepEqual(
+    [
+      activeHostLoss.audit.failure,
+      activeHostLoss.audit.replay,
+      activeHostLoss.audit.conflict,
+    ].map(({ action, outcome, details }) => ({ action, outcome, code: details.code })),
+    [
+      { action: "project.prepare", outcome: "rejected", code: "host_disconnected" },
+      { action: "project.prepare", outcome: "observed", code: "host_disconnected" },
+      {
+        action: "project.prepare",
+        outcome: "rejected",
+        code: "idempotency_key_conflict",
+      },
+    ],
+  );
   const terminal = evidence.contractEvidence.launchTerminal;
   assert.equal(terminal.expiry.code, "launch_request_expired");
   assert.equal(terminal.materialChange.code, "launch_request_materially_changed");

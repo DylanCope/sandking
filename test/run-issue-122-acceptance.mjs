@@ -64,8 +64,15 @@ try {
     });
     const readResult = (file) => readFile(join(resultDirectory, file), "utf8")
       .then(JSON.parse);
-    const [observation, harnessFailure, launchDecision, launchTerminal] = await Promise.all([
+    const [
+      observation,
+      activeHostLoss,
+      harnessFailure,
+      launchDecision,
+      launchTerminal,
+    ] = await Promise.all([
       readFile(observationPath, "utf8").then(JSON.parse),
+      readResult("active-host-loss-contract.json"),
       readResult("harness-run-failure-contract.json"),
       readResult("launch-decision-contract.json"),
       readResult("launch-terminal-contract.json"),
@@ -75,6 +82,10 @@ try {
       || observation.issue !== 122
       || observation.visibleFailure?.code !== "harness_result_incomplete"
       || observation.staleStateEvidence?.hostStatus !== "disconnected"
+      || activeHostLoss.kind !== "active_host_loss_contract"
+      || activeHostLoss.typedFailure?.body?.code !== "host_disconnected"
+      || activeHostLoss.idempotency?.replayReturnedOriginalAudit !== true
+      || activeHostLoss.idempotency?.changedContentCode !== "idempotency_key_conflict"
     ) {
       throw new Error("issue_122_browser_observation_invalid");
     }
@@ -129,6 +140,7 @@ try {
       ...observation,
       contractEvidence: {
         protocolFailures,
+        activeHostLoss,
         launchDecision,
         launchTerminal,
         harnessFailure,

@@ -201,6 +201,14 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
         .getAttribute("data-host-impact"), "unaffected");
       assert.equal(await page.locator("#project-focused-controller-session")
         .getAttribute("data-session-state"), "open");
+      await enter("prepare 122 sandcastle/issue-122");
+      await page.waitForFunction(() => document.querySelector(
+        "#project-controller-terminal-output",
+      )?.textContent?.includes("Controller operation failed safely: host_disconnected"));
+      assert.doesNotMatch(
+        await page.locator("#project-controller-terminal-output").textContent(),
+        /Controller operation failed safely: provider_operation_failed/,
+      );
       assert.equal(await page.locator("#open-project").isDisabled(), true);
       assert.equal(await page.locator("#open-project-controller").isDisabled(), true);
       assert.equal(await page.locator("#open-project-claude-controller").isDisabled(), true);
@@ -235,7 +243,7 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
         }
       }).find((message) => message?.type === "runtime.hello-ack");
       assert.ok(acknowledgement);
-      const disconnectedMutation = await page.evaluate(async ({ csrfToken, path }) => {
+      const exerciseDisconnectedProjectOpen = (path) => page.evaluate(async ({ csrfToken, path }) => {
         const response = await fetch("/projects/open", {
           method: "POST",
           headers: {
@@ -253,7 +261,8 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
           }),
         });
         return { status: response.status, body: await response.json() };
-      }, { csrfToken: acknowledgement.session.csrfToken, path: projectPath });
+      }, { csrfToken: acknowledgement.session.csrfToken, path });
+      const disconnectedMutation = await exerciseDisconnectedProjectOpen(projectPath);
       assert.equal(disconnectedMutation.status, 503);
       assert.equal(disconnectedMutation.body.code, "host_disconnected");
       assert.equal(disconnectedMutation.body.retryable, true);
@@ -267,6 +276,17 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
         projectFileWrite: false,
         privilegedMutation: false,
       });
+      const disconnectedReplay = await exerciseDisconnectedProjectOpen(projectPath);
+      assert.equal(disconnectedReplay.status, 503);
+      assert.equal(disconnectedReplay.body.code, "host_disconnected");
+      assert.equal(disconnectedReplay.body.idempotentReplay, true);
+      assert.equal(disconnectedReplay.body.auditId, disconnectedMutation.body.auditId);
+      const disconnectedChangedUse = await exerciseDisconnectedProjectOpen(
+        join(root, "different-project"),
+      );
+      assert.equal(disconnectedChangedUse.status, 409);
+      assert.equal(disconnectedChangedUse.body.code, "idempotency_key_conflict");
+      assert.equal(disconnectedChangedUse.body.idempotentReplay, false);
 
       const reconnectPage = await context.newPage();
       const reconnectFrames = [];
@@ -321,6 +341,11 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
         && entry.details.code === "host_disconnected");
       const disconnectedMutationAudit = audits.find((entry) =>
         entry.auditId === disconnectedMutation.body.auditId);
+      const controllerHostFailureAudit = audits.find((entry) =>
+        entry.action === "controller.provider.operation"
+        && entry.outcome === "rejected"
+        && entry.details.operation === "launch-request.prepare"
+        && entry.details.code === "host_disconnected");
       assert.ok(outcomeAudit);
       assert.ok(disconnectAudit);
       assert.equal(disconnectAudit.outcome, "observed");
@@ -331,6 +356,7 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       ]);
       assert.ok(disconnectedMutationAudit);
       assert.equal(disconnectedMutationAudit.outcome, "rejected");
+      assert.ok(controllerHostFailureAudit);
       assert.equal(runStateAfterDisconnect.runs.length, 1);
       assert.equal(projectState.projects.length, 1);
       assert.equal(launchState.launchRequests.length, 1);
@@ -385,6 +411,8 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
         stderrLog,
         JSON.stringify(audits),
         JSON.stringify(disconnectedMutation),
+        JSON.stringify(disconnectedReplay),
+        JSON.stringify(disconnectedChangedUse),
         JSON.stringify(acknowledgement.viewModel),
         runtimeError,
         pageText,
@@ -434,6 +462,20 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
           githubProjectionFreshness: "stale",
           stalePlanningMutationsDisabled: true,
           typedHostMutationFailure: disconnectedMutation,
+          disconnectedMutationIdempotency: {
+            replayStatus: disconnectedReplay.status,
+            replayCode: disconnectedReplay.body.code,
+            replayIdempotent: disconnectedReplay.body.idempotentReplay,
+            replayReturnedOriginalAudit:
+              disconnectedReplay.body.auditId === disconnectedMutation.body.auditId,
+            changedContentStatus: disconnectedChangedUse.status,
+            changedContentCode: disconnectedChangedUse.body.code,
+          },
+          typedControllerHostFailure: {
+            operation: controllerHostFailureAudit.details.operation,
+            code: controllerHostFailureAudit.details.code,
+            auditId: controllerHostFailureAudit.auditId,
+          },
           resynchronizationFailure: reconnectAcknowledgement.observation,
         },
         canonicalStateBefore: {
@@ -456,6 +498,7 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
           outcomeAudit,
           disconnectAudit,
           disconnectedMutationAudit,
+          controllerHostFailureAudit,
         ],
         prohibitedSideEffectAssertions: {
           unauthorizedRegistration: false,
@@ -506,6 +549,154 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       await browser.close();
     }
   } finally {
+    await execFileAsync(installed.command, [
+      "stop", "--data-dir", dataDir, "--json",
+    ], { cwd: executionDirectory, env: productEnvironment }).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Host loss during an active Cockpit mutation returns one typed idempotent failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-active-host-loss-browser-"));
+  const dataDir = join(root, "host-state");
+  const executionDirectory = join(root, "outside-checkout");
+  const userHome = join(root, "user-home");
+  const projectPath = join(root, "selected-project");
+  await Promise.all([
+    mkdir(dataDir, { recursive: true }),
+    mkdir(executionDirectory, { recursive: true }),
+    mkdir(userHome, { recursive: true }),
+    execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]),
+  ]);
+  await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
+  const installed = await installCurrentPackage(root);
+  const productEnvironment = { ...process.env, HOME: userHome };
+  let pausedHostPid = null;
+
+  try {
+    const { stdout } = await execFileAsync(installed.command, [
+      "launch",
+      "--data-dir", dataDir,
+      "--idempotency-key", "active-host-loss-runtime-start",
+      "--expected-revision", "0",
+      "--json",
+      "--no-open",
+    ], { cwd: executionDirectory, env: productEnvironment });
+    const launch = JSON.parse(stdout);
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      const receivedFrames = [];
+      page.on("websocket", (websocket) => {
+        websocket.on("framereceived", (event) => receivedFrames.push(String(event.payload)));
+      });
+      const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
+      assert.equal(response?.status(), 200);
+      await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
+        timeout: 10_000,
+      });
+      const acknowledgement = JSON.parse(
+        receivedFrames.find((frame) => frame.includes("runtime.hello-ack")),
+      ).message;
+      const exerciseProjectOpen = (path) => page.evaluate(async (parameters) => {
+        const mutation = await fetch("/projects/open", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-sandking-csrf": parameters.csrfToken,
+            "x-sandking-idempotency-key": "active-host-loss-project-open",
+            "x-sandking-expected-revision": "0",
+          },
+          body: JSON.stringify({
+            path: parameters.path,
+            configuration: {
+              issueWorkflow: { provider: "github", kind: "issues" },
+              checks: [{ checkId: "test", command: "npm run test" }],
+            },
+          }),
+        });
+        return { status: mutation.status, body: await mutation.json() };
+      }, { csrfToken: acknowledgement.session.csrfToken, path });
+
+      const runtimeState = await readJson(join(dataDir, "runtime-state.json"));
+      pausedHostPid = await findLocalHostPid(runtimeState.pid);
+      process.kill(pausedHostPid, "SIGSTOP");
+      const requestStarted = page.waitForRequest((request) =>
+        request.method() === "POST" && request.url().endsWith("/projects/open"));
+      const activeMutation = exerciseProjectOpen(projectPath);
+      await requestStarted;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      process.kill(pausedHostPid, "SIGKILL");
+      pausedHostPid = null;
+
+      const failure = await activeMutation;
+      assert.equal(failure.status, 503);
+      assert.equal(failure.body.code, "host_disconnected");
+      assert.equal(failure.body.idempotentReplay, false);
+      assert.match(failure.body.auditId, /^audit-[a-f0-9]{24}$/);
+      const replay = await exerciseProjectOpen(projectPath);
+      assert.equal(replay.status, 503);
+      assert.equal(replay.body.code, "host_disconnected");
+      assert.equal(replay.body.idempotentReplay, true);
+      assert.equal(replay.body.auditId, failure.body.auditId);
+      const changedUse = await exerciseProjectOpen(join(root, "different-project"));
+      assert.equal(changedUse.status, 409);
+      assert.equal(changedUse.body.code, "idempotency_key_conflict");
+
+      const audits = await readFile(join(dataDir, "audit.jsonl"), "utf8")
+        .then((text) => text.trim().split("\n").filter(Boolean).map(JSON.parse));
+      const failureAudit = audits.find((entry) =>
+        entry.auditId === failure.body.auditId
+        && entry.action === "project.prepare"
+        && entry.outcome === "rejected"
+        && entry.details.code === "host_disconnected");
+      const replayAudit = audits.find((entry) =>
+        entry.action === "project.prepare"
+        && entry.outcome === "observed"
+        && entry.details.idempotentReplay === true
+        && entry.details.originalAuditId === failure.body.auditId);
+      const conflictAudit = audits.find((entry) =>
+        entry.auditId === changedUse.body.auditId
+        && entry.action === "project.prepare"
+        && entry.outcome === "rejected"
+        && entry.details.code === "idempotency_key_conflict");
+      assert.ok(failureAudit);
+      assert.ok(replayAudit);
+      assert.ok(conflictAudit);
+      if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
+        await writeFile(
+          join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "active-host-loss-contract.json"),
+          `${JSON.stringify({
+            kind: "active_host_loss_contract",
+            packagedPublicSeam: installed.observation,
+            typedFailure: failure,
+            idempotency: {
+              replayStatus: replay.status,
+              replayCode: replay.body.code,
+              replayIdempotent: replay.body.idempotentReplay,
+              replayReturnedOriginalAudit: replay.body.auditId === failure.body.auditId,
+              changedContentStatus: changedUse.status,
+              changedContentCode: changedUse.body.code,
+            },
+            audit: {
+              failure: failureAudit,
+              replay: replayAudit,
+              conflict: conflictAudit,
+            },
+          }, null, 2)}\n`,
+          { mode: 0o600 },
+        );
+      }
+      await context.close();
+    } finally {
+      await browser.close();
+    }
+  } finally {
+    if (pausedHostPid) {
+      process.kill(pausedHostPid, "SIGCONT");
+      process.kill(pausedHostPid, "SIGKILL");
+    }
     await execFileAsync(installed.command, [
       "stop", "--data-dir", dataDir, "--json",
     ], { cwd: executionDirectory, env: productEnvironment }).catch(() => undefined);

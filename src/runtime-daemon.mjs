@@ -161,8 +161,11 @@ let hostDisconnectionPromise = null;
 let hostOperationQueue = Promise.resolve();
 let projectPreparationQueue = Promise.resolve();
 let projectSessionMutationQueue = Promise.resolve();
+let hostMutationFailureQueue = Promise.resolve();
 /** @type {Map<string, {fingerprint: string, status: number, response: any}>} */
 const projectSessionOutcomes = new Map();
+/** @type {Map<string, {fingerprint: string, status: number, response: any}>} */
+const hostMutationFailureOutcomes = new Map();
 
 const cockpitCsp = [
   "default-src 'self'",
@@ -287,6 +290,29 @@ const sendJson = (response, status, body) => {
 /** @param {string} key */
 const hashIdempotencyKey = (key) => `sha256:${createHash("sha256").update(key).digest("hex")}`;
 
+/** @param {unknown} value @returns {string} */
+const canonicalJson = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const record = /** @type {Record<string, unknown>} */ (value);
+    return `{${Object.keys(record).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+};
+
+/** @param {unknown} value */
+const mutationRequestFingerprint = (value) => hashIdempotencyKey(canonicalJson(value));
+
+/** @template T @param {() => Promise<T>} operation */
+const withHostMutationFailureLock = (operation) => {
+  const current = hostMutationFailureQueue.catch(() => undefined).then(operation);
+  hostMutationFailureQueue = current.then(() => undefined, () => undefined);
+  return current;
+};
+
 /** @param {string} code @param {string} authorizationClass @param {number} expectedRevision @param {number} actualRevision @param {string} auditId */
 const mutationFailure = (code, authorizationClass, expectedRevision, actualRevision, auditId) => ({
   type: "mutation_failure",
@@ -299,25 +325,23 @@ const mutationFailure = (code, authorizationClass, expectedRevision, actualRevis
 });
 
 /**
+ * @param {"host_disconnected" | "host_protocol_invalid"} failureCode
  * @param {string} action
  * @param {string} authorizationClass
  * @param {number} expectedRevision
  * @param {string | null} idempotencyKeyHash
+ * @param {unknown} requestContent
  */
-const disconnectedHostMutationFailure = async (
+const hostMutationFailure = async (
+  failureCode,
   action,
   authorizationClass,
   expectedRevision,
   idempotencyKeyHash,
-) => {
+  requestContent,
+) => withHostMutationFailureLock(async () => {
   const actualRevision = currentProjectPreparation.current?.revision ?? 0;
-  const auditId = await recordAudit(action, "rejected", {
-    code: "host_disconnected",
-    hostId: state.host.hostId,
-    authorizationClass,
-    idempotencyKeyHash,
-    expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
-    actualRevision,
+  const prohibitedSideEffects = {
     projectRegistrationCreated: false,
     harnessRegistrationCreated: false,
     harnessPinChanged: false,
@@ -326,32 +350,123 @@ const disconnectedHostMutationFailure = async (
     harnessRunStarted: false,
     projectFileWrite: false,
     privilegedMutation: false,
-  });
-  return {
-    status: 503,
-    body: {
-      type: "mutation_failure",
-      code: "host_disconnected",
-      retryable: true,
-      authorizationClass,
-      expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
-      actualRevision,
-      auditId,
-      hostId: state.host.hostId,
-      freshness: "stale",
-      prohibitedSideEffects: {
-        projectRegistrationCreated: false,
-        harnessRegistrationCreated: false,
-        harnessPinChanged: false,
-        launchRequestPrepared: false,
-        approvalRecorded: false,
-        harnessRunStarted: false,
-        projectFileWrite: false,
-        privilegedMutation: false,
-      },
-    },
   };
-};
+  if (
+    !idempotencyKeyHash
+    || !Number.isSafeInteger(expectedRevision)
+    || expectedRevision < 0
+  ) {
+    const auditId = await recordAudit(action, "rejected", {
+      code: "mutation_contract_invalid",
+      hostId: state.host.hostId,
+      authorizationClass,
+      idempotencyKeyHash,
+      expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+      actualRevision,
+      ...prohibitedSideEffects,
+    });
+    return {
+      status: 400,
+      body: {
+        ...mutationFailure(
+          "mutation_contract_invalid",
+          authorizationClass,
+          Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
+          actualRevision,
+          auditId,
+        ),
+        retryable: false,
+        idempotentReplay: false,
+        hostId: state.host.hostId,
+        freshness: "stale",
+        prohibitedSideEffects,
+      },
+    };
+  }
+  const fingerprint = mutationRequestFingerprint({
+    expectedRevision,
+    requestContent,
+  });
+  const outcomeKey = `${action}\0${idempotencyKeyHash}`;
+  const existing = hostMutationFailureOutcomes.get(outcomeKey);
+  if (existing) {
+    if (existing.fingerprint !== fingerprint) {
+      const auditId = await recordAudit(action, "rejected", {
+        code: "idempotency_key_conflict",
+        hostId: state.host.hostId,
+        authorizationClass,
+        idempotencyKeyHash,
+        expectedRevision,
+        actualRevision,
+        ...prohibitedSideEffects,
+      });
+      return {
+        status: 409,
+        body: {
+          ...mutationFailure(
+            "idempotency_key_conflict",
+            authorizationClass,
+            expectedRevision,
+            actualRevision,
+            auditId,
+          ),
+          retryable: false,
+          idempotentReplay: false,
+          hostId: state.host.hostId,
+          freshness: "stale",
+          prohibitedSideEffects,
+        },
+      };
+    }
+    await recordAudit(action, "observed", {
+      code: existing.response.code,
+      hostId: state.host.hostId,
+      authorizationClass,
+      idempotencyKeyHash,
+      expectedRevision,
+      actualRevision,
+      idempotentReplay: true,
+      originalAuditId: existing.response.auditId,
+      ...prohibitedSideEffects,
+    });
+    return {
+      status: existing.status,
+      body: { ...structuredClone(existing.response), idempotentReplay: true },
+    };
+  }
+  const auditId = await recordAudit(action, "rejected", {
+    code: failureCode,
+    hostId: state.host.hostId,
+    authorizationClass,
+    idempotencyKeyHash,
+    expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+    actualRevision,
+    ...prohibitedSideEffects,
+  });
+  const body = {
+    type: "mutation_failure",
+    code: failureCode,
+    retryable: true,
+    authorizationClass,
+    expectedRevision,
+    actualRevision,
+    auditId,
+    idempotentReplay: false,
+    hostId: state.host.hostId,
+    freshness: "stale",
+    prohibitedSideEffects,
+  };
+  const outcome = {
+    status: 503,
+    body,
+  };
+  hostMutationFailureOutcomes.set(outcomeKey, {
+    fingerprint,
+    status: outcome.status,
+    response: structuredClone(body),
+  });
+  return outcome;
+});
 
 /** @param {import("node:http").IncomingMessage} request */
 const readMutationHeaders = (request) => {
@@ -961,7 +1076,7 @@ const requestHostOperation = (message) => {
       || !hostProcess.stdout.readable
     ) {
       await markHostDisconnected("host_disconnected");
-      throw new Error("host_disconnected");
+      throw new ControllerSessionError("host_disconnected");
     }
     try {
       writeFrame(hostProcess.stdin, message);
@@ -990,11 +1105,14 @@ const requestHostOperation = (message) => {
       return response;
     } catch (error) {
       const code = error instanceof ProtocolError
-        || (error instanceof Error && error.message === "host_protocol_error")
-        ? "host_protocol_invalid"
-        : "host_disconnected";
+        ? error.code === "frame_truncated"
+          ? "host_disconnected"
+          : "host_protocol_invalid"
+        : error instanceof Error && error.message === "host_protocol_error"
+          ? "host_protocol_invalid"
+          : "host_disconnected";
       await markHostDisconnected(code);
-      throw new Error("host_disconnected");
+      throw new ControllerSessionError(code);
     }
   });
   hostOperationQueue = current.then(() => undefined, () => undefined);
@@ -2275,23 +2393,50 @@ const main = async () => {
             sendJson(response, 403, failure);
             return;
           }
+          const requestContent = {
+            path: "path" in record ? record.path : null,
+            configuration: "configuration" in record ? record.configuration : null,
+          };
           if (state.host.status === "disconnected") {
-            const failure = await disconnectedHostMutationFailure(
+            const failure = await hostMutationFailure(
+              "host_disconnected",
               "project.prepare",
               "host_local_project_preparation",
               expectedRevision,
               idempotencyKeyHash,
+              requestContent,
             );
             sendJson(response, failure.status, failure.body);
             return;
           }
-          const outcome = await prepareExplicitProject({
-            path: "path" in record ? record.path : null,
-            configuration: "configuration" in record ? record.configuration : null,
-            idempotencyKey,
-            idempotencyKeyHash,
-            expectedRevision,
-          });
+          let outcome;
+          try {
+            outcome = await prepareExplicitProject({
+              ...requestContent,
+              idempotencyKey,
+              idempotencyKeyHash,
+              expectedRevision,
+            });
+          } catch (error) {
+            const hostFailureCode = error instanceof ControllerSessionError
+              ? error.code
+              : null;
+            if (
+              hostFailureCode === "host_disconnected"
+              || hostFailureCode === "host_protocol_invalid"
+            ) {
+              outcome = await hostMutationFailure(
+                hostFailureCode,
+                "project.prepare",
+                "host_local_project_preparation",
+                expectedRevision,
+                idempotencyKeyHash,
+                requestContent,
+              );
+            } else {
+              throw error;
+            }
+          }
           sendJson(response, outcome.status, outcome.body);
           return;
         }
@@ -2307,11 +2452,18 @@ const main = async () => {
           const authorizationAccepted = exactOriginAccepted(request)
             && request.headers["x-sandking-csrf"] === activeSession.csrfToken;
           const outcome = authorizationAccepted && state.host.status === "disconnected"
-            ? await disconnectedHostMutationFailure(
+            ? await hostMutationFailure(
+                "host_disconnected",
                 "project.session.open",
                 "project_focused_session",
                 expectedRevision,
                 idempotencyKeyHash,
+                {
+                  projectId: "projectId" in record ? String(record.projectId) : "",
+                  providerId: "providerId" in record
+                    ? String(record.providerId)
+                    : "conformance-controller-v1",
+                },
               )
             : await openProjectControllerSession({
                 authorizationAccepted,
