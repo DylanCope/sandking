@@ -15,6 +15,7 @@
     "node": ">=22.17.0"
   },
   "scripts": {
+    "prototype:cockpit-ui": "node prototypes/cockpit-ui-foundation/server.mjs",
     "pretest": "node test/ensure-playwright.mjs",
     "sandcastle": "tsx .sandcastle/main.mts",
     "cockpit": "node src/cli.mjs launch",
