@@ -1,9 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
+const LARGE_COMMAND_OUTPUT_BUFFER_BYTES = 64 * 1024 * 1024;
+
 const commandRunner = (cwd) => ({
-  run: (command, args) =>
-    execFileSync(command, args, { cwd, encoding: "utf8" }).trim(),
+  run: (command, args, options = {}) =>
+    execFileSync(command, args, { cwd, encoding: "utf8", ...options }).trim(),
   runResult: (command, args) =>
     spawnSync(command, args, { cwd, encoding: "utf8" }),
 });
@@ -196,7 +198,11 @@ export function createGitHubDelivery({
     },
 
     async getPullRequestDiff({ pullRequest }) {
-      return run("gh", ["pr", "diff", String(pullRequest.number), "--patch"]);
+      return run(
+        "gh",
+        ["pr", "diff", String(pullRequest.number), "--patch"],
+        { maxBuffer: LARGE_COMMAND_OUTPUT_BUFFER_BYTES },
+      );
     },
 
     async waitForPullRequestChecks({ pullRequest }) {

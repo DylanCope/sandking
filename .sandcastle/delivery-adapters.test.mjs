@@ -150,3 +150,32 @@ test("the GitHub adapter persists structured review verdicts for resumed runs", 
   assert.match(comments[0].body, /BLOCKERS/);
   assert.match(comments[0].body, /Competing runtimes are possible/);
 });
+
+test("the GitHub adapter reads pull request patches larger than the subprocess default buffer", async () => {
+  const minimumPatchCapacity = 2 * 1024 * 1024;
+  const github = createGitHubDelivery({
+    commandRunner: {
+      run(command, args, options = {}) {
+        assert.equal(command, "gh");
+        if (args[0] === "repo") return "DylanCope/sandking";
+        if (args[0] === "pr" && args[1] === "diff") {
+          if ((options.maxBuffer ?? 1024 * 1024) < minimumPatchCapacity) {
+            const error = new Error("spawnSync gh ENOBUFS");
+            error.code = "ENOBUFS";
+            throw error;
+          }
+          return "large pull request patch";
+        }
+        throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+      },
+      runResult() {
+        throw new Error("runResult is not expected");
+      },
+    },
+  });
+
+  assert.equal(
+    await github.getPullRequestDiff({ pullRequest: { number: 141 } }),
+    "large pull request patch",
+  );
+});
