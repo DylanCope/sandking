@@ -37,6 +37,7 @@ test("the bundled Claude plugin declares only the minimal Controller skills and 
     name: "sandking-controller",
     version: "1.0.0",
     description: "Minimal typed Sand-King Controller integration.",
+    author: { name: "Sand-King" },
   });
   assert.deepEqual(Object.keys(hooks.hooks).sort(), ["SessionStart", "StopFailure"]);
   assert.equal(hooks.hooks.SessionStart.length, 1);

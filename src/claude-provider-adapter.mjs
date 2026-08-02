@@ -224,7 +224,9 @@ const hasLoadedControllerPlugin = (inventory) => {
       ? inventory.plugins
       : [];
   return records.some((record) => record && typeof record === "object"
-    && (record.name === "sandking-controller" || record.id === "sandking-controller")
+    && (record.name === "sandking-controller"
+      || record.id === "sandking-controller"
+      || record.id === "sandking-controller@inline")
     && record.version === "1.0.0"
     && record.enabled !== false);
 };

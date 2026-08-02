@@ -6,7 +6,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
-import { classifyClaudeStopFailure } from "../src/claude-provider-adapter.mjs";
+import {
+  classifyClaudeStopFailure,
+  probeClaude,
+} from "../src/claude-provider-adapter.mjs";
 
 const execFileAsync = promisify(execFile);
 const adapterPath = fileURLToPath(new URL("../src/claude-provider-adapter.mjs", import.meta.url));
@@ -94,6 +97,41 @@ if (args.length === 1 && args[0] === "--version") {
     });
     assert.doesNotMatch(stdout, /probe-secret-must-not-be-used/);
   } finally {
+    await rm(fixtureDirectory, { recursive: true, force: true });
+  }
+});
+
+test("the Claude adapter accepts the current native CLI session-plugin identity", async () => {
+  const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-native-probe-"));
+  const fakeClaudePath = join(fixtureDirectory, "claude");
+  await writeFile(fakeClaudePath, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\\n' '2.1.220 (Claude Code)'
+elif [ "$1" = "--help" ]; then
+  printf '%s\\n' '--session-id <uuid> --plugin-dir <path>'
+elif [ "$1" = "plugin" ] && [ "$2" = "validate" ] && [ "$4" = "--strict" ]; then
+  grep -q '"author"' "$3/.claude-plugin/plugin.json"
+elif [ "$1" = "--plugin-dir" ] && [ "$3" = "plugin" ] && [ "$4" = "list" ] && [ "$5" = "--json" ]; then
+  printf '%s' '[{"id":"sandking-controller@inline","version":"1.0.0","scope":"session","enabled":true}]'
+elif [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  printf '%s' '{"loggedIn":true,"authMethod":"claude.ai"}'
+else
+  exit 97
+fi
+`, { mode: 0o700 });
+  await chmod(fakeClaudePath, 0o700);
+
+  const previousExecutable = process.env.SANDKING_CLAUDE_EXECUTABLE;
+  try {
+    process.env.SANDKING_CLAUDE_EXECUTABLE = fakeClaudePath;
+    const probe = await probeClaude();
+    assert.equal(probe.availability.status, "available", JSON.stringify(probe));
+    assert.equal(probe.availability.version, "2.1.220");
+    assert.equal(probe.availability.authentication.status, "authenticated");
+    assert.equal(probe.integration.pluginId, "sandking-controller");
+  } finally {
+    if (previousExecutable === undefined) delete process.env.SANDKING_CLAUDE_EXECUTABLE;
+    else process.env.SANDKING_CLAUDE_EXECUTABLE = previousExecutable;
     await rm(fixtureDirectory, { recursive: true, force: true });
   }
 });

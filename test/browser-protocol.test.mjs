@@ -24,7 +24,13 @@ const cliPath = join(process.cwd(), "src", "cli.mjs");
 const launch = async (dataDir, env = process.env) => {
   const { stdout } = await execFileAsync(process.execPath, [
     cliPath, "launch", "--data-dir", dataDir, "--json", "--no-open",
-  ], { cwd: tmpdir(), env });
+  ], {
+    cwd: tmpdir(),
+    env: {
+      ...env,
+      SANDKING_CLAUDE_EXECUTABLE: join(dataDir, "claude-not-installed"),
+    },
+  });
   return JSON.parse(stdout);
 };
 

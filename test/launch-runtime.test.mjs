@@ -334,6 +334,40 @@ test("runtime launch is revisioned, idempotent, and accepted in the audit", asyn
   }
 });
 
+test("runtime startup allows a compatible provider metadata probe within its startup budget", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-provider-probe-startup-"));
+  const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-slow-provider-probe-"));
+  const fakeClaudePath = join(fixtureDirectory, "claude");
+  await writeFile(fakeClaudePath, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\\n' '2.1.220 (Claude Code)'
+elif [ "$1" = "--help" ]; then
+  printf '%s\\n' '--session-id <uuid> --plugin-dir <path>'
+elif [ "$1" = "plugin" ] && [ "$2" = "validate" ]; then
+  exit 0
+elif [ "$1" = "--plugin-dir" ]; then
+  printf '%s' '[{"id":"sandking-controller@inline","version":"1.0.0","scope":"session","enabled":true}]'
+elif [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  sleep 3.2
+  printf '%s' '{"loggedIn":true,"authMethod":"claude.ai"}'
+else
+  exit 97
+fi
+`, { mode: 0o700 });
+
+  try {
+    const launched = await runCli([
+      "launch", "--data-dir", dataDir, "--json", "--no-open",
+    ], {
+      env: { SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath },
+    });
+    assert.equal(launched.runtime.reused, false);
+  } finally {
+    await stopAndRemove(dataDir);
+    await rm(fixtureDirectory, { recursive: true, force: true });
+  }
+});
+
 test("a stop queued behind startup uses the runtime lock and stops the launched runtime", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-runtime-stop-race-"));
 
