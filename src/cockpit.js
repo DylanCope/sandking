@@ -630,9 +630,13 @@ const applyHarnessRunObservation = (observation) => {
     }
   }
   clearTimeout(harnessObservationTimer);
+  const launchExecutionTerminal = ["succeeded", "failed", "cancelled"].includes(
+    visibleObservation.launchRequest?.execution.status,
+  );
   if (
     !visibleObservation.run
     || !["succeeded", "failed", "cancelled"].includes(visibleObservation.run.status)
+    || !launchExecutionTerminal
   ) {
     harnessObservationTimer = setTimeout(requestHarnessRunObservation, 75);
   }
