@@ -141,6 +141,23 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       "#project-focused-controller-session[data-terminal-attachment='read-write']",
       { timeout: 10_000 },
     );
+    const terminalTypography = await page.locator(
+      "#project-controller-terminal-output .xterm",
+    ).evaluate(async (node) => {
+      await document.fonts.ready;
+      return {
+        fontFamily: getComputedStyle(node).fontFamily,
+        firaCodeLoaded: document.fonts.check('13px "Fira Code"'),
+      };
+    });
+    assert.match(terminalTypography.fontFamily, /^"?Fira Code"?/);
+    assert.equal(terminalTypography.firaCodeLoaded, true);
+    assert.equal(await page.locator("#project-controller-terminal-output").evaluate((node) => {
+      const terminal = node.querySelector(".xterm");
+      return terminal
+        ? getComputedStyle(terminal).getPropertyValue("--sandking-terminal-bright-magenta").trim()
+        : "";
+    }), "#d8b4fe");
     const terminalPanel = page.locator("#project-focused-controller-session");
     const focusedContextId = await terminalPanel.getAttribute("data-work-context-id");
     assert.equal(focusedContextId, selectedProjectId);

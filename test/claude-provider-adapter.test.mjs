@@ -312,6 +312,8 @@ else process.exitCode = 97;
     assert.equal(prepared.command.environment.SANDKING_CLAUDE_EXECUTABLE, fakeClaudePath);
     assert.equal(prepared.command.environment.SANDKING_CLAUDE_SESSION_ID, providerSessionId);
     assert.equal(prepared.command.environment.SANDKING_CONTROLLER_SESSION_ID, sessionId);
+    assert.equal(prepared.command.environment.TERM, "xterm-256color");
+    assert.equal(prepared.command.environment.COLORTERM, "truecolor");
     assert.equal(prepared.command.environment.ANTHROPIC_API_KEY, undefined);
     assert.equal(prepared.command.environment.CLAUDE_CODE_OAUTH_TOKEN, undefined);
     assert.equal(prepared.command.environment.AWS_SECRET_ACCESS_KEY, undefined);

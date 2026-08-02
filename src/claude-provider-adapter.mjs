@@ -150,6 +150,7 @@ export const createClaudeDestinationEnvironment = (source = process.env) => {
   }
   environment.LANG ??= "C.UTF-8";
   environment.TERM ??= "xterm-256color";
+  environment.COLORTERM ??= "truecolor";
   if (
     typeof source.SANDKING_CLAUDE_EXECUTABLE === "string"
     && source.SANDKING_CLAUDE_EXECUTABLE.length > 0

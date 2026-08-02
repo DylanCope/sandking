@@ -106,6 +106,12 @@ const xtermFitScriptPath = fileURLToPath(import.meta.resolve(
   "@xterm/addon-fit/lib/addon-fit.mjs",
 ));
 const xtermStylePath = fileURLToPath(import.meta.resolve("@xterm/xterm/css/xterm.css"));
+const firaCodeRegularPath = fileURLToPath(import.meta.resolve(
+  "@fontsource/fira-code/files/fira-code-latin-400-normal.woff2",
+));
+const firaCodeSemiboldPath = fileURLToPath(import.meta.resolve(
+  "@fontsource/fira-code/files/fira-code-latin-600-normal.woff2",
+));
 const statePath = join(args.dataDir, "runtime-state.json");
 const tokenDirectory = join(args.dataDir, "bootstrap-tokens");
 const startupErrorPath = join(args.dataDir, "startup-error.json");
@@ -2642,13 +2648,23 @@ const handleBrowserConnection = (socket, sessionId, session) => {
 const main = async () => {
   await ensurePrivateDirectory(args.dataDir);
   await ensurePrivateDirectory(tokenDirectory);
-  const [cockpitScript, cockpitStyle, xtermScript, xtermFitScript, xtermStyle] =
+  const [
+    cockpitScript,
+    cockpitStyle,
+    xtermScript,
+    xtermFitScript,
+    xtermStyle,
+    firaCodeRegular,
+    firaCodeSemibold,
+  ] =
     await Promise.all([
       readFile(cockpitScriptPath, "utf8"),
       readFile(cockpitStylePath, "utf8"),
       readFile(xtermScriptPath, "utf8"),
       readFile(xtermFitScriptPath, "utf8"),
       readFile(xtermStylePath, "utf8"),
+      readFile(firaCodeRegularPath),
+      readFile(firaCodeSemiboldPath),
     ]);
 
   try {
@@ -2952,17 +2968,31 @@ const main = async () => {
         }
 
         const localAsset = request.method === "GET" ? new Map([
-          ["/cockpit.css", ["text/css; charset=utf-8", cockpitStyle]],
-          ["/terminal/xterm.mjs", ["text/javascript; charset=utf-8", xtermScript]],
-          ["/terminal/addon-fit.mjs", ["text/javascript; charset=utf-8", xtermFitScript]],
-          ["/terminal/xterm.css", ["text/css; charset=utf-8", xtermStyle]],
+          ["/cockpit.css", { contentType: "text/css; charset=utf-8", body: cockpitStyle }],
+          ["/terminal/xterm.mjs", {
+            contentType: "text/javascript; charset=utf-8",
+            body: xtermScript,
+          }],
+          ["/terminal/addon-fit.mjs", {
+            contentType: "text/javascript; charset=utf-8",
+            body: xtermFitScript,
+          }],
+          ["/terminal/xterm.css", { contentType: "text/css; charset=utf-8", body: xtermStyle }],
+          ["/terminal/fira-code-regular.woff2", {
+            contentType: "font/woff2",
+            body: firaCodeRegular,
+          }],
+          ["/terminal/fira-code-semibold.woff2", {
+            contentType: "font/woff2",
+            body: firaCodeSemibold,
+          }],
         ]).get(request.url ?? "") : undefined;
         if (localAsset) {
           response.writeHead(200, {
             ...securityHeaders,
-            "content-type": localAsset[0],
+            "content-type": localAsset.contentType,
           });
-          response.end(localAsset[1]);
+          response.end(localAsset.body);
           return;
         }
 

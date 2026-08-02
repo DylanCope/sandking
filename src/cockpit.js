@@ -191,9 +191,12 @@ const attachTerminalSurface = ({
     disableStdin: true,
     screenReaderMode: true,
     scrollback: 1_000,
-    fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+    fontFamily: '"Fira Code", monospace',
     fontSize: 13,
+    fontWeight: "400",
+    fontWeightBold: "600",
     lineHeight: 1.2,
+    minimumContrastRatio: 1,
     theme: {
       background: "#05070c",
       foreground: "#d4d4d8",
@@ -208,6 +211,14 @@ const attachTerminalSurface = ({
       magenta: "#c084fc",
       cyan: "#67e8f9",
       white: "#f4f4f5",
+      brightBlack: "#71717a",
+      brightRed: "#fda4af",
+      brightGreen: "#6ee7b7",
+      brightYellow: "#fde047",
+      brightBlue: "#93c5fd",
+      brightMagenta: "#d8b4fe",
+      brightCyan: "#a5f3fc",
+      brightWhite: "#ffffff",
     },
   });
   const fitAddon = new FitAddon();
