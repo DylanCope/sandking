@@ -16,7 +16,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:a6d983b5a526b9a7167a39e158ae91dc741b62ae682a15e2c0ac938e2a3a5fcc",
+  schemaDigest: "sha256:f73240669d4b290fe0e4b0b6442ee4f7e2d54633846727ef94cb6f5d5ee4d1cb",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -34,6 +34,8 @@ let runtimeNegotiated = false;
 let harnessRunSection;
 let harnessObservationTimer;
 let harnessRequestSequence = 0;
+let hostConnectionStatus = "connecting";
+let hostFreshness = "stale";
 
 const encodeOpaqueFrame = (streamId, sequence, data) => {
   const id = new TextEncoder().encode(streamId);
@@ -144,6 +146,7 @@ const renderProjectPreparation = (preparation, session, controllerProviders) => 
     id: "project-preparation",
     "data-explicit-path-only": "true",
     "data-directory-scanning": String(preparation.selection.directoryScanning),
+    "data-host-freshness": hostFreshness,
   });
   section.append(
     element("h2", {}, "Open and prepare a local Project"),
@@ -180,6 +183,8 @@ const renderProjectPreparation = (preparation, session, controllerProviders) => 
     id: "open-project",
     type: "button",
     "data-action": "open-project",
+    "data-host-mutation": "true",
+    disabled: hostConnectionStatus !== "connected",
   }, "Open and prepare Project");
   const feedback = element("p", { id: "project-feedback", role: "status" });
   let currentNode = renderPreparedProject(preparation.current);
@@ -189,7 +194,9 @@ const renderProjectPreparation = (preparation, session, controllerProviders) => 
     id: "open-project-controller",
     type: "button",
     "data-action": "open-project-controller",
-    disabled: !preparation.current?.canPrepareLaunchRequest,
+    "data-host-mutation": "true",
+    disabled: hostConnectionStatus !== "connected"
+      || !preparation.current?.canPrepareLaunchRequest,
   }, "Open focused Controller for Launch");
   const claudeProvider = controllerProviders.find((provider) =>
     provider.providerId === "claude-code");
@@ -198,8 +205,11 @@ const renderProjectPreparation = (preparation, session, controllerProviders) => 
     id: "open-project-claude-controller",
     type: "button",
     "data-action": "open-project-claude-controller",
+    "data-host-mutation": "true",
     "data-provider-availability": claudeProvider?.availability.status ?? "unavailable",
-    disabled: !preparation.current?.canPrepareLaunchRequest || !claudeAvailable,
+    disabled: hostConnectionStatus !== "connected"
+      || !preparation.current?.canPrepareLaunchRequest
+      || !claudeAvailable,
   }, "Open installed Claude Controller");
   const claudeProviderStatus = element("p", {
     id: "claude-provider-status",
@@ -252,7 +262,7 @@ const renderProjectPreparation = (preparation, session, controllerProviders) => 
       }
       feedback.textContent = `Project was not changed: ${outcome.code}. ${
         outcome.resolution?.actions?.join(", ") ?? "Review the typed guidance."}`;
-      openButton.disabled = false;
+      openButton.disabled = hostConnectionStatus !== "connected";
       return;
     }
     expectedRevision = outcome.project.revision;
@@ -261,9 +271,12 @@ const renderProjectPreparation = (preparation, session, controllerProviders) => 
     currentNode.replaceWith(replacement);
     currentNode = replacement;
     feedback.textContent = "Project and conformance Harness are ready for Launch preparation.";
-    openController.disabled = !outcome.project.canPrepareLaunchRequest;
-    openClaudeController.disabled = !outcome.project.canPrepareLaunchRequest || !claudeAvailable;
-    openButton.disabled = false;
+    openController.disabled = hostConnectionStatus !== "connected"
+      || !outcome.project.canPrepareLaunchRequest;
+    openClaudeController.disabled = hostConnectionStatus !== "connected"
+      || !outcome.project.canPrepareLaunchRequest
+      || !claudeAvailable;
+    openButton.disabled = hostConnectionStatus !== "connected";
   });
 
   const openFocusedController = async (providerId, sourceButton) => {
@@ -285,7 +298,8 @@ const renderProjectPreparation = (preparation, session, controllerProviders) => 
     const outcome = await response.json();
     if (!response.ok || outcome.type !== "mutation_result") {
       controllerFeedback.textContent = `Focused Controller failed safely: ${outcome.code}.`;
-      sourceButton.disabled = providerId === "claude-code" ? !claudeAvailable : false;
+      sourceButton.disabled = hostConnectionStatus !== "connected"
+        || (providerId === "claude-code" ? !claudeAvailable : false);
       return;
     }
     const focused = outcome.session;
@@ -404,7 +418,11 @@ const renderProjectPreparation = (preparation, session, controllerProviders) => 
 };
 
 const requestHarnessRunObservation = () => {
-  if (!runtimeNegotiated || socket.readyState !== WebSocket.OPEN) {
+  if (
+    !runtimeNegotiated
+    || hostConnectionStatus !== "connected"
+    || socket.readyState !== WebSocket.OPEN
+  ) {
     return;
   }
   socket.send(JSON.stringify({
@@ -424,6 +442,7 @@ const renderHarnessRun = (observation) => {
     id: "harness-run-observation",
     "data-observation-mode": observation.mode,
     "data-run-present": String(Boolean(observation.run)),
+    "data-host-freshness": hostFreshness,
   });
   section.append(
     element("h2", {}, "Harness run observation"),
@@ -545,6 +564,7 @@ const renderPlanning = (planning, session) => {
     id: "planning-spine",
     "data-planning-ready": "true",
     "data-adapter-fixture": String(planning.adapter.fixture),
+    "data-host-impact": "unaffected",
   });
   section.append(
     element("h2", {}, "Planning Journey Rail"),
@@ -818,6 +838,42 @@ socket.addEventListener("message", (event) => {
     return;
   }
 
+  if (message?.type === "runtime.connection-state") {
+    if (!runtimeNegotiated || message.boundary !== "host") {
+      requireReload("runtime_connection_state_before_negotiation");
+      return;
+    }
+    hostConnectionStatus = message.status;
+    hostFreshness = message.freshness;
+    document.documentElement.dataset.hostConnectionStatus = message.status;
+    const connectionStatus = document.getElementById("connection-status");
+    if (connectionStatus) {
+      connectionStatus.dataset.hostStatus = message.status;
+      connectionStatus.dataset.failureCode = message.failure.code;
+      connectionStatus.dataset.connectionAuditId = message.failure.auditId;
+      connectionStatus.setAttribute("role", "alert");
+      connectionStatus.textContent =
+        `Host ${message.hostId} is disconnected. Project and Harness views are stale; `
+        + "unaffected Controller and Planning views remain available.";
+    }
+    const projectPreparation = document.getElementById("project-preparation");
+    if (projectPreparation) {
+      projectPreparation.dataset.hostFreshness = message.freshness;
+      for (const control of projectPreparation.querySelectorAll("[data-host-mutation]")) {
+        control.disabled = true;
+      }
+    }
+    if (harnessRunSection) {
+      harnessRunSection.dataset.hostFreshness = message.freshness;
+    }
+    const planning = document.getElementById("planning-spine");
+    if (planning) {
+      planning.dataset.hostImpact = "unaffected";
+    }
+    clearTimeout(harnessObservationTimer);
+    return;
+  }
+
   if (message?.type === "runtime.terminal-attached") {
     const terminal = terminalStreams.get(message.streamId);
     if (
@@ -900,6 +956,15 @@ socket.addEventListener("message", (event) => {
   const durableIdentitiesCompatible = /^runtime-[a-f0-9]{24}$/
     .test(message?.viewModel?.runtime?.runtimeId ?? "")
     && /^host-[a-f0-9]{24}$/.test(message?.viewModel?.host?.hostId ?? "");
+  const hostConnectionCompatible = ["connected", "disconnected"].includes(
+    message?.viewModel?.host?.status,
+  ) && ["current", "stale"].includes(message?.viewModel?.host?.freshness)
+    && (message.viewModel.host.status === "connected"
+      ? message.viewModel.host.failure === null
+      : message.viewModel.host.failure?.code === "host_disconnected"
+        || message.viewModel.host.failure?.code === "host_protocol_invalid"
+        || message.viewModel.host.failure?.code
+          === "host_observation_resynchronization_failed");
   const planningCompatible = message?.viewModel?.planning?.kind === "cockpit.planning-spine"
     && message.viewModel.planning.adapter?.fixture === true
     && JSON.stringify(message.viewModel.planning.builtInStages)
@@ -930,6 +995,7 @@ socket.addEventListener("message", (event) => {
     || !capabilitiesCompatible
     || !framingCompatible
     || !durableIdentitiesCompatible
+    || !hostConnectionCompatible
     || !planningCompatible
     || !projectPreparationCompatible
     || !controllerProvidersCompatible
@@ -941,29 +1007,34 @@ socket.addEventListener("message", (event) => {
 
   sessionStorage.setItem("sandking.observationCursor", message.observation.cursor);
   runtimeNegotiated = true;
+  hostConnectionStatus = message.viewModel.host.status;
+  hostFreshness = message.viewModel.host.freshness;
   document.documentElement.dataset.observationMode = message.observation.mode;
   document.documentElement.dataset.protocolVersion = message.protocol.version;
+  document.documentElement.dataset.hostConnectionStatus = hostConnectionStatus;
   app.textContent = "";
   app.append(
     element(
       "p",
-      { id: "connection-status" },
-      `Connected to ${message.viewModel.host.identity} with protocol ${message.protocol.version}`
-        + ` (${message.viewModel.host.hostId})`,
+      {
+        id: "connection-status",
+        "data-host-status": hostConnectionStatus,
+        "data-failure-code": message.viewModel.host.failure?.code ?? "",
+        "data-connection-audit-id": message.viewModel.host.failure?.auditId ?? "",
+        ...(hostConnectionStatus === "disconnected" ? { role: "alert" } : {}),
+      },
+      hostConnectionStatus === "connected"
+        ? `Connected to ${message.viewModel.host.identity} with protocol ${message.protocol.version}`
+          + ` (${message.viewModel.host.hostId})`
+        : `Host ${message.viewModel.host.hostId} is disconnected. Project and Harness views `
+          + "are stale; unaffected Controller and Planning views remain available.",
     ),
     renderProjectPreparation(
       message.viewModel.projectPreparation,
       message.session,
       message.viewModel.controllerProviders,
     ),
-    renderHarnessRun({
-      mode: "snapshot",
-      run: null,
-      events: [],
-      outcome: null,
-      logStreams: [],
-      terminalEnvelopeValidation: null,
-    }),
+    renderHarnessRun(message.viewModel.harnessRunObservation),
     renderPlanning(message.viewModel.planning, message.session),
   );
   harnessRunSection = document.getElementById("harness-run-observation");
@@ -973,6 +1044,6 @@ socket.addEventListener("message", (event) => {
 socket.addEventListener("close", (event) => {
   clearTimeout(harnessObservationTimer);
   if (!document.documentElement.dataset.protocolError && !event.wasClean) {
-    app.textContent = "Host connection is stale. Retry by reloading the Cockpit.";
+    app.textContent = "Controller runtime connection is stale. Retry by reloading the Cockpit.";
   }
 });

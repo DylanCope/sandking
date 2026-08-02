@@ -35,7 +35,7 @@ export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-controller-provider-readiness")
+  .update("sandking-browser-runtime-schema-v1-with-truthful-degraded-connections")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -47,6 +47,43 @@ const capabilitySetSchema = z.object({
 const browserFramingSchema = z.object({
   maxControlMessageBytes: z.number().int().positive().max(MAX_BROWSER_CONTROL_BYTES),
   maxOpaqueStreamChunkBytes: z.number().int().positive().max(MAX_BROWSER_OPAQUE_CHUNK_BYTES),
+}).strict();
+
+const hostConnectionFailureSchema = z.object({
+  code: z.enum([
+    "host_disconnected",
+    "host_protocol_invalid",
+    "host_observation_resynchronization_failed",
+  ]),
+  retryable: z.literal(true),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  observedAt: z.string().datetime(),
+}).strict();
+
+const harnessRunObservationProjectionSchema = z.object({
+  type: z.literal("harness.run.observe.result"),
+  requestId: identifierSchema,
+  code: z.enum(["harness_run_absent", "harness_run_observed"]),
+  mode: z.enum(["snapshot", "resume"]),
+  run: harnessRunSchema.nullable(),
+  events: z.array(harnessRunEventSchema).max(1_024),
+  nextSequence: z.number().int().nonnegative(),
+  outcome: harnessRunOutcomeSchema.nullable(),
+  logStreams: z.array(z.object({
+    streamId: z.string().regex(/^harness-log-[a-f0-9]{24}$/),
+    producer: z.enum(["stdout", "stderr"]),
+    availableStart: z.literal(0),
+    availableEnd: z.number().int().nonnegative(),
+    explicitRetrievalRequired: z.literal(true),
+    insertedIntoControllerConversation: z.literal(false),
+  }).strict()).max(2),
+  terminalEnvelopeValidation: z.object({
+    adapterReadyObserved: z.boolean(),
+    validTerminalEnvelopeCount: z.number().int().nonnegative(),
+    exactlyOne: z.boolean(),
+    adapterChannelClosedObserved: z.boolean(),
+    processExitObserved: z.boolean(),
+  }).strict().nullable(),
 }).strict();
 
 export const browserHelloSchema = z.object({
@@ -113,7 +150,7 @@ export const runtimeHelloAckSchema = z.object({
   schemaDigest: digestSchema,
   framing: browserFramingSchema,
   observation: z.object({
-    mode: z.enum(["snapshot", "resume", "resynchronize"]),
+    mode: z.enum(["snapshot", "resume", "resynchronize", "resynchronization-failed"]),
     cursor: z.string().min(1).max(256),
     reason: identifierSchema.optional(),
   }).strict(),
@@ -132,7 +169,9 @@ export const runtimeHelloAckSchema = z.object({
       identity: identifierSchema,
       hostId: z.string().regex(/^host-[a-f0-9]{24}$/),
       release: z.string().min(1).max(64),
-      status: z.literal("connected"),
+      status: z.enum(["connected", "disconnected"]),
+      freshness: z.enum(["current", "stale"]),
+      failure: hostConnectionFailureSchema.nullable(),
     }).strict(),
     negotiation: z.object({
       protocol: versionSchema,
@@ -177,6 +216,7 @@ export const runtimeHelloAckSchema = z.object({
         credentialsTransferred: z.literal(false),
       }).strict().optional(),
     }).strict()).length(2),
+    harnessRunObservation: harnessRunObservationProjectionSchema,
   }).strict(),
 }).strict();
 
@@ -205,31 +245,25 @@ const runtimeTerminalAttachedSchema = z.object({
 const runtimeHarnessRunObservationSchema = z.object({
   type: z.literal("runtime.harness-run.observation"),
   requestId: identifierSchema,
-  observation: z.object({
-    type: z.literal("harness.run.observe.result"),
-    requestId: identifierSchema,
-    code: z.enum(["harness_run_absent", "harness_run_observed"]),
-    mode: z.enum(["snapshot", "resume"]),
-    run: harnessRunSchema.nullable(),
-    events: z.array(harnessRunEventSchema).max(1_024),
-    nextSequence: z.number().int().nonnegative(),
-    outcome: harnessRunOutcomeSchema.nullable(),
-    logStreams: z.array(z.object({
-      streamId: z.string().regex(/^harness-log-[a-f0-9]{24}$/),
-      producer: z.enum(["stdout", "stderr"]),
-      availableStart: z.literal(0),
-      availableEnd: z.number().int().nonnegative(),
-      explicitRetrievalRequired: z.literal(true),
-      insertedIntoControllerConversation: z.literal(false),
-    }).strict()).max(2),
-    terminalEnvelopeValidation: z.object({
-      adapterReadyObserved: z.boolean(),
-      validTerminalEnvelopeCount: z.number().int().nonnegative(),
-      exactlyOne: z.boolean(),
-      adapterChannelClosedObserved: z.boolean(),
-      processExitObserved: z.boolean(),
-    }).strict().nullable(),
-  }).strict(),
+  observation: harnessRunObservationProjectionSchema,
+}).strict();
+
+export const runtimeConnectionStateSchema = z.object({
+  type: z.literal("runtime.connection-state"),
+  boundary: z.literal("host"),
+  hostId: z.string().regex(/^host-[a-f0-9]{24}$/),
+  status: z.literal("disconnected"),
+  freshness: z.literal("stale"),
+  failure: hostConnectionFailureSchema,
+  affectedViews: z.tuple([
+    z.literal("project-preparation"),
+    z.literal("harness-run-observation"),
+  ]),
+  unaffectedViews: z.tuple([
+    z.literal("planning-spine"),
+    z.literal("controller-sessions"),
+  ]),
+  retainedObservationCursor: z.string().max(256).nullable(),
 }).strict();
 
 const runtimeHarnessRunLogsResultSchema = z.object({
@@ -259,6 +293,7 @@ export const runtimeControlEnvelopeSchema = z.object({
     runtimeTerminalAttachedSchema,
     runtimeHarnessRunObservationSchema,
     runtimeHarnessRunLogsResultSchema,
+    runtimeConnectionStateSchema,
   ]),
 }).strict();
 

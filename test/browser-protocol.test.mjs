@@ -125,10 +125,27 @@ test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and 
     assert.equal(ack.observation.mode, "snapshot");
     assert.equal(ack.viewModel.host.identity, "local-host");
     assert.equal(ack.viewModel.host.hostId, runtime.host.hostId);
+    assert.deepEqual({
+      status: ack.viewModel.host.status,
+      freshness: ack.viewModel.host.freshness,
+      failure: ack.viewModel.host.failure,
+    }, { status: "connected", freshness: "current", failure: null });
     assert.deepEqual(Object.keys(ack.viewModel).sort(), [
-      "controllerProviders", "host", "kind", "negotiation", "planning",
-      "projectPreparation", "runtime",
+      "controllerProviders", "harnessRunObservation", "host", "kind", "negotiation",
+      "planning", "projectPreparation", "runtime",
     ]);
+    assert.deepEqual(ack.viewModel.harnessRunObservation, {
+      type: "harness.run.observe.result",
+      requestId: "harness-observe-cached",
+      code: "harness_run_absent",
+      mode: "snapshot",
+      run: null,
+      events: [],
+      nextSequence: 0,
+      outcome: null,
+      logStreams: [],
+      terminalEnvelopeValidation: null,
+    });
     assert.deepEqual(ack.viewModel.controllerProviders.map((provider) => ({
       providerId: provider.providerId,
       fixture: provider.fixture,

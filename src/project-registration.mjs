@@ -565,7 +565,7 @@ if (command === "probe") {
     if (progressRecordCount === 1) {
       await new Promise((resolve) => setTimeout(resolve, 140));
     }
-    writeFrame({
+    const terminal = {
       type: "harness.run.terminal",
       adapterProtocol,
       adapterId,
@@ -578,7 +578,18 @@ if (command === "probe") {
         issueNumber: execution.parameters.issueNumber,
         targetBranch: execution.parameters.targetBranch,
       },
-    });
+    };
+    if (execution.parameters.issueNumber === 999999995) {
+      writeFrame({ ...terminal, terminalId: "invalid-terminal-id" });
+    } else {
+      writeFrame(terminal);
+      if (execution.parameters.issueNumber === 999999996) {
+        writeFrame({
+          ...terminal,
+          terminalId: \`harness-terminal-\${"3".repeat(24)}\`,
+        });
+      }
+    }
   }
 } else {
   throw new Error("harness_adapter_command_invalid");

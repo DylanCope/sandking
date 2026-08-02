@@ -118,6 +118,8 @@ const expiredSessions = new Map();
 const sessionExpiryTimers = new Map();
 /** @type {Map<string, Set<WebSocket>>} */
 const sessionSockets = new Map();
+/** @type {Set<WebSocket>} */
+const negotiatedBrowserSockets = new Set();
 /** @type {Map<string, Promise<any>>} */
 const sessionMutationQueues = new Map();
 /** @type {Map<string, Promise<any>>} */
@@ -139,8 +141,23 @@ let controllerProviderProjection = [];
 let controllerSessions;
 /** @type {any} */
 let state;
+/** @type {any} */
+let currentHarnessRunObservation = {
+  type: "harness.run.observe.result",
+  requestId: "harness-observe-cached",
+  code: "harness_run_absent",
+  mode: "snapshot",
+  run: null,
+  events: [],
+  nextSequence: 0,
+  outcome: null,
+  logStreams: [],
+  terminalEnvelopeValidation: null,
+};
 let shuttingDown = false;
 let startupCommitted = false;
+/** @type {Promise<void> | null} */
+let hostDisconnectionPromise = null;
 let hostOperationQueue = Promise.resolve();
 let projectPreparationQueue = Promise.resolve();
 let projectSessionMutationQueue = Promise.resolve();
@@ -177,6 +194,66 @@ const recordAudit = async (action, outcome, details = {}) => {
     recordedAt: new Date().toISOString(),
   });
   return auditId;
+};
+
+const hostAffectedViews = Object.freeze([
+  "project-preparation",
+  "harness-run-observation",
+]);
+const hostUnaffectedViews = Object.freeze([
+  "planning-spine",
+  "controller-sessions",
+]);
+
+const hostConnectionStateMessage = () => ({
+  type: "runtime.connection-state",
+  boundary: "host",
+  hostId: state.host.hostId,
+  status: "disconnected",
+  freshness: "stale",
+  failure: state.host.failure,
+  affectedViews: [...hostAffectedViews],
+  unaffectedViews: [...hostUnaffectedViews],
+  retainedObservationCursor: state.host.observationCursor,
+});
+
+/** @param {"host_disconnected" | "host_protocol_invalid" | "host_observation_resynchronization_failed"} code */
+const markHostDisconnected = async (code) => {
+  if (!state) {
+    return null;
+  }
+  if (state.host.status !== "disconnected" && !hostDisconnectionPromise) {
+    hostDisconnectionPromise = (async () => {
+      const observedAt = new Date().toISOString();
+      const auditId = await recordAudit("host.connection", "observed", {
+        code,
+        hostId: state.host.hostId,
+        controllerId: state.runtimeId,
+        affectedViews: [...hostAffectedViews],
+        unaffectedViews: [...hostUnaffectedViews],
+        retainedObservationCursor: state.host.observationCursor,
+        retainedProjectId: currentProjectPreparation.current?.projectId ?? null,
+        retainedHarnessRunId: currentHarnessRunObservation.run?.harnessRunId ?? null,
+        registrationCreated: false,
+        approvalRecorded: false,
+        harnessRunStarted: false,
+        privilegedMutation: false,
+        inventedSuccess: false,
+      });
+      state.host.status = "disconnected";
+      state.host.freshness = "stale";
+      state.host.failure = { code, retryable: true, auditId, observedAt };
+      await writePrivateJson(statePath, state);
+      const message = hostConnectionStateMessage();
+      for (const socket of negotiatedBrowserSockets) {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(serializeRuntimeControl(message));
+        }
+      }
+    })();
+  }
+  await hostDisconnectionPromise;
+  return hostConnectionStateMessage();
 };
 
 /** @param {string | undefined} header */
@@ -220,6 +297,61 @@ const mutationFailure = (code, authorizationClass, expectedRevision, actualRevis
   actualRevision,
   auditId,
 });
+
+/**
+ * @param {string} action
+ * @param {string} authorizationClass
+ * @param {number} expectedRevision
+ * @param {string | null} idempotencyKeyHash
+ */
+const disconnectedHostMutationFailure = async (
+  action,
+  authorizationClass,
+  expectedRevision,
+  idempotencyKeyHash,
+) => {
+  const actualRevision = currentProjectPreparation.current?.revision ?? 0;
+  const auditId = await recordAudit(action, "rejected", {
+    code: "host_disconnected",
+    hostId: state.host.hostId,
+    authorizationClass,
+    idempotencyKeyHash,
+    expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+    actualRevision,
+    projectRegistrationCreated: false,
+    harnessRegistrationCreated: false,
+    harnessPinChanged: false,
+    launchRequestPrepared: false,
+    approvalRecorded: false,
+    harnessRunStarted: false,
+    projectFileWrite: false,
+    privilegedMutation: false,
+  });
+  return {
+    status: 503,
+    body: {
+      type: "mutation_failure",
+      code: "host_disconnected",
+      retryable: true,
+      authorizationClass,
+      expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
+      actualRevision,
+      auditId,
+      hostId: state.host.hostId,
+      freshness: "stale",
+      prohibitedSideEffects: {
+        projectRegistrationCreated: false,
+        harnessRegistrationCreated: false,
+        harnessPinChanged: false,
+        launchRequestPrepared: false,
+        approvalRecorded: false,
+        harnessRunStarted: false,
+        projectFileWrite: false,
+        privilegedMutation: false,
+      },
+    },
+  };
+};
 
 /** @param {import("node:http").IncomingMessage} request */
 const readMutationHeaders = (request) => {
@@ -579,6 +711,9 @@ const sanitizedRuntimeCode = (error) => {
       "host_schema_mismatch",
       "host_framing_invalid",
       "host_unavailable",
+      "host_disconnected",
+      "host_protocol_invalid",
+      "host_observation_resynchronization_failed",
       "controller_identity_invalid",
       "controller_host_identity_mismatch",
       "controller_protocol_major_mismatch",
@@ -819,33 +954,48 @@ const withProjectSessionMutationLock = (operation) => {
 /** @param {any} message */
 const requestHostOperation = (message) => {
   const current = hostOperationQueue.catch(() => undefined).then(async () => {
-    if (!hostProcess || !hostProcess.stdin.writable || !hostProcess.stdout.readable) {
-      throw new Error("host_unavailable");
+    if (
+      state?.host?.status === "disconnected"
+      || !hostProcess
+      || !hostProcess.stdin.writable
+      || !hostProcess.stdout.readable
+    ) {
+      await markHostDisconnected("host_disconnected");
+      throw new Error("host_disconnected");
     }
-    writeFrame(hostProcess.stdin, message);
-    const frame = await readProtocolFrame(hostProcess.stdout);
-    if (frame.channel !== "control") {
-      throw new Error("host_protocol_error");
-    }
-    const response = frame.message;
-    if (!("requestId" in response) || response.requestId !== message.requestId) {
-      throw new Error("host_protocol_error");
-    }
-    if (response.type === "harness.run.logs.result") {
-      const bulk = await readProtocolFrame(hostProcess.stdout);
-      if (
-        bulk.channel !== "bulk"
-        || bulk.streamId !== response.streamId
-        || bulk.sequence !== response.range.start
-        || bulk.eof !== response.range.eof
-        || bulk.data.byteLength !== response.byteLength
-        || `sha256:${createHash("sha256").update(bulk.data).digest("hex")}` !== response.sha256
-      ) {
+    try {
+      writeFrame(hostProcess.stdin, message);
+      const frame = await readProtocolFrame(hostProcess.stdout);
+      if (frame.channel !== "control") {
         throw new Error("host_protocol_error");
       }
-      return { ...response, data: bulk.data };
+      const response = frame.message;
+      if (!("requestId" in response) || response.requestId !== message.requestId) {
+        throw new Error("host_protocol_error");
+      }
+      if (response.type === "harness.run.logs.result") {
+        const bulk = await readProtocolFrame(hostProcess.stdout);
+        if (
+          bulk.channel !== "bulk"
+          || bulk.streamId !== response.streamId
+          || bulk.sequence !== response.range.start
+          || bulk.eof !== response.range.eof
+          || bulk.data.byteLength !== response.byteLength
+          || `sha256:${createHash("sha256").update(bulk.data).digest("hex")}` !== response.sha256
+        ) {
+          throw new Error("host_protocol_error");
+        }
+        return { ...response, data: bulk.data };
+      }
+      return response;
+    } catch (error) {
+      const code = error instanceof ProtocolError
+        || (error instanceof Error && error.message === "host_protocol_error")
+        ? "host_protocol_invalid"
+        : "host_disconnected";
+      await markHostDisconnected(code);
+      throw new Error("host_disconnected");
     }
-    return response;
   });
   hostOperationQueue = current.then(() => undefined, () => undefined);
   return current;
@@ -1637,6 +1787,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
   sessionSockets.set(sessionId, authenticatedSockets);
   socket.once("close", () => {
     controllerSessions?.detach(socket);
+    negotiatedBrowserSockets.delete(socket);
     authenticatedSockets.delete(socket);
     if (authenticatedSockets.size === 0) {
       sessionSockets.delete(sessionId);
@@ -1770,6 +1921,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           if (observation.type !== "harness.run.observe.result") {
             throw new BrowserProtocolError("harness_run_observation_failed");
           }
+          currentHarnessRunObservation = structuredClone(observation);
           socket.send(serializeRuntimeControl({
             type: "runtime.harness-run.observation",
             requestId: control.requestId,
@@ -1841,11 +1993,19 @@ const handleBrowserConnection = (socket, sessionId, session) => {
       }
 
       const currentCursor = state.host.observationCursor ?? "host:origin";
-      const observation = hello.observationCursor === null
-        ? { mode: "snapshot", cursor: currentCursor }
-        : hello.observationCursor === currentCursor
-          ? { mode: "resume", cursor: currentCursor }
-          : { mode: "resynchronize", cursor: currentCursor, reason: "cursor_unavailable" };
+      const observation = state.host.status === "disconnected"
+        && hello.observationCursor !== null
+        && hello.observationCursor !== currentCursor
+        ? {
+            mode: "resynchronization-failed",
+            cursor: currentCursor,
+            reason: "host_observation_resynchronization_failed",
+          }
+        : hello.observationCursor === null
+          ? { mode: "snapshot", cursor: currentCursor }
+          : hello.observationCursor === currentCursor
+            ? { mode: "resume", cursor: currentCursor }
+            : { mode: "resynchronize", cursor: currentCursor, reason: "cursor_unavailable" };
       const negotiatedCapabilities = browserCapabilities.filter((capability) =>
         [...hello.capabilities.required, ...hello.capabilities.optional].includes(capability));
 
@@ -1884,7 +2044,9 @@ const handleBrowserConnection = (socket, sessionId, session) => {
             identity: state.host.identity,
             hostId: state.host.hostId,
             release: state.host.release,
-            status: "connected",
+            status: state.host.status,
+            freshness: state.host.freshness,
+            failure: state.host.failure,
           },
           negotiation: {
             protocol: state.protocol,
@@ -1896,6 +2058,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           projectPreparation: currentProjectPreparation,
           controllerProviders: controllerProviderProjection,
           planning: await planningSpine?.project(),
+          harnessRunObservation: currentHarnessRunObservation,
         },
       });
       await recordAudit("browser.negotiate", "accepted", {
@@ -1906,8 +2069,16 @@ const handleBrowserConnection = (socket, sessionId, session) => {
         sessionAuditId: session.auditId,
       });
       phase = "negotiated";
+      negotiatedBrowserSockets.add(socket);
       socket.send(acknowledgement);
     } catch (error) {
+      if (error instanceof Error && error.message === "host_disconnected") {
+        const connection = await markHostDisconnected("host_disconnected");
+        if (connection && socket.readyState === WebSocket.OPEN) {
+          socket.send(serializeRuntimeControl(connection));
+        }
+        return;
+      }
       const code = error instanceof BrowserProtocolError
         ? error.code
         : "browser_protocol_invalid";
@@ -2104,6 +2275,16 @@ const main = async () => {
             sendJson(response, 403, failure);
             return;
           }
+          if (state.host.status === "disconnected") {
+            const failure = await disconnectedHostMutationFailure(
+              "project.prepare",
+              "host_local_project_preparation",
+              expectedRevision,
+              idempotencyKeyHash,
+            );
+            sendJson(response, failure.status, failure.body);
+            return;
+          }
           const outcome = await prepareExplicitProject({
             path: "path" in record ? record.path : null,
             configuration: "configuration" in record ? record.configuration : null,
@@ -2123,17 +2304,25 @@ const main = async () => {
             idempotencyKeyHash,
             expectedRevision,
           } = readMutationHeaders(request);
-          const outcome = await openProjectControllerSession({
-            authorizationAccepted: exactOriginAccepted(request)
-              && request.headers["x-sandking-csrf"] === activeSession.csrfToken,
-            idempotencyKey,
-            idempotencyKeyHash,
-            expectedRevision,
-            projectId: "projectId" in record ? String(record.projectId) : "",
-            providerId: "providerId" in record
-              ? String(record.providerId)
-              : "conformance-controller-v1",
-          });
+          const authorizationAccepted = exactOriginAccepted(request)
+            && request.headers["x-sandking-csrf"] === activeSession.csrfToken;
+          const outcome = authorizationAccepted && state.host.status === "disconnected"
+            ? await disconnectedHostMutationFailure(
+                "project.session.open",
+                "project_focused_session",
+                expectedRevision,
+                idempotencyKeyHash,
+              )
+            : await openProjectControllerSession({
+                authorizationAccepted,
+                idempotencyKey,
+                idempotencyKeyHash,
+                expectedRevision,
+                projectId: "projectId" in record ? String(record.projectId) : "",
+                providerId: "providerId" in record
+                  ? String(record.providerId)
+                  : "conformance-controller-v1",
+              });
           sendJson(response, outcome.status, outcome.body);
           return;
         }
@@ -2270,6 +2459,9 @@ const main = async () => {
         framing: host.framing,
         observationCursor: host.observationCursor,
         release: host.release,
+        status: "connected",
+        freshness: "current",
+        failure: null,
       },
       protocol: host.protocol,
       listener: { address: "127.0.0.1", class: "loopback" },
@@ -2281,9 +2473,8 @@ const main = async () => {
 
     hostProcess?.once("exit", async () => {
       if (!shuttingDown) {
-        await logSanitizedRuntimeError(new Error("host_unavailable"));
-        await shutdown();
-        process.exit(1);
+        await logSanitizedRuntimeError(new Error("host_disconnected"));
+        await markHostDisconnected("host_disconnected");
       }
     });
   } catch (error) {

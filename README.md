@@ -136,6 +136,18 @@ opaque bulk channel, and renders the structured outcome. Closing or refreshing
 the browser neither cancels the run nor terminates its focused Controller
 session.
 
+If the Harness process exits without exactly one valid terminal envelope, the
+Cockpit shows a failed incomplete result even when a diagnostic says
+`SUCCESS`; the structured outcome retains only explicit stdout and stderr range
+references. If the real Host process disconnects, the Controller runtime and
+its provider sessions remain available while Project and Harness views are
+marked stale and their mutations are disabled. The cached accepted run remains
+visible, reconnecting with an unavailable Host cursor reports a typed
+resynchronization failure, and direct Host mutations fail as
+`host_disconnected` with sanitized audit evidence. Planning remains separately
+usable when its GitHub projection is fresh; an unavailable GitHub projection
+alone is visibly stale and mutation-disabled.
+
 For an explicitly selected Project, the same focused-session Cockpit action can
 also operate an installed Claude Code CLI. Without invoking a model, the runtime
 probes the destination-local version and authentication, checks the installed
@@ -226,6 +238,16 @@ npm run acceptance:issue-120
 Its retained sanitized evidence is generated with
 `npm run acceptance:issue-120:update-evidence` and stored in
 `acceptance/evidence/issue-120.json`.
+
+Run the truthful Harness and connection-failure scenario with:
+
+```bash
+npm run acceptance:issue-122
+```
+
+Its retained sanitized evidence is generated with
+`npm run acceptance:issue-122:update-evidence` and stored in
+`acceptance/evidence/issue-122.json`.
 
 Run the optional-Planning public-seam scenario with:
 
