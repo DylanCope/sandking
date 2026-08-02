@@ -10,18 +10,18 @@
     "normalizationDifference": "one terminal LF",
     "exactContentEquivalentAfterApprovedExportNormalization": true
   },
-  "generatedFromCommit": "6f84024b6d338ac18520592769949a36d69e7b9f",
-  "recordedAt": "2026-08-02T02:26:57.851Z",
+  "generatedFromCommit": "f94c2554b7848ff2c1ecd972aaeac645068b3d09",
+  "recordedAt": "2026-08-02T02:59:25.147Z",
   "scenario": "local-walking-skeleton/operates-installed-claude-controller",
   "packagedPublicSeam": {
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "96a3debaa5ad5a06cfba62809e9ff543f7c1ee9240c0ded726f61b91b690af02"
+    "tarballSha256": "9a150dd4761d0945abd67d8c0662e161584a1fe51c264cf4c93591ca8cbf4260"
   },
   "runtime": {
-    "runtimeId": "runtime-5147b9e21c514c0fbf21ae79",
-    "hostId": "host-1530e45091c3eb17ffb29525"
+    "runtimeId": "runtime-46056147a60e5246002855a9",
+    "hostId": "host-b4c7e066c7acfdfaa2cbcbc1"
   },
   "automatedClaudeContract": {
     "executable": "no-model contract fixture",
@@ -31,16 +31,30 @@
     "adapterProtocol": "1.0.0",
     "reportedVersion": "2.1.141",
     "destinationLocalAuthentication": true,
+    "capabilityProbe": "non-model-cli-help-and-session-plugin-inventory",
+    "reportedCapabilities": [
+      "controller.session.start",
+      "controller.session.interactive",
+      "controller.session.terminate",
+      "controller.work-context.inspect",
+      "controller.launch-request.prepare",
+      "controller.launch-request.decide",
+      "controller.harness-run.start",
+      "controller.session.stable-identity",
+      "controller.session.typed-exit"
+    ],
     "pluginId": "sandking-controller",
     "pluginVersion": "1.0.0",
-    "pluginScope": "user"
+    "pluginScope": "session",
+    "pluginLoading": "--plugin-dir",
+    "shimBoundary": "session-plugin-private-typed-shim"
   },
   "focusedSession": {
-    "sessionId": "controller-session-83b9cb835ac34e4efc6c9806",
-    "providerSessionId": "2a84d4bc-d656-4176-9e9f-d45b1e475f66",
+    "sessionId": "controller-session-52b4c38c629c9a6a28cfadef",
+    "providerSessionId": "ee0e082a-07a7-4065-b54e-0302cc798e17",
     "stableProviderSessionIdentity": true,
-    "workContextId": "project-7fd50e9ee8fd4c4cd9aa422c",
-    "terminalStreamId": "controller-terminal-a4c28351043fc75004d68d54",
+    "workContextId": "project-1dc444aa4073009f4437aa17",
+    "terminalStreamId": "controller-terminal-76a59abd6ea5220e0f3c1d91",
     "ptyRuntimeOwned": true,
     "survivedBrowserDisconnection": true,
     "oneWritableAttachmentContractTested": true,
@@ -57,6 +71,7 @@
   ],
   "typedProviderOutcomesTested": [
     "provider_cli_unavailable",
+    "provider_cli_incompatible",
     "provider_authentication_missing",
     "provider_authentication_failed",
     "provider_network_unavailable",
@@ -67,12 +82,13 @@
   ],
   "auditReferences": [
     {
-      "auditId": "audit-5cd79d2a2fd899c530cfcac4",
+      "auditId": "audit-6855ae5a824d63d37ecf3b33",
       "action": "controller.session.start",
       "outcome": "accepted",
       "details": {
-        "sessionId": "controller-session-83b9cb835ac34e4efc6c9806",
-        "providerSessionId": "2a84d4bc-d656-4176-9e9f-d45b1e475f66",
+        "sessionId": "controller-session-52b4c38c629c9a6a28cfadef",
+        "controllerSessionId": "controller-session-52b4c38c629c9a6a28cfadef",
+        "providerSessionId": "ee0e082a-07a7-4065-b54e-0302cc798e17",
         "providerId": "claude-code",
         "providerAdapterId": "claude-code-controller-adapter-v1",
         "adapterProtocol": "1.0.0",
@@ -87,9 +103,9 @@
           "controller.session.stable-identity",
           "controller.session.typed-exit"
         ],
-        "workContextId": "project-7fd50e9ee8fd4c4cd9aa422c",
-        "canonicalReference": "sandking:project:project-7fd50e9ee8fd4c4cd9aa422c",
-        "streamId": "controller-terminal-a4c28351043fc75004d68d54",
+        "workContextId": "project-1dc444aa4073009f4437aa17",
+        "canonicalReference": "sandking:project:project-1dc444aa4073009f4437aa17",
+        "streamId": "controller-terminal-76a59abd6ea5220e0f3c1d91",
         "providerControlProtocol": "1.0.0",
         "providerReadySignal": "provider.session.ready",
         "providerObservedTty": true,
@@ -130,17 +146,7 @@
     "authentication": "unknown",
     "authenticationSource": "destination-local",
     "failureCode": "provider_cli_unavailable",
-    "capabilities": [
-      "controller.session.start",
-      "controller.session.interactive",
-      "controller.session.terminate",
-      "controller.work-context.inspect",
-      "controller.launch-request.prepare",
-      "controller.launch-request.decide",
-      "controller.harness-run.start",
-      "controller.session.stable-identity",
-      "controller.session.typed-exit"
-    ],
+    "capabilities": [],
     "modelInvoked": false,
     "credentialsTransferred": false
   },
