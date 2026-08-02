@@ -225,7 +225,7 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
       assert.match(relative(dataDir, harnessState.harnesses[0].workspacePath), /^\.\./);
       assert.deepEqual(
         (await readdir(harnessState.harnesses[0].workspacePath)).sort(),
-        [".git", "adapter.mjs", "harness.json"],
+        [".git", "adapters", "harness.json"],
       );
       assert.equal(
         (await execFileAsync("git", [

@@ -16,6 +16,7 @@ const pathSchema = z.string().min(1).max(4_096).refine((value) => !value.include
 const commandSchema = z.string().min(1).max(256)
   .refine((value) => !/[\r\n\0]/.test(value));
 const checkIdSchema = z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9._-]*$/);
+const conformanceAdapterEntryPoint = "adapters/conformance.mjs";
 
 export const projectConfigurationSchema = z.object({
   issueWorkflow: z.object({
@@ -442,11 +443,12 @@ const initializeConformanceWorkspace = async (workspacePath) => {
       compatibility: {
         adapterId: "conformance-harness-adapter-v1",
         adapterProtocol: "1.0.0",
-        entryPoint: "adapter.mjs",
+        entryPoint: conformanceAdapterEntryPoint,
       },
     }, null, 2)}\n`, { mode: 0o600 });
+    await mkdir(join(workspacePath, "adapters"), { mode: 0o700 });
     await writeFile(
-      join(workspacePath, "adapter.mjs"),
+      join(workspacePath, conformanceAdapterEntryPoint),
       `import { writeSync } from "node:fs";
 
 const adapterProtocol = "1.0.0";
@@ -577,7 +579,7 @@ if (command === "probe") {
     );
     await execFileAsync("git", [
       "-C", workspacePath,
-      "add", "--", "harness.json", "adapter.mjs",
+      "add", "--", "harness.json", conformanceAdapterEntryPoint,
     ]);
     await execFileAsync("git", [
       "-C", workspacePath,

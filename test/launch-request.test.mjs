@@ -443,7 +443,7 @@ test("the pinned conformance Harness negotiates a side-effect-free preparation s
     assert.deepEqual(result, {
       adapterId: "conformance-harness-adapter-v1",
       adapterProtocol: "1.0.0",
-      adapterEntryPoint: "adapter.mjs",
+      adapterEntryPoint: "adapters/conformance.mjs",
       negotiatedCapabilities: ["harness.launch.prepare.v1"],
       suppliedCapabilities: ["github.issues.read", "project.git.read"],
       sanitizedPreview: {
@@ -482,11 +482,11 @@ test("the pinned conformance Harness negotiates a side-effect-free preparation s
       expectedRevision: 0,
       expiresInSeconds: 300,
     });
-    const adapterPath = join(context.harnessWorkspacePath, "adapter.mjs");
+    const adapterPath = join(context.harnessWorkspacePath, "adapters", "conformance.mjs");
     const adapterSource = await readFile(adapterPath, "utf8");
     await execFileAsync("git", [
       "-C", context.harnessWorkspacePath,
-      "update-index", "--assume-unchanged", "--", "adapter.mjs",
+      "update-index", "--assume-unchanged", "--", "adapters/conformance.mjs",
     ]);
     await writeFile(adapterPath, `${adapterSource}\n// hidden material adapter drift\n`);
     assert.equal((await execFileAsync("git", [

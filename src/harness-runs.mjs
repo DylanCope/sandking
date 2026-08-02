@@ -575,8 +575,6 @@ export const createHarnessRunManager = async (options) => {
       code = "launch_request_unapproved";
     } else if (launchRequest.status !== "approved") {
       code = "launch_request_terminal";
-    } else if (now().getTime() >= Date.parse(launchRequest.expiresAt)) {
-      code = "launch_request_expired";
     } else if (launchRequest.execution.status !== "not_started") {
       const canonical = retained.runs.find((run) =>
         run.harnessRunId === launchRequest.execution.harnessRunId);
@@ -608,6 +606,8 @@ export const createHarnessRunManager = async (options) => {
         return response;
       }
       code = "launch_request_already_started";
+    } else if (now().getTime() >= Date.parse(launchRequest.expiresAt)) {
+      code = "launch_request_expired";
     } else if (launchRequest.revision !== request.expectedRevision) {
       code = "mutation_revision_conflict";
     }

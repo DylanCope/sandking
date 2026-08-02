@@ -133,7 +133,7 @@ test("retained issue 120 evidence proves one observable pinned successful run", 
   assert.equal(run.harnessPinnedRevision, evidence.identities.harnessPin);
   assert.equal(run.adapterId, "conformance-harness-adapter-v1");
   assert.equal(run.adapterProtocol, "1.0.0");
-  assert.equal(run.adapterEntryPoint, "adapter.mjs");
+  assert.equal(run.adapterEntryPoint, "adapters/conformance.mjs");
   assert.deepEqual(run.events.map(({ sequence, type }) => ({ sequence, type })), [
     { sequence: 1, type: "harness_run_created" },
     { sequence: 2, type: "harness_adapter_ready" },
@@ -169,7 +169,10 @@ test("retained issue 120 evidence proves one observable pinned successful run", 
     "harness.run.outcome",
   ]);
   assert.equal(evidence.auditReferences[0].details.returnedBeforeTerminal, true);
-  assert.equal(evidence.auditReferences[0].details.adapterEntryPoint, "adapter.mjs");
+  assert.equal(
+    evidence.auditReferences[0].details.adapterEntryPoint,
+    "adapters/conformance.mjs",
+  );
 });
 
 test("retained issue 120 evidence proves idempotency and truthful incomplete failure", () => {
@@ -186,6 +189,8 @@ test("retained issue 120 evidence proves idempotency and truthful incomplete fai
     lookupReturnedCanonicalRun: true,
     differentKeyFoundCode: "harness_run_found",
     differentKeyReturnedCanonicalRun: true,
+    postExpiryFoundCode: "harness_run_found",
+    postExpiryReturnedCanonicalRun: true,
   });
   assert.deepEqual(success.unapproved, {
     code: "launch_request_unapproved",
@@ -230,6 +235,7 @@ test("retained issue 120 evidence proves idempotency and truthful incomplete fai
     rejected: "launch_request_terminal",
     expired: "launch_request_expired",
     expiredCanonicalStatus: "expired",
+    staleBoundary: "pinned_compatibility_manifest",
     stale: "launch_request_stale",
     staleCanonicalStatus: "expired",
     restoredStaleRetry: "launch_request_terminal",

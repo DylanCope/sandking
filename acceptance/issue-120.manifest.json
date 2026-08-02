@@ -26,7 +26,7 @@
       "actions": [
         "prepare and approve one immutable Launch request in its owning focused Controller conversation",
         "start it with an idempotency key and exact expected revision and return while the canonical run is starting",
-        "replay and look up the same start outcome and reject changed key content without creating duplicate work",
+        "replay and look up the same start outcome, find the consumed request's canonical run after approval expiry, and reject changed key content without creating duplicate work",
         "resolve and validate the adapter protocol and entry point from the pinned Harness compatibility envelope before crossing that exact committed boundary",
         "retain readiness plus one Harness-defined progress record and reject duplicate identities or references to unpublished parents",
         "capture stdout and stderr only as independently ranged diagnostic streams",
@@ -39,7 +39,7 @@
       "canonicalStateInvariants": [
         "one approved Launch request links to at most one canonical Harness-run identity",
         "start returns from durable run creation without waiting for terminal completion",
-        "identical start replay and lookup return the original run and audit while changed key content conflicts",
+        "identical start replay and lookup return the original run and audit, a consumed approval still resolves to its canonical run after its unused-approval deadline, and changed key content conflicts",
         "the execution snapshot retains Host, Project, Harness identity and pin, Launch request, Controller owner, adapter identity, protocol, and declared entry point",
         "adapter readiness and Harness-defined progress remain ordered generic lifecycle records with unique identities and valid published parents",
         "stdout and stderr are never parsed as adapter protocol, progress, authorization, or success",

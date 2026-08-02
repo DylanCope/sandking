@@ -100,12 +100,14 @@ test("an approved Launch request starts one asynchronous canonical conformance H
       expectedRevision: 0,
       expiresInSeconds: 300,
     });
+    let harnessManagerNow = new Date();
     const manager = await createHarnessRunManager({
       dataDir,
       hostId,
       recordAudit,
       launchRequests,
       loadLaunchContext: registry.loadLaunchContext,
+      now: () => new Date(harnessManagerNow),
     });
     const unapprovedRequest = {
       requestId: "start-unapproved-run",
@@ -152,7 +154,7 @@ test("an approved Launch request starts one asynchronous canonical conformance H
     assert.equal(started.idempotentReplay, false);
     assert.equal(started.run.status, "starting");
     assert.equal(started.run.completedAt, null);
-    assert.equal(started.run.adapterEntryPoint, "adapter.mjs");
+    assert.equal(started.run.adapterEntryPoint, "adapters/conformance.mjs");
     assert.match(started.run.harnessRunId, /^harness-run-[a-f0-9]{24}$/);
 
     const replay = await manager.start({
@@ -194,6 +196,18 @@ test("an approved Launch request starts one asynchronous canonical conformance H
     });
     assert.equal(found.code, "harness_run_found");
     assert.equal(found.run.harnessRunId, started.run.harnessRunId);
+    harnessManagerNow = new Date(Date.parse(prepared.launchRequest.expiresAt) + 1);
+    const foundAfterApprovalExpiry = await manager.start({
+      requestId: "find-started-run-after-approval-expiry",
+      launchRequestId: prepared.launchRequest.launchRequestId,
+      controllerId,
+      controllerSessionId,
+      authorizationClass: "approved_launch_request_execution",
+      idempotencyKey: "find-started-run-after-approval-expiry",
+      expectedRevision: approved.revision,
+    });
+    assert.equal(foundAfterApprovalExpiry.code, "harness_run_found");
+    assert.equal(foundAfterApprovalExpiry.run.harnessRunId, started.run.harnessRunId);
 
     const observation = await waitForTerminal(manager, started.run.harnessRunId);
     assert.equal(observation.type, "harness.run.observe.result");
@@ -271,6 +285,9 @@ test("an approved Launch request starts one asynchronous canonical conformance H
             differentKeyFoundCode: found.code,
             differentKeyReturnedCanonicalRun:
               found.run.harnessRunId === started.run.harnessRunId,
+            postExpiryFoundCode: foundAfterApprovalExpiry.code,
+            postExpiryReturnedCanonicalRun:
+              foundAfterApprovalExpiry.run.harnessRunId === started.run.harnessRunId,
           },
           unapproved: {
             code: unapproved.code,
@@ -482,9 +499,9 @@ test("process exit and success-looking diagnostics cannot replace one valid term
 
     const staleLaunch = await prepareAndDecide(123);
     const context = await registry.loadLaunchContext(registered.project.projectId);
-    const staleAdapterPath = join(context.harnessWorkspacePath, "adapter.mjs");
-    const approvedAdapterSource = await readFile(staleAdapterPath, "utf8");
-    await writeFile(staleAdapterPath, "// changed after approval\n", {
+    const staleManifestPath = join(context.harnessWorkspacePath, "harness.json");
+    const approvedManifestSource = await readFile(staleManifestPath, "utf8");
+    await writeFile(staleManifestPath, " \n", {
       flag: "a",
     });
     const stale = await manager.start({
@@ -504,7 +521,7 @@ test("process exit and success-looking diagnostics cannot replace one valid term
     assert.equal(terminalizedStaleLaunch.status, "expired");
     assert.equal(terminalizedStaleLaunch.revision, staleLaunch.decided.revision + 1);
 
-    await writeFile(staleAdapterPath, approvedAdapterSource);
+    await writeFile(staleManifestPath, approvedManifestSource);
     const restoredRetry = await manager.start({
       requestId: "retry-restored-stale-run",
       launchRequestId: staleLaunch.prepared.launchRequest.launchRequestId,
@@ -539,6 +556,7 @@ test("process exit and success-looking diagnostics cannot replace one valid term
             rejected: rejected.code,
             expired: expired.code,
             expiredCanonicalStatus: terminalizedExpiredLaunch.status,
+            staleBoundary: "pinned_compatibility_manifest",
             stale: stale.code,
             staleCanonicalStatus: terminalizedStaleLaunch.status,
             restoredStaleRetry: restoredRetry.code,
