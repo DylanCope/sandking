@@ -268,6 +268,91 @@ test("retained issue 122 evidence scopes Host loss and preserves canonical ident
   ]);
 });
 
+test("retained issue 122 evidence preserves an accepted Project across composite Host loss", () => {
+  const retained = evidence.contractEvidence.acceptedProjectHostLoss;
+  assert.equal(retained.kind, "accepted_project_host_loss_contract");
+  assert.deepEqual({
+    command: retained.packagedPublicSeam.command,
+    installed: retained.packagedPublicSeam.installed,
+    launchedOutsideCheckout: retained.packagedPublicSeam.launchedOutsideCheckout,
+  }, { command: "sandking", installed: true, launchedOutsideCheckout: true });
+  assert.equal(retained.typedFailure.status, 503);
+  assert.equal(retained.typedFailure.body.code, "host_disconnected");
+  assert.equal(retained.typedFailure.body.project.projectId,
+    retained.acceptedProject.projectId);
+  assert.equal(retained.typedFailure.body.project.revision,
+    retained.acceptedProject.revision);
+  assert.equal(retained.typedFailure.body.project.canPrepareLaunchRequest, false);
+  assert.deepEqual(retained.typedFailure.body.project.readiness,
+    retained.acceptedProject.readiness);
+  assert.equal(retained.typedFailure.body.mutations.projectRegistration.code,
+    "project_registered");
+  assert.equal(retained.typedFailure.body.mutations.projectRegistration.auditId,
+    retained.acceptedProject.registrationAuditId);
+  assert.deepEqual(retained.typedFailure.body.prohibitedSideEffects, {
+    projectRegistrationCreated: true,
+    harnessRegistrationCreated: false,
+    harnessPinChanged: false,
+    launchRequestPrepared: false,
+    approvalRecorded: false,
+    harnessRunStarted: false,
+    projectFileWrite: false,
+    privilegedMutation: false,
+  });
+  assert.deepEqual(retained.cockpit, {
+    retainedProjectVisible: true,
+    launchRequestReady: false,
+    hostFreshness: "stale",
+    planningHostImpact: "unaffected",
+  });
+  assert.deepEqual(retained.canonicalState, {
+    projectCount: 1,
+    projectId: retained.acceptedProject.projectId,
+    registrationAuditRetained: true,
+  });
+  assert.equal(retained.audit.registration.auditId,
+    retained.acceptedProject.registrationAuditId);
+  assert.equal(retained.audit.registration.action, "project.register");
+  assert.equal(retained.audit.registration.outcome, "accepted");
+  assert.equal(retained.audit.failure.auditId, retained.typedFailure.body.auditId);
+  assert.equal(retained.audit.failure.details.projectId,
+    retained.acceptedProject.projectId);
+  assert.equal(retained.audit.failure.details.projectRegistrationAuditId,
+    retained.acceptedProject.registrationAuditId);
+  assert.equal(retained.audit.failure.details.projectRegistrationCreated, true);
+});
+
+test("retained issue 122 evidence keeps negotiated Host framing failure Host-scoped", () => {
+  const retained = evidence.contractEvidence.postNegotiationHostProtocol;
+  assert.equal(retained.kind, "post_negotiation_host_protocol_contract");
+  assert.equal(retained.negotiatedHostObserved, true);
+  assert.equal(retained.typedConnectionFailure.type, "runtime.connection-state");
+  assert.equal(retained.typedConnectionFailure.boundary, "host");
+  assert.equal(retained.typedConnectionFailure.failure.code, "host_protocol_invalid");
+  assert.deepEqual(retained.typedConnectionFailure.affectedViews, [
+    "project-preparation",
+    "harness-run-observation",
+  ]);
+  assert.deepEqual(retained.typedConnectionFailure.unaffectedViews, [
+    "planning-spine",
+    "controller-sessions",
+  ]);
+  assert.equal(retained.browserProtocolFailureMisattributed, false);
+  assert.equal(retained.browserSocketRetained, true);
+  assert.deepEqual(retained.cockpit, {
+    projectFreshness: "stale",
+    planningHostImpact: "unaffected",
+    planningVisible: true,
+    controllerSessionOpened: true,
+    planningMutationSucceeded: true,
+  });
+  assert.equal(retained.audit.auditId,
+    retained.typedConnectionFailure.failure.auditId);
+  assert.equal(retained.audit.action, "host.connection");
+  assert.equal(retained.audit.outcome, "observed");
+  assert.equal(retained.audit.details.code, "host_protocol_invalid");
+});
+
 test("retained issue 122 evidence covers protocol and mutation failures", () => {
   assert.deepEqual(
     evidence.contractEvidence.protocolFailures.map(({ diagnosis }) => diagnosis.code),
