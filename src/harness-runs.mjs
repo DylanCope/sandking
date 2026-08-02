@@ -1,12 +1,13 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { z } from "zod";
 import {
   HarnessAdapterProtocolError,
+  harnessAdapterEntryPointSchema,
   harnessTerminalEnvelopeSchema,
+  loadPinnedHarnessAdapter,
   readHarnessAdapterFrame,
 } from "./harness-adapter-protocol.mjs";
 import { prepareConformanceHarnessLaunch } from "./launch-requests.mjs";
@@ -16,8 +17,6 @@ import {
   readJson,
   writePrivateJson,
 } from "./private-state.mjs";
-
-const execFileAsync = promisify(execFile);
 
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const auditIdSchema = z.string().regex(/^audit-[a-f0-9]{24}$/);
@@ -89,6 +88,7 @@ const terminalEnvelopeValidationSchema = z.object({
   adapterReadyObserved: z.boolean(),
   validTerminalEnvelopeCount: z.number().int().nonnegative(),
   exactlyOne: z.boolean(),
+  adapterChannelClosedObserved: z.boolean(),
   processExitObserved: z.boolean(),
 }).strict();
 
@@ -113,6 +113,7 @@ export const harnessRunSchema = z.object({
   harnessPinnedRevision: commitSchema,
   adapterId: z.literal("conformance-harness-adapter-v1"),
   adapterProtocol: z.literal("1.0.0"),
+  adapterEntryPoint: harnessAdapterEntryPointSchema,
   controllerId: controllerIdSchema,
   controllerSessionId: controllerSessionIdSchema,
   createdAt: z.string().datetime(),
@@ -162,6 +163,7 @@ const publicRun = (run) => harnessRunSchema.parse({
   harnessPinnedRevision: run.harnessPinnedRevision,
   adapterId: run.adapterId,
   adapterProtocol: run.adapterProtocol,
+  adapterEntryPoint: run.adapterEntryPoint,
   controllerId: run.controllerId,
   controllerSessionId: run.controllerSessionId,
   createdAt: run.createdAt,
@@ -193,23 +195,16 @@ const appendEvent = (run, type, details = {}) => {
  * @param {{onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>}} observer
  */
 const superviseConformanceHarness = async (run, context, observer) => {
-  const adapterPath = join(context.harnessWorkspacePath, "run.mjs");
-  const [{ stdout: pinnedAdapterSource }, workspaceAdapterSource, { stdout: observedHead }] =
-    await Promise.all([
-      execFileAsync("git", [
-        "-C", context.harnessWorkspacePath,
-        "show", `${run.harnessPinnedRevision}:run.mjs`,
-      ], { env: { LANG: "C.UTF-8" }, timeout: 3_000, maxBuffer: 32_768 }),
-      readFile(adapterPath, "utf8"),
-      execFileAsync("git", ["-C", context.harnessWorkspacePath, "rev-parse", "HEAD"], {
-        env: { LANG: "C.UTF-8" }, timeout: 3_000, maxBuffer: 32_768,
-      }),
-    ]);
+  const pinnedAdapter = await loadPinnedHarnessAdapter({
+    workspacePath: context.harnessWorkspacePath,
+    pinnedRevision: run.harnessPinnedRevision,
+  });
   if (
-    workspaceAdapterSource !== pinnedAdapterSource
-    || observedHead.trim() !== run.harnessPinnedRevision
+    pinnedAdapter.compatibility.adapterId !== run.adapterId
+    || pinnedAdapter.compatibility.adapterProtocol !== run.adapterProtocol
+    || pinnedAdapter.compatibility.entryPoint !== run.adapterEntryPoint
   ) {
-    throw new Error("harness_workspace_invalid");
+    throw new Error("harness_adapter_protocol_invalid");
   }
   const encodedExecution = Buffer.from(JSON.stringify({
     harnessRunId: run.harnessRunId,
@@ -220,8 +215,8 @@ const superviseConformanceHarness = async (run, context, observer) => {
   // window in which different adapter bytes could otherwise be launched.
   const child = spawn(process.execPath, [
     "--input-type=module",
-    "--eval", pinnedAdapterSource,
-    "pinned-harness-adapter",
+    "--eval", pinnedAdapter.pinnedEntryPointSource,
+    pinnedAdapter.compatibility.entryPoint,
     "run",
     encodedExecution,
   ], {
@@ -244,6 +239,8 @@ const superviseConformanceHarness = async (run, context, observer) => {
 
   let adapterReadyObserved = false;
   let protocolInvalid = false;
+  let adapterChannelClosedObserved = false;
+  const publishedProgressRecordIds = new Set();
   /** @type {Array<z.infer<typeof harnessTerminalEnvelopeSchema>>} */
   const terminalEnvelopes = [];
   const consumeFrames = async () => {
@@ -256,6 +253,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
           error instanceof HarnessAdapterProtocolError
           && error.code === "harness_adapter_channel_closed"
         ) {
+          adapterChannelClosedObserved = true;
           return;
         }
         protocolInvalid = true;
@@ -286,10 +284,17 @@ const superviseConformanceHarness = async (run, context, observer) => {
         continue;
       }
       if (message.type === "harness.run.progress") {
-        if (!adapterReadyObserved || terminalEnvelopes.length > 0) {
+        if (
+          !adapterReadyObserved
+          || terminalEnvelopes.length > 0
+          || publishedProgressRecordIds.has(message.record.recordId)
+          || (message.record.parentRecordId !== null
+            && !publishedProgressRecordIds.has(message.record.parentRecordId))
+        ) {
           protocolInvalid = true;
           continue;
         }
+        publishedProgressRecordIds.add(message.record.recordId);
         await observer.onProgress(message.record);
         continue;
       }
@@ -313,6 +318,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
     adapterReadyObserved,
     protocolInvalid,
     terminalEnvelopes,
+    adapterChannelClosedObserved,
     exit: exitResult,
   };
 };
@@ -322,16 +328,14 @@ const superviseConformanceHarness = async (run, context, observer) => {
  *   dataDir: string,
  *   hostId: string,
  *   recordAudit: (action: string, outcome: "accepted" | "rejected" | "observed", details?: Record<string, unknown>) => Promise<string>,
- *   launchRequests: {get: (launchRequestId: string) => Promise<any>, claimExecution: (request: any) => Promise<any>, completeExecution: (request: any) => Promise<any>},
+ *   launchRequests: {get: (launchRequestId: string) => Promise<any>, expireExecutionAuthorization: (request: any) => Promise<any>, claimExecution: (request: any) => Promise<any>, completeExecution: (request: any) => Promise<any>},
  *   loadLaunchContext: (projectId: string) => Promise<any>,
- *   superviseHarness?: typeof superviseConformanceHarness,
  *   now?: () => Date,
  * }} options
  */
 export const createHarnessRunManager = async (options) => {
   const parsedHostId = hostIdSchema.parse(options.hostId);
   const now = options.now ?? (() => new Date());
-  const superviseHarness = options.superviseHarness ?? superviseConformanceHarness;
   let mutationQueue = Promise.resolve();
   /** @template T @param {() => Promise<T>} operation */
   const withMutationLock = (operation) => {
@@ -382,7 +386,7 @@ export const createHarnessRunManager = async (options) => {
   const supervise = async (initialRun, context) => {
     let supervision;
     try {
-      supervision = await superviseHarness(initialRun, context, {
+      supervision = await superviseConformanceHarness(initialRun, context, {
         onReady: async (readyAt) => {
           await updateRun(initialRun.harnessRunId, (run) => {
             if (run.status !== "starting") {
@@ -408,6 +412,7 @@ export const createHarnessRunManager = async (options) => {
         adapterReadyObserved: false,
         protocolInvalid: false,
         terminalEnvelopes: [],
+        adapterChannelClosedObserved: false,
         exit: { code: null, signal: null, startFailed: true },
       };
     }
@@ -437,6 +442,7 @@ export const createHarnessRunManager = async (options) => {
         adapterReadyObserved: supervision.adapterReadyObserved,
         validTerminalEnvelopeCount: supervision.terminalEnvelopes.length,
         exactlyOne: Boolean(validTerminal),
+        adapterChannelClosedObserved: supervision.adapterChannelClosedObserved,
         processExitObserved: !supervision.exit.startFailed,
       };
       run.outcome = harnessRunOutcomeSchema.parse({
@@ -478,6 +484,7 @@ export const createHarnessRunManager = async (options) => {
       incompleteResult: !validTerminal,
       adapterReadyObserved: supervision.adapterReadyObserved,
       validTerminalEnvelopeCount: supervision.terminalEnvelopes.length,
+      adapterChannelClosedObserved: supervision.adapterChannelClosedObserved,
       processExitObserved: !supervision.exit.startFailed,
       stdoutRange: finalized.logStreams[0].availableEnd,
       stderrRange: finalized.logStreams[1].availableEnd,
@@ -545,7 +552,7 @@ export const createHarnessRunManager = async (options) => {
       };
     }
 
-    const launchRequest = launchRequestIdSchema.safeParse(request.launchRequestId).success
+    let launchRequest = launchRequestIdSchema.safeParse(request.launchRequestId).success
       ? await options.launchRequests.get(request.launchRequestId)
       : null;
     let code = null;
@@ -605,6 +612,16 @@ export const createHarnessRunManager = async (options) => {
       code = "mutation_revision_conflict";
     }
 
+    if (code === "launch_request_expired" && launchRequest) {
+      const observedAt = now().toISOString();
+      launchRequest = await options.launchRequests.expireExecutionAuthorization({
+        launchRequestId: launchRequest.launchRequestId,
+        expectedRevision: launchRequest.revision,
+        reason: "launch_request_expired",
+        observedAt,
+      });
+    }
+
     let context;
     if (!code && launchRequest) {
       try {
@@ -616,6 +633,8 @@ export const createHarnessRunManager = async (options) => {
           || context.harness.harnessId !== launchRequest.harness.harnessId
           || context.harness.immutableRevision !== launchRequest.harness.pinnedRevision
           || prepared.adapterId !== launchRequest.harness.adapterId
+          || prepared.adapterProtocol !== launchRequest.harness.adapterProtocol
+          || prepared.adapterEntryPoint !== launchRequest.harness.adapterEntryPoint
           || JSON.stringify(prepared.suppliedCapabilities)
             !== JSON.stringify(launchRequest.suppliedCapabilities)
           || prepared.sanitizedPreview.summary !== launchRequest.preview.summary
@@ -624,6 +643,15 @@ export const createHarnessRunManager = async (options) => {
         }
       } catch {
         code = "launch_request_stale";
+      }
+      if (code === "launch_request_stale") {
+        const observedAt = now().toISOString();
+        launchRequest = await options.launchRequests.expireExecutionAuthorization({
+          launchRequestId: launchRequest.launchRequestId,
+          expectedRevision: launchRequest.revision,
+          reason: "launch_request_stale",
+          observedAt,
+        });
       }
     }
 
@@ -685,7 +713,8 @@ export const createHarnessRunManager = async (options) => {
       controllerId: request.controllerId,
       controllerSessionId: request.controllerSessionId,
       adapterId: launchRequest.harness.adapterId,
-      adapterProtocol: "1.0.0",
+      adapterProtocol: launchRequest.harness.adapterProtocol,
+      adapterEntryPoint: launchRequest.harness.adapterEntryPoint,
       returnedBeforeTerminal: true,
       projectWrite: false,
     });
@@ -700,7 +729,8 @@ export const createHarnessRunManager = async (options) => {
       harnessId: launchRequest.harness.harnessId,
       harnessPinnedRevision: launchRequest.harness.pinnedRevision,
       adapterId: launchRequest.harness.adapterId,
-      adapterProtocol: "1.0.0",
+      adapterProtocol: launchRequest.harness.adapterProtocol,
+      adapterEntryPoint: launchRequest.harness.adapterEntryPoint,
       controllerId: request.controllerId,
       controllerSessionId: request.controllerSessionId,
       createdAt,
@@ -713,6 +743,7 @@ export const createHarnessRunManager = async (options) => {
         adapterReadyObserved: false,
         validTerminalEnvelopeCount: 0,
         exactlyOne: false,
+        adapterChannelClosedObserved: false,
         processExitObserved: false,
       },
       logStreams: [

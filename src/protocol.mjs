@@ -537,6 +537,7 @@ const terminalEnvelopeValidationSchema = z.object({
   adapterReadyObserved: z.boolean(),
   validTerminalEnvelopeCount: z.number().int().nonnegative(),
   exactlyOne: z.boolean(),
+  adapterChannelClosedObserved: z.boolean(),
   processExitObserved: z.boolean(),
 }).strict();
 const harnessRunObserveResultSchema = z.object({

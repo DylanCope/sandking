@@ -1,11 +1,30 @@
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { z } from "zod";
 
+const execFileAsync = promisify(execFile);
 const FRAME_HEADER_BYTES = 4;
 export const MAX_HARNESS_ADAPTER_FRAME_BYTES = 32_768;
 
 const harnessRunIdSchema = z.string().regex(/^harness-run-[a-f0-9]{24}$/);
 const adapterProtocolSchema = z.literal("1.0.0");
 const adapterIdSchema = z.literal("conformance-harness-adapter-v1");
+export const harnessAdapterEntryPointSchema = z.string().min(1).max(256)
+  .regex(/^[a-zA-Z0-9._/-]+\.mjs$/)
+  .refine((value) =>
+    !value.startsWith("/")
+    && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."));
+export const harnessCompatibilityManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  name: z.string().min(1).max(120),
+  compatibility: z.object({
+    adapterId: adapterIdSchema,
+    adapterProtocol: adapterProtocolSchema,
+    entryPoint: harnessAdapterEntryPointSchema,
+  }).strict(),
+}).strict();
 const capabilitySchema = z.enum([
   "harness.launch.prepare.v1",
   "harness.run.v1",
@@ -94,6 +113,73 @@ export class HarnessAdapterProtocolError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * Resolve the adapter only from the pinned Harness revision's declared
+ * compatibility envelope, while requiring the checked-out workspace to still
+ * contain those exact committed bytes.
+ * @param {{workspacePath: string, pinnedRevision: string}} options
+ */
+export const loadPinnedHarnessAdapter = async ({ workspacePath, pinnedRevision }) => {
+  const environment = { LANG: "C.UTF-8" };
+  let pinnedManifestSource;
+  let workspaceManifestSource;
+  let observedHead;
+  try {
+    [{ stdout: pinnedManifestSource }, workspaceManifestSource, { stdout: observedHead }] =
+      await Promise.all([
+        execFileAsync("git", [
+          "-C", workspacePath,
+          "show", `${pinnedRevision}:harness.json`,
+        ], { env: environment, timeout: 3_000, maxBuffer: 32_768 }),
+        readFile(join(workspacePath, "harness.json"), "utf8"),
+        execFileAsync("git", ["-C", workspacePath, "rev-parse", "HEAD"], {
+          env: environment,
+          timeout: 3_000,
+          maxBuffer: 32_768,
+        }),
+      ]);
+  } catch {
+    throw new Error("harness_workspace_invalid");
+  }
+  if (
+    workspaceManifestSource !== pinnedManifestSource
+    || observedHead.trim() !== pinnedRevision
+  ) {
+    throw new Error("harness_workspace_invalid");
+  }
+
+  let manifest;
+  try {
+    manifest = harnessCompatibilityManifestSchema.parse(JSON.parse(pinnedManifestSource));
+  } catch {
+    throw new Error("harness_adapter_protocol_invalid");
+  }
+  const entryPointPath = join(workspacePath, ...manifest.compatibility.entryPoint.split("/"));
+  let pinnedEntryPointSource;
+  try {
+    ({ stdout: pinnedEntryPointSource } = await execFileAsync("git", [
+      "-C", workspacePath,
+      "show", `${pinnedRevision}:${manifest.compatibility.entryPoint}`,
+    ], { env: environment, timeout: 3_000, maxBuffer: 256_000 }));
+  } catch {
+    throw new Error("harness_adapter_protocol_invalid");
+  }
+  let workspaceEntryPointSource;
+  try {
+    workspaceEntryPointSource = await readFile(entryPointPath, "utf8");
+  } catch {
+    throw new Error("harness_workspace_invalid");
+  }
+  if (workspaceEntryPointSource !== pinnedEntryPointSource) {
+    throw new Error("harness_workspace_invalid");
+  }
+  return {
+    compatibility: manifest.compatibility,
+    entryPointPath,
+    pinnedEntryPointSource,
+  };
+};
 
 /** @type {WeakMap<import("node:stream").Readable, {buffer: Buffer, iterator: AsyncIterator<unknown>}>} */
 const readerStates = new WeakMap();

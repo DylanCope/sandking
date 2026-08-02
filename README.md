@@ -124,10 +124,13 @@ After approval, `start <request-id> <revision>` sends a separate typed,
 revisioned, idempotent Harness-run mutation through the provider, Controller
 runtime, and framed Host protocol. The Host durably creates or finds one
 canonical run and returns while supervision continues. It invokes the exact
-pinned conformance Harness adapter on a dedicated framed channel; adapter
-readiness, Harness-defined progress, and exactly one terminal envelope are
-canonical control records, while stdout and stderr remain independently ranged
-diagnostic streams. Process exit or log text never implies success. The Cockpit
+pinned conformance Harness adapter entry point declared with its protocol in the
+committed compatibility envelope. The dedicated framed channel carries adapter
+readiness, bounded progress with unique identities and valid published parents,
+and exactly one terminal envelope; stdout and stderr remain independently ranged
+diagnostic streams. Observed expiry or material drift permanently invalidates
+the original approval. Adapter-channel closure, process exit, or log text never
+implies success. The Cockpit
 observes ordered lifecycle events, explicitly fetches each log range over the
 opaque bulk channel, and renders the structured outcome. Closing or refreshing
 the browser neither cancels the run nor terminates its focused Controller

@@ -474,8 +474,11 @@ const renderHarnessRun = (observation) => {
       "data-process-exit-observed": String(
         observation.terminalEnvelopeValidation?.processExitObserved ?? false,
       ),
+      "data-adapter-channel-closed-observed": String(
+        observation.terminalEnvelopeValidation?.adapterChannelClosedObserved ?? false,
+      ),
     }, observation.terminalEnvelopeValidation
-      ? `Terminal envelopes: ${observation.terminalEnvelopeValidation.validTerminalEnvelopeCount}; process exit observed: ${observation.terminalEnvelopeValidation.processExitObserved}.`
+      ? `Terminal envelopes: ${observation.terminalEnvelopeValidation.validTerminalEnvelopeCount}; adapter channel closed: ${observation.terminalEnvelopeValidation.adapterChannelClosedObserved}; process exit observed: ${observation.terminalEnvelopeValidation.processExitObserved}.`
       : "Terminal envelope validation pending."),
   );
   return section;

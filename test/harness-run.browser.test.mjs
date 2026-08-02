@@ -151,6 +151,8 @@ test("local-walking-skeleton/completes-approved-run crosses the public Cockpit a
         .getAttribute("data-exactly-one-terminal"), "true");
       assert.equal(await page.locator("#harness-terminal-validation")
         .getAttribute("data-process-exit-observed"), "true");
+      assert.equal(await page.locator("#harness-terminal-validation")
+        .getAttribute("data-adapter-channel-closed-observed"), "true");
       assert.equal(await page.locator("#harness-run-structured-outcome")
         .getAttribute("data-outcome-status"), "succeeded");
       assert.equal(await page.locator("#harness-run-diagnostics")

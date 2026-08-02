@@ -186,9 +186,18 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
     assert.equal(harnessState.harnesses[0].harnessId, harnessRegistration.harness.harnessId);
     assert.notEqual(harnessState.harnesses[0].workspacePath, projectPath);
     assert.match(relative(dataDir, harnessState.harnesses[0].workspacePath), /^\.\./);
+    const compatibilityManifest = JSON.parse(await readFile(
+      join(harnessState.harnesses[0].workspacePath, "harness.json"),
+      "utf8",
+    ));
+    assert.deepEqual(compatibilityManifest.compatibility, {
+      adapterId: "conformance-harness-adapter-v1",
+      adapterProtocol: "1.0.0",
+      entryPoint: "adapter.mjs",
+    });
     assert.deepEqual(
       (await readdir(harnessState.harnesses[0].workspacePath)).sort(),
-      [".git", "harness.json", "run.mjs"],
+      [".git", "adapter.mjs", "harness.json"],
     );
     assert.equal(
       (await execFileAsync("git", [

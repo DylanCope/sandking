@@ -251,11 +251,11 @@ test("the framed Host durably prepares and decides one immutable Launch request"
     const harnessState = JSON.parse(
       await readFile(join(dataDir, "harness-registry.json"), "utf8"),
     );
-    const adapterPath = join(harnessState.harnesses[0].workspacePath, "run.mjs");
+    const adapterPath = join(harnessState.harnesses[0].workspacePath, "adapter.mjs");
     const adapterSource = await readFile(adapterPath, "utf8");
     await execFileAsync("git", [
       "-C", harnessState.harnesses[0].workspacePath,
-      "update-index", "--assume-unchanged", "--", "run.mjs",
+      "update-index", "--assume-unchanged", "--", "adapter.mjs",
     ]);
     await writeFile(adapterPath, `${adapterSource}\n// hidden material workspace drift\n`);
     assert.equal((await execFileAsync("git", [

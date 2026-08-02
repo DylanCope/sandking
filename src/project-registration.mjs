@@ -439,11 +439,14 @@ const initializeConformanceWorkspace = async (workspacePath) => {
     await writeFile(join(workspacePath, "harness.json"), `${JSON.stringify({
       schemaVersion: 1,
       name: "Sand-King Conformance Harness",
-      adapter: "conformance-harness-adapter-v1",
-      adapterProtocol: "1.0.0",
+      compatibility: {
+        adapterId: "conformance-harness-adapter-v1",
+        adapterProtocol: "1.0.0",
+        entryPoint: "adapter.mjs",
+      },
     }, null, 2)}\n`, { mode: 0o600 });
     await writeFile(
-      join(workspacePath, "run.mjs"),
+      join(workspacePath, "adapter.mjs"),
       `import { writeSync } from "node:fs";
 
 const adapterProtocol = "1.0.0";
@@ -527,46 +530,55 @@ if (command === "probe") {
     capabilities: ["harness.run.v1"],
     readyAt: now(),
   });
-  await new Promise((resolve) => setTimeout(resolve, 40));
-  writeFrame({
-    type: "harness.run.progress",
-    adapterProtocol,
-    adapterId,
-    harnessRunId: execution.harnessRunId,
-    record: {
-      recordId: \`progress-\${"1".repeat(24)}\`,
-      schemaVersion: "1.0.0",
-      type: "conformance.step",
-      parentRecordId: null,
-      label: "Exercise approved conformance Launch",
-      summary: "The deterministic conformance workflow crossed its pinned adapter boundary.",
-      status: "complete",
-      timestamp: now(),
-      payload: { issueNumber: execution.parameters.issueNumber },
-    },
-  });
-  await new Promise((resolve) => setTimeout(resolve, 140));
-  writeFrame({
-    type: "harness.run.terminal",
-    adapterProtocol,
-    adapterId,
-    harnessRunId: execution.harnessRunId,
-    terminalId: \`harness-terminal-\${"2".repeat(24)}\`,
-    status: "succeeded",
-    completedAt: now(),
-    result: {
-      kind: "conformance-result",
-      issueNumber: execution.parameters.issueNumber,
-      targetBranch: execution.parameters.targetBranch,
-    },
-  });
+  if (execution.parameters.issueNumber === 999999999) {
+    process.stdout.write("SUCCESS: process exited cleanly without a terminal envelope.\\n");
+  } else {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    writeFrame({
+      type: "harness.run.progress",
+      adapterProtocol,
+      adapterId,
+      harnessRunId: execution.harnessRunId,
+      record: {
+        recordId: \`progress-\${"1".repeat(24)}\`,
+        schemaVersion: "1.0.0",
+        type: "conformance.step",
+        parentRecordId: execution.parameters.issueNumber === 999999998
+          ? \`progress-\${"9".repeat(24)}\`
+          : null,
+        label: "Exercise approved conformance Launch",
+        summary: "The deterministic conformance workflow crossed its pinned adapter boundary.",
+        status: "complete",
+        timestamp: now(),
+        payload: { issueNumber: execution.parameters.issueNumber },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 140));
+    writeFrame({
+      type: "harness.run.terminal",
+      adapterProtocol,
+      adapterId,
+      harnessRunId: execution.harnessRunId,
+      terminalId: \`harness-terminal-\${"2".repeat(24)}\`,
+      status: "succeeded",
+      completedAt: now(),
+      result: {
+        kind: "conformance-result",
+        issueNumber: execution.parameters.issueNumber,
+        targetBranch: execution.parameters.targetBranch,
+      },
+    });
+  }
 } else {
   throw new Error("harness_adapter_command_invalid");
 }
 `,
       { mode: 0o700 },
     );
-    await execFileAsync("git", ["-C", workspacePath, "add", "--", "harness.json", "run.mjs"]);
+    await execFileAsync("git", [
+      "-C", workspacePath,
+      "add", "--", "harness.json", "adapter.mjs",
+    ]);
     await execFileAsync("git", [
       "-C", workspacePath,
       "-c", "user.name=Sand-King Conformance",

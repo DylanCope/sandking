@@ -152,6 +152,7 @@ test("an approved Launch request starts one asynchronous canonical conformance H
     assert.equal(started.idempotentReplay, false);
     assert.equal(started.run.status, "starting");
     assert.equal(started.run.completedAt, null);
+    assert.equal(started.run.adapterEntryPoint, "adapter.mjs");
     assert.match(started.run.harnessRunId, /^harness-run-[a-f0-9]{24}$/);
 
     const replay = await manager.start({
@@ -209,6 +210,7 @@ test("an approved Launch request starts one asynchronous canonical conformance H
       adapterReadyObserved: true,
       validTerminalEnvelopeCount: 1,
       exactlyOne: true,
+      adapterChannelClosedObserved: true,
       processExitObserved: true,
     });
     assert.deepEqual(observation.logStreams.map((stream) => stream.producer), [
@@ -369,27 +371,13 @@ test("process exit and success-looking diagnostics cannot replace one valid term
       return { prepared, decided };
     };
 
-    const incompleteLaunch = await prepareAndDecide(120);
+    const incompleteLaunch = await prepareAndDecide(999_999_999);
     const manager = await createHarnessRunManager({
       dataDir,
       hostId,
       recordAudit,
       launchRequests,
       loadLaunchContext: registry.loadLaunchContext,
-      superviseHarness: async (run, context, observer) => {
-        void context;
-        await observer.onReady(new Date().toISOString());
-        await observer.onDiagnostic(
-          "stdout",
-          Buffer.from("SUCCESS: process exited cleanly\n", "utf8"),
-        );
-        return {
-          adapterReadyObserved: true,
-          protocolInvalid: false,
-          terminalEnvelopes: [],
-          exit: { code: 0, signal: null, startFailed: false },
-        };
-      },
     });
     const started = await manager.start({
       requestId: "start-incomplete-run",
@@ -406,6 +394,10 @@ test("process exit and success-looking diagnostics cannot replace one valid term
     assert.equal(observation.outcome.incompleteResult, true);
     assert.equal(observation.terminalEnvelopeValidation.validTerminalEnvelopeCount, 0);
     assert.equal(observation.terminalEnvelopeValidation.exactlyOne, false);
+    assert.equal(
+      observation.terminalEnvelopeValidation.adapterChannelClosedObserved,
+      true,
+    );
     assert.equal(observation.terminalEnvelopeValidation.processExitObserved, true);
     assert.equal(observation.events.at(-1).type, "harness_run_failed");
     const misleadingLog = await manager.readLogs({
@@ -417,6 +409,38 @@ test("process exit and success-looking diagnostics cannot replace one valid term
     });
     assert.match(misleadingLog.data.toString("utf8"), /SUCCESS/);
     assert.equal(misleadingLog.response.insertedIntoControllerConversation, false);
+
+    const malformedProgressLaunch = await prepareAndDecide(999_999_998);
+    const realSupervisorManager = await createHarnessRunManager({
+      dataDir,
+      hostId,
+      recordAudit,
+      launchRequests,
+      loadLaunchContext: registry.loadLaunchContext,
+    });
+    const malformedProgressStart = await realSupervisorManager.start({
+      requestId: "start-malformed-progress-run",
+      launchRequestId: malformedProgressLaunch.prepared.launchRequest.launchRequestId,
+      controllerId,
+      controllerSessionId,
+      authorizationClass: "approved_launch_request_execution",
+      idempotencyKey: "start-malformed-progress-run",
+      expectedRevision: malformedProgressLaunch.decided.revision,
+    });
+    const malformedProgressObservation = await waitForTerminal(
+      realSupervisorManager,
+      malformedProgressStart.run.harnessRunId,
+    );
+    assert.equal(malformedProgressObservation.run.status, "failed");
+    assert.equal(
+      malformedProgressObservation.outcome.code,
+      "harness_adapter_protocol_invalid",
+    );
+    assert.equal(
+      malformedProgressObservation.events.some((event) =>
+        event.type === "harness_progress_published"),
+      false,
+    );
 
     const rejectedLaunch = await prepareAndDecide(121, "rejected");
     const rejected = await manager.start({
@@ -450,10 +474,17 @@ test("process exit and success-looking diagnostics cannot replace one valid term
       expectedRevision: expiredLaunch.decided.revision,
     });
     assert.equal(expired.code, "launch_request_expired");
+    const terminalizedExpiredLaunch = await launchRequests.get(
+      expiredLaunch.prepared.launchRequest.launchRequestId,
+    );
+    assert.equal(terminalizedExpiredLaunch.status, "expired");
+    assert.equal(terminalizedExpiredLaunch.revision, expiredLaunch.decided.revision + 1);
 
     const staleLaunch = await prepareAndDecide(123);
     const context = await registry.loadLaunchContext(registered.project.projectId);
-    await writeFile(join(context.harnessWorkspacePath, "run.mjs"), "// changed after approval\n", {
+    const staleAdapterPath = join(context.harnessWorkspacePath, "adapter.mjs");
+    const approvedAdapterSource = await readFile(staleAdapterPath, "utf8");
+    await writeFile(staleAdapterPath, "// changed after approval\n", {
       flag: "a",
     });
     const stale = await manager.start({
@@ -467,9 +498,27 @@ test("process exit and success-looking diagnostics cannot replace one valid term
     });
     assert.equal(stale.code, "launch_request_stale");
     assert.equal(stale.prohibitedSideEffects.harnessRunStarted, false);
+    const terminalizedStaleLaunch = await launchRequests.get(
+      staleLaunch.prepared.launchRequest.launchRequestId,
+    );
+    assert.equal(terminalizedStaleLaunch.status, "expired");
+    assert.equal(terminalizedStaleLaunch.revision, staleLaunch.decided.revision + 1);
+
+    await writeFile(staleAdapterPath, approvedAdapterSource);
+    const restoredRetry = await manager.start({
+      requestId: "retry-restored-stale-run",
+      launchRequestId: staleLaunch.prepared.launchRequest.launchRequestId,
+      controllerId,
+      controllerSessionId,
+      authorizationClass: "approved_launch_request_execution",
+      idempotencyKey: "retry-restored-stale-run",
+      expectedRevision: staleLaunch.decided.revision,
+    });
+    assert.equal(restoredRetry.code, "launch_request_terminal");
+    assert.equal(restoredRetry.prohibitedSideEffects.harnessRunStarted, false);
 
     const retained = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
-    assert.equal(retained.runs.length, 1);
+    assert.equal(retained.runs.length, 2);
     assert.equal(retained.runs[0].status, "failed");
     if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
       await writeFile(
@@ -489,7 +538,17 @@ test("process exit and success-looking diagnostics cannot replace one valid term
           prohibitedStarts: {
             rejected: rejected.code,
             expired: expired.code,
+            expiredCanonicalStatus: terminalizedExpiredLaunch.status,
             stale: stale.code,
+            staleCanonicalStatus: terminalizedStaleLaunch.status,
+            restoredStaleRetry: restoredRetry.code,
+          },
+          malformedProgress: {
+            harnessRunId: malformedProgressStart.run.harnessRunId,
+            status: malformedProgressObservation.run.status,
+            outcome: malformedProgressObservation.outcome,
+            malformedRecordPublished: malformedProgressObservation.events.some((event) =>
+              event.type === "harness_progress_published"),
           },
           canonicalRunCount: retained.runs.length,
           auditReferences: audits.filter((entry) => entry.action.startsWith("harness.run")),
