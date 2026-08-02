@@ -118,6 +118,8 @@ const expiredSessions = new Map();
 const sessionExpiryTimers = new Map();
 /** @type {Map<string, Set<WebSocket>>} */
 const sessionSockets = new Map();
+/** @type {Set<WebSocket>} */
+const negotiatedBrowserSockets = new Set();
 /** @type {Map<string, Promise<any>>} */
 const sessionMutationQueues = new Map();
 /** @type {Map<string, Promise<any>>} */
@@ -139,13 +141,33 @@ let controllerProviderProjection = [];
 let controllerSessions;
 /** @type {any} */
 let state;
+/** @type {any} */
+let currentHarnessRunObservation = {
+  type: "harness.run.observe.result",
+  requestId: "harness-observe-cached",
+  code: "harness_run_absent",
+  mode: "snapshot",
+  run: null,
+  events: [],
+  nextSequence: 0,
+  outcome: null,
+  logStreams: [],
+  terminalEnvelopeValidation: null,
+};
 let shuttingDown = false;
 let startupCommitted = false;
+/** @type {Promise<void> | null} */
+let hostDisconnectionPromise = null;
 let hostOperationQueue = Promise.resolve();
 let projectPreparationQueue = Promise.resolve();
 let projectSessionMutationQueue = Promise.resolve();
+let hostMutationFailureQueue = Promise.resolve();
 /** @type {Map<string, {fingerprint: string, status: number, response: any}>} */
 const projectSessionOutcomes = new Map();
+/** @type {Map<string, {fingerprint: string, status: number, response: any}>} */
+const hostMutationOutcomes = new Map();
+/** @type {Map<string, {fingerprint: string, response: any}>} */
+const focusedHostMutationOutcomes = new Map();
 
 const cockpitCsp = [
   "default-src 'self'",
@@ -179,6 +201,66 @@ const recordAudit = async (action, outcome, details = {}) => {
   return auditId;
 };
 
+const hostAffectedViews = Object.freeze([
+  "project-preparation",
+  "harness-run-observation",
+]);
+const hostUnaffectedViews = Object.freeze([
+  "planning-spine",
+  "controller-sessions",
+]);
+
+const hostConnectionStateMessage = () => ({
+  type: "runtime.connection-state",
+  boundary: "host",
+  hostId: state.host.hostId,
+  status: "disconnected",
+  freshness: "stale",
+  failure: state.host.failure,
+  affectedViews: [...hostAffectedViews],
+  unaffectedViews: [...hostUnaffectedViews],
+  retainedObservationCursor: state.host.observationCursor,
+});
+
+/** @param {"host_disconnected" | "host_protocol_invalid" | "host_observation_resynchronization_failed"} code */
+const markHostDisconnected = async (code) => {
+  if (!state) {
+    return null;
+  }
+  if (state.host.status !== "disconnected" && !hostDisconnectionPromise) {
+    hostDisconnectionPromise = (async () => {
+      const observedAt = new Date().toISOString();
+      const auditId = await recordAudit("host.connection", "observed", {
+        code,
+        hostId: state.host.hostId,
+        controllerId: state.runtimeId,
+        affectedViews: [...hostAffectedViews],
+        unaffectedViews: [...hostUnaffectedViews],
+        retainedObservationCursor: state.host.observationCursor,
+        retainedProjectId: currentProjectPreparation.current?.projectId ?? null,
+        retainedHarnessRunId: currentHarnessRunObservation.run?.harnessRunId ?? null,
+        registrationCreated: false,
+        approvalRecorded: false,
+        harnessRunStarted: false,
+        privilegedMutation: false,
+        inventedSuccess: false,
+      });
+      state.host.status = "disconnected";
+      state.host.freshness = "stale";
+      state.host.failure = { code, retryable: true, auditId, observedAt };
+      await writePrivateJson(statePath, state);
+      const message = hostConnectionStateMessage();
+      for (const socket of negotiatedBrowserSockets) {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(serializeRuntimeControl(message));
+        }
+      }
+    })();
+  }
+  await hostDisconnectionPromise;
+  return hostConnectionStateMessage();
+};
+
 /** @param {string | undefined} header */
 const parseCookies = (header) => {
   if (!header) {
@@ -210,6 +292,29 @@ const sendJson = (response, status, body) => {
 /** @param {string} key */
 const hashIdempotencyKey = (key) => `sha256:${createHash("sha256").update(key).digest("hex")}`;
 
+/** @param {unknown} value @returns {string} */
+const canonicalJson = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const record = /** @type {Record<string, unknown>} */ (value);
+    return `{${Object.keys(record).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+};
+
+/** @param {unknown} value */
+const mutationRequestFingerprint = (value) => hashIdempotencyKey(canonicalJson(value));
+
+/** @template T @param {() => Promise<T>} operation */
+const withHostMutationFailureLock = (operation) => {
+  const current = hostMutationFailureQueue.catch(() => undefined).then(operation);
+  hostMutationFailureQueue = current.then(() => undefined, () => undefined);
+  return current;
+};
+
 /** @param {string} code @param {string} authorizationClass @param {number} expectedRevision @param {number} actualRevision @param {string} auditId */
 const mutationFailure = (code, authorizationClass, expectedRevision, actualRevision, auditId) => ({
   type: "mutation_failure",
@@ -219,6 +324,244 @@ const mutationFailure = (code, authorizationClass, expectedRevision, actualRevis
   expectedRevision,
   actualRevision,
   auditId,
+});
+
+/**
+ * @param {string} action
+ * @param {string} authorizationClass
+ * @param {number} expectedRevision
+ * @param {string} idempotencyKeyHash
+ * @param {unknown} requestContent
+ * @param {number} actualRevision
+ * @param {Record<string, boolean>} prohibitedSideEffects
+ */
+const replayHostMutationOutcome = async (
+  action,
+  authorizationClass,
+  expectedRevision,
+  idempotencyKeyHash,
+  requestContent,
+  actualRevision,
+  prohibitedSideEffects,
+) => {
+  const fingerprint = mutationRequestFingerprint({
+    expectedRevision,
+    requestContent,
+  });
+  const outcomeKey = `${action}\0${idempotencyKeyHash}`;
+  const existing = hostMutationOutcomes.get(outcomeKey);
+  if (!existing) {
+    return null;
+  }
+  if (existing.fingerprint !== fingerprint) {
+    const auditId = await recordAudit(action, "rejected", {
+      code: "idempotency_key_conflict",
+      hostId: state.host.hostId,
+      authorizationClass,
+      idempotencyKeyHash,
+      expectedRevision,
+      actualRevision,
+      originalAuditId: existing.response.auditId,
+      projectId: existing.response.project?.projectId ?? null,
+      harnessId: existing.response.harness?.harnessId
+        ?? existing.response.project?.harness?.harnessId
+        ?? null,
+      ...prohibitedSideEffects,
+    });
+    return {
+      status: 409,
+      body: {
+        ...mutationFailure(
+          "idempotency_key_conflict",
+          authorizationClass,
+          expectedRevision,
+          actualRevision,
+          auditId,
+        ),
+        retryable: false,
+        idempotentReplay: false,
+        ...(state.host.status === "disconnected" ? {
+          hostId: state.host.hostId,
+          freshness: "stale",
+        } : {}),
+        prohibitedSideEffects,
+      },
+    };
+  }
+  await recordAudit(action, "observed", {
+    code: existing.response.code,
+    hostId: state.host.hostId,
+    authorizationClass,
+    idempotencyKeyHash,
+    expectedRevision,
+    actualRevision,
+    idempotentReplay: true,
+    originalAuditId: existing.response.auditId,
+    projectId: existing.response.project?.projectId ?? null,
+    harnessId: existing.response.harness?.harnessId
+      ?? existing.response.project?.harness?.harnessId
+      ?? null,
+    projectRegistrationAuditId:
+      existing.response.mutations?.projectRegistration?.auditId ?? null,
+    harnessRegistrationAuditId:
+      existing.response.mutations?.harnessRegistration?.auditId ?? null,
+    harnessPinAuditId: existing.response.mutations?.harnessPin?.auditId ?? null,
+    ...existing.response.prohibitedSideEffects,
+  });
+  return {
+    status: existing.status,
+    body: { ...structuredClone(existing.response), idempotentReplay: true },
+  };
+};
+
+/**
+ * @param {string} action
+ * @param {string} idempotencyKeyHash
+ * @param {number} expectedRevision
+ * @param {unknown} requestContent
+ * @param {{status: number, body: any}} outcome
+ */
+const retainHostMutationOutcome = (
+  action,
+  idempotencyKeyHash,
+  expectedRevision,
+  requestContent,
+  outcome,
+) => {
+  hostMutationOutcomes.set(`${action}\0${idempotencyKeyHash}`, {
+    fingerprint: mutationRequestFingerprint({ expectedRevision, requestContent }),
+    status: outcome.status,
+    response: structuredClone(outcome.body),
+  });
+};
+
+/**
+ * @param {"host_disconnected" | "host_protocol_invalid"} failureCode
+ * @param {string} action
+ * @param {string} authorizationClass
+ * @param {number} expectedRevision
+ * @param {string | null} idempotencyKeyHash
+ * @param {unknown} requestContent
+ * @param {{project?: any, harness?: any, mutations?: any, effects?: Record<string, boolean>} | null} [acceptedState]
+ */
+const hostMutationFailure = async (
+  failureCode,
+  action,
+  authorizationClass,
+  expectedRevision,
+  idempotencyKeyHash,
+  requestContent,
+  acceptedState = null,
+) => withHostMutationFailureLock(async () => {
+  const actualRevision = currentProjectPreparation.current?.revision ?? 0;
+  const prohibitedSideEffects = {
+    projectRegistrationCreated: acceptedState?.effects?.projectRegistrationCreated ?? false,
+    harnessRegistrationCreated: acceptedState?.effects?.harnessRegistrationCreated ?? false,
+    harnessPinChanged: acceptedState?.effects?.harnessPinChanged ?? false,
+    launchRequestPrepared: false,
+    approvalRecorded: false,
+    harnessRunStarted: false,
+    projectFileWrite: false,
+    privilegedMutation: false,
+  };
+  const acceptedReferences = acceptedState ? {
+    projectId: acceptedState.project?.projectId ?? null,
+    harnessId: acceptedState.harness?.harnessId
+      ?? acceptedState.project?.harness?.harnessId
+      ?? null,
+    projectRegistrationAuditId:
+      acceptedState.mutations?.projectRegistration?.auditId ?? null,
+    harnessRegistrationAuditId:
+      acceptedState.mutations?.harnessRegistration?.auditId ?? null,
+    harnessPinAuditId: acceptedState.mutations?.harnessPin?.auditId ?? null,
+  } : {};
+  const acceptedOutcome = acceptedState ? {
+    project: acceptedState.project ?? null,
+    harness: acceptedState.harness ?? null,
+    mutations: acceptedState.mutations ?? null,
+  } : {};
+  if (
+    !idempotencyKeyHash
+    || !Number.isSafeInteger(expectedRevision)
+    || expectedRevision < 0
+  ) {
+    const auditId = await recordAudit(action, "rejected", {
+      code: "mutation_contract_invalid",
+      hostId: state.host.hostId,
+      authorizationClass,
+      idempotencyKeyHash,
+      expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+      actualRevision,
+      ...acceptedReferences,
+      ...prohibitedSideEffects,
+    });
+    return {
+      status: 400,
+      body: {
+        ...mutationFailure(
+          "mutation_contract_invalid",
+          authorizationClass,
+          Number.isSafeInteger(expectedRevision) ? expectedRevision : -1,
+          actualRevision,
+          auditId,
+        ),
+        retryable: false,
+        idempotentReplay: false,
+        hostId: state.host.hostId,
+        freshness: "stale",
+        ...acceptedOutcome,
+        prohibitedSideEffects,
+      },
+    };
+  }
+  const retained = await replayHostMutationOutcome(
+    action,
+    authorizationClass,
+    expectedRevision,
+    idempotencyKeyHash,
+    requestContent,
+    actualRevision,
+    prohibitedSideEffects,
+  );
+  if (retained) {
+    return retained;
+  }
+  const auditId = await recordAudit(action, "rejected", {
+    code: failureCode,
+    hostId: state.host.hostId,
+    authorizationClass,
+    idempotencyKeyHash,
+    expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
+    actualRevision,
+    ...acceptedReferences,
+    ...prohibitedSideEffects,
+  });
+  const body = {
+    type: "mutation_failure",
+    code: failureCode,
+    retryable: true,
+    authorizationClass,
+    expectedRevision,
+    actualRevision,
+    auditId,
+    idempotentReplay: false,
+    hostId: state.host.hostId,
+    freshness: "stale",
+    ...acceptedOutcome,
+    prohibitedSideEffects,
+  };
+  const outcome = {
+    status: 503,
+    body,
+  };
+  retainHostMutationOutcome(
+    action,
+    idempotencyKeyHash,
+    expectedRevision,
+    requestContent,
+    outcome,
+  );
+  return outcome;
 });
 
 /** @param {import("node:http").IncomingMessage} request */
@@ -579,6 +922,9 @@ const sanitizedRuntimeCode = (error) => {
       "host_schema_mismatch",
       "host_framing_invalid",
       "host_unavailable",
+      "host_disconnected",
+      "host_protocol_invalid",
+      "host_observation_resynchronization_failed",
       "controller_identity_invalid",
       "controller_host_identity_mismatch",
       "controller_protocol_major_mismatch",
@@ -819,36 +1165,161 @@ const withProjectSessionMutationLock = (operation) => {
 /** @param {any} message */
 const requestHostOperation = (message) => {
   const current = hostOperationQueue.catch(() => undefined).then(async () => {
-    if (!hostProcess || !hostProcess.stdin.writable || !hostProcess.stdout.readable) {
-      throw new Error("host_unavailable");
+    if (
+      state?.host?.status === "disconnected"
+      || !hostProcess
+      || !hostProcess.stdin.writable
+      || !hostProcess.stdout.readable
+    ) {
+      await markHostDisconnected("host_disconnected");
+      throw new ControllerSessionError("host_disconnected");
     }
-    writeFrame(hostProcess.stdin, message);
-    const frame = await readProtocolFrame(hostProcess.stdout);
-    if (frame.channel !== "control") {
-      throw new Error("host_protocol_error");
-    }
-    const response = frame.message;
-    if (!("requestId" in response) || response.requestId !== message.requestId) {
-      throw new Error("host_protocol_error");
-    }
-    if (response.type === "harness.run.logs.result") {
-      const bulk = await readProtocolFrame(hostProcess.stdout);
-      if (
-        bulk.channel !== "bulk"
-        || bulk.streamId !== response.streamId
-        || bulk.sequence !== response.range.start
-        || bulk.eof !== response.range.eof
-        || bulk.data.byteLength !== response.byteLength
-        || `sha256:${createHash("sha256").update(bulk.data).digest("hex")}` !== response.sha256
-      ) {
+    try {
+      writeFrame(hostProcess.stdin, message);
+      const frame = await readProtocolFrame(hostProcess.stdout);
+      if (frame.channel !== "control") {
         throw new Error("host_protocol_error");
       }
-      return { ...response, data: bulk.data };
+      const response = frame.message;
+      if (!("requestId" in response) || response.requestId !== message.requestId) {
+        throw new Error("host_protocol_error");
+      }
+      if (response.type === "harness.run.logs.result") {
+        const bulk = await readProtocolFrame(hostProcess.stdout);
+        if (
+          bulk.channel !== "bulk"
+          || bulk.streamId !== response.streamId
+          || bulk.sequence !== response.range.start
+          || bulk.eof !== response.range.eof
+          || bulk.data.byteLength !== response.byteLength
+          || `sha256:${createHash("sha256").update(bulk.data).digest("hex")}` !== response.sha256
+        ) {
+          throw new Error("host_protocol_error");
+        }
+        return { ...response, data: bulk.data };
+      }
+      return response;
+    } catch (error) {
+      const code = error instanceof ProtocolError
+        ? error.code === "frame_truncated"
+          ? "host_disconnected"
+          : "host_protocol_invalid"
+        : error instanceof Error && error.message === "host_protocol_error"
+          ? "host_protocol_invalid"
+          : "host_disconnected";
+      await markHostDisconnected(code);
+      throw new ControllerSessionError(code);
     }
-    return response;
   });
   hostOperationQueue = current.then(() => undefined, () => undefined);
   return current;
+};
+
+/**
+ * @param {string} action
+ * @param {any} message
+ * @param {unknown} requestContent
+ */
+const requestFocusedHostMutation = async (action, message, requestContent) => {
+  const idempotencyKeyHash = typeof message.idempotencyKey === "string"
+    && message.idempotencyKey.length > 0
+    && message.idempotencyKey.length <= 256
+    ? hashIdempotencyKey(message.idempotencyKey)
+    : null;
+  const fingerprint = mutationRequestFingerprint({
+    expectedRevision: message.expectedRevision,
+    requestContent,
+  });
+  const outcomeKey = idempotencyKeyHash ? `${action}\0${idempotencyKeyHash}` : null;
+  const existing = outcomeKey ? focusedHostMutationOutcomes.get(outcomeKey) : null;
+  if (existing) {
+    if (existing.fingerprint !== fingerprint) {
+      const actualRevision = Number.isSafeInteger(existing.response.revision)
+        ? existing.response.revision
+        : Number.isSafeInteger(existing.response.actualRevision)
+          ? existing.response.actualRevision
+          : message.expectedRevision;
+      const auditId = await recordAudit(action, "rejected", {
+        code: "idempotency_key_conflict",
+        authorizationClass: message.authorizationClass,
+        idempotencyKeyHash,
+        expectedRevision: message.expectedRevision,
+        actualRevision,
+        originalAuditId: existing.response.auditId,
+        launchRequestPrepared: false,
+        approvalRecorded: false,
+        harnessRunStarted: false,
+        privilegedMutation: false,
+      });
+      throw new ControllerSessionError("idempotency_key_conflict", {
+        ...mutationFailure(
+          "idempotency_key_conflict",
+          message.authorizationClass,
+          message.expectedRevision,
+          actualRevision,
+          auditId,
+        ),
+        retryable: false,
+        idempotentReplay: false,
+        prohibitedSideEffects: {
+          launchRequestPrepared: false,
+          approvalRecorded: false,
+          harnessRunStarted: false,
+          privilegedMutation: false,
+        },
+      });
+    }
+    await recordAudit(action, "observed", {
+      code: existing.response.code,
+      authorizationClass: message.authorizationClass,
+      idempotencyKeyHash,
+      expectedRevision: message.expectedRevision,
+      idempotentReplay: true,
+      originalAuditId: existing.response.auditId,
+      launchRequestId: existing.response.launchRequest?.launchRequestId
+        ?? existing.response.run?.launchRequestId
+        ?? null,
+      harnessRunId: existing.response.run?.harnessRunId ?? null,
+    });
+    return {
+      ...structuredClone(existing.response),
+      requestId: message.requestId,
+      idempotentReplay: true,
+    };
+  }
+  try {
+    const outcome = /** @type {any} */ (await requestHostOperation(message));
+    if (
+      outcomeKey
+      && outcome
+      && typeof outcome === "object"
+      && typeof outcome.auditId === "string"
+      && outcome.code !== "idempotency_key_conflict"
+    ) {
+      focusedHostMutationOutcomes.set(outcomeKey, {
+        fingerprint,
+        response: structuredClone(outcome),
+      });
+    }
+    return outcome;
+  } catch (error) {
+    const failureCode = error instanceof ControllerSessionError
+      && (error.code === "host_disconnected" || error.code === "host_protocol_invalid")
+      ? error.code
+      : null;
+    if (!failureCode) {
+      throw error;
+    }
+    const failure = await hostMutationFailure(
+      failureCode,
+      action,
+      message.authorizationClass,
+      message.expectedRevision,
+      idempotencyKeyHash,
+      requestContent,
+    );
+    throw new ControllerSessionError(failure.body.code, failure.body);
+  }
 };
 
 /** @param {string} key @param {string} operation */
@@ -932,13 +1403,49 @@ const runtimeProjectFailure = async (
  * @param {{path: unknown, configuration: unknown, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number}} request
  */
 const prepareExplicitProject = (request) => withProjectPreparationLock(async () => {
-  if (
+  const mutationContractValid = !(
     typeof request.idempotencyKey !== "string"
     || request.idempotencyKey.length === 0
     || request.idempotencyKey.length > 256
     || !Number.isSafeInteger(request.expectedRevision)
     || request.expectedRevision < 0
-  ) {
+  );
+
+  const requestContent = {
+    path: request.path,
+    configuration: request.configuration,
+  };
+  const prohibitedSideEffects = {
+    directoryScan: false,
+    projectFileWrite: false,
+    trackedSandKingFileWrite: false,
+    approvalRequest: false,
+  };
+  if (mutationContractValid) {
+    const retained = await replayHostMutationOutcome(
+      "project.prepare",
+      "host_local_project_preparation",
+      request.expectedRevision,
+      /** @type {string} */ (request.idempotencyKeyHash),
+      requestContent,
+      currentProjectPreparation.current?.revision ?? 0,
+      prohibitedSideEffects,
+    );
+    if (retained) {
+      return retained;
+    }
+  }
+  if (state.host.status === "disconnected") {
+    return hostMutationFailure(
+      "host_disconnected",
+      "project.prepare",
+      "host_local_project_preparation",
+      request.expectedRevision,
+      request.idempotencyKeyHash,
+      requestContent,
+    );
+  }
+  if (!mutationContractValid) {
     return {
       status: 400,
       body: await runtimeProjectFailure(
@@ -950,6 +1457,17 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       ),
     };
   }
+  /** @param {{status: number, body: any}} outcome */
+  const retainProjectPreparation = (outcome) => {
+    retainHostMutationOutcome(
+      "project.prepare",
+      /** @type {string} */ (request.idempotencyKeyHash),
+      request.expectedRevision,
+      requestContent,
+      outcome,
+    );
+    return outcome;
+  };
 
   /** @param {string} label */
   const requestId = (label) => `${label}-${randomBytes(8).toString("hex")}`;
@@ -959,10 +1477,10 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     path: typeof request.path === "string" ? request.path : "",
   });
   if (inspection.type === "project.operation.failure") {
-    return {
+    return retainProjectPreparation({
       status: projectFailureStatus[inspection.code] ?? 409,
       body: inspection,
-    };
+    });
   }
   if (inspection.type !== "project.inspect.result") {
     throw new Error("host_protocol_error");
@@ -982,10 +1500,10 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     expectedRevision: request.expectedRevision,
   });
   if (projectRegistration.type === "project.operation.failure") {
-    return {
+    return retainProjectPreparation({
       status: projectFailureStatus[projectRegistration.code] ?? 409,
       body: projectRegistration,
-    };
+    });
   }
   if (projectRegistration.type !== "project.register.result") {
     throw new Error("host_protocol_error");
@@ -993,70 +1511,110 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
   // An idempotent registration replay returns its original revisioned outcome;
   // the preceding inspection remains the current canonical Project snapshot.
   let project = inspectedProject ?? projectRegistration.project;
+  currentProjectPreparation = projectPreparationProjection(project);
+  currentProjectPath = project.canonicalPath;
 
-  const harnessInspection = await requestHostOperation({
-    type: "harness.conformance.inspect",
-    requestId: requestId("harness-inspect"),
-  });
-  if (harnessInspection.type !== "harness.conformance.inspect.result") {
-    throw new Error("host_protocol_error");
-  }
-  let harness = harnessInspection.harness;
+  let harness = null;
   let harnessRegistration = null;
-  if (!harness) {
-    harnessRegistration = await requestHostOperation({
-      type: "harness.conformance.register",
-      requestId: requestId("harness-register"),
-      name: "Sand-King Conformance Harness",
-      authorizationClass: "host_local_harness_registration",
-      idempotencyKey: derivedHostIdempotencyKey(
-        request.idempotencyKey,
-        "harness.conformance.register",
-      ),
-      expectedRevision: 0,
-    });
-    if (harnessRegistration.type === "project.operation.failure") {
-      return {
-        status: projectFailureStatus[harnessRegistration.code] ?? 409,
-        body: harnessRegistration,
-      };
-    }
-    if (harnessRegistration.type !== "harness.conformance.register.result") {
-      throw new Error("host_protocol_error");
-    }
-    harness = harnessRegistration.harness;
-  }
-
   let pin = null;
-  if (
-    !project.harness
-    || project.harness.harnessId !== harness.harnessId
-    || project.harness.pinnedRevision !== harness.immutableRevision
-  ) {
-    pin = await requestHostOperation({
-      type: "project.harness.pin",
-      requestId: requestId("project-pin"),
-      projectId: project.projectId,
-      harnessId: harness.harnessId,
-      immutableRevision: harness.immutableRevision,
-      boundedConfiguration: {
-        adapterProtocol: "1.0.0",
-        launchProfile: "delegated-work",
-      },
-      authorizationClass: "host_local_project_configuration",
-      idempotencyKey: derivedHostIdempotencyKey(
-        request.idempotencyKey,
-        "project.harness.pin",
-      ),
-      expectedRevision: project.revision,
+  try {
+    const harnessInspection = await requestHostOperation({
+      type: "harness.conformance.inspect",
+      requestId: requestId("harness-inspect"),
     });
-    if (pin.type === "project.operation.failure") {
-      return { status: projectFailureStatus[pin.code] ?? 409, body: pin };
-    }
-    if (pin.type !== "project.harness.pin.result") {
+    if (harnessInspection.type !== "harness.conformance.inspect.result") {
       throw new Error("host_protocol_error");
     }
-    project = pin.project;
+    harness = harnessInspection.harness;
+    if (!harness) {
+      harnessRegistration = await requestHostOperation({
+        type: "harness.conformance.register",
+        requestId: requestId("harness-register"),
+        name: "Sand-King Conformance Harness",
+        authorizationClass: "host_local_harness_registration",
+        idempotencyKey: derivedHostIdempotencyKey(
+          request.idempotencyKey,
+          "harness.conformance.register",
+        ),
+        expectedRevision: 0,
+      });
+      if (harnessRegistration.type === "project.operation.failure") {
+        return retainProjectPreparation({
+          status: projectFailureStatus[harnessRegistration.code] ?? 409,
+          body: harnessRegistration,
+        });
+      }
+      if (harnessRegistration.type !== "harness.conformance.register.result") {
+        throw new Error("host_protocol_error");
+      }
+      harness = harnessRegistration.harness;
+    }
+
+    if (
+      !project.harness
+      || project.harness.harnessId !== harness.harnessId
+      || project.harness.pinnedRevision !== harness.immutableRevision
+    ) {
+      pin = await requestHostOperation({
+        type: "project.harness.pin",
+        requestId: requestId("project-pin"),
+        projectId: project.projectId,
+        harnessId: harness.harnessId,
+        immutableRevision: harness.immutableRevision,
+        boundedConfiguration: {
+          adapterProtocol: "1.0.0",
+          launchProfile: "delegated-work",
+        },
+        authorizationClass: "host_local_project_configuration",
+        idempotencyKey: derivedHostIdempotencyKey(
+          request.idempotencyKey,
+          "project.harness.pin",
+        ),
+        expectedRevision: project.revision,
+      });
+      if (pin.type === "project.operation.failure") {
+        return retainProjectPreparation({
+          status: projectFailureStatus[pin.code] ?? 409,
+          body: pin,
+        });
+      }
+      if (pin.type !== "project.harness.pin.result") {
+        throw new Error("host_protocol_error");
+      }
+      project = pin.project;
+      currentProjectPreparation = projectPreparationProjection(project);
+    }
+  } catch (error) {
+    if (
+      error instanceof ControllerSessionError
+      && (error.code === "host_disconnected" || error.code === "host_protocol_invalid")
+    ) {
+      const mutations = {
+        projectRegistration: projectMutationSummary(projectRegistration),
+        harnessRegistration: projectMutationSummary(harnessRegistration),
+        harnessPin: projectMutationSummary(pin),
+      };
+      return hostMutationFailure(
+        error.code,
+        "project.prepare",
+        "host_local_project_preparation",
+        request.expectedRevision,
+        request.idempotencyKeyHash,
+        requestContent,
+        {
+          project: currentProjectPreparation.current,
+          harness,
+          mutations,
+          effects: {
+            projectRegistrationCreated: projectRegistration.code === "project_registered",
+            harnessRegistrationCreated:
+              mutations.harnessRegistration?.code === "conformance_harness_registered",
+            harnessPinChanged: mutations.harnessPin?.code === "project_harness_pinned",
+          },
+        },
+      );
+    }
+    throw error;
   }
 
   currentProjectPreparation = projectPreparationProjection(project);
@@ -1076,7 +1634,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     projectFileWrite: false,
     separateApprovalRequired: false,
   });
-  return {
+  return retainProjectPreparation({
     status: 200,
     body: {
       type: "project_preparation_result",
@@ -1085,6 +1643,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       expectedRevision: request.expectedRevision,
       revision: project.revision,
       auditId: preparationAuditId,
+      idempotentReplay: false,
       project: currentProjectPreparation.current,
       mutations: {
         projectRegistration: projectMutationSummary(projectRegistration),
@@ -1098,7 +1657,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
         approvalRequest: false,
       },
     },
-  };
+  });
 });
 
 /** @param {{sessionId: string, providerSessionId: string, workContext: any, operation: string, input: unknown}} request */
@@ -1131,7 +1690,7 @@ const handleProviderOperation = async (request) => {
     throw new ControllerSessionError("provider_operation_unsupported");
   }
   if (request.operation === "launch-request.prepare") {
-    return requestHostOperation({
+    const message = {
       type: "launch.request.prepare",
       requestId: `launch-prepare-${randomBytes(8).toString("hex")}`,
       projectId: request.workContext.workContextId,
@@ -1142,10 +1701,18 @@ const handleProviderOperation = async (request) => {
       idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
       expectedRevision: 0,
       expiresInSeconds: "expiresInSeconds" in input ? Number(input.expiresInSeconds) : 0,
+    };
+    return requestFocusedHostMutation("launch.request.prepare", message, {
+      projectId: message.projectId,
+      parameters: message.parameters,
+      controllerId: message.controllerId,
+      controllerSessionId: message.controllerSessionId,
+      authorizationClass: message.authorizationClass,
+      expiresInSeconds: message.expiresInSeconds,
     });
   }
   if (request.operation === "launch-request.decide") {
-    return requestHostOperation({
+    const message = {
       type: "launch.request.decision",
       requestId: `launch-decision-${randomBytes(8).toString("hex")}`,
       launchRequestId: "launchRequestId" in input ? String(input.launchRequestId) : "",
@@ -1155,10 +1722,17 @@ const handleProviderOperation = async (request) => {
       authorizationClass: "focused_controller_launch",
       idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
       expectedRevision: "expectedRevision" in input ? Number(input.expectedRevision) : -1,
+    };
+    return requestFocusedHostMutation("launch.request.decision", message, {
+      launchRequestId: message.launchRequestId,
+      decision: message.decision,
+      controllerId: message.controllerId,
+      controllerSessionId: message.controllerSessionId,
+      authorizationClass: message.authorizationClass,
     });
   }
   if (request.operation === "harness-run.start") {
-    return requestHostOperation({
+    const message = {
       type: "harness.run.start",
       requestId: `harness-run-start-${randomBytes(8).toString("hex")}`,
       launchRequestId: "launchRequestId" in input ? String(input.launchRequestId) : "",
@@ -1167,6 +1741,12 @@ const handleProviderOperation = async (request) => {
       authorizationClass: "approved_launch_request_execution",
       idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
       expectedRevision: "expectedRevision" in input ? Number(input.expectedRevision) : -1,
+    };
+    return requestFocusedHostMutation("harness.run.start", message, {
+      launchRequestId: message.launchRequestId,
+      controllerId: message.controllerId,
+      controllerSessionId: message.controllerSessionId,
+      authorizationClass: message.authorizationClass,
     });
   }
   if (request.operation === "harness-run.lookup") {
@@ -1234,6 +1814,19 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
       status: existing.response.type === "mutation_result" ? 200 : existing.status,
       body: { ...structuredClone(existing.response), idempotentReplay: true },
     };
+  }
+  if (request.authorizationAccepted && state.host.status === "disconnected") {
+    return hostMutationFailure(
+      "host_disconnected",
+      "project.session.open",
+      authorizationClass,
+      request.expectedRevision,
+      request.idempotencyKeyHash,
+      {
+        projectId: request.projectId,
+        providerId: request.providerId,
+      },
+    );
   }
   if (
     !request.authorizationAccepted
@@ -1637,6 +2230,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
   sessionSockets.set(sessionId, authenticatedSockets);
   socket.once("close", () => {
     controllerSessions?.detach(socket);
+    negotiatedBrowserSockets.delete(socket);
     authenticatedSockets.delete(socket);
     if (authenticatedSockets.size === 0) {
       sessionSockets.delete(sessionId);
@@ -1770,6 +2364,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           if (observation.type !== "harness.run.observe.result") {
             throw new BrowserProtocolError("harness_run_observation_failed");
           }
+          currentHarnessRunObservation = structuredClone(observation);
           socket.send(serializeRuntimeControl({
             type: "runtime.harness-run.observation",
             requestId: control.requestId,
@@ -1841,11 +2436,19 @@ const handleBrowserConnection = (socket, sessionId, session) => {
       }
 
       const currentCursor = state.host.observationCursor ?? "host:origin";
-      const observation = hello.observationCursor === null
-        ? { mode: "snapshot", cursor: currentCursor }
-        : hello.observationCursor === currentCursor
-          ? { mode: "resume", cursor: currentCursor }
-          : { mode: "resynchronize", cursor: currentCursor, reason: "cursor_unavailable" };
+      const observation = state.host.status === "disconnected"
+        && hello.observationCursor !== null
+        && hello.observationCursor !== currentCursor
+        ? {
+            mode: "resynchronization-failed",
+            cursor: currentCursor,
+            reason: "host_observation_resynchronization_failed",
+          }
+        : hello.observationCursor === null
+          ? { mode: "snapshot", cursor: currentCursor }
+          : hello.observationCursor === currentCursor
+            ? { mode: "resume", cursor: currentCursor }
+            : { mode: "resynchronize", cursor: currentCursor, reason: "cursor_unavailable" };
       const negotiatedCapabilities = browserCapabilities.filter((capability) =>
         [...hello.capabilities.required, ...hello.capabilities.optional].includes(capability));
 
@@ -1884,7 +2487,9 @@ const handleBrowserConnection = (socket, sessionId, session) => {
             identity: state.host.identity,
             hostId: state.host.hostId,
             release: state.host.release,
-            status: "connected",
+            status: state.host.status,
+            freshness: state.host.freshness,
+            failure: state.host.failure,
           },
           negotiation: {
             protocol: state.protocol,
@@ -1896,6 +2501,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           projectPreparation: currentProjectPreparation,
           controllerProviders: controllerProviderProjection,
           planning: await planningSpine?.project(),
+          harnessRunObservation: currentHarnessRunObservation,
         },
       });
       await recordAudit("browser.negotiate", "accepted", {
@@ -1906,8 +2512,17 @@ const handleBrowserConnection = (socket, sessionId, session) => {
         sessionAuditId: session.auditId,
       });
       phase = "negotiated";
+      negotiatedBrowserSockets.add(socket);
       socket.send(acknowledgement);
     } catch (error) {
+      const hostFailureCode = error instanceof ControllerSessionError
+        && (error.code === "host_disconnected" || error.code === "host_protocol_invalid")
+        ? error.code
+        : null;
+      if (hostFailureCode) {
+        await markHostDisconnected(hostFailureCode);
+        return;
+      }
       const code = error instanceof BrowserProtocolError
         ? error.code
         : "browser_protocol_invalid";
@@ -2104,13 +2719,39 @@ const main = async () => {
             sendJson(response, 403, failure);
             return;
           }
-          const outcome = await prepareExplicitProject({
+          const requestContent = {
             path: "path" in record ? record.path : null,
             configuration: "configuration" in record ? record.configuration : null,
-            idempotencyKey,
-            idempotencyKeyHash,
-            expectedRevision,
-          });
+          };
+          let outcome;
+          try {
+            outcome = await prepareExplicitProject({
+              ...requestContent,
+              idempotencyKey,
+              idempotencyKeyHash,
+              expectedRevision,
+            });
+          } catch (error) {
+            const hostFailureCode = error instanceof ControllerSessionError
+              ? error.code
+              : null;
+            if (
+              hostFailureCode === "host_disconnected"
+              || hostFailureCode === "host_protocol_invalid"
+            ) {
+              outcome = await hostMutationFailure(
+                hostFailureCode,
+                "project.prepare",
+                "host_local_project_preparation",
+                expectedRevision,
+                idempotencyKeyHash,
+                requestContent,
+                error instanceof ControllerSessionError ? error.retainedOutcome : null,
+              );
+            } else {
+              throw error;
+            }
+          }
           sendJson(response, outcome.status, outcome.body);
           return;
         }
@@ -2123,9 +2764,10 @@ const main = async () => {
             idempotencyKeyHash,
             expectedRevision,
           } = readMutationHeaders(request);
+          const authorizationAccepted = exactOriginAccepted(request)
+            && request.headers["x-sandking-csrf"] === activeSession.csrfToken;
           const outcome = await openProjectControllerSession({
-            authorizationAccepted: exactOriginAccepted(request)
-              && request.headers["x-sandking-csrf"] === activeSession.csrfToken,
+            authorizationAccepted,
             idempotencyKey,
             idempotencyKeyHash,
             expectedRevision,
@@ -2270,6 +2912,9 @@ const main = async () => {
         framing: host.framing,
         observationCursor: host.observationCursor,
         release: host.release,
+        status: "connected",
+        freshness: "current",
+        failure: null,
       },
       protocol: host.protocol,
       listener: { address: "127.0.0.1", class: "loopback" },
@@ -2281,9 +2926,8 @@ const main = async () => {
 
     hostProcess?.once("exit", async () => {
       if (!shuttingDown) {
-        await logSanitizedRuntimeError(new Error("host_unavailable"));
-        await shutdown();
-        process.exit(1);
+        await logSanitizedRuntimeError(new Error("host_disconnected"));
+        await markHostDisconnected("host_disconnected");
       }
     });
   } catch (error) {

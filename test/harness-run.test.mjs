@@ -426,6 +426,70 @@ test("invalid adapter lifecycles fail truthfully without corrupting canonical ru
     });
     assert.match(misleadingLog.data.toString("utf8"), /SUCCESS/);
     assert.equal(misleadingLog.response.insertedIntoControllerConversation, false);
+    assert.deepEqual(observation.outcome.diagnosticReferences.map((reference) => ({
+      producer: reference.producer,
+      streamId: reference.streamId,
+      start: reference.range.start,
+      end: reference.range.end,
+    })), observation.logStreams.map((stream) => ({
+      producer: stream.producer,
+      streamId: stream.streamId,
+      start: stream.availableStart,
+      end: stream.availableEnd,
+    })));
+
+    const duplicateTerminalLaunch = await prepareAndDecide(999_999_996);
+    const duplicateTerminalStart = await manager.start({
+      requestId: "start-duplicate-terminal-run",
+      launchRequestId: duplicateTerminalLaunch.prepared.launchRequest.launchRequestId,
+      controllerId,
+      controllerSessionId,
+      authorizationClass: "approved_launch_request_execution",
+      idempotencyKey: "start-duplicate-terminal-run",
+      expectedRevision: duplicateTerminalLaunch.decided.revision,
+    });
+    const duplicateTerminalObservation = await waitForTerminal(
+      manager,
+      duplicateTerminalStart.run.harnessRunId,
+    );
+    assert.equal(duplicateTerminalObservation.run.status, "failed");
+    assert.equal(duplicateTerminalObservation.outcome.code, "harness_result_incomplete");
+    assert.equal(duplicateTerminalObservation.outcome.incompleteResult, true);
+    assert.equal(
+      duplicateTerminalObservation.terminalEnvelopeValidation.validTerminalEnvelopeCount,
+      2,
+    );
+    assert.equal(duplicateTerminalObservation.terminalEnvelopeValidation.exactlyOne, false);
+
+    const invalidTerminalLaunch = await prepareAndDecide(999_999_995);
+    const invalidTerminalStart = await manager.start({
+      requestId: "start-invalid-terminal-run",
+      launchRequestId: invalidTerminalLaunch.prepared.launchRequest.launchRequestId,
+      controllerId,
+      controllerSessionId,
+      authorizationClass: "approved_launch_request_execution",
+      idempotencyKey: "start-invalid-terminal-run",
+      expectedRevision: invalidTerminalLaunch.decided.revision,
+    });
+    const invalidTerminalObservation = await waitForTerminal(
+      manager,
+      invalidTerminalStart.run.harnessRunId,
+    );
+    assert.equal(invalidTerminalObservation.run.status, "failed");
+    assert.equal(
+      invalidTerminalObservation.outcome.code,
+      "harness_adapter_protocol_invalid",
+    );
+    assert.equal(invalidTerminalObservation.outcome.incompleteResult, true);
+    assert.equal(
+      invalidTerminalObservation.terminalEnvelopeValidation.validTerminalEnvelopeCount,
+      0,
+    );
+    assert.equal(invalidTerminalObservation.terminalEnvelopeValidation.exactlyOne, false);
+    assert.equal(
+      invalidTerminalObservation.terminalEnvelopeValidation.processExitObserved,
+      true,
+    );
 
     const malformedProgressLaunch = await prepareAndDecide(999_999_998);
     const realSupervisorManager = await createHarnessRunManager({
@@ -590,7 +654,7 @@ test("invalid adapter lifecycles fail truthfully without corrupting canonical ru
     }
 
     const retained = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
-    assert.equal(retained.runs.length, 3);
+    assert.equal(retained.runs.length, 5);
     assert.equal(retained.runs[0].status, "failed");
     if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
       await writeFile(
@@ -606,6 +670,22 @@ test("invalid adapter lifecycles fail truthfully without corrupting canonical ru
             successLookingDiagnosticRetained: misleadingLog.data.toString("utf8").includes("SUCCESS"),
             logInsertedIntoControllerConversation:
               misleadingLog.response.insertedIntoControllerConversation,
+          },
+          nonUniqueOrInvalidTerminal: {
+            duplicate: {
+              harnessRunId: duplicateTerminalStart.run.harnessRunId,
+              status: duplicateTerminalObservation.run.status,
+              outcome: duplicateTerminalObservation.outcome,
+              terminalEnvelopeValidation:
+                duplicateTerminalObservation.terminalEnvelopeValidation,
+            },
+            invalid: {
+              harnessRunId: invalidTerminalStart.run.harnessRunId,
+              status: invalidTerminalObservation.run.status,
+              outcome: invalidTerminalObservation.outcome,
+              terminalEnvelopeValidation:
+                invalidTerminalObservation.terminalEnvelopeValidation,
+            },
           },
           prohibitedStarts: {
             rejected: rejected.code,

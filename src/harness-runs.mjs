@@ -80,6 +80,16 @@ export const harnessRunOutcomeSchema = z.object({
   completedAt: z.string().datetime(),
   incompleteResult: z.boolean(),
   result: z.record(z.string(), z.unknown()).nullable(),
+  diagnosticReferences: z.array(z.object({
+    streamId: logStreamIdSchema,
+    producer: z.enum(["stdout", "stderr"]),
+    range: z.object({
+      start: z.literal(0),
+      end: z.number().int().nonnegative(),
+    }).strict(),
+    explicitRetrievalRequired: z.literal(true),
+    insertedIntoControllerConversation: z.literal(false),
+  }).strict()).length(2),
   terminalEnvelope: z.object({
     terminalId: z.string().regex(/^harness-terminal-[a-f0-9]{24}$/),
     status: z.enum(["succeeded", "failed", "cancelled"]),
@@ -466,6 +476,16 @@ export const createHarnessRunManager = async (options) => {
         completedAt,
         incompleteResult: !validTerminal,
         result: validTerminal ? terminal.result : null,
+        diagnosticReferences: run.logStreams.map((stream) => ({
+          streamId: stream.streamId,
+          producer: stream.producer,
+          range: {
+            start: stream.availableStart,
+            end: stream.availableEnd,
+          },
+          explicitRetrievalRequired: stream.explicitRetrievalRequired,
+          insertedIntoControllerConversation: stream.insertedIntoControllerConversation,
+        })),
         terminalEnvelope: validTerminal ? {
           terminalId: terminal.terminalId,
           status: terminal.status,

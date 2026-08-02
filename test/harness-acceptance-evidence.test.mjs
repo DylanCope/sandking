@@ -213,7 +213,7 @@ test("retained issue 120 evidence proves idempotency and truthful incomplete fai
   }
 
   const failure = evidence.contractEvidence.truthfulFailure;
-  assert.equal(failure.canonicalRunCount, 3);
+  assert.equal(failure.canonicalRunCount, 5);
   assert.equal(failure.incompleteResult.status, "failed");
   assert.equal(failure.incompleteResult.outcome.code, "harness_result_incomplete");
   assert.equal(failure.incompleteResult.outcome.incompleteResult, true);
@@ -227,6 +227,17 @@ test("retained issue 120 evidence proves idempotency and truthful incomplete fai
   });
   assert.equal(failure.incompleteResult.successLookingDiagnosticRetained, true);
   assert.equal(failure.incompleteResult.logInsertedIntoControllerConversation, false);
+  assert.equal(failure.nonUniqueOrInvalidTerminal.duplicate.status, "failed");
+  assert.equal(
+    failure.nonUniqueOrInvalidTerminal.duplicate
+      .terminalEnvelopeValidation.validTerminalEnvelopeCount,
+    2,
+  );
+  assert.equal(failure.nonUniqueOrInvalidTerminal.invalid.status, "failed");
+  assert.equal(
+    failure.nonUniqueOrInvalidTerminal.invalid.outcome.code,
+    "harness_adapter_protocol_invalid",
+  );
   const incompleteOutcomeAudit = failure.auditReferences.find((entry) =>
     entry.action === "harness.run.outcome"
     && entry.details.code === "harness_result_incomplete");

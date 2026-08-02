@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 2,
+  "issue": 122,
+  "parentPrd": 125,
+  "sourceSpecification": {
+    "issue": 116,
+    "githubBodyUtf8Sha256": "34ebbde096564621b14a68d4bc64cdbd8ba9e448a42cb75c084d80c0e201308a",
+    "parentApprovedTextExportSha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23",
+    "parentApprovedHashBasis": "exact GitHub body UTF-8 plus one terminal LF"
+  },
+  "scenarios": [
+    {
+      "id": "local-walking-skeleton/shows-truthful-failure",
+      "requirements": [
+        "#116 stories 25-28, 40, and 41-44",
+        "#122 acceptance criteria",
+        "#6 typed framing, capability, revision, idempotency, disconnection, and resynchronization outcomes",
+        "#8 exact approval, immutable audit, secret isolation, and prohibited privileged mutation",
+        "#9 exactly one terminal Harness envelope, separate diagnostics, and truthful incomplete failure",
+        "#11 visible typed failure plus preserved canonical state, audit history, and retained sanitized evidence",
+        "#14 Host-local stale views, GitHub-local stale projections, and an otherwise usable Cockpit",
+        "#17 public Cockpit vertical-slice acceptance boundary"
+      ],
+      "environment": "npm-packed Sand-King; npm-pinned real headless Chromium; real Controller runtime and local Host processes; independently Git-versioned deterministic conformance Harness; deterministic GitHub fixture adapter; user-space Node and Git processes",
+      "transport": "served Cockpit and focused Controller PTY -> typed same-origin browser protocol -> real Controller runtime -> versioned framed stdio local Host -> Host-private canonical state -> exact pinned conformance Harness adapter on its dedicated framed channel",
+      "initialState": "one explicit ordinary Project, no Sand-King Project footprint, one connected local Host, fresh and unavailable GitHub projections, no Launch request or Harness run, and recognizable secret fixtures confined to the Controller process environment",
+      "actions": [
+        "negotiate the real Host and browser boundaries and prepare one immutable Launch request through its focused Controller conversation",
+        "approve and start the request exactly once",
+        "inject a deterministic confirmed conformance-Harness process exit without a terminal envelope while stdout claims SUCCESS",
+        "display the failed incomplete result with retained ranged diagnostic references and accepted canonical identities",
+        "exercise absent, duplicate, and invalid terminal-envelope contracts",
+        "kill the real local Host process after the failed result is retained",
+        "pause the real local Host, begin an authorized Cockpit Project mutation, and kill the Host while its framed result is pending",
+        "use the real Cockpit preparation control, wait until the Host durably accepts Project registration, then kill the Host during subsequent Harness preparation",
+        "queue an identical public Project-preparation retry while that accepted composite mutation is still in flight, then require both responses to retain one Project and audit narrative after real Host loss",
+        "use the real Cockpit preparation control to accept a complete project_ready outcome, kill the real Host, replay the identical public mutation with its accepted Project, Harness, and audit identities, and reject changed content under that accepted key",
+        "after successful negotiation, make the real Host emit malformed framing for a live Cockpit observation request",
+        "mark only Project and Harness views stale, disable their mutations, preserve the cached failed run, and keep Controller and fresh Planning work available",
+        "show unavailable GitHub authority as stale and mutation-disabled without blocking ordinary work",
+        "reconnect with an unavailable observation cursor and return a typed resynchronization failure plus the retained stale snapshot",
+        "reject an authorized Host mutation with a typed audited host_disconnected outcome and explicit prohibited effects",
+        "replay that disconnected outcome with its original audit identity and reject changed content under the same idempotency key",
+        "after Host loss, replay the accepted focused Controller-session open and accepted Launch-request preparation with their original audit and canonical identities, while rejecting changed session content under the accepted key",
+        "retain a disconnected focused-Controller mutation failure, replay the identical visible command as an observed outcome linked to its original rejected audit, and preserve its original mutation-outcome audit",
+        "verify protocol/capability mismatch, stale approval/revision, identical replay, changed-content idempotency use, and Planning projection staleness at their owning boundaries"
+      ],
+      "expectedTypedOutcome": "a Cockpit-visible harness_result_incomplete followed by typed host_disconnected, host_protocol_invalid, and host_observation_resynchronization_failed degraded states, including an interrupted composite preparation that retains its accepted Project identity and truthful registration effect, an accepted project_ready composite outcome that remains replayable after Host loss with its original Project, Harness, and audit identities, plus active Cockpit and Controller mutation failures whose identical retries retain the original audit and whose changed-content retries return idempotency_key_conflict, with the same canonical Project, Launch-request, Harness-run, outcome, event, audit, and diagnostic references",
+      "canonicalStateInvariants": [
+        "a confirmed adapter exit without exactly one valid terminal envelope is failed and incomplete",
+        "success-looking diagnostics and process exit never imply success",
+        "diagnostic streams remain separate, explicitly ranged references and are never inserted into a Controller conversation",
+        "Host disconnection preserves the accepted Host, Project, Launch-request, Harness-run, outcome, event, and audit identities",
+        "Host loss after accepted Project registration returns and renders that canonical identity, its blocked readiness, its accepted audit, and the registration effect that actually occurred",
+        "an identical Project-preparation retry queued during Host loss replays the first public outcome and original audit instead of racing it with a disconnected-only outcome",
+        "an accepted public Project preparation returns idempotentReplay false and identical replay after Host loss returns project_ready with the original composite Project, Harness, mutation, and audit identities",
+        "post-negotiation Host framing failure remains typed as host_protocol_invalid, keeps the Browser connection open, and removes neither Controller nor Planning views",
+        "Host disconnection neither terminates the Controller runtime nor disables unaffected Controller and Planning views",
+        "unavailable GitHub authority stales only its projection and disables its mutations without queueing a write",
+        "observation uncertainty is explicit and returns the retained stale snapshot rather than invented continuity",
+        "identical mutation replay returns its original outcome and audit while changed content conflicts",
+        "accepted focused Controller-session and Launch-request preparation identities remain replayable after Host loss",
+        "a repeated disconnected focused-Controller mutation is an observed replay linked to one original rejected outcome rather than a second rejection",
+        "Host loss while a public mutation is active remains a Host failure at the Cockpit and Controller seams and records the affected operation",
+        "stale approval or revision fails closed without creating a Harness run",
+        "all retained state remains outside the Project and Harness workspace"
+      ],
+      "prohibitedSideEffects": [
+        "unauthorized Project or Harness registration",
+        "unauthorized or browser-submitted approval",
+        "duplicate Harness run",
+        "invented success",
+        "success inferred from logs or process exit",
+        "queued or live GitHub write",
+        "Project file mutation",
+        "generic Host shell or filesystem access",
+        "privileged mutation",
+        "secret, credential, stack trace, or environment-dump disclosure",
+        "sudo",
+        "system package install",
+        "shell profile mutation",
+        "service configuration",
+        "recovery-required workflow",
+        "canonical commit-boundary fault injection",
+        "daemon-restart recovery",
+        "cross-boundary recovery matrix"
+      ],
+      "evidence": "acceptance/evidence/issue-122.json"
+    }
+  ],
+  "verification": {
+    "commands": [
+      [
+        "node",
+        "--test",
+        "test/protocol.test.mjs",
+        "test/browser-protocol.test.mjs",
+        "test/host-negotiation.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/launch-request.test.mjs",
+        "test/harness-run.test.mjs",
+        "test/planning-spine.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/truthful-failure.browser.test.mjs"
+      ]
+    ],
+    "typedProtocolFailures": [
+      "controller_protocol_major_mismatch",
+      "controller_capability_unsupported",
+      "host_protocol_major_mismatch",
+      "host_capability_unsupported",
+      "host_protocol_invalid_frame"
+    ],
+    "typedMutationFailures": [
+      "authorization_failed",
+      "idempotency_key_conflict",
+      "mutation_revision_conflict",
+      "launch_request_expired",
+      "launch_request_materially_changed",
+      "launch_request_stale",
+      "projection_stale",
+      "host_disconnected"
+    ],
+    "truthfulHarnessFailures": [
+      "harness_result_incomplete",
+      "harness_adapter_protocol_invalid",
+      "harness_adapter_start_failed"
+    ],
+    "degradedConnectionFailures": [
+      "host_disconnected",
+      "host_protocol_invalid",
+      "host_observation_resynchronization_failed",
+      "github_projection_unavailable"
+    ],
+    "laterSliceExclusions": [
+      "recovery-required state",
+      "deterministic canonical-commit fault injection",
+      "restart recovery",
+      "cross-boundary recovery matrices"
+    ]
+  }
+}

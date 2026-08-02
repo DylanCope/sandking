@@ -203,6 +203,18 @@ const runtimeStateSchema = z.object({
     framing: framingSchema,
     observationCursor: z.string().nullable(),
     release: z.string(),
+    status: z.enum(["connected", "disconnected"]).default("connected"),
+    freshness: z.enum(["current", "stale"]).default("current"),
+    failure: z.object({
+      code: z.enum([
+        "host_disconnected",
+        "host_protocol_invalid",
+        "host_observation_resynchronization_failed",
+      ]),
+      retryable: z.literal(true),
+      auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+      observedAt: z.string().datetime(),
+    }).strict().nullable().default(null),
   }).strict(),
   protocol: versionSchema,
   listener: z.object({
