@@ -6,7 +6,7 @@ import test from "node:test";
 import { createControllerSessionManager } from "../src/controller-sessions.mjs";
 
 const waitFor = async (predicate) => {
-  const deadline = Date.now() + 3_000;
+  const deadline = Date.now() + 6_000;
   while (Date.now() < deadline) {
     if (predicate()) {
       return;
@@ -21,10 +21,13 @@ test("a project-focused conformance Controller invokes typed Launch operations",
   const audits = [];
   const operations = [];
   const launchRequestId = `launch-request-${"1".repeat(24)}`;
+  const harnessRunId = `harness-run-${"6".repeat(24)}`;
   const projectId = `project-${"2".repeat(24)}`;
   const harnessId = `harness-${"3".repeat(24)}`;
   const pinnedRevision = "4".repeat(40);
   const overlongIssueNumber = "9".repeat(400);
+  let canonicalStartOutcome = null;
+  let startAttempts = 0;
   const recordAudit = async (action, outcome, details) => {
     const auditId = `audit-${String(audits.length + 1).padStart(24, "0")}`;
     audits.push({ auditId, action, outcome, details });
@@ -85,6 +88,27 @@ test("a project-focused conformance Controller invokes typed Launch operations",
           revision: 2,
           execution: { status: "not_started" },
         },
+      };
+    }
+    if (request.operation === "harness-run.start") {
+      startAttempts += 1;
+      canonicalStartOutcome = {
+        type: "harness.run.start.result",
+        code: "harness_run_created",
+        idempotentReplay: false,
+        run: { harnessRunId },
+      };
+      await new Promise((resolve) => setTimeout(resolve, 3_250));
+      return canonicalStartOutcome;
+    }
+    if (request.operation === "harness-run.lookup") {
+      return {
+        type: "harness.run.lookup.result",
+        code: canonicalStartOutcome
+          ? "harness_run_start_outcome_found"
+          : "harness_run_start_outcome_absent",
+        found: Boolean(canonicalStartOutcome),
+        startOutcome: canonicalStartOutcome,
       };
     }
     throw new Error("unexpected_provider_operation");
@@ -168,6 +192,13 @@ test("a project-focused conformance Controller invokes typed Launch operations",
     await waitFor(() => output.join("").includes(
       `Launch request ${launchRequestId} approved at revision 2.`,
     ));
+    await enter(`start ${launchRequestId} 2`);
+    await waitFor(() => output.join("").includes(
+      "Recovered the accepted outcome by exact idempotency-key lookup",
+    ));
+    assert.match(output.join(""), new RegExp(`Harness run ${harnessRunId} created`));
+    assert.match(output.join(""), /Recovered the accepted outcome by exact idempotency-key lookup/);
+    assert.equal(startAttempts, 1);
     const downgraded = await manager.attach({
       socket,
       sessionId: session.sessionId,
@@ -191,6 +222,8 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       "launch-request.prepare",
       "launch-request.prepare",
       "launch-request.decide",
+      "harness-run.start",
+      "harness-run.lookup",
     ]);
     assert.ok(operations.every((operation) =>
       operation.sessionId === session.sessionId
@@ -213,6 +246,10 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       expectedRevision: 1,
       idempotencyKey: operations[3].input.idempotencyKey,
     });
+    assert.equal(
+      operations[4].input.idempotencyKey,
+      operations[5].input.idempotencyKey,
+    );
     const sessionStartAudit = audits.find((entry) =>
       entry.action === "controller.session.start"
       && entry.outcome === "accepted"

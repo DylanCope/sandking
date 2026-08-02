@@ -147,6 +147,8 @@ let currentHarnessRunObservation = {
   requestId: "harness-observe-cached",
   code: "harness_run_absent",
   mode: "snapshot",
+  resynchronization: null,
+  launchRequest: null,
   run: null,
   events: [],
   nextSequence: 0,
@@ -154,6 +156,8 @@ let currentHarnessRunObservation = {
   logStreams: [],
   terminalEnvelopeValidation: null,
 };
+/** @type {any | null} */
+let currentProjectControllerSession = null;
 let shuttingDown = false;
 let startupCommitted = false;
 /** @type {Promise<void> | null} */
@@ -221,6 +225,38 @@ const hostConnectionStateMessage = () => ({
   unaffectedViews: [...hostUnaffectedViews],
   retainedObservationCursor: state.host.observationCursor,
 });
+
+/** @param {any} observation */
+const retainCanonicalHarnessRunObservation = (observation) => {
+  if (!observation.run) {
+    currentHarnessRunObservation = {
+      ...structuredClone(observation),
+      requestId: "harness-observe-cached",
+      code: "harness_run_absent",
+      mode: "snapshot",
+      resynchronization: null,
+    };
+    return;
+  }
+  const sameRun = currentHarnessRunObservation.run?.harnessRunId
+    === observation.run.harnessRunId;
+  const retainedEvents = observation.mode === "resume" && sameRun
+    ? [...currentHarnessRunObservation.events, ...observation.events]
+    : observation.events;
+  const eventsById = new Map(retainedEvents.map(
+    (/** @type {any} */ event) => [event.eventId, event],
+  ));
+  currentHarnessRunObservation = {
+    ...structuredClone(observation),
+    requestId: "harness-observe-cached",
+    code: "harness_run_observed",
+    mode: "snapshot",
+    resynchronization: null,
+    events: [...eventsById.values()].sort(
+      (/** @type {any} */ left, /** @type {any} */ right) => left.sequence - right.sequence,
+    ),
+  };
+};
 
 /** @param {"host_disconnected" | "host_protocol_invalid" | "host_observation_resynchronization_failed"} code */
 const markHostDisconnected = async (code) => {
@@ -1988,6 +2024,7 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
       projectFileWrite: false,
     },
   };
+  currentProjectControllerSession = structuredClone(session);
   projectSessionOutcomes.set(request.idempotencyKeyHash, {
     fingerprint,
     status: 201,
@@ -2343,6 +2380,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
               mode: attached.mode,
               exclusive: attached.exclusive,
               outputCursor: control.outputCursor,
+              inputSequence: attached.inputSequence,
             }));
             for (const frame of attached.frames) {
               socket.send(encodeBrowserOpaqueFrame(frame), { binary: true });
@@ -2364,7 +2402,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           if (observation.type !== "harness.run.observe.result") {
             throw new BrowserProtocolError("harness_run_observation_failed");
           }
-          currentHarnessRunObservation = structuredClone(observation);
+          retainCanonicalHarnessRunObservation(observation);
           socket.send(serializeRuntimeControl({
             type: "runtime.harness-run.observation",
             requestId: control.requestId,
@@ -2499,6 +2537,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
             observationCursor: state.host.observationCursor,
           },
           projectPreparation: currentProjectPreparation,
+          focusedControllerSession: currentProjectControllerSession,
           controllerProviders: controllerProviderProjection,
           planning: await planningSpine?.project(),
           harnessRunObservation: currentHarnessRunObservation,

@@ -7,6 +7,7 @@ import {
   harnessRunOutcomeSchema,
   harnessRunSchema,
 } from "./harness-runs.mjs";
+import { launchRequestSchema } from "./launch-requests.mjs";
 import { protocolVersion, releaseVersion, versionSchema } from "./protocol.mjs";
 
 export const BROWSER_PROTOCOL_VERSION = protocolVersion;
@@ -35,7 +36,7 @@ export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-truthful-degraded-connections")
+  .update("sandking-browser-runtime-schema-v1-with-canonical-run-reconnection")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -60,11 +61,59 @@ const hostConnectionFailureSchema = z.object({
   observedAt: z.string().datetime(),
 }).strict();
 
+const focusedControllerSessionProjectionSchema = z.object({
+  sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
+  focused: z.literal(true),
+  provider: z.object({
+    providerId: z.enum(["conformance-controller-v1", "claude-code"]),
+    kind: z.enum(["conformance", "production"]),
+    fixture: z.boolean(),
+    adapterId: z.enum([
+      "conformance-controller-adapter-v1",
+      "claude-code-controller-adapter-v1",
+    ]),
+    adapterProtocol: z.string().regex(/^1\.[0-9]+\.[0-9]+$/),
+    capabilities: z.array(identifierSchema).max(9),
+    providerSessionId: z.union([
+      z.string().regex(/^conformance-provider-session-[a-f0-9]{24}$/),
+      z.string().uuid(),
+    ]),
+    readiness: z.object({
+      controlProtocol: z.string().regex(/^1\.[0-9]+\.[0-9]+$/),
+      signal: z.literal("provider.session.ready"),
+      providerObservedTty: z.literal(true),
+    }).strict(),
+  }).strip(),
+  terminal: z.object({
+    streamId: z.string().regex(/^controller-terminal-[a-f0-9]{24}$/),
+    kind: z.literal("pty"),
+    runtimeOwned: z.literal(true),
+    state: z.enum(["running", "exited"]),
+    writableAttachment: z.object({
+      attachmentId: z.string().regex(/^terminal-attachment-[a-f0-9]{24}$/),
+      mode: z.literal("exclusive"),
+    }).strict(),
+  }).strict(),
+  workContext: z.object({
+    workContextId: z.string().regex(/^project-[a-f0-9]{24}$/),
+    kind: z.literal("project"),
+    canonicalReference: z.string().regex(/^sandking:project:project-[a-f0-9]{24}$/),
+  }).strict(),
+}).strict();
+
 const harnessRunObservationProjectionSchema = z.object({
   type: z.literal("harness.run.observe.result"),
   requestId: identifierSchema,
-  code: z.enum(["harness_run_absent", "harness_run_observed"]),
-  mode: z.enum(["snapshot", "resume"]),
+  code: z.enum(["harness_run_absent", "harness_run_observed", "resync-required"]),
+  mode: z.enum(["snapshot", "resume", "resync-required"]),
+  resynchronization: z.object({
+    code: z.literal("resync-required"),
+    reason: z.enum(["cursor_incompatible", "history_gap"]),
+    requestedAfterSequence: z.number().int().nonnegative(),
+    availableFromSequence: z.number().int().nonnegative(),
+    canonicalSnapshot: z.literal(true),
+  }).strict().nullable(),
+  launchRequest: launchRequestSchema.nullable(),
   run: harnessRunSchema.nullable(),
   events: z.array(harnessRunEventSchema).max(1_024),
   nextSequence: z.number().int().nonnegative(),
@@ -108,7 +157,7 @@ const browserTerminalAttachSchema = z.object({
   sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
   streamId: z.string().regex(/^controller-terminal-[a-f0-9]{24}$/),
   attachmentId: z.string().regex(/^terminal-attachment-[a-f0-9]{24}$/),
-  mode: z.enum(["read-write", "read-only"]),
+  mode: z.enum(["read-write", "read-only", "read-write-if-available"]),
   outputCursor: z.number().int().nonnegative(),
 }).strict();
 
@@ -185,6 +234,7 @@ export const runtimeHelloAckSchema = z.object({
     }).strict(),
     planning: planningProjectionSchema,
     projectPreparation: projectPreparationProjectionSchema,
+    focusedControllerSession: focusedControllerSessionProjectionSchema.nullable(),
     controllerProviders: z.array(z.object({
       providerId: z.enum(["conformance-controller-v1", "claude-code"]),
       kind: z.enum(["conformance", "production"]),
@@ -240,6 +290,7 @@ const runtimeTerminalAttachedSchema = z.object({
   mode: z.enum(["read-write", "read-only"]),
   exclusive: z.boolean(),
   outputCursor: z.number().int().nonnegative(),
+  inputSequence: z.number().int().nonnegative(),
 }).strict();
 
 const runtimeHarnessRunObservationSchema = z.object({

@@ -27,6 +27,8 @@
     "acceptance:issue-119:update-evidence": "node test/run-issue-119-acceptance.mjs acceptance/issue-119.manifest.json --update-evidence",
     "acceptance:issue-120": "node test/run-issue-120-acceptance.mjs acceptance/issue-120.manifest.json",
     "acceptance:issue-120:update-evidence": "node test/run-issue-120-acceptance.mjs acceptance/issue-120.manifest.json --update-evidence",
+    "acceptance:issue-121": "node test/run-issue-121-acceptance.mjs acceptance/issue-121.manifest.json",
+    "acceptance:issue-121:update-evidence": "node test/run-issue-121-acceptance.mjs acceptance/issue-121.manifest.json --update-evidence",
     "acceptance:issue-122": "node test/run-issue-122-acceptance.mjs acceptance/issue-122.manifest.json",
     "acceptance:issue-122:update-evidence": "node test/run-issue-122-acceptance.mjs acceptance/issue-122.manifest.json --update-evidence",
     "acceptance:issue-123": "node test/run-issue-123-acceptance.mjs acceptance/issue-123.manifest.json",

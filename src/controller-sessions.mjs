@@ -1,5 +1,5 @@
 import { spawn as spawnChild } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -518,6 +518,19 @@ const openProviderControl = async (context) => {
           if (!context.handleOperation) {
             throw new ControllerSessionError("provider_operation_unsupported");
           }
+          const operationInput = operationRequest.input
+            && typeof operationRequest.input === "object"
+            && !Array.isArray(operationRequest.input)
+            ? operationRequest.input
+            : null;
+          const idempotencyKey = operationInput && "idempotencyKey" in operationInput
+            ? operationInput.idempotencyKey
+            : null;
+          const idempotencyKeyHash = typeof idempotencyKey === "string"
+            && idempotencyKey.length > 0
+            && idempotencyKey.length <= 256
+            ? `sha256:${createHash("sha256").update(idempotencyKey).digest("hex")}`
+            : null;
           try {
             const outcome = await context.handleOperation({
               sessionId: context.sessionId,
@@ -532,6 +545,7 @@ const openProviderControl = async (context) => {
               workContextId: context.workContext.workContextId,
               operation: operationRequest.operation,
               operationId: operationRequest.operationId,
+              idempotencyKeyHash,
               inputRetained: false,
             });
             socket.write(`${JSON.stringify({
@@ -566,6 +580,7 @@ const openProviderControl = async (context) => {
                 workContextId: context.workContext.workContextId,
                 operation: operationRequest.operation,
                 operationId: operationRequest.operationId,
+                idempotencyKeyHash,
                 code,
                 ...(retainedOutcome ? {
                   idempotentReplay,
@@ -1059,7 +1074,7 @@ export const createControllerSessionManager = async (options) => {
   };
 
   /**
-   * @param {{socket: any, sessionId: string, streamId: string, attachmentId: string, mode: "read-write" | "read-only", outputCursor: number, onOutput: (socket: any, frame: any) => void}} request
+   * @param {{socket: any, sessionId: string, streamId: string, attachmentId: string, mode: "read-write" | "read-only" | "read-write-if-available", outputCursor: number, onOutput: (socket: any, frame: any) => void}} request
    */
   const attach = async (request) => {
     const session = activeBySession.get(request.sessionId);
@@ -1072,17 +1087,26 @@ export const createControllerSessionManager = async (options) => {
     ) {
       throw new ControllerSessionError("controller_terminal_not_found");
     }
-    if (request.mode !== "read-write" && request.mode !== "read-only") {
+    if (
+      request.mode !== "read-write"
+      && request.mode !== "read-only"
+      && request.mode !== "read-write-if-available"
+    ) {
       throw new ControllerSessionError("controller_terminal_attachment_mode_invalid");
     }
+    const mode = request.mode === "read-write-if-available"
+      ? session.writableSocket && session.writableSocket !== request.socket
+        ? "read-only"
+        : "read-write"
+      : request.mode;
     if (
-      request.mode === "read-write"
+      mode === "read-write"
       && session.writableSocket
       && session.writableSocket !== request.socket
     ) {
       throw new ControllerSessionError("terminal_write_attachment_conflict");
     }
-    if (request.mode === "read-write") {
+    if (mode === "read-write") {
       session.writableSocket = request.socket;
       session.onOutput = request.onOutput;
       session.readOnlySockets.delete(request.socket);
@@ -1099,14 +1123,15 @@ export const createControllerSessionManager = async (options) => {
       sessionId: session.sessionId,
       providerSessionId: session.providerSessionId,
       streamId: session.streamId,
-      mode: request.mode,
-      exclusive: request.mode === "read-write",
+      mode,
+      exclusive: mode === "read-write",
       outputCursor: request.outputCursor,
     });
     return {
       session,
-      mode: request.mode,
-      exclusive: request.mode === "read-write",
+      mode,
+      exclusive: mode === "read-write",
+      inputSequence: session.expectedInputSequence,
       frames: session.bufferedFrames.filter(
         (/** @type {{sequence: number}} */ frame) => frame.sequence >= request.outputCursor,
       ),

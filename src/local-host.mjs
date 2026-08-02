@@ -356,6 +356,7 @@ const main = async () => {
     launchRequests,
     loadLaunchContext: projectRegistry.loadLaunchContext,
   });
+  let delayedHarnessRunStartResponse = false;
 
   // The Host is a durable process boundary. It remains available after
   // negotiation and keeps control and opaque bulk frames structurally distinct.
@@ -407,7 +408,12 @@ const main = async () => {
       continue;
     }
     if (frame.message.type === "harness.run.start") {
-      writeFrame(process.stdout, await harnessRuns.start(frame.message));
+      const outcome = await harnessRuns.start(frame.message);
+      if (mode === "delayed-harness-run-start-response" && !delayedHarnessRunStartResponse) {
+        delayedHarnessRunStartResponse = true;
+        await new Promise((resolve) => setTimeout(resolve, 3_250));
+      }
+      writeFrame(process.stdout, outcome);
       continue;
     }
     if (frame.message.type === "harness.run.lookup") {
