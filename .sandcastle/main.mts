@@ -26,6 +26,7 @@ import { runPullRequestReview } from "./pr-review-runner.mjs";
 import {
   createCodexSandboxSettings,
   createRunSettings,
+  createWorkerSandboxSettings,
 } from "./sandbox-settings.mjs";
 import { retryOperation } from "./resilience.mjs";
 import {
@@ -130,12 +131,13 @@ const runIssueWorker = async (
     attempts: PHASE_ATTEMPTS,
     initialDelayMs: RETRY_DELAY_MS,
     operation: async () => {
+      const workerSandboxSettings = createWorkerSandboxSettings(issue.id);
       // A retry gets a fresh container while retaining the named worktree.
       // This preserves commits and uncommitted edits from an interrupted agent.
       const sandbox = await sandcastle.createSandbox({
         branch: issue.branch,
-        sandbox: codexDocker(),
-        hooks,
+        sandbox: docker(workerSandboxSettings.docker),
+        hooks: workerSandboxSettings.hooks,
         copyToWorktree,
       });
 

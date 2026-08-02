@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   createCodexSandboxSettings,
   createRunSettings,
+  createWorkerSandboxSettings,
 } from "./sandbox-settings.mjs";
 
 test("the sandbox receives an independent copy of the host Codex auth file", async () => {
@@ -45,6 +46,75 @@ test("the Docker sandbox mounts the host Codex auth file read-only", () => {
       readonly: true,
     },
   ]);
+});
+
+test("real Claude access is granted only to an explicitly selected Worker issue", () => {
+  const paths = {
+    codexAuthPath: "/host/.codex/auth.json",
+    claudeCredentialPath: "/host/.claude/.credentials.json",
+    claudeExecutablePath: "/host/bin/claude",
+  };
+  const environment = { SANDCASTLE_REAL_CLAUDE_ISSUES: "146, 150" };
+
+  const selected = createWorkerSandboxSettings("146", environment, paths);
+  const unrelated = createWorkerSandboxSettings("147", environment, paths);
+  const disabled = createWorkerSandboxSettings("146", {}, paths);
+
+  assert.deepEqual(selected.docker.mounts, [
+    {
+      hostPath: paths.codexAuthPath,
+      sandboxPath: "/home/agent/.sandcastle-secrets/codex-auth.json",
+      readonly: true,
+    },
+    {
+      hostPath: paths.claudeCredentialPath,
+      sandboxPath: "/home/agent/.sandcastle-secrets/claude-credentials.json",
+      readonly: true,
+    },
+    {
+      hostPath: paths.claudeExecutablePath,
+      sandboxPath: "/usr/local/bin/claude",
+      readonly: true,
+    },
+  ]);
+  assert.deepEqual(unrelated, createCodexSandboxSettings(paths.codexAuthPath));
+  assert.deepEqual(disabled, createCodexSandboxSettings(paths.codexAuthPath));
+});
+
+test("the selected Worker receives a writable isolated copy of Claude authentication", async () => {
+  const testRoot = await mkdtemp(join(tmpdir(), "sandcastle-claude-auth-"));
+  const hostCredential = join(testRoot, "host-claude-credentials.json");
+  const sandboxHome = join(testRoot, "sandbox-home");
+  const credentials = '{"claudeAiOauth":{"accessToken":"destination-local"}}\n';
+  await writeFile(hostCredential, credentials, { mode: 0o600 });
+  const settings = createWorkerSandboxSettings(
+    "146",
+    { SANDCASTLE_REAL_CLAUDE_ISSUES: "146" },
+    {
+      codexAuthPath: "/host/.codex/auth.json",
+      claudeCredentialPath: "/host/.claude/.credentials.json",
+      claudeExecutablePath: "/host/bin/claude",
+    },
+  );
+  const claudeHook = settings.hooks.sandbox.onSandboxReady.find((hook) =>
+    hook.command.includes("CLAUDE_CREDENTIAL_SOURCE"));
+
+  assert.ok(claudeHook, "selected Worker must install isolated Claude authentication");
+  const result = spawnSync("bash", ["-lc", claudeHook.command], {
+    cwd: testRoot,
+    env: {
+      ...process.env,
+      HOME: sandboxHome,
+      CLAUDE_CREDENTIAL_SOURCE: hostCredential,
+    },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+
+  const sandboxCredential = join(sandboxHome, ".claude", ".credentials.json");
+  assert.equal(await readFile(sandboxCredential, "utf8"), credentials);
+  await writeFile(sandboxCredential, '{"refreshed":true}\n');
+  assert.equal(await readFile(hostCredential, "utf8"), credentials);
 });
 
 test("the sandbox installs Codex auth when the worktree has no Sandcastle files", async () => {

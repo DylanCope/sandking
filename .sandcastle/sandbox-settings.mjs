@@ -29,6 +29,47 @@ export const createCodexSandboxSettings = (
   },
 });
 
+export const createWorkerSandboxSettings = (
+  issueId,
+  environment = process.env,
+  paths = {},
+) => {
+  const codexAuthPath = paths.codexAuthPath ?? "~/.codex/auth.json";
+  const settings = createCodexSandboxSettings(codexAuthPath);
+  const allowedIssues = new Set(
+    (environment.SANDCASTLE_REAL_CLAUDE_ISSUES ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+  if (!allowedIssues.has(String(issueId))) {
+    return settings;
+  }
+  settings.docker.mounts.push(
+    {
+      hostPath: paths.claudeCredentialPath ?? "~/.claude/.credentials.json",
+      sandboxPath: "/home/agent/.sandcastle-secrets/claude-credentials.json",
+      readonly: true,
+    },
+    {
+      hostPath: paths.claudeExecutablePath ?? "~/.local/bin/claude",
+      sandboxPath: "/usr/local/bin/claude",
+      readonly: true,
+    },
+  );
+  settings.hooks.sandbox.onSandboxReady.splice(-1, 0, {
+    command: [
+      "set -eu",
+      'claude_credential_source="${CLAUDE_CREDENTIAL_SOURCE:-${HOME}/.sandcastle-secrets/claude-credentials.json}"',
+      'claude_home="${CLAUDE_HOME:-${HOME}/.claude}"',
+      'mkdir -p "${claude_home}"',
+      'cp "${claude_credential_source}" "${claude_home}/.credentials.json"',
+      'chmod 600 "${claude_home}/.credentials.json"',
+    ].join("; "),
+  });
+  return settings;
+};
+
 /** @returns {{ logging?: { type: "stdout" } }} */
 export const createRunSettings = (args = process.argv.slice(2)) =>
   args.includes("--stdout") ? { logging: { type: "stdout" } } : {};
