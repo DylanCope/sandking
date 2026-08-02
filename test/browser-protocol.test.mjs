@@ -131,14 +131,17 @@ test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and 
       failure: ack.viewModel.host.failure,
     }, { status: "connected", freshness: "current", failure: null });
     assert.deepEqual(Object.keys(ack.viewModel).sort(), [
-      "controllerProviders", "harnessRunObservation", "host", "kind", "negotiation",
-      "planning", "projectPreparation", "runtime",
+      "controllerProviders", "focusedControllerSession", "harnessRunObservation", "host", "kind",
+      "negotiation", "planning", "projectPreparation", "runtime",
     ]);
+    assert.equal(ack.viewModel.focusedControllerSession, null);
     assert.deepEqual(ack.viewModel.harnessRunObservation, {
       type: "harness.run.observe.result",
       requestId: "harness-observe-cached",
       code: "harness_run_absent",
       mode: "snapshot",
+      resynchronization: null,
+      launchRequest: null,
       run: null,
       events: [],
       nextSequence: 0,

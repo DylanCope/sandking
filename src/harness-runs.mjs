@@ -852,6 +852,8 @@ export const createHarnessRunManager = async (options) => {
         requestId: request.requestId,
         code: "harness_run_absent",
         mode: "snapshot",
+        resynchronization: null,
+        launchRequest: null,
         run: null,
         events: [],
         nextSequence: 0,
@@ -864,16 +866,41 @@ export const createHarnessRunManager = async (options) => {
       ? request.afterSequence
       : 0;
     const maximumSequence = run.events.at(-1)?.sequence ?? 0;
-    const resynchronize = afterSequence > maximumSequence;
+    const availableFromSequence = run.events[0]?.sequence ?? 0;
+    const laterEvents = run.events.filter((event) => event.sequence > afterSequence);
+    const historyGap = afterSequence > 0
+      && afterSequence < maximumSequence
+      && laterEvents.length > 0
+      && laterEvents[0].sequence !== afterSequence + 1;
+    const cursorIncompatible = afterSequence > maximumSequence;
+    const resynchronizationReason = cursorIncompatible
+      ? "cursor_incompatible"
+      : historyGap
+        ? "history_gap"
+        : null;
+    const resynchronization = resynchronizationReason ? {
+      code: "resync-required",
+      reason: resynchronizationReason,
+      requestedAfterSequence: afterSequence,
+      availableFromSequence,
+      canonicalSnapshot: true,
+    } : null;
+    const launchRequest = await options.launchRequests.get(run.launchRequestId);
     return {
       type: "harness.run.observe.result",
       requestId: request.requestId,
-      code: "harness_run_observed",
-      mode: afterSequence === 0 || resynchronize ? "snapshot" : "resume",
+      code: resynchronization ? "resync-required" : "harness_run_observed",
+      mode: resynchronization
+        ? "resync-required"
+        : afterSequence === 0
+          ? "snapshot"
+          : "resume",
+      resynchronization,
+      launchRequest,
       run: publicRun(run),
-      events: structuredClone(resynchronize
+      events: structuredClone(resynchronization
         ? run.events
-        : run.events.filter((event) => event.sequence > afterSequence)),
+        : laterEvents),
       nextSequence: maximumSequence,
       outcome: structuredClone(run.outcome),
       logStreams: structuredClone(run.logStreams),

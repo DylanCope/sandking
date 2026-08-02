@@ -130,11 +130,17 @@ readiness, bounded progress with unique identities and valid published parents,
 and exactly one terminal envelope; stdout and stderr remain independently ranged
 diagnostic streams. Observed expiry or material drift permanently invalidates
 the original approval. Adapter-channel closure, process exit, or log text never
-implies success. The Cockpit
-observes ordered lifecycle events, explicitly fetches each log range over the
-opaque bulk channel, and renders the structured outcome. Closing or refreshing
-the browser neither cancels the run nor terminates its focused Controller
-session.
+implies success. The Cockpit observes ordered lifecycle events, explicitly
+fetches each log range over the opaque bulk channel, and renders the structured
+outcome. Closing or refreshing the browser neither cancels the run nor
+terminates its focused Controller session. On refresh, the Cockpit reconnects
+to the same runtime and reattaches that existing provider PTY using its retained
+output and next input sequence; it does not launch another provider session.
+Harness-run observation acknowledges its last sequence and requests only later
+retained events. An unavailable or incompatible run cursor returns typed
+`resync-required` with the canonical Launch request, run snapshot, retained
+events, log references, and structured outcome instead of claiming gap-free
+continuity.
 
 If the Harness process exits without exactly one valid terminal envelope, the
 Cockpit shows a failed incomplete result even when a diagnostic says
@@ -238,6 +244,16 @@ npm run acceptance:issue-120
 Its retained sanitized evidence is generated with
 `npm run acceptance:issue-120:update-evidence` and stored in
 `acceptance/evidence/issue-120.json`.
+
+Run the canonical reconnect and ambiguous-outcome lookup scenario with:
+
+```bash
+npm run acceptance:issue-121
+```
+
+Its retained sanitized evidence is generated with
+`npm run acceptance:issue-121:update-evidence` and stored in
+`acceptance/evidence/issue-121.json`.
 
 Run the truthful Harness and connection-failure scenario with:
 

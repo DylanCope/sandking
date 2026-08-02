@@ -1059,7 +1059,7 @@ export const createControllerSessionManager = async (options) => {
   };
 
   /**
-   * @param {{socket: any, sessionId: string, streamId: string, attachmentId: string, mode: "read-write" | "read-only", outputCursor: number, onOutput: (socket: any, frame: any) => void}} request
+   * @param {{socket: any, sessionId: string, streamId: string, attachmentId: string, mode: "read-write" | "read-only" | "read-write-if-available", outputCursor: number, onOutput: (socket: any, frame: any) => void}} request
    */
   const attach = async (request) => {
     const session = activeBySession.get(request.sessionId);
@@ -1072,17 +1072,26 @@ export const createControllerSessionManager = async (options) => {
     ) {
       throw new ControllerSessionError("controller_terminal_not_found");
     }
-    if (request.mode !== "read-write" && request.mode !== "read-only") {
+    if (
+      request.mode !== "read-write"
+      && request.mode !== "read-only"
+      && request.mode !== "read-write-if-available"
+    ) {
       throw new ControllerSessionError("controller_terminal_attachment_mode_invalid");
     }
+    const mode = request.mode === "read-write-if-available"
+      ? session.writableSocket && session.writableSocket !== request.socket
+        ? "read-only"
+        : "read-write"
+      : request.mode;
     if (
-      request.mode === "read-write"
+      mode === "read-write"
       && session.writableSocket
       && session.writableSocket !== request.socket
     ) {
       throw new ControllerSessionError("terminal_write_attachment_conflict");
     }
-    if (request.mode === "read-write") {
+    if (mode === "read-write") {
       session.writableSocket = request.socket;
       session.onOutput = request.onOutput;
       session.readOnlySockets.delete(request.socket);
@@ -1099,14 +1108,15 @@ export const createControllerSessionManager = async (options) => {
       sessionId: session.sessionId,
       providerSessionId: session.providerSessionId,
       streamId: session.streamId,
-      mode: request.mode,
-      exclusive: request.mode === "read-write",
+      mode,
+      exclusive: mode === "read-write",
       outputCursor: request.outputCursor,
     });
     return {
       session,
-      mode: request.mode,
-      exclusive: request.mode === "read-write",
+      mode,
+      exclusive: mode === "read-write",
+      inputSequence: session.expectedInputSequence,
       frames: session.bufferedFrames.filter(
         (/** @type {{sequence: number}} */ frame) => frame.sequence >= request.outputCursor,
       ),

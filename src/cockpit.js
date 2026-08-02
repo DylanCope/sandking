@@ -16,7 +16,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:f73240669d4b290fe0e4b0b6442ee4f7e2d54633846727ef94cb6f5d5ee4d1cb",
+  schemaDigest: "sha256:607f457203e1296a9d8614d2131175cee7eb4c23ad2c0eb3c39be313a5693418",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -34,8 +34,23 @@ let runtimeNegotiated = false;
 let harnessRunSection;
 let harnessObservationTimer;
 let harnessRequestSequence = 0;
+let currentHarnessRunObservation = null;
 let hostConnectionStatus = "connecting";
 let hostFreshness = "stale";
+const harnessRunCursorStorageKey = "sandking.harnessRunCursor";
+
+const retainedHarnessRunCursor = () => {
+  try {
+    const cursor = JSON.parse(sessionStorage.getItem(harnessRunCursorStorageKey) ?? "null");
+    return /^harness-run-[a-f0-9]{24}$/.test(cursor?.harnessRunId ?? "")
+      && Number.isSafeInteger(cursor?.sequence)
+      && cursor.sequence >= 0
+      ? cursor
+      : null;
+  } catch {
+    return null;
+  }
+};
 
 const encodeOpaqueFrame = (streamId, sequence, data) => {
   const id = new TextEncoder().encode(streamId);
@@ -141,7 +156,12 @@ const renderPreparedProject = (current) => {
   return card;
 };
 
-const renderProjectPreparation = (preparation, session, controllerProviders) => {
+const renderProjectPreparation = (
+  preparation,
+  session,
+  controllerProviders,
+  focusedControllerSession,
+) => {
   const section = element("section", {
     id: "project-preparation",
     "data-explicit-path-only": "true",
@@ -289,32 +309,10 @@ const renderProjectPreparation = (preparation, session, controllerProviders) => 
     openButton.disabled = hostConnectionStatus !== "connected";
   });
 
-  const openFocusedController = async (providerId, sourceButton) => {
-    if (!currentProject) {
-      return;
-    }
-    sourceButton.disabled = true;
-    controllerFeedback.textContent = "Opening the owning focused Controller session…";
-    const response = await fetch("/projects/sessions/open", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-sandking-csrf": session.csrfToken,
-        "x-sandking-idempotency-key": mutationKey(),
-        "x-sandking-expected-revision": String(currentProject.revision),
-      },
-      body: JSON.stringify({ projectId: currentProject.projectId, providerId }),
-    });
-    const outcome = await response.json();
-    if (!response.ok || outcome.type !== "mutation_result") {
-      controllerFeedback.textContent = `Focused Controller failed safely: ${outcome.code}.`;
-      sourceButton.disabled = hostConnectionStatus !== "connected"
-        || (providerId === "claude-code" ? !claudeAvailable : false);
-      return;
-    }
-    const focused = outcome.session;
+  const attachFocusedController = (focused, reconnected) => {
     controllerPanel.hidden = false;
     controllerPanel.dataset.sessionState = "open";
+    controllerPanel.dataset.reconnected = String(reconnected);
     controllerPanel.dataset.sessionId = focused.sessionId;
     controllerPanel.dataset.workContextId = focused.workContext.workContextId;
     controllerPanel.dataset.providerId = focused.provider.providerId;
@@ -351,6 +349,7 @@ const renderProjectPreparation = (preparation, session, controllerProviders) => 
       attachmentId: focused.terminal.writableAttachment.attachmentId,
       decoder: new TextDecoder(),
       inputSequence: 0,
+      requestedMode: reconnected ? "read-write-if-available" : "read-write",
       output: terminalOutput,
       panel: controllerPanel,
       sendInput,
@@ -392,17 +391,47 @@ const renderProjectPreparation = (preparation, session, controllerProviders) => 
         sessionId: focused.sessionId,
         streamId: focused.terminal.streamId,
         attachmentId: focused.terminal.writableAttachment.attachmentId,
-        mode: "read-write",
+        mode: terminalState.requestedMode,
         outputCursor: 0,
       },
     }));
-    controllerFeedback.textContent =
-      "Use the focused Controller conversation to inspect, prepare, approve, or reject.";
+    controllerFeedback.textContent = reconnected
+      ? "Reconnected to the existing focused Controller and retained terminal output."
+      : "Use the focused Controller conversation to inspect, prepare, approve, or reject.";
+  };
+
+  const openFocusedController = async (providerId, sourceButton) => {
+    if (!currentProject) {
+      return;
+    }
+    sourceButton.disabled = true;
+    controllerFeedback.textContent = "Opening the owning focused Controller session…";
+    const response = await fetch("/projects/sessions/open", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-sandking-csrf": session.csrfToken,
+        "x-sandking-idempotency-key": mutationKey(),
+        "x-sandking-expected-revision": String(currentProject.revision),
+      },
+      body: JSON.stringify({ projectId: currentProject.projectId, providerId }),
+    });
+    const outcome = await response.json();
+    if (!response.ok || outcome.type !== "mutation_result") {
+      controllerFeedback.textContent = `Focused Controller failed safely: ${outcome.code}.`;
+      sourceButton.disabled = hostConnectionStatus !== "connected"
+        || (providerId === "claude-code" ? !claudeAvailable : false);
+      return;
+    }
+    attachFocusedController(outcome.session, false);
   };
   openController.addEventListener("click", () =>
     openFocusedController("conformance-controller-v1", openController));
   openClaudeController.addEventListener("click", () =>
     openFocusedController("claude-code", openClaudeController));
+  if (focusedControllerSession) {
+    attachFocusedController(focusedControllerSession, true);
+  }
 
   section.append(
     element("h3", {}, "Bounded Project configuration"),
@@ -435,13 +464,14 @@ const requestHarnessRunObservation = () => {
   ) {
     return;
   }
+  const cursor = retainedHarnessRunCursor();
   socket.send(JSON.stringify({
     channel: "control",
     message: {
       type: "browser.harness-run.observe",
       requestId: `harness-observe-${harnessRequestSequence}`,
-      harnessRunId: null,
-      afterSequence: 0,
+      harnessRunId: cursor?.harnessRunId ?? currentHarnessRunObservation?.run?.harnessRunId ?? null,
+      afterSequence: cursor?.sequence ?? 0,
     },
   }));
   harnessRequestSequence += 1;
@@ -453,6 +483,8 @@ const renderHarnessRun = (observation) => {
     "data-observation-mode": observation.mode,
     "data-run-present": String(Boolean(observation.run)),
     "data-host-freshness": hostFreshness,
+    "data-next-sequence": observation.nextSequence,
+    "data-resynchronization-reason": observation.resynchronization?.reason ?? "",
   });
   section.append(
     element("h2", {}, "Harness run observation"),
@@ -468,11 +500,24 @@ const renderHarnessRun = (observation) => {
   section.dataset.runId = run.harnessRunId;
   section.dataset.runStatus = run.status;
   section.dataset.launchRequestId = run.launchRequestId;
+  section.dataset.projectId = observation.launchRequest?.project.projectId ?? run.projectId;
   section.dataset.harnessPin = run.harnessPinnedRevision;
+  section.dataset.controllerSessionId = run.controllerSessionId;
+  section.dataset.startAuditId = run.startAuditId;
+  section.dataset.launchRequestStatus = observation.launchRequest?.status ?? "unknown";
+  section.dataset.launchExecutionStatus =
+    observation.launchRequest?.execution.status ?? "unknown";
+  section.dataset.launchDecisionId = observation.launchRequest?.decision?.decisionId ?? "";
+  section.dataset.launchDecisionAuditId = observation.launchRequest?.decision?.auditId ?? "";
   section.append(
     element("h3", {}, `Harness run ${run.harnessRunId}`),
     element("p", { "data-run-status": run.status }, `Lifecycle status: ${run.status}`),
-    element("p", {}, `Launch request: ${run.launchRequestId}`),
+    element("p", {
+      "data-launch-request-status": observation.launchRequest?.status ?? "unknown",
+      "data-launch-execution-status": observation.launchRequest?.execution.status ?? "unknown",
+    }, `Launch request: ${run.launchRequestId} (${observation.launchRequest?.status ?? "unknown"}; `
+      + `execution ${observation.launchRequest?.execution.status ?? "unknown"})`),
+    element("p", {}, `Project: ${observation.launchRequest?.project.projectId ?? run.projectId}`),
     element("p", {}, `Harness: ${run.harnessId} @ ${run.harnessPinnedRevision}`),
   );
   const events = element("ol", {
@@ -540,12 +585,33 @@ const renderHarnessRun = (observation) => {
 };
 
 const applyHarnessRunObservation = (observation) => {
-  const replacement = renderHarnessRun(observation);
+  const sameRun = currentHarnessRunObservation?.run?.harnessRunId
+    === observation.run?.harnessRunId;
+  const visibleObservation = observation.mode === "resume" && sameRun
+    ? {
+        ...observation,
+        events: [...new Map([
+          ...currentHarnessRunObservation.events,
+          ...observation.events,
+        ].map((event) => [event.eventId, event])).values()]
+          .sort((left, right) => left.sequence - right.sequence),
+      }
+    : observation;
+  currentHarnessRunObservation = visibleObservation;
+  if (visibleObservation.run) {
+    sessionStorage.setItem(harnessRunCursorStorageKey, JSON.stringify({
+      harnessRunId: visibleObservation.run.harnessRunId,
+      sequence: visibleObservation.nextSequence,
+    }));
+  } else {
+    sessionStorage.removeItem(harnessRunCursorStorageKey);
+  }
+  const replacement = renderHarnessRun(visibleObservation);
   harnessRunSection?.replaceWith(replacement);
   harnessRunSection = replacement;
   diagnosticStreams.clear();
-  if (observation.run) {
-    for (const stream of observation.logStreams) {
+  if (visibleObservation.run) {
+    for (const stream of visibleObservation.logStreams) {
       if (stream.availableEnd === 0) {
         continue;
       }
@@ -554,7 +620,7 @@ const applyHarnessRunObservation = (observation) => {
         message: {
           type: "browser.harness-run.logs.get",
           requestId: `harness-logs-${stream.producer}-${harnessRequestSequence}`,
-          harnessRunId: observation.run.harnessRunId,
+          harnessRunId: visibleObservation.run.harnessRunId,
           producer: stream.producer,
           offset: 0,
           limit: Math.min(16_384, Math.max(1, stream.availableEnd)),
@@ -564,7 +630,10 @@ const applyHarnessRunObservation = (observation) => {
     }
   }
   clearTimeout(harnessObservationTimer);
-  if (!observation.run || !["succeeded", "failed", "cancelled"].includes(observation.run.status)) {
+  if (
+    !visibleObservation.run
+    || !["succeeded", "failed", "cancelled"].includes(visibleObservation.run.status)
+  ) {
     harnessObservationTimer = setTimeout(requestHarnessRunObservation, 75);
   }
 };
@@ -686,6 +755,7 @@ const renderPlanning = (planning, session) => {
           attachmentId: outcome.body.session.terminal.writableAttachment.attachmentId,
           decoder: new TextDecoder(),
           inputSequence: 0,
+          requestedMode: "read-write",
           output: terminalOutput,
           panel: sessionPanel,
           sendInput,
@@ -890,14 +960,17 @@ socket.addEventListener("message", (event) => {
       !runtimeNegotiated
       || !terminal
       || terminal.attachmentId !== message.attachmentId
-      || message.mode !== "read-write"
-      || message.exclusive !== true
+      || (terminal.requestedMode === "read-write"
+        && (message.mode !== "read-write" || message.exclusive !== true))
+      || (terminal.requestedMode === "read-write-if-available"
+        && !["read-write", "read-only"].includes(message.mode))
     ) {
       requireReload("runtime_terminal_attachment_mismatch");
       return;
     }
-    terminal.panel.dataset.terminalAttachment = "read-write";
-    terminal.sendInput.disabled = false;
+    terminal.panel.dataset.terminalAttachment = message.mode;
+    terminal.inputSequence = message.inputSequence;
+    terminal.sendInput.disabled = message.mode !== "read-write";
     return;
   }
 
@@ -995,6 +1068,31 @@ socket.addEventListener("message", (event) => {
       && ["available", "unavailable", "unauthenticated"].includes(
         provider.availability?.status,
       ));
+  const focusedControllerSession = message?.viewModel?.focusedControllerSession;
+  const focusedControllerSessionCompatible = focusedControllerSession === null
+    || (
+      /^controller-session-[a-f0-9]{24}$/.test(focusedControllerSession?.sessionId ?? "")
+      && /^controller-terminal-[a-f0-9]{24}$/
+        .test(focusedControllerSession?.terminal?.streamId ?? "")
+      && /^terminal-attachment-[a-f0-9]{24}$/
+        .test(focusedControllerSession?.terminal?.writableAttachment?.attachmentId ?? "")
+      && focusedControllerSession?.terminal?.runtimeOwned === true
+      && focusedControllerSession?.workContext?.workContextId
+        === message?.viewModel?.projectPreparation?.current?.projectId
+    );
+  const harnessObservation = message?.viewModel?.harnessRunObservation;
+  const resynchronizationConsistent = harnessObservation?.mode === "resync-required"
+    ? harnessObservation?.code === "resync-required"
+      && harnessObservation?.resynchronization?.canonicalSnapshot === true
+    : harnessObservation?.code !== "resync-required"
+      && harnessObservation?.resynchronization === null;
+  const harnessObservationCompatible =
+    harnessObservation?.type === "harness.run.observe.result"
+    && resynchronizationConsistent
+    && (harnessObservation.run === null
+      ? harnessObservation.launchRequest === null
+      : harnessObservation.launchRequest?.launchRequestId
+        === harnessObservation.run.launchRequestId);
 
   if (
     message?.type !== "runtime.hello-ack"
@@ -1009,6 +1107,8 @@ socket.addEventListener("message", (event) => {
     || !planningCompatible
     || !projectPreparationCompatible
     || !controllerProvidersCompatible
+    || !focusedControllerSessionCompatible
+    || !harnessObservationCompatible
     || message.viewModel?.kind !== "cockpit.connection"
   ) {
     requireReload("browser_runtime_handshake_mismatch");
@@ -1043,10 +1143,12 @@ socket.addEventListener("message", (event) => {
       message.viewModel.projectPreparation,
       message.session,
       message.viewModel.controllerProviders,
+      message.viewModel.focusedControllerSession,
     ),
     renderHarnessRun(message.viewModel.harnessRunObservation),
     renderPlanning(message.viewModel.planning, message.session),
   );
+  currentHarnessRunObservation = message.viewModel.harnessRunObservation;
   harnessRunSection = document.getElementById("harness-run-observation");
   requestHarnessRunObservation();
 });

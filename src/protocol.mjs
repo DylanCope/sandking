@@ -38,7 +38,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-supervised-harness-runs")
+  .update("sandking-host-control-schema-v1-with-canonical-run-reconnection")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -543,8 +543,16 @@ const terminalEnvelopeValidationSchema = z.object({
 const harnessRunObserveResultSchema = z.object({
   type: z.literal("harness.run.observe.result"),
   requestId: identifierSchema,
-  code: z.enum(["harness_run_absent", "harness_run_observed"]),
-  mode: z.enum(["snapshot", "resume"]),
+  code: z.enum(["harness_run_absent", "harness_run_observed", "resync-required"]),
+  mode: z.enum(["snapshot", "resume", "resync-required"]),
+  resynchronization: z.object({
+    code: z.literal("resync-required"),
+    reason: z.enum(["cursor_incompatible", "history_gap"]),
+    requestedAfterSequence: z.number().int().nonnegative(),
+    availableFromSequence: z.number().int().nonnegative(),
+    canonicalSnapshot: z.literal(true),
+  }).strict().nullable(),
+  launchRequest: launchRequestSchema.nullable(),
   run: harnessRunSchema.nullable(),
   events: z.array(harnessRunEventSchema).max(1_024),
   nextSequence: z.number().int().nonnegative(),

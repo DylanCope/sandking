@@ -212,6 +212,11 @@ test("an approved Launch request starts one asynchronous canonical conformance H
     const observation = await waitForTerminal(manager, started.run.harnessRunId);
     assert.equal(observation.type, "harness.run.observe.result");
     assert.equal(observation.run.status, "succeeded");
+    assert.equal(
+      observation.launchRequest.launchRequestId,
+      prepared.launchRequest.launchRequestId,
+    );
+    assert.equal(observation.launchRequest.execution.harnessRunId, started.run.harnessRunId);
     assert.deepEqual(observation.events.map((event) => event.type), [
       "harness_run_created",
       "harness_adapter_ready",
@@ -231,6 +236,38 @@ test("an approved Launch request starts one asynchronous canonical conformance H
       "stdout",
       "stderr",
     ]);
+
+    const resumed = await manager.observe({
+      requestId: "resume-run-after-two",
+      harnessRunId: started.run.harnessRunId,
+      afterSequence: 2,
+    });
+    assert.equal(resumed.code, "harness_run_observed");
+    assert.equal(resumed.mode, "resume");
+    assert.equal(resumed.resynchronization, null);
+    assert.deepEqual(resumed.events.map((event) => event.sequence), [3, 4]);
+    assert.equal(resumed.nextSequence, 4);
+    assert.equal(resumed.launchRequest.launchRequestId, prepared.launchRequest.launchRequestId);
+
+    const resynchronization = await manager.observe({
+      requestId: "resynchronize-incompatible-run-cursor",
+      harnessRunId: started.run.harnessRunId,
+      afterSequence: resumed.nextSequence + 1,
+    });
+    assert.equal(resynchronization.code, "resync-required");
+    assert.equal(resynchronization.mode, "resync-required");
+    assert.deepEqual(resynchronization.resynchronization, {
+      code: "resync-required",
+      reason: "cursor_incompatible",
+      requestedAfterSequence: 5,
+      availableFromSequence: 1,
+      canonicalSnapshot: true,
+    });
+    assert.deepEqual(resynchronization.events.map((event) => event.sequence), [1, 2, 3, 4]);
+    assert.equal(
+      resynchronization.launchRequest.launchRequestId,
+      prepared.launchRequest.launchRequestId,
+    );
 
     const stdout = await manager.readLogs({
       requestId: "read-run-stdout",
@@ -303,6 +340,22 @@ test("an approved Launch request starts one asynchronous canonical conformance H
         { mode: 0o600 },
       );
     }
+
+    retained.runs[0].events = retained.runs[0].events.filter((event) => event.sequence !== 2);
+    await writeFile(
+      join(dataDir, "harness-runs.json"),
+      `${JSON.stringify(retained, null, 2)}\n`,
+    );
+    const historyGap = await manager.observe({
+      requestId: "resynchronize-history-gap",
+      harnessRunId: started.run.harnessRunId,
+      afterSequence: 1,
+    });
+    assert.equal(historyGap.code, "resync-required");
+    assert.equal(historyGap.mode, "resync-required");
+    assert.equal(historyGap.resynchronization.reason, "history_gap");
+    assert.equal(historyGap.resynchronization.canonicalSnapshot, true);
+    assert.deepEqual(historyGap.events.map((event) => event.sequence), [1, 3, 4]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
