@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "issue": 146,
+  "parentPrd": 125,
+  "scenario": "cockpit-workbench/operates-real-installed-claude-terminal",
+  "recordedAt": "2026-08-02T21:02:25.074Z",
+  "environment": {
+    "provider": "claude-code",
+    "version": "2.1.220",
+    "availability": "available",
+    "authentication": "authenticated",
+    "credentialSource": "destination-local",
+    "credentialsTransferred": false
+  },
+  "observations": {
+    "productionPublicPath": true,
+    "workbenchRendered": true,
+    "fullScreenRowsRendered": true,
+    "terminalFocused": true,
+    "printableInput": true,
+    "enterUsed": true,
+    "escape": true,
+    "tab": true,
+    "arrows": true,
+    "controlSequence": true,
+    "initialDimensions": {
+      "columns": 68,
+      "rows": 33,
+      "sequence": 0
+    },
+    "resizedDimensions": {
+      "columns": 52,
+      "rows": 33,
+      "sequence": 1
+    },
+    "browserReconnection": true,
+    "ptyRuntimeOwned": true,
+    "sessionId": "controller-session-54a0079e9a367aec1c037429",
+    "streamId": "controller-terminal-b69a24602bc425df2776576e",
+    "inputAuditCount": 16,
+    "resizeAuditCount": 2
+  },
+  "prohibitedEffects": {
+    "launchRequestPrepared": false,
+    "launchRequestApproved": false,
+    "harnessRunStarted": false,
+    "dangerousMode": false,
+    "projectStateChanged": false,
+    "terminalTranscriptRetained": false,
+    "providerAccountMetadataRetained": false
+  },
+  "auditReferences": [
+    {
+      "auditId": "audit-87047dc12e85b60f7e3129e9",
+      "action": "controller.terminal.input",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-54a0079e9a367aec1c037429",
+        "providerSessionId": "0bbaa7c5-e595-4322-a424-a665b72a370c",
+        "streamId": "controller-terminal-b69a24602bc425df2776576e",
+        "sequence": 14,
+        "byteLength": 3,
+        "contentRetained": false
+      }
+    },
+    {
+      "auditId": "audit-1177607f91d7e83cdbae4022",
+      "action": "controller.terminal.input",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-54a0079e9a367aec1c037429",
+        "providerSessionId": "0bbaa7c5-e595-4322-a424-a665b72a370c",
+        "streamId": "controller-terminal-b69a24602bc425df2776576e",
+        "sequence": 15,
+        "byteLength": 7,
+        "contentRetained": false
+      }
+    },
+    {
+      "auditId": "audit-c276623581a9397e01dc4b8b",
+      "action": "controller.terminal.resize",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-54a0079e9a367aec1c037429",
+        "providerSessionId": "0bbaa7c5-e595-4322-a424-a665b72a370c",
+        "streamId": "controller-terminal-b69a24602bc425df2776576e",
+        "attachmentId": "terminal-attachment-f019e7e906a845a4043d783c",
+        "sequence": 0,
+        "columns": 68,
+        "rows": 33,
+        "contentRetained": false
+      }
+    },
+    {
+      "auditId": "audit-04078e0552db0386a1ee2d47",
+      "action": "controller.terminal.resize",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-54a0079e9a367aec1c037429",
+        "providerSessionId": "0bbaa7c5-e595-4322-a424-a665b72a370c",
+        "streamId": "controller-terminal-b69a24602bc425df2776576e",
+        "attachmentId": "terminal-attachment-f019e7e906a845a4043d783c",
+        "sequence": 1,
+        "columns": 52,
+        "rows": 33,
+        "contentRetained": false
+      }
+    }
+  ]
+}

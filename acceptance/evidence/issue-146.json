@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 2,
+  "issue": 146,
+  "parentPrd": 125,
+  "sourceSpecification": {
+    "issue": 116,
+    "githubBodyUtf8Sha256": "34ebbde096564621b14a68d4bc64cdbd8ba9e448a42cb75c084d80c0e201308a",
+    "parentApprovedTextExportSha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23",
+    "parentApprovedHashBasis": "exact GitHub body UTF-8 plus one terminal LF",
+    "normalizationDifference": "one terminal LF",
+    "exactContentEquivalentAfterApprovedExportNormalization": true
+  },
+  "visualPrimarySource": {
+    "decisionIssue": 145,
+    "variant": "A — Workbench",
+    "immutableCommit": "2467a8d"
+  },
+  "generatedFromCommit": "d758ddbf9747516fc3079828ded7f1834d564d47",
+  "recordedAt": "2026-08-02T21:13:52.370Z",
+  "scenario": "cockpit-workbench/operates-interactive-controller-terminal",
+  "packagedPublicSeam": {
+    "command": "sandking",
+    "installed": true,
+    "launchedOutsideCheckout": true,
+    "tarballSha256": "c72f64d830b5fe9d35734a676ac693081aa7dae5f8f8b9fc57466c5f6b903153"
+  },
+  "layout": {
+    "referenceViewport": {
+      "width": 1440,
+      "height": 1000
+    },
+    "regions": {
+      "navigationWidth": "220px",
+      "contextWidth": "310px",
+      "terminalWorkspaceFlexible": true
+    },
+    "tokens": {
+      "background": "#030712",
+      "accent": "#9333ea"
+    },
+    "narrowViewport": {
+      "width": 700,
+      "navigationDrawer": true,
+      "contextDrawer": true,
+      "horizontalPageOverflow": false
+    },
+    "visibleKeyboardFocus": true,
+    "semanticLandmarks": [
+      "navigation",
+      "main",
+      "complementary"
+    ]
+  },
+  "terminal": {
+    "emulator": "@xterm/xterm@6.0.0",
+    "localAssetsOnly": true,
+    "ansiVtFixture": {
+      "cursorMovement": true,
+      "eraseAndRedraw": true,
+      "color": true,
+      "alternateScreen": true,
+      "splitEscapeSequence": true,
+      "intendedFinalScreen": true,
+      "transcriptRetained": false
+    },
+    "keyboard": {
+      "printable": true,
+      "enter": true,
+      "tab": true,
+      "escape": true,
+      "arrows": true,
+      "navigation": true,
+      "deletion": true,
+      "controlSequence": true,
+      "exactBytesOnce": true,
+      "observedInputAuditCount": 52
+    },
+    "resize": {
+      "initial": {
+        "columns": 68,
+        "rows": 33,
+        "sequence": 0
+      },
+      "containerDriven": {
+        "columns": 52,
+        "rows": 33,
+        "sequence": 1
+      },
+      "providerObservedAcceptedDimensions": true,
+      "feedbackLoopAbsent": true,
+      "reconnectedSequence": 3,
+      "observedResizeAuditCount": 4
+    },
+    "attachmentAuthority": {
+      "writable": "accepted",
+      "competingWriter": "terminal_write_attachment_conflict",
+      "readOnlyInput": "terminal_write_attachment_required",
+      "invalidBounds": "browser_control_schema_invalid",
+      "wrongCorrelation": "controller_terminal_not_found",
+      "staleCorrelation": "terminal_resize_sequence_conflict"
+    },
+    "boundedRetainedOutputResynchronization": true
+  },
+  "auditReferences": [
+    {
+      "auditId": "audit-d00b869dcee747f856a9e65b",
+      "action": "controller.terminal.input",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-505eda2255b275dcd2404c0a",
+        "providerSessionId": "conformance-provider-session-d5088ab2f86ede7a363ec39f",
+        "streamId": "controller-terminal-d80099c329ff4f07a3d19cd2",
+        "sequence": 50,
+        "byteLength": 1,
+        "contentRetained": false
+      }
+    },
+    {
+      "auditId": "audit-3d74ee87a92ffc5024248490",
+      "action": "controller.terminal.input",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-505eda2255b275dcd2404c0a",
+        "providerSessionId": "conformance-provider-session-d5088ab2f86ede7a363ec39f",
+        "streamId": "controller-terminal-d80099c329ff4f07a3d19cd2",
+        "sequence": 51,
+        "byteLength": 1,
+        "contentRetained": false
+      }
+    },
+    {
+      "auditId": "audit-c0af122d7db681d76ea1ad6d",
+      "action": "controller.terminal.resize",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-505eda2255b275dcd2404c0a",
+        "providerSessionId": "conformance-provider-session-d5088ab2f86ede7a363ec39f",
+        "streamId": "controller-terminal-d80099c329ff4f07a3d19cd2",
+        "attachmentId": "terminal-attachment-bec1b7d02f65a7e3257fa00a",
+        "sequence": 2,
+        "columns": 53,
+        "rows": 20,
+        "contentRetained": false
+      }
+    },
+    {
+      "auditId": "audit-eb573dbc3e52dbe42ef97d1b",
+      "action": "controller.terminal.resize",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-505eda2255b275dcd2404c0a",
+        "providerSessionId": "conformance-provider-session-d5088ab2f86ede7a363ec39f",
+        "streamId": "controller-terminal-d80099c329ff4f07a3d19cd2",
+        "attachmentId": "terminal-attachment-bec1b7d02f65a7e3257fa00a",
+        "sequence": 3,
+        "columns": 68,
+        "rows": 33,
+        "contentRetained": false
+      }
+    }
+  ],
+  "securityAssertions": {
+    "credentialValueRetained": false,
+    "terminalTranscriptRetained": false,
+    "recognizableSecretFixtureRetained": false,
+    "providerAccountMetadataRetained": false,
+    "browserApprovalAssertion": false,
+    "providerTerminationFromBrowserDetach": false
+  },
+  "inheritedBrowserScenarios": {
+    "projectPreparation": "passed",
+    "planningProjectionAndMutation": "passed",
+    "launchRequestInteraction": "passed",
+    "activeAndTerminalHarnessRunObservation": "passed",
+    "diagnosticsAndStructuredOutcome": "passed",
+    "truthfulFailure": "passed",
+    "disconnectedAndReadOnlyState": "passed",
+    "canonicalReconnection": "passed",
+    "installedClaudeContractFixture": "passed"
+  },
+  "realClaudeExecution": {
+    "deterministicMergeOracle": false,
+    "launchApprovalPermittedForWorker": false,
+    "executionCommand": "SANDCASTLE_REAL_CLAUDE_ISSUES=146 SANDKING_REAL_CLAUDE_ACCEPTANCE=1 SANDKING_REAL_CLAUDE_PROJECT=/absolute/path npm run acceptance:issue-146:real"
+  },
+  "verificationCommands": [
+    [
+      "node",
+      "--test",
+      "test/browser-protocol.test.mjs",
+      "test/controller-launch-session.test.mjs",
+      "test/security-boundary.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/workbench-terminal.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/project-preparation.browser.test.mjs",
+      "test/planning-spine.browser.test.mjs",
+      "test/launch-request.browser.test.mjs",
+      "test/harness-run.browser.test.mjs",
+      "test/reconnect-canonical.browser.test.mjs",
+      "test/truthful-failure.browser.test.mjs",
+      "test/claude-controller.browser.test.mjs",
+      "test/local-walking-skeleton.browser.test.mjs"
+    ]
+  ]
+}
