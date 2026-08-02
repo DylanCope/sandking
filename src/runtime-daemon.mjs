@@ -131,6 +131,10 @@ let websocketServer;
 /** @type {Awaited<ReturnType<typeof createPlanningSpine>> | undefined} */
 let planningSpine;
 let currentProjectPreparation = projectPreparationProjection();
+/** @type {string | null} */
+let currentProjectPath = null;
+/** @type {any[]} */
+let controllerProviderProjection = [];
 /** @type {Awaited<ReturnType<typeof createControllerSessionManager>> | undefined} */
 let controllerSessions;
 /** @type {any} */
@@ -1056,6 +1060,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
   }
 
   currentProjectPreparation = projectPreparationProjection(project);
+  currentProjectPath = project.canonicalPath;
   const preparationAuditId = await recordAudit("project.prepare", "observed", {
     authorizationClass: "host_local_project_preparation",
     idempotencyKeyHash: request.idempotencyKeyHash,
@@ -1175,13 +1180,18 @@ const handleProviderOperation = async (request) => {
 };
 
 /**
- * @param {{authorizationAccepted: boolean, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number, projectId: string}} request
+ * @param {{authorizationAccepted: boolean, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number, projectId: string, providerId: string}} request
  */
 const openProjectControllerSession = (request) => withProjectSessionMutationLock(async () => {
   const authorizationClass = "project_focused_session";
   const project = currentProjectPreparation.current;
+  const selectedProviderId = request.providerId === "conformance-controller-v1"
+    || request.providerId === "claude-code"
+    ? request.providerId
+    : null;
   const fingerprint = hashIdempotencyKey(JSON.stringify({
     projectId: request.projectId,
+    providerId: request.providerId,
     expectedRevision: request.expectedRevision,
   }));
   const existing = request.idempotencyKeyHash
@@ -1230,6 +1240,7 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
     || !request.idempotencyKeyHash
     || request.idempotencyKey.length === 0
     || request.idempotencyKey.length > 256
+    || !selectedProviderId
     || !project
     || project.projectId !== request.projectId
   ) {
@@ -1304,6 +1315,11 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
       workContextId: project.projectId,
       kind: "project",
       canonicalReference: `sandking:project:${project.projectId}`,
+    }, {
+      providerId: selectedProviderId,
+      workingDirectory: selectedProviderId === "claude-code"
+        ? currentProjectPath ?? ""
+        : args.dataDir,
     });
     if (!session) {
       throw new ControllerSessionError("controller_session_unavailable");
@@ -1319,6 +1335,7 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
       expectedRevision: request.expectedRevision,
       actualRevision: project.revision,
       projectId: project.projectId,
+      providerId: request.providerId,
       controllerSessionCreated: false,
       launchRequestPrepared: false,
       approvalRecorded: false,
@@ -1356,6 +1373,7 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
     expectedRevision: request.expectedRevision,
     resultingRevision: project.revision,
     projectId: project.projectId,
+    providerId: request.providerId,
     sessionId: session.sessionId,
     providerSessionId: session.provider.providerSessionId,
     providerAdapterId: session.provider.adapterId,
@@ -1876,6 +1894,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
             observationCursor: state.host.observationCursor,
           },
           projectPreparation: currentProjectPreparation,
+          controllerProviders: controllerProviderProjection,
           planning: await planningSpine?.project(),
         },
       });
@@ -1922,6 +1941,33 @@ const main = async () => {
       recordAudit,
       handleProviderOperation,
     });
+    const [conformanceProvider, claudeProvider] = await Promise.all([
+      controllerSessions.probeProvider("conformance-controller-v1"),
+      controllerSessions.probeProvider("claude-code"),
+    ]);
+    if (!conformanceProvider || !claudeProvider) {
+      throw new Error("controller_provider_probe_invalid");
+    }
+    controllerProviderProjection = [conformanceProvider, claudeProvider].map((probe) => ({
+      ...probe.provider,
+      adapterId: probe.adapterId,
+      adapterProtocol: probe.adapterProtocol.version,
+      capabilities: probe.capabilities,
+      availability: probe.availability ? {
+        status: probe.availability.status,
+        version: probe.availability.version,
+        authentication: probe.availability.authentication.status,
+        source: probe.availability.authentication.source,
+        failureCode: probe.availability.failure?.code ?? null,
+      } : {
+        status: "available",
+        version: probe.adapterProtocol.version,
+        authentication: "not-applicable",
+        source: "packaged-conformance",
+        failureCode: null,
+      },
+      terminal: probe.terminal,
+    }));
     planningSpine = await createPlanningSpine({
       dataDir: args.dataDir,
       recordAudit,
@@ -2084,6 +2130,9 @@ const main = async () => {
             idempotencyKeyHash,
             expectedRevision,
             projectId: "projectId" in record ? String(record.projectId) : "",
+            providerId: "providerId" in record
+              ? String(record.providerId)
+              : "conformance-controller-v1",
           });
           sendJson(response, outcome.status, outcome.body);
           return;

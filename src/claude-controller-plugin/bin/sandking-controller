@@ -1,0 +1,170 @@
+#!/usr/bin/env node
+
+import { randomBytes } from "node:crypto";
+import { createConnection } from "node:net";
+
+const controllerSessionPattern = /^controller-session-[a-f0-9]{24}$/;
+const providerSessionPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const launchRequestPattern = /^launch-request-[a-f0-9]{24}$/;
+
+/** @returns {Promise<string>} */
+const readStandardInput = async () => new Promise((resolve, reject) => {
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    input += chunk;
+    if (Buffer.byteLength(input, "utf8") > 32_768) {
+      reject(new Error("claude_plugin_input_too_large"));
+    }
+  });
+  process.stdin.once("end", () => resolve(input));
+  process.stdin.once("error", reject);
+});
+
+/** @param {string} operation @param {unknown} input */
+const requestOperation = async (operation, input) => {
+  const endpoint = process.env.SANDKING_CLAUDE_SHIM_ENDPOINT ?? "";
+  const controllerSessionId = process.env.SANDKING_CONTROLLER_SESSION_ID ?? "";
+  const providerSessionId = process.env.SANDKING_CLAUDE_SESSION_ID ?? "";
+  if (
+    endpoint.length < 1
+    || endpoint.length > 512
+    || /[\r\n\0]/.test(endpoint)
+    || !controllerSessionPattern.test(controllerSessionId)
+    || !providerSessionPattern.test(providerSessionId)
+  ) {
+    throw new Error("claude_plugin_environment_invalid");
+  }
+  const operationId = `claude-plugin-operation-${randomBytes(12).toString("hex")}`;
+  const request = {
+    type: "claude.plugin.operation.request",
+    protocol: "1.0.0",
+    operationId,
+    controllerSessionId,
+    providerSessionId,
+    operation,
+    input,
+  };
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(endpoint);
+    let responseText = "";
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket.destroy();
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const timeout = setTimeout(() => {
+      finish(new Error("claude_plugin_operation_timeout"));
+    }, 3_000);
+    socket.once("connect", () => socket.write(`${JSON.stringify(request)}\n`));
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      responseText += chunk;
+      if (Buffer.byteLength(responseText, "utf8") > 32_768) {
+        finish(new Error("claude_plugin_response_too_large"));
+        return;
+      }
+      if (!responseText.includes("\n")) return;
+      try {
+        const response = JSON.parse(responseText.slice(0, responseText.indexOf("\n")));
+        if (
+          response?.type !== "claude.plugin.operation.result"
+          || response.protocol !== "1.0.0"
+          || response.operationId !== operationId
+        ) {
+          throw new Error("claude_plugin_protocol_invalid");
+        }
+        if (response.ok !== true) {
+          throw new Error(typeof response?.failure?.code === "string"
+            ? response.failure.code
+            : "claude_plugin_operation_failed");
+        }
+        finish(null, response.outcome);
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error("claude_plugin_protocol_invalid"));
+      }
+    });
+    socket.once("error", () => finish(new Error("claude_plugin_channel_unavailable")));
+    socket.once("end", () => {
+      if (!settled) finish(new Error("claude_plugin_protocol_invalid"));
+    });
+  });
+};
+
+const parseRevision = (value) => {
+  const revision = Number(value);
+  if (!Number.isSafeInteger(revision) || revision < 1) {
+    throw new Error("launch_request_revision_invalid");
+  }
+  return revision;
+};
+
+const main = async () => {
+  const [command, ...args] = process.argv.slice(2);
+  let outcome;
+  if (command === "inspect" && args.length === 0) {
+    outcome = await requestOperation("work-context.inspect", {});
+  } else if (command === "prepare" && args.length === 2) {
+    const issueNumber = Number(args[0]);
+    if (
+      !Number.isSafeInteger(issueNumber)
+      || issueNumber < 1
+      || issueNumber > 4_095
+      || args[1] !== `sandcastle/issue-${issueNumber}`
+    ) {
+      throw new Error("launch_request_parameters_invalid");
+    }
+    outcome = await requestOperation("launch-request.prepare", {
+      parameters: { issueNumber, targetBranch: args[1] },
+      expiresInSeconds: 300,
+    });
+  } else if ((command === "approve" || command === "reject") && args.length === 2) {
+    if (!launchRequestPattern.test(args[0])) {
+      throw new Error("launch_request_identity_invalid");
+    }
+    outcome = await requestOperation("launch-request.decide", {
+      launchRequestId: args[0],
+      decision: command === "approve" ? "approved" : "rejected",
+      expectedRevision: parseRevision(args[1]),
+    });
+  } else if (command === "start" && args.length === 2) {
+    if (!launchRequestPattern.test(args[0])) {
+      throw new Error("launch_request_identity_invalid");
+    }
+    outcome = await requestOperation("harness-run.start", {
+      launchRequestId: args[0],
+      expectedRevision: parseRevision(args[1]),
+    });
+  } else if (command === "session-start" && args.length === 0) {
+    const hook = JSON.parse(await readStandardInput());
+    outcome = await requestOperation("claude.session-start", {
+      hookEventName: hook?.hook_event_name,
+      sessionId: hook?.session_id,
+      source: hook?.source,
+    });
+  } else if (command === "stop-failure" && args.length === 0) {
+    const hook = JSON.parse(await readStandardInput());
+    outcome = await requestOperation("claude.stop-failure", {
+      hookEventName: hook?.hook_event_name,
+      sessionId: hook?.session_id,
+      error: hook?.error,
+      error_details: typeof hook?.error_details === "string"
+        ? hook.error_details.slice(0, 512)
+        : undefined,
+    });
+  } else {
+    throw new Error("claude_plugin_command_invalid");
+  }
+  process.stdout.write(`${JSON.stringify(outcome)}\n`);
+};
+
+try {
+  await main();
+} catch (error) {
+  process.stderr.write(`${error instanceof Error ? error.message : "claude_plugin_failed"}\n`);
+  process.exitCode = 1;
+}
