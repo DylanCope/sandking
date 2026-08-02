@@ -67,12 +67,16 @@ try {
     const [
       observation,
       activeHostLoss,
+      acceptedProjectHostLoss,
+      postNegotiationHostProtocol,
       harnessFailure,
       launchDecision,
       launchTerminal,
     ] = await Promise.all([
       readFile(observationPath, "utf8").then(JSON.parse),
       readResult("active-host-loss-contract.json"),
+      readResult("accepted-project-host-loss-contract.json"),
+      readResult("post-negotiation-host-protocol-contract.json"),
       readResult("harness-run-failure-contract.json"),
       readResult("launch-decision-contract.json"),
       readResult("launch-terminal-contract.json"),
@@ -86,6 +90,21 @@ try {
       || activeHostLoss.typedFailure?.body?.code !== "host_disconnected"
       || activeHostLoss.idempotency?.replayReturnedOriginalAudit !== true
       || activeHostLoss.idempotency?.changedContentCode !== "idempotency_key_conflict"
+      || acceptedProjectHostLoss.kind !== "accepted_project_host_loss_contract"
+      || acceptedProjectHostLoss.typedFailure?.body?.code !== "host_disconnected"
+      || acceptedProjectHostLoss.typedFailure?.body?.project?.projectId
+        !== acceptedProjectHostLoss.acceptedProject?.projectId
+      || acceptedProjectHostLoss.typedFailure?.body?.prohibitedSideEffects
+        ?.projectRegistrationCreated !== true
+      || acceptedProjectHostLoss.canonicalState?.registrationAuditRetained !== true
+      || postNegotiationHostProtocol.kind
+        !== "post_negotiation_host_protocol_contract"
+      || postNegotiationHostProtocol.typedConnectionFailure?.failure?.code
+        !== "host_protocol_invalid"
+      || postNegotiationHostProtocol.browserProtocolFailureMisattributed !== false
+      || postNegotiationHostProtocol.browserSocketRetained !== true
+      || postNegotiationHostProtocol.cockpit?.controllerSessionOpened !== true
+      || postNegotiationHostProtocol.cockpit?.planningMutationSucceeded !== true
       || observation.staleStateEvidence?.acceptedProjectSessionIdempotency
         ?.replayReturnedOriginalAudit !== true
       || observation.staleStateEvidence?.acceptedProjectSessionIdempotency
@@ -155,6 +174,8 @@ try {
       contractEvidence: {
         protocolFailures,
         activeHostLoss,
+        acceptedProjectHostLoss,
+        postNegotiationHostProtocol,
         launchDecision,
         launchTerminal,
         harnessFailure,

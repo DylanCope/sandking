@@ -415,6 +415,10 @@ const main = async () => {
       continue;
     }
     if (frame.message.type === "harness.run.observe") {
+      if (mode === "malformed-frame-after-negotiation") {
+        writeMalformedFrame();
+        continue;
+      }
       writeFrame(process.stdout, await harnessRuns.observe(frame.message));
       continue;
     }

@@ -852,3 +852,324 @@ test("Host loss during an active Cockpit mutation returns one typed idempotent f
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("Host loss after accepted Project registration preserves its identity and effects", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-partial-project-host-loss-browser-"));
+  const dataDir = join(root, "host-state");
+  const executionDirectory = join(root, "outside-checkout");
+  const userHome = join(root, "user-home");
+  const projectPath = join(root, "selected-project");
+  await Promise.all([
+    mkdir(dataDir, { recursive: true }),
+    mkdir(executionDirectory, { recursive: true }),
+    mkdir(userHome, { recursive: true }),
+    execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]),
+  ]);
+  await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
+  const installed = await installCurrentPackage(root);
+  const productEnvironment = { ...process.env, HOME: userHome };
+  let pausedHostPid = null;
+
+  try {
+    const { stdout } = await execFileAsync(installed.command, [
+      "launch",
+      "--data-dir", dataDir,
+      "--idempotency-key", "partial-project-host-loss-runtime-start",
+      "--expected-revision", "0",
+      "--json",
+      "--no-open",
+    ], { cwd: executionDirectory, env: productEnvironment });
+    const launch = JSON.parse(stdout);
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
+      assert.equal(response?.status(), 200);
+      await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
+        timeout: 10_000,
+      });
+      await page.locator("#project-path").fill(projectPath);
+
+      const projectResponse = page.waitForResponse((candidate) =>
+        candidate.request().method() === "POST"
+        && candidate.url().endsWith("/projects/open"));
+      await page.locator("#open-project").click();
+
+      const registrationDeadline = Date.now() + 10_000;
+      let acceptedProject;
+      let acceptedRegistrationAudit;
+      while (Date.now() < registrationDeadline) {
+        const [projectState, audits] = await Promise.all([
+          readJson(join(dataDir, "project-registrations.json")).catch(() => null),
+          readFile(join(dataDir, "audit.jsonl"), "utf8")
+            .then((text) => text.trim().split("\n").filter(Boolean).map(JSON.parse))
+            .catch(() => []),
+        ]);
+        acceptedProject = projectState?.projects?.[0];
+        acceptedRegistrationAudit = audits.find((entry) =>
+          entry.action === "project.register"
+          && entry.outcome === "accepted"
+          && entry.details.projectId === acceptedProject?.projectId);
+        if (acceptedProject && acceptedRegistrationAudit) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      assert.ok(acceptedProject);
+      assert.ok(acceptedRegistrationAudit);
+      assert.equal(acceptedProject.harness, null);
+      assert.equal(acceptedProject.readiness.launchRequest, "blocked");
+
+      const runtimeState = await readJson(join(dataDir, "runtime-state.json"));
+      pausedHostPid = await findLocalHostPid(runtimeState.pid);
+      process.kill(pausedHostPid, "SIGSTOP");
+      process.kill(pausedHostPid, "SIGKILL");
+      pausedHostPid = null;
+
+      const failedResponse = await projectResponse;
+      const failure = {
+        status: failedResponse.status(),
+        body: await failedResponse.json(),
+      };
+      assert.equal(failure.status, 503);
+      assert.equal(failure.body.code, "host_disconnected");
+      assert.equal(failure.body.project.projectId, acceptedProject.projectId);
+      assert.equal(failure.body.project.revision, acceptedProject.revision);
+      assert.equal(failure.body.project.canPrepareLaunchRequest, false);
+      assert.equal(failure.body.mutations.projectRegistration.code, "project_registered");
+      assert.equal(
+        failure.body.mutations.projectRegistration.auditId,
+        acceptedRegistrationAudit.auditId,
+      );
+      assert.deepEqual(failure.body.prohibitedSideEffects, {
+        projectRegistrationCreated: true,
+        harnessRegistrationCreated: false,
+        harnessPinChanged: false,
+        launchRequestPrepared: false,
+        approvalRecorded: false,
+        harnessRunStarted: false,
+        projectFileWrite: false,
+        privilegedMutation: false,
+      });
+
+      await page.waitForSelector(
+        `#project-readiness[data-project-id='${acceptedProject.projectId}']`,
+        { timeout: 10_000 },
+      );
+      assert.equal(await page.locator("#project-readiness")
+        .getAttribute("data-launch-request-ready"), "false");
+      assert.match(await page.locator("#project-readiness").textContent(), /Harness: missing/);
+      assert.equal(await page.locator("#project-preparation")
+        .getAttribute("data-host-freshness"), "stale");
+      assert.equal(await page.locator("#planning-spine")
+        .getAttribute("data-host-impact"), "unaffected");
+
+      const [projectStateAfter, auditsAfter] = await Promise.all([
+        readJson(join(dataDir, "project-registrations.json")),
+        readFile(join(dataDir, "audit.jsonl"), "utf8")
+          .then((text) => text.trim().split("\n").filter(Boolean).map(JSON.parse)),
+      ]);
+      assert.equal(projectStateAfter.projects.length, 1);
+      assert.equal(projectStateAfter.projects[0].projectId, acceptedProject.projectId);
+      assert.ok(auditsAfter.some((entry) => entry.auditId === acceptedRegistrationAudit.auditId));
+      const failureAudit = auditsAfter.find((entry) => entry.auditId === failure.body.auditId);
+      assert.equal(failureAudit.action, "project.prepare");
+      assert.equal(failureAudit.outcome, "rejected");
+      assert.equal(failureAudit.details.projectId, acceptedProject.projectId);
+      assert.equal(failureAudit.details.projectRegistrationAuditId,
+        acceptedRegistrationAudit.auditId);
+      assert.equal(failureAudit.details.projectRegistrationCreated, true);
+      assert.equal(failureAudit.details.harnessRegistrationCreated, false);
+      if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
+        await writeFile(
+          join(
+            process.env.SANDKING_ACCEPTANCE_RESULT_DIR,
+            "accepted-project-host-loss-contract.json",
+          ),
+          `${JSON.stringify({
+            kind: "accepted_project_host_loss_contract",
+            packagedPublicSeam: installed.observation,
+            typedFailure: failure,
+            acceptedProject: {
+              projectId: acceptedProject.projectId,
+              revision: acceptedProject.revision,
+              readiness: acceptedProject.readiness,
+              registrationAuditId: acceptedRegistrationAudit.auditId,
+            },
+            cockpit: {
+              retainedProjectVisible: true,
+              launchRequestReady: false,
+              hostFreshness: "stale",
+              planningHostImpact: "unaffected",
+            },
+            canonicalState: {
+              projectCount: projectStateAfter.projects.length,
+              projectId: projectStateAfter.projects[0].projectId,
+              registrationAuditRetained: auditsAfter.some((entry) =>
+                entry.auditId === acceptedRegistrationAudit.auditId),
+            },
+            audit: {
+              registration: acceptedRegistrationAudit,
+              failure: failureAudit,
+            },
+          }, null, 2)}\n`,
+          { mode: 0o600 },
+        );
+      }
+      await context.close();
+    } finally {
+      await browser.close();
+    }
+  } finally {
+    if (pausedHostPid) {
+      process.kill(pausedHostPid, "SIGCONT");
+      process.kill(pausedHostPid, "SIGKILL");
+    }
+    await execFileAsync(installed.command, [
+      "stop", "--data-dir", dataDir, "--json",
+    ], { cwd: executionDirectory, env: productEnvironment }).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("post-negotiation Host framing failure degrades only Host-scoped Cockpit views", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-active-host-protocol-browser-"));
+  const dataDir = join(root, "host-state");
+  const executionDirectory = join(root, "outside-checkout");
+  const userHome = join(root, "user-home");
+  await Promise.all([
+    mkdir(dataDir, { recursive: true }),
+    mkdir(executionDirectory, { recursive: true }),
+    mkdir(userHome, { recursive: true }),
+  ]);
+  const installed = await installCurrentPackage(root);
+  const productEnvironment = { ...process.env, HOME: userHome };
+
+  try {
+    const { stdout } = await execFileAsync(installed.command, [
+      "launch",
+      "--data-dir", dataDir,
+      "--host-mode", "malformed-frame-after-negotiation",
+      "--idempotency-key", "active-host-protocol-runtime-start",
+      "--expected-revision", "0",
+      "--json",
+      "--no-open",
+    ], { cwd: executionDirectory, env: productEnvironment });
+    const launch = JSON.parse(stdout);
+    const browser = await launchBrowser();
+    try {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      const receivedFrames = [];
+      let browserSocketClosed = false;
+      page.on("websocket", (websocket) => {
+        websocket.on("framereceived", (event) => receivedFrames.push(String(event.payload)));
+        websocket.on("close", () => {
+          browserSocketClosed = true;
+        });
+      });
+      const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
+      assert.equal(response?.status(), 200);
+      await page.waitForSelector("#planning-spine[data-planning-ready='true']");
+
+      await page.waitForSelector(
+        "#connection-status[data-host-status='disconnected'][data-failure-code='host_protocol_invalid']",
+        { timeout: 10_000 },
+      );
+      const receivedMessages = receivedFrames.flatMap((frame) => {
+        try {
+          return [JSON.parse(frame)?.message];
+        } catch {
+          return [];
+        }
+      });
+      assert.ok(receivedMessages.some((message) =>
+        message?.type === "runtime.connection-state"
+        && message.failure.code === "host_protocol_invalid"));
+      assert.ok(receivedMessages.some((message) =>
+        message?.type === "runtime.hello-ack"
+        && message.viewModel.host.status === "connected"));
+      assert.equal(receivedMessages.some((message) =>
+        message?.type === "runtime.protocol-error"
+        && message.code === "browser_protocol_invalid"), false);
+      assert.equal(browserSocketClosed, false);
+      assert.equal(await page.locator("#project-preparation")
+        .getAttribute("data-host-freshness"), "stale");
+      assert.equal(await page.locator("#planning-spine")
+        .getAttribute("data-host-impact"), "unaffected");
+      assert.equal(await page.locator("#planning-spine").count(), 1);
+
+      const freshJourney = page.locator(
+        "[data-journey-id='journey-fixture-optional-planning']",
+      );
+      await freshJourney.locator(
+        "[data-stage-id='speccing'] button[data-action='open-session']",
+      ).click();
+      await page.waitForSelector(
+        "#focused-controller-session[data-terminal-attachment='read-write']",
+        { timeout: 10_000 },
+      );
+      assert.equal(await page.locator("#focused-controller-session")
+        .getAttribute("data-session-state"), "open");
+      const ticketing = freshJourney.locator("[data-stage-id='ticketing']");
+      await ticketing.locator("button[data-action='not-used']").click();
+      await page.waitForFunction(() => document.querySelector(
+        "[data-journey-id='journey-fixture-optional-planning'] [data-stage-id='ticketing']",
+      )?.getAttribute("data-stage-status") === "Not used");
+
+      const audits = await readFile(join(dataDir, "audit.jsonl"), "utf8")
+        .then((text) => text.trim().split("\n").filter(Boolean).map(JSON.parse));
+      const protocolFailureAudit = audits.find((entry) =>
+        entry.action === "host.connection"
+        && entry.outcome === "observed"
+        && entry.details.code === "host_protocol_invalid");
+      assert.ok(protocolFailureAudit);
+      assert.deepEqual(protocolFailureAudit.details.affectedViews, [
+        "project-preparation",
+        "harness-run-observation",
+      ]);
+      assert.deepEqual(protocolFailureAudit.details.unaffectedViews, [
+        "planning-spine",
+        "controller-sessions",
+      ]);
+      if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
+        await writeFile(
+          join(
+            process.env.SANDKING_ACCEPTANCE_RESULT_DIR,
+            "post-negotiation-host-protocol-contract.json",
+          ),
+          `${JSON.stringify({
+            kind: "post_negotiation_host_protocol_contract",
+            packagedPublicSeam: installed.observation,
+            negotiatedHostObserved: true,
+            typedConnectionFailure: receivedMessages.find((message) =>
+              message?.type === "runtime.connection-state"
+              && message.failure.code === "host_protocol_invalid"),
+            browserProtocolFailureMisattributed: receivedMessages.some((message) =>
+              message?.type === "runtime.protocol-error"
+              && message.code === "browser_protocol_invalid"),
+            browserSocketRetained: !browserSocketClosed,
+            cockpit: {
+              projectFreshness: "stale",
+              planningHostImpact: "unaffected",
+              planningVisible: true,
+              controllerSessionOpened: true,
+              planningMutationSucceeded: true,
+            },
+            audit: protocolFailureAudit,
+          }, null, 2)}\n`,
+          { mode: 0o600 },
+        );
+      }
+      await context.close();
+    } finally {
+      await browser.close();
+    }
+  } finally {
+    await execFileAsync(installed.command, [
+      "stop", "--data-dir", dataDir, "--json",
+    ], { cwd: executionDirectory, env: productEnvironment }).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});

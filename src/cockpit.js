@@ -254,14 +254,24 @@ const renderProjectPreparation = (preparation, session, controllerProviders) => 
     });
     const outcome = await response.json();
     if (!response.ok) {
+      if (outcome.project) {
+        expectedRevision = outcome.project.revision;
+        currentProject = outcome.project;
+        const replacement = renderPreparedProject(outcome.project);
+        currentNode.replaceWith(replacement);
+        currentNode = replacement;
+      }
       if (
         outcome.code === "mutation_revision_conflict"
         && Number.isSafeInteger(outcome.actualRevision)
       ) {
         expectedRevision = outcome.actualRevision;
       }
-      feedback.textContent = `Project was not changed: ${outcome.code}. ${
-        outcome.resolution?.actions?.join(", ") ?? "Review the typed guidance."}`;
+      feedback.textContent = outcome.project
+        ? `Project ${outcome.project.projectId} was accepted, but preparation stopped: ${
+            outcome.code}. Its retained readiness is shown above.`
+        : `Project was not changed: ${outcome.code}. ${
+            outcome.resolution?.actions?.join(", ") ?? "Review the typed guidance."}`;
       openButton.disabled = hostConnectionStatus !== "connected";
       return;
     }
