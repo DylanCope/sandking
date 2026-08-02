@@ -13,7 +13,10 @@ export const selectBrowserLaunch = (url, options = {}) => {
   if (platform === "darwin") return { command: "open", args: [url] };
   if (platform === "win32") return { command: "cmd", args: ["/c", "start", "", url] };
   if (environment.WSL_INTEROP || environment.WSL_DISTRO_NAME) {
-    return { command: "cmd.exe", args: ["/c", "start", "", `"${url}"`] };
+    return {
+      command: "/mnt/c/Windows/System32/rundll32.exe",
+      args: ["url.dll,FileProtocolHandler", url],
+    };
   }
   return { command: "xdg-open", args: [url] };
 };
