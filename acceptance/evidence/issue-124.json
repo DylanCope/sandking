@@ -10,18 +10,18 @@
     "normalizationDifference": "one terminal LF",
     "exactContentEquivalentAfterApprovedExportNormalization": true
   },
-  "generatedFromCommit": "0ff09138e1fc4b3dc87f7888a413d47d482fe7ba",
-  "recordedAt": "2026-08-02T04:43:07.216Z",
+  "generatedFromCommit": "6c823182270eaad02a8fe1849c39f7124d6c2a5e",
+  "recordedAt": "2026-08-02T05:19:30.981Z",
   "scenario": "local-walking-skeleton/operates-installed-claude-controller",
   "packagedPublicSeam": {
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "0fa240d007007fd35fda64a20c8677a9280ca0d39f123f4e5b2a633500b98a00"
+    "tarballSha256": "23c964c04b97ea6ddac558b0e80de1b2afde3b24c2027e13b26307c226b9381f"
   },
   "runtime": {
-    "runtimeId": "runtime-e1b7287d41523316300af05d",
-    "hostId": "host-32723351684f8a6c5b9a8fe4"
+    "runtimeId": "runtime-ad6548c40e4fa7f1fe96e9e4",
+    "hostId": "host-7eea89e0a8dcfc6a309c81aa"
   },
   "automatedClaudeContract": {
     "executable": "no-model contract fixture",
@@ -51,11 +51,11 @@
     "shimBoundary": "session-plugin-private-typed-shim"
   },
   "focusedSession": {
-    "sessionId": "controller-session-3a9040ebac0f27299d7d4836",
-    "providerSessionId": "cd6ff8ed-4fe7-4833-861b-fe0ea8cb0954",
+    "sessionId": "controller-session-3458e652187c802082a3f073",
+    "providerSessionId": "72509a23-d453-41e2-914d-5d6d567a72f8",
     "stableProviderSessionIdentity": true,
-    "workContextId": "project-b56601c99f3e60c79928f10f",
-    "terminalStreamId": "controller-terminal-c88881bec834816c02bf78ff",
+    "workContextId": "project-25999d8dbc6acd2c9960fa77",
+    "terminalStreamId": "controller-terminal-b48d47127a68e1a549a59cb8",
     "ptyRuntimeOwned": true,
     "survivedBrowserDisconnection": true,
     "oneWritableAttachmentContractTested": true,
@@ -83,13 +83,13 @@
   ],
   "auditReferences": [
     {
-      "auditId": "audit-6d0aa65f9fe29b36c5037d93",
+      "auditId": "audit-7535e5217c04efd14a0ede12",
       "action": "controller.session.start",
       "outcome": "accepted",
       "details": {
-        "sessionId": "controller-session-3a9040ebac0f27299d7d4836",
-        "controllerSessionId": "controller-session-3a9040ebac0f27299d7d4836",
-        "providerSessionId": "cd6ff8ed-4fe7-4833-861b-fe0ea8cb0954",
+        "sessionId": "controller-session-3458e652187c802082a3f073",
+        "controllerSessionId": "controller-session-3458e652187c802082a3f073",
+        "providerSessionId": "72509a23-d453-41e2-914d-5d6d567a72f8",
         "providerId": "claude-code",
         "providerAdapterId": "claude-code-controller-adapter-v1",
         "adapterProtocol": "1.0.0",
@@ -104,9 +104,9 @@
           "controller.session.stable-identity",
           "controller.session.typed-exit"
         ],
-        "workContextId": "project-b56601c99f3e60c79928f10f",
-        "canonicalReference": "sandking:project:project-b56601c99f3e60c79928f10f",
-        "streamId": "controller-terminal-c88881bec834816c02bf78ff",
+        "workContextId": "project-25999d8dbc6acd2c9960fa77",
+        "canonicalReference": "sandking:project:project-25999d8dbc6acd2c9960fa77",
+        "streamId": "controller-terminal-b48d47127a68e1a549a59cb8",
         "providerControlProtocol": "1.0.0",
         "providerReadySignal": "provider.session.ready",
         "providerObservedTty": true,
