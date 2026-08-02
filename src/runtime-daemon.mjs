@@ -166,6 +166,8 @@ let hostMutationFailureQueue = Promise.resolve();
 const projectSessionOutcomes = new Map();
 /** @type {Map<string, {fingerprint: string, status: number, response: any}>} */
 const hostMutationFailureOutcomes = new Map();
+/** @type {Map<string, {fingerprint: string, response: any}>} */
+const focusedHostMutationOutcomes = new Map();
 
 const cockpitCsp = [
   "default-src 'self'",
@@ -1119,6 +1121,113 @@ const requestHostOperation = (message) => {
   return current;
 };
 
+/**
+ * @param {string} action
+ * @param {any} message
+ * @param {unknown} requestContent
+ */
+const requestFocusedHostMutation = async (action, message, requestContent) => {
+  const idempotencyKeyHash = typeof message.idempotencyKey === "string"
+    && message.idempotencyKey.length > 0
+    && message.idempotencyKey.length <= 256
+    ? hashIdempotencyKey(message.idempotencyKey)
+    : null;
+  const fingerprint = mutationRequestFingerprint({
+    expectedRevision: message.expectedRevision,
+    requestContent,
+  });
+  const outcomeKey = idempotencyKeyHash ? `${action}\0${idempotencyKeyHash}` : null;
+  const existing = outcomeKey ? focusedHostMutationOutcomes.get(outcomeKey) : null;
+  if (existing) {
+    if (existing.fingerprint !== fingerprint) {
+      const actualRevision = Number.isSafeInteger(existing.response.revision)
+        ? existing.response.revision
+        : Number.isSafeInteger(existing.response.actualRevision)
+          ? existing.response.actualRevision
+          : message.expectedRevision;
+      const auditId = await recordAudit(action, "rejected", {
+        code: "idempotency_key_conflict",
+        authorizationClass: message.authorizationClass,
+        idempotencyKeyHash,
+        expectedRevision: message.expectedRevision,
+        actualRevision,
+        originalAuditId: existing.response.auditId,
+        launchRequestPrepared: false,
+        approvalRecorded: false,
+        harnessRunStarted: false,
+        privilegedMutation: false,
+      });
+      throw new ControllerSessionError("idempotency_key_conflict", {
+        ...mutationFailure(
+          "idempotency_key_conflict",
+          message.authorizationClass,
+          message.expectedRevision,
+          actualRevision,
+          auditId,
+        ),
+        retryable: false,
+        idempotentReplay: false,
+        prohibitedSideEffects: {
+          launchRequestPrepared: false,
+          approvalRecorded: false,
+          harnessRunStarted: false,
+          privilegedMutation: false,
+        },
+      });
+    }
+    await recordAudit(action, "observed", {
+      code: existing.response.code,
+      authorizationClass: message.authorizationClass,
+      idempotencyKeyHash,
+      expectedRevision: message.expectedRevision,
+      idempotentReplay: true,
+      originalAuditId: existing.response.auditId,
+      launchRequestId: existing.response.launchRequest?.launchRequestId
+        ?? existing.response.run?.launchRequestId
+        ?? null,
+      harnessRunId: existing.response.run?.harnessRunId ?? null,
+    });
+    return {
+      ...structuredClone(existing.response),
+      requestId: message.requestId,
+      idempotentReplay: true,
+    };
+  }
+  try {
+    const outcome = /** @type {any} */ (await requestHostOperation(message));
+    if (
+      outcomeKey
+      && outcome
+      && typeof outcome === "object"
+      && typeof outcome.auditId === "string"
+      && outcome.code !== "idempotency_key_conflict"
+    ) {
+      focusedHostMutationOutcomes.set(outcomeKey, {
+        fingerprint,
+        response: structuredClone(outcome),
+      });
+    }
+    return outcome;
+  } catch (error) {
+    const failureCode = error instanceof ControllerSessionError
+      && (error.code === "host_disconnected" || error.code === "host_protocol_invalid")
+      ? error.code
+      : null;
+    if (!failureCode) {
+      throw error;
+    }
+    const failure = await hostMutationFailure(
+      failureCode,
+      action,
+      message.authorizationClass,
+      message.expectedRevision,
+      idempotencyKeyHash,
+      requestContent,
+    );
+    throw new ControllerSessionError(failure.body.code, failure.body);
+  }
+};
+
 /** @param {string} key @param {string} operation */
 const derivedHostIdempotencyKey = (key, operation) => createHash("sha256")
   .update(`${operation}\0${key}`)
@@ -1399,7 +1508,7 @@ const handleProviderOperation = async (request) => {
     throw new ControllerSessionError("provider_operation_unsupported");
   }
   if (request.operation === "launch-request.prepare") {
-    return requestHostOperation({
+    const message = {
       type: "launch.request.prepare",
       requestId: `launch-prepare-${randomBytes(8).toString("hex")}`,
       projectId: request.workContext.workContextId,
@@ -1410,10 +1519,18 @@ const handleProviderOperation = async (request) => {
       idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
       expectedRevision: 0,
       expiresInSeconds: "expiresInSeconds" in input ? Number(input.expiresInSeconds) : 0,
+    };
+    return requestFocusedHostMutation("launch.request.prepare", message, {
+      projectId: message.projectId,
+      parameters: message.parameters,
+      controllerId: message.controllerId,
+      controllerSessionId: message.controllerSessionId,
+      authorizationClass: message.authorizationClass,
+      expiresInSeconds: message.expiresInSeconds,
     });
   }
   if (request.operation === "launch-request.decide") {
-    return requestHostOperation({
+    const message = {
       type: "launch.request.decision",
       requestId: `launch-decision-${randomBytes(8).toString("hex")}`,
       launchRequestId: "launchRequestId" in input ? String(input.launchRequestId) : "",
@@ -1423,10 +1540,17 @@ const handleProviderOperation = async (request) => {
       authorizationClass: "focused_controller_launch",
       idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
       expectedRevision: "expectedRevision" in input ? Number(input.expectedRevision) : -1,
+    };
+    return requestFocusedHostMutation("launch.request.decision", message, {
+      launchRequestId: message.launchRequestId,
+      decision: message.decision,
+      controllerId: message.controllerId,
+      controllerSessionId: message.controllerSessionId,
+      authorizationClass: message.authorizationClass,
     });
   }
   if (request.operation === "harness-run.start") {
-    return requestHostOperation({
+    const message = {
       type: "harness.run.start",
       requestId: `harness-run-start-${randomBytes(8).toString("hex")}`,
       launchRequestId: "launchRequestId" in input ? String(input.launchRequestId) : "",
@@ -1435,6 +1559,12 @@ const handleProviderOperation = async (request) => {
       authorizationClass: "approved_launch_request_execution",
       idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
       expectedRevision: "expectedRevision" in input ? Number(input.expectedRevision) : -1,
+    };
+    return requestFocusedHostMutation("harness.run.start", message, {
+      launchRequestId: message.launchRequestId,
+      controllerId: message.controllerId,
+      controllerSessionId: message.controllerSessionId,
+      authorizationClass: message.authorizationClass,
     });
   }
   if (request.operation === "harness-run.lookup") {
@@ -1502,6 +1632,19 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
       status: existing.response.type === "mutation_result" ? 200 : existing.status,
       body: { ...structuredClone(existing.response), idempotentReplay: true },
     };
+  }
+  if (request.authorizationAccepted && state.host.status === "disconnected") {
+    return hostMutationFailure(
+      "host_disconnected",
+      "project.session.open",
+      authorizationClass,
+      request.expectedRevision,
+      request.idempotencyKeyHash,
+      {
+        projectId: request.projectId,
+        providerId: request.providerId,
+      },
+    );
   }
   if (
     !request.authorizationAccepted
@@ -2451,30 +2594,16 @@ const main = async () => {
           } = readMutationHeaders(request);
           const authorizationAccepted = exactOriginAccepted(request)
             && request.headers["x-sandking-csrf"] === activeSession.csrfToken;
-          const outcome = authorizationAccepted && state.host.status === "disconnected"
-            ? await hostMutationFailure(
-                "host_disconnected",
-                "project.session.open",
-                "project_focused_session",
-                expectedRevision,
-                idempotencyKeyHash,
-                {
-                  projectId: "projectId" in record ? String(record.projectId) : "",
-                  providerId: "providerId" in record
-                    ? String(record.providerId)
-                    : "conformance-controller-v1",
-                },
-              )
-            : await openProjectControllerSession({
-                authorizationAccepted,
-                idempotencyKey,
-                idempotencyKeyHash,
-                expectedRevision,
-                projectId: "projectId" in record ? String(record.projectId) : "",
-                providerId: "providerId" in record
-                  ? String(record.providerId)
-                  : "conformance-controller-v1",
-              });
+          const outcome = await openProjectControllerSession({
+            authorizationAccepted,
+            idempotencyKey,
+            idempotencyKeyHash,
+            expectedRevision,
+            projectId: "projectId" in record ? String(record.projectId) : "",
+            providerId: "providerId" in record
+              ? String(record.providerId)
+              : "conformance-controller-v1",
+          });
           sendJson(response, outcome.status, outcome.body);
           return;
         }

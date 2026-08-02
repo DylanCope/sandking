@@ -87,6 +87,21 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       const page = await context.newPage();
       const sentFrames = [];
       const receivedFrames = [];
+      let acceptedProjectSessionRequest = null;
+      page.on("request", (request) => {
+        if (
+          request.method() === "POST"
+          && request.url().endsWith("/projects/sessions/open")
+          && !acceptedProjectSessionRequest
+        ) {
+          acceptedProjectSessionRequest = {
+            body: request.postDataJSON(),
+            csrfToken: request.headers()["x-sandking-csrf"],
+            idempotencyKey: request.headers()["x-sandking-idempotency-key"],
+            expectedRevision: request.headers()["x-sandking-expected-revision"],
+          };
+        }
+      });
       page.on("websocket", (websocket) => {
         websocket.on("framesent", (event) => sentFrames.push(String(event.payload)));
         websocket.on("framereceived", (event) => receivedFrames.push(String(event.payload)));
@@ -111,6 +126,12 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       );
       const sessionId = await page.locator("#project-focused-controller-session")
         .getAttribute("data-session-id");
+      assert.deepEqual(acceptedProjectSessionRequest?.body, {
+        projectId,
+        providerId: "conformance-controller-v1",
+      });
+      assert.ok(acceptedProjectSessionRequest?.idempotencyKey);
+      assert.equal(acceptedProjectSessionRequest?.expectedRevision, "2");
       const enter = async (value) => {
         await page.locator("#project-controller-terminal-input").fill(value);
         await page.locator("#send-project-controller-input").click();
@@ -184,8 +205,18 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
           entry.action === "harness.run.outcome" && entry.outcome === "observed"
         ))
         .map(({ auditId }) => auditId);
+      const acceptedProjectSessionAudit = auditsBeforeDisconnect.find((entry) =>
+        entry.action === "project.session.open"
+        && entry.outcome === "accepted"
+        && entry.details.sessionId === sessionId);
+      const acceptedFocusedMutationAudit = auditsBeforeDisconnect.find((entry) =>
+        entry.action === "launch.request.prepare"
+        && entry.outcome === "accepted"
+        && entry.details.launchRequestId === launchRequestId);
       assert.ok(retainedEventIdsBefore.length >= 3);
       assert.ok(retainedAuditIdsBefore.length >= 3);
+      assert.ok(acceptedProjectSessionAudit);
+      assert.ok(acceptedFocusedMutationAudit);
 
       const runtimeStateBeforeDisconnect = await readJson(join(dataDir, "runtime-state.json"));
       const hostPid = await findLocalHostPid(runtimeStateBeforeDisconnect.pid);
@@ -201,10 +232,58 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
         .getAttribute("data-host-impact"), "unaffected");
       assert.equal(await page.locator("#project-focused-controller-session")
         .getAttribute("data-session-state"), "open");
+      const replayAcceptedProjectSession = (body) => page.evaluate(async (parameters) => {
+        const response = await fetch("/projects/sessions/open", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-sandking-csrf": parameters.csrfToken,
+            "x-sandking-idempotency-key": parameters.idempotencyKey,
+            "x-sandking-expected-revision": parameters.expectedRevision,
+          },
+          body: JSON.stringify(parameters.body),
+        });
+        return { status: response.status, body: await response.json() };
+      }, {
+        csrfToken: acceptedProjectSessionRequest.csrfToken,
+        idempotencyKey: acceptedProjectSessionRequest.idempotencyKey,
+        expectedRevision: acceptedProjectSessionRequest.expectedRevision,
+        body,
+      });
+      const acceptedProjectSessionReplay = await replayAcceptedProjectSession(
+        acceptedProjectSessionRequest.body,
+      );
+      assert.equal(acceptedProjectSessionReplay.status, 200);
+      assert.equal(
+        acceptedProjectSessionReplay.body.code,
+        "project_focused_controller_session_opened",
+      );
+      assert.equal(acceptedProjectSessionReplay.body.idempotentReplay, true);
+      assert.equal(acceptedProjectSessionReplay.body.auditId, acceptedProjectSessionAudit.auditId);
+      assert.equal(acceptedProjectSessionReplay.body.session.sessionId, sessionId);
+      const acceptedProjectSessionChangedUse = await replayAcceptedProjectSession({
+        ...acceptedProjectSessionRequest.body,
+        providerId: "claude-code",
+      });
+      assert.equal(acceptedProjectSessionChangedUse.status, 409);
+      assert.equal(acceptedProjectSessionChangedUse.body.code, "idempotency_key_conflict");
+      assert.equal(acceptedProjectSessionChangedUse.body.idempotentReplay, false);
+      await enter("prepare 999999999 sandcastle/issue-999999999");
+      await page.waitForFunction((requestId) => (
+        document.querySelector("#project-controller-terminal-output")
+          ?.textContent?.match(new RegExp(`Launch request: ${requestId}`, "g"))?.length
+          ?? 0
+      ) >= 2, launchRequestId);
       await enter("prepare 122 sandcastle/issue-122");
       await page.waitForFunction(() => document.querySelector(
         "#project-controller-terminal-output",
       )?.textContent?.includes("Controller operation failed safely: host_disconnected"));
+      await enter("prepare 122 sandcastle/issue-122");
+      await page.waitForFunction(() => (
+        document.querySelector("#project-controller-terminal-output")
+          ?.textContent?.match(/Controller operation failed safely: host_disconnected/g)?.length
+          ?? 0
+      ) >= 2);
       assert.doesNotMatch(
         await page.locator("#project-controller-terminal-output").textContent(),
         /Controller operation failed safely: provider_operation_failed/,
@@ -341,11 +420,20 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
         && entry.details.code === "host_disconnected");
       const disconnectedMutationAudit = audits.find((entry) =>
         entry.auditId === disconnectedMutation.body.auditId);
-      const controllerHostFailureAudit = audits.find((entry) =>
+      const controllerHostFailureAudits = audits.filter((entry) =>
         entry.action === "controller.provider.operation"
-        && entry.outcome === "rejected"
         && entry.details.operation === "launch-request.prepare"
         && entry.details.code === "host_disconnected");
+      const [controllerHostFailureAudit, controllerHostFailureReplayAudit] =
+        controllerHostFailureAudits;
+      const focusedHostMutationAudits = audits.filter((entry) =>
+        entry.action === "launch.request.prepare"
+        && entry.details.code === "host_disconnected");
+      const acceptedFocusedMutationReplayAudit = audits.find((entry) =>
+        entry.action === "launch.request.prepare"
+        && entry.outcome === "observed"
+        && entry.details.idempotentReplay === true
+        && entry.details.originalAuditId === acceptedFocusedMutationAudit.auditId);
       assert.ok(outcomeAudit);
       assert.ok(disconnectAudit);
       assert.equal(disconnectAudit.outcome, "observed");
@@ -357,6 +445,30 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       assert.ok(disconnectedMutationAudit);
       assert.equal(disconnectedMutationAudit.outcome, "rejected");
       assert.ok(controllerHostFailureAudit);
+      assert.ok(controllerHostFailureReplayAudit);
+      assert.deepEqual(controllerHostFailureAudits.map(({ outcome }) => outcome), [
+        "rejected",
+        "observed",
+      ]);
+      assert.equal(controllerHostFailureAudit.details.idempotentReplay, false);
+      assert.equal(controllerHostFailureReplayAudit.details.idempotentReplay, true);
+      assert.equal(
+        controllerHostFailureReplayAudit.details.originalAuditId,
+        controllerHostFailureAudit.auditId,
+      );
+      assert.equal(
+        controllerHostFailureReplayAudit.details.outcomeAuditId,
+        controllerHostFailureAudit.details.outcomeAuditId,
+      );
+      assert.deepEqual(focusedHostMutationAudits.map(({ outcome }) => outcome), [
+        "rejected",
+        "observed",
+      ]);
+      assert.equal(
+        focusedHostMutationAudits[1].details.originalAuditId,
+        focusedHostMutationAudits[0].auditId,
+      );
+      assert.ok(acceptedFocusedMutationReplayAudit);
       assert.equal(runStateAfterDisconnect.runs.length, 1);
       assert.equal(projectState.projects.length, 1);
       assert.equal(launchState.launchRequests.length, 1);
@@ -413,6 +525,8 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
         JSON.stringify(disconnectedMutation),
         JSON.stringify(disconnectedReplay),
         JSON.stringify(disconnectedChangedUse),
+        JSON.stringify(acceptedProjectSessionReplay),
+        JSON.stringify(acceptedProjectSessionChangedUse),
         JSON.stringify(acknowledgement.viewModel),
         runtimeError,
         pageText,
@@ -476,6 +590,40 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
             code: controllerHostFailureAudit.details.code,
             auditId: controllerHostFailureAudit.auditId,
           },
+          acceptedProjectSessionIdempotency: {
+            sessionId,
+            originalAuditId: acceptedProjectSessionAudit.auditId,
+            replayStatus: acceptedProjectSessionReplay.status,
+            replayCode: acceptedProjectSessionReplay.body.code,
+            replayIdempotent: acceptedProjectSessionReplay.body.idempotentReplay,
+            replayReturnedOriginalAudit:
+              acceptedProjectSessionReplay.body.auditId === acceptedProjectSessionAudit.auditId,
+            replayReturnedOriginalSession:
+              acceptedProjectSessionReplay.body.session.sessionId === sessionId,
+            changedContentStatus: acceptedProjectSessionChangedUse.status,
+            changedContentCode: acceptedProjectSessionChangedUse.body.code,
+          },
+          focusedControllerMutationIdempotency: {
+            operation: controllerHostFailureAudit.details.operation,
+            code: controllerHostFailureAudit.details.code,
+            acceptedOutcomeAuditId: acceptedFocusedMutationAudit.auditId,
+            acceptedOutcomeReplayAuditId: acceptedFocusedMutationReplayAudit.auditId,
+            acceptedOutcomeReplayLinkedToOriginalAudit:
+              acceptedFocusedMutationReplayAudit.details.originalAuditId
+                === acceptedFocusedMutationAudit.auditId,
+            replayCode: controllerHostFailureReplayAudit.details.code,
+            replayIdempotent: controllerHostFailureReplayAudit.details.idempotentReplay,
+            originalFailureAuditId: controllerHostFailureAudit.auditId,
+            originalOutcomeAuditId: controllerHostFailureAudit.details.outcomeAuditId,
+            replayAuditId: controllerHostFailureReplayAudit.auditId,
+            replayOriginalAuditId: controllerHostFailureReplayAudit.details.originalAuditId,
+            replayLinkedToOriginalAudit:
+              controllerHostFailureReplayAudit.details.originalAuditId
+                === controllerHostFailureAudit.auditId,
+            replayReturnedOriginalOutcomeAudit:
+              controllerHostFailureReplayAudit.details.outcomeAuditId
+                === controllerHostFailureAudit.details.outcomeAuditId,
+          },
           resynchronizationFailure: reconnectAcknowledgement.observation,
         },
         canonicalStateBefore: {
@@ -499,6 +647,7 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
           disconnectAudit,
           disconnectedMutationAudit,
           controllerHostFailureAudit,
+          controllerHostFailureReplayAudit,
         ],
         prohibitedSideEffectAssertions: {
           unauthorizedRegistration: false,

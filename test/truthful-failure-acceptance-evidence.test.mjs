@@ -184,6 +184,61 @@ test("retained issue 122 evidence scopes Host loss and preserves canonical ident
   assert.equal(stale.typedControllerHostFailure.operation, "launch-request.prepare");
   assert.equal(stale.typedControllerHostFailure.code, "host_disconnected");
   assert.match(stale.typedControllerHostFailure.auditId, /^audit-[a-f0-9]{24}$/);
+  assert.deepEqual({
+    sessionId: stale.acceptedProjectSessionIdempotency.sessionId,
+    replayStatus: stale.acceptedProjectSessionIdempotency.replayStatus,
+    replayCode: stale.acceptedProjectSessionIdempotency.replayCode,
+    replayIdempotent: stale.acceptedProjectSessionIdempotency.replayIdempotent,
+    replayReturnedOriginalAudit:
+      stale.acceptedProjectSessionIdempotency.replayReturnedOriginalAudit,
+    replayReturnedOriginalSession:
+      stale.acceptedProjectSessionIdempotency.replayReturnedOriginalSession,
+    changedContentStatus: stale.acceptedProjectSessionIdempotency.changedContentStatus,
+    changedContentCode: stale.acceptedProjectSessionIdempotency.changedContentCode,
+  }, {
+    sessionId: evidence.identities.controllerSessionId,
+    replayStatus: 200,
+    replayCode: "project_focused_controller_session_opened",
+    replayIdempotent: true,
+    replayReturnedOriginalAudit: true,
+    replayReturnedOriginalSession: true,
+    changedContentStatus: 409,
+    changedContentCode: "idempotency_key_conflict",
+  });
+  assert.match(
+    stale.acceptedProjectSessionIdempotency.originalAuditId,
+    /^audit-[a-f0-9]{24}$/,
+  );
+  assert.deepEqual({
+    operation: stale.focusedControllerMutationIdempotency.operation,
+    code: stale.focusedControllerMutationIdempotency.code,
+    acceptedOutcomeReplayLinkedToOriginalAudit:
+      stale.focusedControllerMutationIdempotency.acceptedOutcomeReplayLinkedToOriginalAudit,
+    replayCode: stale.focusedControllerMutationIdempotency.replayCode,
+    replayIdempotent: stale.focusedControllerMutationIdempotency.replayIdempotent,
+    replayLinkedToOriginalAudit:
+      stale.focusedControllerMutationIdempotency.replayLinkedToOriginalAudit,
+    replayReturnedOriginalOutcomeAudit:
+      stale.focusedControllerMutationIdempotency.replayReturnedOriginalOutcomeAudit,
+  }, {
+    operation: "launch-request.prepare",
+    code: "host_disconnected",
+    acceptedOutcomeReplayLinkedToOriginalAudit: true,
+    replayCode: "host_disconnected",
+    replayIdempotent: true,
+    replayLinkedToOriginalAudit: true,
+    replayReturnedOriginalOutcomeAudit: true,
+  });
+  for (const auditId of [
+    stale.focusedControllerMutationIdempotency.acceptedOutcomeAuditId,
+    stale.focusedControllerMutationIdempotency.acceptedOutcomeReplayAuditId,
+    stale.focusedControllerMutationIdempotency.originalFailureAuditId,
+    stale.focusedControllerMutationIdempotency.originalOutcomeAuditId,
+    stale.focusedControllerMutationIdempotency.replayAuditId,
+    stale.focusedControllerMutationIdempotency.replayOriginalAuditId,
+  ]) {
+    assert.match(auditId, /^audit-[a-f0-9]{24}$/);
+  }
 
   assert.equal(evidence.canonicalStateBefore.runCount, 1);
   assert.deepEqual(evidence.canonicalStateAfter, {
@@ -209,6 +264,7 @@ test("retained issue 122 evidence scopes Host loss and preserves canonical ident
     { action: "host.connection", outcome: "observed" },
     { action: "project.prepare", outcome: "rejected" },
     { action: "controller.provider.operation", outcome: "rejected" },
+    { action: "controller.provider.operation", outcome: "observed" },
   ]);
 });
 

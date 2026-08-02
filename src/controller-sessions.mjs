@@ -291,11 +291,12 @@ const retainedStateSchema = z.object({
 }).strict();
 
 export class ControllerSessionError extends Error {
-  /** @param {string} code */
-  constructor(code) {
+  /** @param {string} code @param {Record<string, unknown> | null} [retainedOutcome] */
+  constructor(code, retainedOutcome = null) {
     super(code);
     this.name = "ControllerSessionError";
     this.code = code;
+    this.retainedOutcome = retainedOutcome;
   }
 }
 
@@ -402,6 +403,8 @@ const openProviderControl = async (context) => {
   let controlSocket;
   /** @type {NodeJS.Timeout | undefined} */
   let timeout;
+  /** @type {Map<string, string>} */
+  const controllerAuditByRetainedOutcome = new Map();
   /** @type {(value: z.infer<typeof providerReadySchema>) => void} */
   let resolveReady = () => undefined;
   /** @type {(reason?: unknown) => void} */
@@ -542,21 +545,47 @@ const openProviderControl = async (context) => {
             const code = error instanceof ControllerSessionError
               ? error.code
               : "provider_operation_failed";
-            await context.recordAudit("controller.provider.operation", "rejected", {
-              sessionId: context.sessionId,
-              providerSessionId: context.providerSessionId,
-              workContextId: context.workContext.workContextId,
-              operation: operationRequest.operation,
-              operationId: operationRequest.operationId,
-              code,
-              inputRetained: false,
-            });
+            const retainedOutcome = error instanceof ControllerSessionError
+              && error.retainedOutcome
+              && typeof error.retainedOutcome === "object"
+              ? error.retainedOutcome
+              : null;
+            const outcomeAuditId = typeof retainedOutcome?.auditId === "string"
+              ? retainedOutcome.auditId
+              : null;
+            const idempotentReplay = retainedOutcome?.idempotentReplay === true;
+            const originalControllerAuditId = outcomeAuditId && idempotentReplay
+              ? controllerAuditByRetainedOutcome.get(outcomeAuditId)
+              : null;
+            const controllerAuditId = await context.recordAudit(
+              "controller.provider.operation",
+              idempotentReplay ? "observed" : "rejected",
+              {
+                sessionId: context.sessionId,
+                providerSessionId: context.providerSessionId,
+                workContextId: context.workContext.workContextId,
+                operation: operationRequest.operation,
+                operationId: operationRequest.operationId,
+                code,
+                ...(retainedOutcome ? {
+                  idempotentReplay,
+                  outcomeAuditId,
+                  ...(originalControllerAuditId
+                    ? { originalAuditId: originalControllerAuditId }
+                    : {}),
+                } : {}),
+                inputRetained: false,
+              },
+            );
+            if (outcomeAuditId && !idempotentReplay) {
+              controllerAuditByRetainedOutcome.set(outcomeAuditId, controllerAuditId);
+            }
             socket.write(`${JSON.stringify({
               type: "provider.operation.result",
               controlProtocol: "1.0.0",
               operationId: operationRequest.operationId,
               ok: false,
-              failure: { code },
+              failure: retainedOutcome ? structuredClone(retainedOutcome) : { code },
             })}\n`);
           }
         }).catch(() => {

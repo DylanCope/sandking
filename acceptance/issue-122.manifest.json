@@ -37,6 +37,8 @@
         "reconnect with an unavailable observation cursor and return a typed resynchronization failure plus the retained stale snapshot",
         "reject an authorized Host mutation with a typed audited host_disconnected outcome and explicit prohibited effects",
         "replay that disconnected outcome with its original audit identity and reject changed content under the same idempotency key",
+        "after Host loss, replay the accepted focused Controller-session open and accepted Launch-request preparation with their original audit and canonical identities, while rejecting changed session content under the accepted key",
+        "retain a disconnected focused-Controller mutation failure, replay the identical visible command as an observed outcome linked to its original rejected audit, and preserve its original mutation-outcome audit",
         "verify protocol/capability mismatch, stale approval/revision, identical replay, changed-content idempotency use, and Planning projection staleness at their owning boundaries"
       ],
       "expectedTypedOutcome": "a Cockpit-visible harness_result_incomplete followed by typed host_disconnected and host_observation_resynchronization_failed degraded states, including active Cockpit and Controller mutation failures whose identical retries retain the original audit and whose changed-content retries return idempotency_key_conflict, with the same canonical Project, Launch-request, Harness-run, outcome, event, audit, and diagnostic references",
@@ -49,6 +51,8 @@
         "unavailable GitHub authority stales only its projection and disables its mutations without queueing a write",
         "observation uncertainty is explicit and returns the retained stale snapshot rather than invented continuity",
         "identical mutation replay returns its original outcome and audit while changed content conflicts",
+        "accepted focused Controller-session and Launch-request preparation identities remain replayable after Host loss",
+        "a repeated disconnected focused-Controller mutation is an observed replay linked to one original rejected outcome rather than a second rejection",
         "Host loss while a public mutation is active remains a Host failure at the Cockpit and Controller seams and records the affected operation",
         "stale approval or revision fails closed without creating a Harness run",
         "all retained state remains outside the Project and Harness workspace"

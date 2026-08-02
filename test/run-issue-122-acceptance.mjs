@@ -86,6 +86,20 @@ try {
       || activeHostLoss.typedFailure?.body?.code !== "host_disconnected"
       || activeHostLoss.idempotency?.replayReturnedOriginalAudit !== true
       || activeHostLoss.idempotency?.changedContentCode !== "idempotency_key_conflict"
+      || observation.staleStateEvidence?.acceptedProjectSessionIdempotency
+        ?.replayReturnedOriginalAudit !== true
+      || observation.staleStateEvidence?.acceptedProjectSessionIdempotency
+        ?.replayReturnedOriginalSession !== true
+      || observation.staleStateEvidence?.acceptedProjectSessionIdempotency
+        ?.changedContentCode !== "idempotency_key_conflict"
+      || observation.staleStateEvidence?.focusedControllerMutationIdempotency
+        ?.acceptedOutcomeReplayLinkedToOriginalAudit !== true
+      || observation.staleStateEvidence?.focusedControllerMutationIdempotency
+        ?.replayIdempotent !== true
+      || observation.staleStateEvidence?.focusedControllerMutationIdempotency
+        ?.replayLinkedToOriginalAudit !== true
+      || observation.staleStateEvidence?.focusedControllerMutationIdempotency
+        ?.replayReturnedOriginalOutcomeAudit !== true
     ) {
       throw new Error("issue_122_browser_observation_invalid");
     }
