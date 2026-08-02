@@ -83,6 +83,7 @@ test("an installed Claude Controller uses the shared PTY, work-context, and appr
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 const args = process.argv.slice(2);
+await new Promise((resolve) => setTimeout(resolve, 700));
 if (args.length === 1 && args[0] === "--version") {
   process.stdout.write("2.1.141 (Claude Code)\\n");
 } else if (args.length === 1 && args[0] === "--help") {

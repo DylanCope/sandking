@@ -636,9 +636,12 @@ const openProviderControl = async (context) => {
   server.once("error", () => {
     finishReady(new ControllerSessionError("provider_control_unavailable"));
   });
-  timeout = setTimeout(() => {
-    finishReady(new ControllerSessionError("provider_session_ready_timeout"));
-  }, 3_000);
+  const expectReady = () => {
+    if (readySettled || timeout) return;
+    timeout = setTimeout(() => {
+      finishReady(new ControllerSessionError("provider_session_ready_timeout"));
+    }, 3_000);
+  };
   const close = async () => {
     if (closed) {
       return;
@@ -654,6 +657,7 @@ const openProviderControl = async (context) => {
   return {
     endpoint,
     ready,
+    expectReady,
     /** @param {ControllerSessionError} error */
     fail: (error) => {
       finishReady(error);
@@ -960,6 +964,7 @@ export const createControllerSessionManager = async (options) => {
       resolveExit(undefined);
     });
 
+    providerControl.expectReady();
     let readyMessage;
     try {
       readyMessage = await providerControl.ready;
