@@ -133,6 +133,7 @@ test("retained issue 120 evidence proves one observable pinned successful run", 
   assert.equal(run.harnessPinnedRevision, evidence.identities.harnessPin);
   assert.equal(run.adapterId, "conformance-harness-adapter-v1");
   assert.equal(run.adapterProtocol, "1.0.0");
+  assert.equal(run.adapterEntryPoint, "adapter.mjs");
   assert.deepEqual(run.events.map(({ sequence, type }) => ({ sequence, type })), [
     { sequence: 1, type: "harness_run_created" },
     { sequence: 2, type: "harness_adapter_ready" },
@@ -146,6 +147,7 @@ test("retained issue 120 evidence proves one observable pinned successful run", 
     adapterReadyObserved: true,
     validTerminalEnvelopeCount: 1,
     exactlyOne: true,
+    adapterChannelClosedObserved: true,
     processExitObserved: true,
   });
   assert.deepEqual(run.logStreams.map(({ producer }) => producer), ["stdout", "stderr"]);
@@ -167,6 +169,7 @@ test("retained issue 120 evidence proves one observable pinned successful run", 
     "harness.run.outcome",
   ]);
   assert.equal(evidence.auditReferences[0].details.returnedBeforeTerminal, true);
+  assert.equal(evidence.auditReferences[0].details.adapterEntryPoint, "adapter.mjs");
 });
 
 test("retained issue 120 evidence proves idempotency and truthful incomplete failure", () => {
@@ -204,7 +207,7 @@ test("retained issue 120 evidence proves idempotency and truthful incomplete fai
   }
 
   const failure = evidence.contractEvidence.truthfulFailure;
-  assert.equal(failure.canonicalRunCount, 1);
+  assert.equal(failure.canonicalRunCount, 2);
   assert.equal(failure.incompleteResult.status, "failed");
   assert.equal(failure.incompleteResult.outcome.code, "harness_result_incomplete");
   assert.equal(failure.incompleteResult.outcome.incompleteResult, true);
@@ -213,15 +216,30 @@ test("retained issue 120 evidence proves idempotency and truthful incomplete fai
     adapterReadyObserved: true,
     validTerminalEnvelopeCount: 0,
     exactlyOne: false,
+    adapterChannelClosedObserved: true,
     processExitObserved: true,
   });
   assert.equal(failure.incompleteResult.successLookingDiagnosticRetained, true);
   assert.equal(failure.incompleteResult.logInsertedIntoControllerConversation, false);
+  const incompleteOutcomeAudit = failure.auditReferences.find((entry) =>
+    entry.action === "harness.run.outcome"
+    && entry.details.code === "harness_result_incomplete");
+  assert.equal(incompleteOutcomeAudit.details.adapterChannelClosedObserved, true);
+  assert.equal(incompleteOutcomeAudit.details.processExitObserved, true);
   assert.deepEqual(failure.prohibitedStarts, {
     rejected: "launch_request_terminal",
     expired: "launch_request_expired",
+    expiredCanonicalStatus: "expired",
     stale: "launch_request_stale",
+    staleCanonicalStatus: "expired",
+    restoredStaleRetry: "launch_request_terminal",
   });
+  assert.equal(failure.malformedProgress.status, "failed");
+  assert.equal(
+    failure.malformedProgress.outcome.code,
+    "harness_adapter_protocol_invalid",
+  );
+  assert.equal(failure.malformedProgress.malformedRecordPublished, false);
 });
 
 test("retained issue 120 evidence is sanitized and excludes prohibited effects", () => {
