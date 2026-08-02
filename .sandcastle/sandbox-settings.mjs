@@ -53,10 +53,22 @@ export const createWorkerSandboxSettings = (
     },
     {
       hostPath: paths.claudeExecutablePath ?? "~/.local/bin/claude",
-      sandboxPath: "/usr/local/bin/claude",
+      sandboxPath: "/home/agent/.local/bin/claude",
       readonly: true,
     },
   );
+  settings.docker.env = {
+    ...settings.docker.env,
+    PATH: [
+      "/home/agent/.local/bin",
+      "/usr/local/sbin",
+      "/usr/local/bin",
+      "/usr/sbin",
+      "/usr/bin",
+      "/sbin",
+      "/bin",
+    ].join(":"),
+  };
   settings.hooks.sandbox.onSandboxReady.splice(-1, 0, {
     command: [
       "set -eu",

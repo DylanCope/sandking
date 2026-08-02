@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import {
   createCodexSandboxSettings,
   createRunSettings,
@@ -73,10 +74,14 @@ test("real Claude access is granted only to an explicitly selected Worker issue"
     },
     {
       hostPath: paths.claudeExecutablePath,
-      sandboxPath: "/usr/local/bin/claude",
+      sandboxPath: "/home/agent/.local/bin/claude",
       readonly: true,
     },
   ]);
+  assert.equal(
+    selected.docker.env.PATH,
+    "/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+  );
   assert.deepEqual(unrelated, createCodexSandboxSettings(paths.codexAuthPath));
   assert.deepEqual(disabled, createCodexSandboxSettings(paths.codexAuthPath));
 });
@@ -115,6 +120,29 @@ test("the selected Worker receives a writable isolated copy of Claude authentica
   assert.equal(await readFile(sandboxCredential, "utf8"), credentials);
   await writeFile(sandboxCredential, '{"refreshed":true}\n');
   assert.equal(await readFile(hostCredential, "utf8"), credentials);
+});
+
+test("the selected Worker's Claude executable mount is accepted by Sandcastle", async () => {
+  const testRoot = await mkdtemp(join(tmpdir(), "sandcastle-claude-mount-"));
+  const codexAuth = join(testRoot, "codex-auth.json");
+  const claudeCredential = join(testRoot, "claude-credentials.json");
+  const claudeExecutable = join(testRoot, "claude");
+  await Promise.all([
+    writeFile(codexAuth, "{}\n"),
+    writeFile(claudeCredential, "{}\n"),
+    writeFile(claudeExecutable, "fixture executable\n", { mode: 0o700 }),
+  ]);
+  const settings = createWorkerSandboxSettings(
+    "146",
+    { SANDCASTLE_REAL_CLAUDE_ISSUES: "146" },
+    {
+      codexAuthPath: codexAuth,
+      claudeCredentialPath: claudeCredential,
+      claudeExecutablePath: claudeExecutable,
+    },
+  );
+
+  assert.doesNotThrow(() => docker(settings.docker));
 });
 
 test("the sandbox installs Codex auth when the worktree has no Sandcastle files", async () => {
