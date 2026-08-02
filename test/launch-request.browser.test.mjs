@@ -579,6 +579,13 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
         && entry.details.code === "launch_request_materially_changed"
         && entry.details.launchRequestId === replacementCandidate.launchRequestId);
       assert.ok(replacementExpiryAudit);
+      const retainedAuditReferences = replacementAudits.filter((entry) =>
+        (entry.action.startsWith("launch.request")
+          || entry.action.startsWith("controller.")
+          || entry.action === "project.session.open")
+        && entry.action !== "controller.terminal.input"
+        && entry.action !== "controller.terminal.resize");
+      assert.ok(retainedAuditReferences.length < 100);
       await rm(projectPath, { recursive: true, force: true });
       await rename(movedProjectPath, projectPath);
 
@@ -690,10 +697,7 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
           competingWritableRejectedAs: competingWriter.code,
           secondaryView: { mode: readOnlyView.mode, exclusive: readOnlyView.exclusive },
         },
-        auditReferences: replacementAudits.filter((entry) =>
-          entry.action.startsWith("launch.request")
-          || entry.action.startsWith("controller.")
-          || entry.action === "project.session.open"),
+        auditReferences: retainedAuditReferences,
         prohibitedSideEffectAssertions: {
           browserApprovalAccepted: false,
           delegatedWorkStarted: false,
