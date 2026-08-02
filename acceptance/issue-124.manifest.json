@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 2,
+  "issue": 124,
+  "parentPrd": 125,
+  "sourceSpecification": {
+    "issue": 116,
+    "githubBodyUtf8Sha256": "34ebbde096564621b14a68d4bc64cdbd8ba9e448a42cb75c084d80c0e201308a",
+    "parentApprovedTextExportSha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23",
+    "parentApprovedHashBasis": "exact GitHub body UTF-8 plus one terminal LF"
+  },
+  "scenarios": [
+    {
+      "id": "local-walking-skeleton/operates-installed-claude-controller",
+      "requirements": [
+        "#116 stories 31-36 and 41-44",
+        "#124 acceptance criteria",
+        "#8 exact focused in-conversation approval, audit, and secret boundaries",
+        "#14 provider adapter, runtime-owned PTY, one-writer attachment, and browser boundaries",
+        "#17 vertical-slice acceptance and real production-boundary decisions",
+        "#22 stable named manifest and retained sanitized evidence decisions",
+        "#23 coherent fail-closed implementation boundary"
+      ],
+      "environment": "automated contracts use an npm-packed Sand-King, real Chromium, and a no-model fake installed-CLI executable; the final acceptance child sets SANDKING_REAL_CLAUDE_ACCEPTANCE=1 on the known user-scoped authenticated development environment",
+      "transport": "served Cockpit -> shared focused-session HTTP and opaque WebSocket seams -> provider-neutral Controller runtime -> runtime-owned PTY -> production Claude adapter wrapper -> installed Claude Code CLI with bundled plugin -> private typed shim channel -> existing work-context, Launch-request, approval, Harness-run, and observation operations",
+      "initialState": "one explicitly selected local Project and pinned conformance Harness; destination-local Claude installation/authentication may be absent during deterministic merge verification; no credentials are transferred",
+      "actions": [
+        "probe installed Claude Code without invoking a model, verify its session-ID and session-plugin loading surfaces, strictly validate and exactly enumerate the bundled session plugin, and report only demonstrated capabilities with destination-local authentication state and typed availability",
+        "prepare a stable --session-id and --plugin-dir command with a sanitized environment that excludes credential-bearing variables and NODE_OPTIONS",
+        "open the production Claude adapter through the same Cockpit Project-focused Controller action used by conformance",
+        "launch the installed CLI in a runtime-owned PTY rooted at the selected Project and keep it alive across browser disconnection",
+        "load the minimal plugin and thin shim, inject only sanitized selected work-context facts, and carry exact prepare, approve or reject, and start operations over the typed provider channel",
+        "enforce one writable terminal attachment with read-only observers",
+        "classify unavailable CLI, missing or failed authentication, network, provider outage, quota, model-behavior uncertainty, and Sand-King adapter failure distinctly",
+        "on the final acceptance child only, have a person inspect the work context, explicitly approve the exact immutable Launch request in the Claude conversation, start it separately, and observe the conformance Harness outcome in the Cockpit"
+      ],
+      "expectedTypedOutcome": "automated contract evidence with a truthful environment-gate diagnostic; final-child real evidence records project_focused_controller_session_opened, launch_request_approved, and one structured conformance Harness outcome",
+      "canonicalStateInvariants": [
+        "conformance remains the deterministic merge oracle while Claude uses the same public Cockpit, Controller-runtime, work-context, preview, approval, and observation interfaces",
+        "the Controller runtime owns the PTY and provider lifecycle while the adapter owns only probe, command preparation, plugin shim forwarding, and typed provider reasons",
+        "the controller-assigned supported CLI session UUID is stable and retained independently from the Sand-King Controller-session identity",
+        "the bundled plugin is truthfully identified as session-loaded through --plugin-dir with a runtime-private typed CLI shim; no user-installed plugin record is claimed",
+        "only the owning focused Controller session can submit the exact request ID and expected revision",
+        "approval remains separate from Harness-run start and browser interaction cannot assert approval",
+        "browser disconnection detaches without terminating the Claude process",
+        "Project execution state remains Host-private and the selected Project receives no Sand-King state",
+        "the actual authenticated Claude interaction is performed by the final human/environment acceptance child, never fabricated by deterministic automation"
+      ],
+      "prohibitedSideEffects": [
+        "credential copy or transfer",
+        "credential value in prompt, command metadata, environment evidence, logs, state, audit, errors, or browser models",
+        "browser approval assertion",
+        "terminal-output parsing as approval, canonical session state, or success",
+        "second writable PTY attachment",
+        "Project Sand-King file mutation",
+        "dangerous mode",
+        "external writable attachment transfer",
+        "complete Claude lifecycle or exhaustive failure coverage",
+        "sudo",
+        "system package install",
+        "shell profile mutation",
+        "service configuration"
+      ],
+      "evidence": "acceptance/evidence/issue-124.json"
+    }
+  ],
+  "environmentGate": {
+    "name": "SANDKING_REAL_CLAUDE_ACCEPTANCE",
+    "enabledValue": "1",
+    "executionCommand": "SANDKING_REAL_CLAUDE_ACCEPTANCE=1 SANDKING_REAL_CLAUDE_PROJECT=/absolute/path npm run acceptance:issue-124:real",
+    "deterministicMergeOracleRequiresAuthenticatedExecution": false,
+    "finalAcceptanceChildRequiresAuthenticatedExecution": true,
+    "missingOrUnauthenticatedOutcome": "typed diagnostic, never fabricated success"
+  },
+  "verification": {
+    "commands": [
+      [
+        "node",
+        "--test",
+        "test/claude-provider-adapter.test.mjs",
+        "test/claude-controller-plugin.test.mjs",
+        "test/claude-controller-session.test.mjs",
+        "test/installed-claude-acceptance-audits.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/browser-protocol.test.mjs",
+        "test/claude-controller.browser.test.mjs"
+      ]
+    ],
+    "typedProviderOutcomes": [
+      "provider_cli_unavailable",
+      "provider_cli_incompatible",
+      "provider_authentication_missing",
+      "provider_authentication_failed",
+      "provider_network_unavailable",
+      "provider_outage",
+      "provider_quota_unavailable",
+      "provider_model_behavior_unconfirmed",
+      "provider_adapter_failed"
+    ]
+  }
+}

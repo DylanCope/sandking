@@ -16,7 +16,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:92e4331f6945b40de00865c16724ab9d9162e0b43da527298850c738b4ff6fd4",
+  schemaDigest: "sha256:a6d983b5a526b9a7167a39e158ae91dc741b62ae682a15e2c0ac938e2a3a5fcc",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -139,7 +139,7 @@ const renderPreparedProject = (current) => {
   return card;
 };
 
-const renderProjectPreparation = (preparation, session) => {
+const renderProjectPreparation = (preparation, session, controllerProviders) => {
   const section = element("section", {
     id: "project-preparation",
     "data-explicit-path-only": "true",
@@ -191,6 +191,25 @@ const renderProjectPreparation = (preparation, session) => {
     "data-action": "open-project-controller",
     disabled: !preparation.current?.canPrepareLaunchRequest,
   }, "Open focused Controller for Launch");
+  const claudeProvider = controllerProviders.find((provider) =>
+    provider.providerId === "claude-code");
+  const claudeAvailable = claudeProvider?.availability.status === "available";
+  const openClaudeController = element("button", {
+    id: "open-project-claude-controller",
+    type: "button",
+    "data-action": "open-project-claude-controller",
+    "data-provider-availability": claudeProvider?.availability.status ?? "unavailable",
+    disabled: !preparation.current?.canPrepareLaunchRequest || !claudeAvailable,
+  }, "Open installed Claude Controller");
+  const claudeProviderStatus = element("p", {
+    id: "claude-provider-status",
+    "data-provider-id": "claude-code",
+    "data-availability": claudeProvider?.availability.status ?? "unavailable",
+    "data-authentication": claudeProvider?.availability.authentication ?? "unknown",
+    "data-failure-code": claudeProvider?.availability.failureCode ?? "",
+  }, claudeAvailable
+    ? `Claude Code ${claudeProvider.availability.version} is available with destination-local authentication.`
+    : `Claude Controller unavailable: ${claudeProvider?.availability.failureCode ?? "provider_cli_unavailable"}.`);
   const controllerFeedback = element("p", {
     id: "project-controller-feedback",
     role: "status",
@@ -243,14 +262,15 @@ const renderProjectPreparation = (preparation, session) => {
     currentNode = replacement;
     feedback.textContent = "Project and conformance Harness are ready for Launch preparation.";
     openController.disabled = !outcome.project.canPrepareLaunchRequest;
+    openClaudeController.disabled = !outcome.project.canPrepareLaunchRequest || !claudeAvailable;
     openButton.disabled = false;
   });
 
-  openController.addEventListener("click", async () => {
+  const openFocusedController = async (providerId, sourceButton) => {
     if (!currentProject) {
       return;
     }
-    openController.disabled = true;
+    sourceButton.disabled = true;
     controllerFeedback.textContent = "Opening the owning focused Controller session…";
     const response = await fetch("/projects/sessions/open", {
       method: "POST",
@@ -260,12 +280,12 @@ const renderProjectPreparation = (preparation, session) => {
         "x-sandking-idempotency-key": mutationKey(),
         "x-sandking-expected-revision": String(currentProject.revision),
       },
-      body: JSON.stringify({ projectId: currentProject.projectId }),
+      body: JSON.stringify({ projectId: currentProject.projectId, providerId }),
     });
     const outcome = await response.json();
     if (!response.ok || outcome.type !== "mutation_result") {
       controllerFeedback.textContent = `Focused Controller failed safely: ${outcome.code}.`;
-      openController.disabled = false;
+      sourceButton.disabled = providerId === "claude-code" ? !claudeAvailable : false;
       return;
     }
     const focused = outcome.session;
@@ -354,7 +374,11 @@ const renderProjectPreparation = (preparation, session) => {
     }));
     controllerFeedback.textContent =
       "Use the focused Controller conversation to inspect, prepare, approve, or reject.";
-  });
+  };
+  openController.addEventListener("click", () =>
+    openFocusedController("conformance-controller-v1", openController));
+  openClaudeController.addEventListener("click", () =>
+    openFocusedController("claude-code", openClaudeController));
 
   section.append(
     element("h3", {}, "Bounded Project configuration"),
@@ -369,6 +393,8 @@ const renderProjectPreparation = (preparation, session) => {
     feedback,
     currentNode,
     openController,
+    openClaudeController,
+    claudeProviderStatus,
     controllerFeedback,
     controllerPanel,
     element("p", { "data-project-scope": "registration-only" },
@@ -883,6 +909,17 @@ socket.addEventListener("message", (event) => {
     && message.viewModel.projectPreparation.selection?.mode === "explicit-host-path"
     && message.viewModel.projectPreparation.selection?.directoryScanning === false
     && message.viewModel.projectPreparation.conformanceHarness?.permittedTestDouble === true;
+  const controllerProvidersCompatible =
+    Array.isArray(message?.viewModel?.controllerProviders)
+    && message.viewModel.controllerProviders.length === 2
+    && message.viewModel.controllerProviders.some((provider) =>
+      provider.providerId === "conformance-controller-v1" && provider.fixture === true)
+    && message.viewModel.controllerProviders.some((provider) =>
+      provider.providerId === "claude-code"
+      && provider.fixture === false
+      && ["available", "unavailable", "unauthenticated"].includes(
+        provider.availability?.status,
+      ));
 
   if (
     message?.type !== "runtime.hello-ack"
@@ -895,6 +932,7 @@ socket.addEventListener("message", (event) => {
     || !durableIdentitiesCompatible
     || !planningCompatible
     || !projectPreparationCompatible
+    || !controllerProvidersCompatible
     || message.viewModel?.kind !== "cockpit.connection"
   ) {
     requireReload("browser_runtime_handshake_mismatch");
@@ -913,7 +951,11 @@ socket.addEventListener("message", (event) => {
       `Connected to ${message.viewModel.host.identity} with protocol ${message.protocol.version}`
         + ` (${message.viewModel.host.hostId})`,
     ),
-    renderProjectPreparation(message.viewModel.projectPreparation, message.session),
+    renderProjectPreparation(
+      message.viewModel.projectPreparation,
+      message.session,
+      message.viewModel.controllerProviders,
+    ),
     renderHarnessRun({
       mode: "snapshot",
       run: null,

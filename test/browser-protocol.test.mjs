@@ -126,8 +126,32 @@ test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and 
     assert.equal(ack.viewModel.host.identity, "local-host");
     assert.equal(ack.viewModel.host.hostId, runtime.host.hostId);
     assert.deepEqual(Object.keys(ack.viewModel).sort(), [
-      "host", "kind", "negotiation", "planning", "projectPreparation", "runtime",
+      "controllerProviders", "host", "kind", "negotiation", "planning",
+      "projectPreparation", "runtime",
     ]);
+    assert.deepEqual(ack.viewModel.controllerProviders.map((provider) => ({
+      providerId: provider.providerId,
+      fixture: provider.fixture,
+      status: provider.availability.status,
+      ptyRuntimeOwned: provider.terminal.runtimeOwnershipRequired,
+    })), [
+      {
+        providerId: "conformance-controller-v1",
+        fixture: true,
+        status: "available",
+        ptyRuntimeOwned: true,
+      },
+      {
+        providerId: "claude-code",
+        fixture: false,
+        status: "unavailable",
+        ptyRuntimeOwned: true,
+      },
+    ]);
+    assert.equal(
+      ack.viewModel.controllerProviders[1].availability.failureCode,
+      "provider_cli_unavailable",
+    );
     assert.deepEqual(ack.viewModel.projectPreparation.selection, {
       mode: "explicit-host-path",
       directoryScanning: false,

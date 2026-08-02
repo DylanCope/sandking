@@ -35,7 +35,7 @@ export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-harness-run-observation")
+  .update("sandking-browser-runtime-schema-v1-with-controller-provider-readiness")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -146,6 +146,37 @@ export const runtimeHelloAckSchema = z.object({
     }).strict(),
     planning: planningProjectionSchema,
     projectPreparation: projectPreparationProjectionSchema,
+    controllerProviders: z.array(z.object({
+      providerId: z.enum(["conformance-controller-v1", "claude-code"]),
+      kind: z.enum(["conformance", "production"]),
+      fixture: z.boolean(),
+      adapterId: z.enum([
+        "conformance-controller-adapter-v1",
+        "claude-code-controller-adapter-v1",
+      ]),
+      adapterProtocol: z.string().regex(/^1\.[0-9]+\.[0-9]+$/),
+      capabilities: z.array(identifierSchema).max(9),
+      availability: z.object({
+        status: z.enum(["available", "unavailable", "unauthenticated"]),
+        version: z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+$/).nullable(),
+        authentication: z.enum(["authenticated", "missing", "unknown", "not-applicable"]),
+        source: z.enum(["destination-local", "packaged-conformance"]),
+        failureCode: identifierSchema.nullable(),
+      }).strict(),
+      terminal: z.object({
+        ptyRequired: z.literal(true),
+        runtimeOwnershipRequired: z.literal(true),
+      }).strict(),
+      integration: z.object({
+        pluginId: z.literal("sandking-controller"),
+        pluginVersion: z.literal("1.0.0"),
+        scope: z.literal("session"),
+        loading: z.literal("--plugin-dir"),
+        installed: z.literal(false),
+        boundary: z.literal("session-plugin-private-typed-shim"),
+        credentialsTransferred: z.literal(false),
+      }).strict().optional(),
+    }).strict()).length(2),
   }).strict(),
 }).strict();
 

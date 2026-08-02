@@ -29,6 +29,9 @@
     "acceptance:issue-120:update-evidence": "node test/run-issue-120-acceptance.mjs acceptance/issue-120.manifest.json --update-evidence",
     "acceptance:issue-123": "node test/run-issue-123-acceptance.mjs acceptance/issue-123.manifest.json",
     "acceptance:issue-123:update-evidence": "node test/run-issue-123-acceptance.mjs acceptance/issue-123.manifest.json --update-evidence",
+    "acceptance:issue-124": "node test/run-issue-124-acceptance.mjs acceptance/issue-124.manifest.json",
+    "acceptance:issue-124:update-evidence": "node test/run-issue-124-acceptance.mjs acceptance/issue-124.manifest.json --update-evidence",
+    "acceptance:issue-124:real": "node test/run-installed-claude-acceptance.mjs acceptance/issue-124.manifest.json",
     "typecheck": "tsc --noEmit -p tsconfig.sandcastle.json && tsc --noEmit -p tsconfig.json",
     "test": "node --test .sandcastle/*.test.mjs test/*.test.mjs"
   },

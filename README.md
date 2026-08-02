@@ -136,6 +136,28 @@ opaque bulk channel, and renders the structured outcome. Closing or refreshing
 the browser neither cancels the run nor terminates its focused Controller
 session.
 
+For an explicitly selected Project, the same focused-session Cockpit action can
+also operate an installed Claude Code CLI. Without invoking a model, the runtime
+probes the destination-local version and authentication, checks the installed
+CLI's session-ID and plugin-loading surfaces, and strictly validates, loads, and
+exactly enumerates the bundled plugin before advertising its negotiated
+capabilities. It reports a
+typed unavailable, incompatible, or unauthenticated state and enables **Open
+installed Claude Code** only when the complete minimal surface is ready.
+Sand-King launches Claude in its runtime-owned PTY with a stable
+controller-assigned CLI session ID. The bundled plugin is loaded for that
+session with `--plugin-dir`; it has no user-installed plugin record and is
+truthfully paired with a runtime-private typed CLI shim. The plugin exposes only
+sanitized work-context inspection, immutable Launch preparation, the exact
+approve or reject decision, and a separate approved-run start over the private
+typed Controller channel. User-scoped plugin installation and update lifecycle
+remain part of the later complete Claude integration slice. Credentials stay
+in the destination-local Claude store and are excluded from the adapter command
+environment, browser models, prompts supplied by Sand-King, logs, state, audit,
+and retained evidence. Conformance remains the deterministic Harness oracle;
+Claude uses the same work-context, preview, approval, run, and observation
+interfaces.
+
 The Cockpit also projects a thin optional Planning journey. Its Journey Rail
 shows the built-in Wayfinding, Speccing, and Ticketing stages from data labelled
 `Conformance fixture data — not live GitHub`. Selecting fixture-backed work
@@ -214,3 +236,28 @@ npm run acceptance:issue-123
 Its retained sanitized evidence is generated with
 `npm run acceptance:issue-123:update-evidence` and stored in
 `acceptance/evidence/issue-123.json`.
+
+Run the installed-Claude Controller contract and Cockpit scenario without
+requiring a real model interaction with:
+
+```bash
+npm run acceptance:issue-124
+```
+
+Its deterministic retained evidence is generated with
+`npm run acceptance:issue-124:update-evidence` and stored in
+`acceptance/evidence/issue-124.json`. The final authenticated acceptance child
+is intentionally separate and human-driven. On a known per-user development
+environment with an installed, authenticated `claude` CLI and an explicit Git
+Project, run:
+
+```bash
+SANDKING_REAL_CLAUDE_ACCEPTANCE=1 \
+SANDKING_REAL_CLAUDE_PROJECT=/absolute/path \
+npm run acceptance:issue-124:real
+```
+
+The gated runner opens the Cockpit, prints the exact in-conversation inspection,
+preparation, approval, separate start, structured-outcome, and browser-detach
+checklist, then verifies the durable canonical records. It never copies
+credentials or treats automation as evidence that a person approved a request.
