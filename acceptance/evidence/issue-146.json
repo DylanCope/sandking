@@ -15,14 +15,14 @@
     "variant": "A — Workbench",
     "immutableCommit": "2467a8d"
   },
-  "generatedFromCommit": "d758ddbf9747516fc3079828ded7f1834d564d47",
-  "recordedAt": "2026-08-02T21:13:52.370Z",
+  "generatedFromCommit": "d40c9c34ce58a7e807a9bfaeb4b190f479ed8fb7",
+  "recordedAt": "2026-08-02T21:48:15.165Z",
   "scenario": "cockpit-workbench/operates-interactive-controller-terminal",
   "packagedPublicSeam": {
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "c72f64d830b5fe9d35734a676ac693081aa7dae5f8f8b9fc57466c5f6b903153"
+    "tarballSha256": "adffa4e571686c864ab0f2864cb93f88d5238b3914af1d7649d0427be64be0bc"
   },
   "layout": {
     "referenceViewport": {
@@ -42,6 +42,8 @@
       "width": 700,
       "navigationDrawer": true,
       "contextDrawer": true,
+      "hostConnectionStatusVisible": true,
+      "externalProviderEscapeReachable": true,
       "horizontalPageOverflow": false
     },
     "visibleKeyboardFocus": true,
@@ -49,7 +51,9 @@
       "navigation",
       "main",
       "complementary"
-    ]
+    ],
+    "mainLandmarkCount": 1,
+    "nestedMainLandmark": false
   },
   "terminal": {
     "emulator": "@xterm/xterm@6.0.0",
@@ -99,44 +103,50 @@
       "wrongCorrelation": "controller_terminal_not_found",
       "staleCorrelation": "terminal_resize_sequence_conflict"
     },
-    "boundedRetainedOutputResynchronization": true
+    "boundedRetainedOutputResynchronization": true,
+    "attachmentDelivery": {
+      "regression": "test/controller-terminal-attachment.test.mjs",
+      "acknowledgementBeforeOutput": true,
+      "replayBeforeLive": true,
+      "duplicateSequenceDelivery": false
+    }
   },
   "auditReferences": [
     {
-      "auditId": "audit-d00b869dcee747f856a9e65b",
+      "auditId": "audit-28beac9da3b2239814cb07b6",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-505eda2255b275dcd2404c0a",
-        "providerSessionId": "conformance-provider-session-d5088ab2f86ede7a363ec39f",
-        "streamId": "controller-terminal-d80099c329ff4f07a3d19cd2",
+        "sessionId": "controller-session-cd8f26e006382468de1006e5",
+        "providerSessionId": "conformance-provider-session-edf9118051abe0ed2e0270c9",
+        "streamId": "controller-terminal-2822c8e6b6694145e08e8076",
         "sequence": 50,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-3d74ee87a92ffc5024248490",
+      "auditId": "audit-c58918890c304ef004a4b8bf",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-505eda2255b275dcd2404c0a",
-        "providerSessionId": "conformance-provider-session-d5088ab2f86ede7a363ec39f",
-        "streamId": "controller-terminal-d80099c329ff4f07a3d19cd2",
+        "sessionId": "controller-session-cd8f26e006382468de1006e5",
+        "providerSessionId": "conformance-provider-session-edf9118051abe0ed2e0270c9",
+        "streamId": "controller-terminal-2822c8e6b6694145e08e8076",
         "sequence": 51,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-c0af122d7db681d76ea1ad6d",
+      "auditId": "audit-e2299e6022a8491b6977cdf4",
       "action": "controller.terminal.resize",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-505eda2255b275dcd2404c0a",
-        "providerSessionId": "conformance-provider-session-d5088ab2f86ede7a363ec39f",
-        "streamId": "controller-terminal-d80099c329ff4f07a3d19cd2",
-        "attachmentId": "terminal-attachment-bec1b7d02f65a7e3257fa00a",
+        "sessionId": "controller-session-cd8f26e006382468de1006e5",
+        "providerSessionId": "conformance-provider-session-edf9118051abe0ed2e0270c9",
+        "streamId": "controller-terminal-2822c8e6b6694145e08e8076",
+        "attachmentId": "terminal-attachment-645aa722fca46799bb6189e8",
         "sequence": 2,
         "columns": 53,
         "rows": 20,
@@ -144,14 +154,14 @@
       }
     },
     {
-      "auditId": "audit-eb573dbc3e52dbe42ef97d1b",
+      "auditId": "audit-5acbe5368b06104967b2dec8",
       "action": "controller.terminal.resize",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-505eda2255b275dcd2404c0a",
-        "providerSessionId": "conformance-provider-session-d5088ab2f86ede7a363ec39f",
-        "streamId": "controller-terminal-d80099c329ff4f07a3d19cd2",
-        "attachmentId": "terminal-attachment-bec1b7d02f65a7e3257fa00a",
+        "sessionId": "controller-session-cd8f26e006382468de1006e5",
+        "providerSessionId": "conformance-provider-session-edf9118051abe0ed2e0270c9",
+        "streamId": "controller-terminal-2822c8e6b6694145e08e8076",
+        "attachmentId": "terminal-attachment-645aa722fca46799bb6189e8",
         "sequence": 3,
         "columns": 68,
         "rows": 33,
@@ -190,6 +200,16 @@
       "test/browser-protocol.test.mjs",
       "test/controller-launch-session.test.mjs",
       "test/security-boundary.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/controller-terminal-attachment.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/claude-controller-session.test.mjs"
     ],
     [
       "node",
