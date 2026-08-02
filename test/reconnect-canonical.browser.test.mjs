@@ -35,6 +35,7 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--host-mode", "delayed-harness-run-start-response",
       "--idempotency-key", "issue-121-runtime-start",
       "--expected-revision", "0",
       "--json",
@@ -107,10 +108,57 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
       await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} created/.test(
         document.querySelector("#project-controller-terminal-output")?.textContent ?? "",
       ));
+      await page.waitForFunction(() => document.querySelector(
+        "#project-controller-terminal-output",
+      )?.textContent?.includes(
+        "Recovered the accepted outcome by exact idempotency-key lookup after the start response timed out",
+      ));
       const startOutput = await page.locator("#project-controller-terminal-output").textContent();
       const harnessRunId = /Harness run (harness-run-[a-f0-9]{24}) created/
         .exec(startOutput)?.[1];
       assert.match(harnessRunId, /^harness-run-[a-f0-9]{24}$/);
+      assert.match(
+        startOutput,
+        /Recovered the accepted outcome by exact idempotency-key lookup after the start response timed out/,
+      );
+      const [recoveryAudits, recoveryRunState] = await Promise.all([
+        readFile(join(dataDir, "audit.jsonl"), "utf8")
+          .then((text) => text.trim().split("\n").map((line) => JSON.parse(line))),
+        readFile(join(dataDir, "harness-runs.json"), "utf8").then(JSON.parse),
+      ]);
+      const recoveryStartOperationAudits = recoveryAudits.filter((entry) =>
+        entry.action === "controller.provider.operation"
+        && entry.outcome === "accepted"
+        && entry.details.operation === "harness-run.start");
+      const recoveryLookupOperationAudits = recoveryAudits.filter((entry) =>
+        entry.action === "controller.provider.operation"
+        && entry.outcome === "accepted"
+        && entry.details.operation === "harness-run.lookup");
+      const recoveryAcceptedStartAudits = recoveryAudits.filter((entry) =>
+        entry.action === "harness.run.start" && entry.outcome === "accepted");
+      assert.equal(recoveryStartOperationAudits.length, 1);
+      assert.equal(recoveryLookupOperationAudits.length, 1);
+      assert.equal(recoveryAcceptedStartAudits.length, 1);
+      assert.match(
+        recoveryStartOperationAudits[0].details.idempotencyKeyHash,
+        /^sha256:[a-f0-9]{64}$/,
+      );
+      assert.equal(
+        recoveryLookupOperationAudits[0].details.idempotencyKeyHash,
+        recoveryStartOperationAudits[0].details.idempotencyKeyHash,
+      );
+      assert.equal(
+        recoveryAcceptedStartAudits[0].details.idempotencyKeyHash,
+        recoveryStartOperationAudits[0].details.idempotencyKeyHash,
+      );
+      assert.equal(recoveryAcceptedStartAudits[0].details.harnessRunId, harnessRunId);
+      assert.equal(recoveryRunState.runs.length, 1);
+      assert.equal(recoveryRunState.runs[0].harnessRunId, harnessRunId);
+      assert.equal(recoveryRunState.startOutcomes.length, 1);
+      assert.equal(
+        recoveryRunState.startOutcomes[0].idempotencyKeyHash,
+        recoveryStartOperationAudits[0].details.idempotencyKeyHash,
+      );
       await enter(`start ${launchRequestId} 2`);
       await page.waitForFunction((runId) => (
         document.querySelector("#project-controller-terminal-output")?.textContent
@@ -286,6 +334,29 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
             launchRequest: launchState.launchRequests[0],
             harnessRun: runState.runs[0],
           },
+          ambiguousMutationLookup: {
+            kind: "ambiguous_mutation_lookup_contract",
+            operation: "harness-run.start",
+            publicSeam: "packaged Cockpit -> runtime-owned provider PTY -> Controller runtime -> framed local Host",
+            ambiguousResponse: {
+              code: "provider_operation_timeout",
+              providerDeadlineMs: 3_000,
+              acceptedHostResponseDelayMs: 3_250,
+            },
+            lookupOperation: "harness-run.lookup",
+            lookupOperationAuditId: recoveryLookupOperationAudits[0].auditId,
+            idempotencyKeyHash: recoveryLookupOperationAudits[0].details.idempotencyKeyHash,
+            lookupUsedSameIdempotencyKey: true,
+            lookupReturnedExistingHarnessRunId: harnessRunId,
+            canonicalStartAuditId: recoveryAcceptedStartAudits[0].auditId,
+            startRequestsBeforeRecoveryReturned: recoveryStartOperationAudits.length,
+            canonicalStartEffectsBeforeRecoveryReturned: recoveryAcceptedStartAudits.length,
+            canonicalRunCountBeforeRecoveryReturned: recoveryRunState.runs.length,
+            canonicalStartOutcomeCountBeforeRecoveryReturned:
+              recoveryRunState.startOutcomes.length,
+            duplicateStartRequestedDuringRecovery: false,
+            visibleCanonicalRecovery: true,
+          },
           auditReferences: {
             approval: acceptedApprovalAudits[0],
             start: acceptedStartAudits[0],
@@ -317,6 +388,7 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
             duplicateLaunchDecision: false,
             duplicateHarnessRun: false,
             inventedGapFreeContinuity: false,
+            newMutationIdentityAfterAmbiguousResponse: false,
             projectFileWrite: false,
             sudo: false,
             systemPackageInstall: false,

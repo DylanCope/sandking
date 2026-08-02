@@ -271,15 +271,37 @@ test("retained issue 121 evidence proves cursor truth and no duplicate keyed wor
     postExpiryFoundCode: "harness_run_found",
     postExpiryReturnedCanonicalRun: true,
   });
-  assert.deepEqual(evidence.contractEvidence.ambiguousMutationLookup, {
-    kind: "ambiguous_mutation_lookup_contract",
-    operation: "harness-run.start",
-    ambiguousResponse: true,
-    lookupOperation: "harness-run.lookup",
-    lookupUsedSameIdempotencyKey: true,
-    lookupReturnedExistingHarnessRunId: "harness-run-666666666666666666666666",
-    duplicateStartRequested: false,
+  const ambiguousRecovery = evidence.contractEvidence.ambiguousMutationLookup;
+  assert.equal(ambiguousRecovery.kind, "ambiguous_mutation_lookup_contract");
+  assert.equal(ambiguousRecovery.operation, "harness-run.start");
+  assert.equal(
+    ambiguousRecovery.publicSeam,
+    "packaged Cockpit -> runtime-owned provider PTY -> Controller runtime -> framed local Host",
+  );
+  assert.deepEqual(ambiguousRecovery.ambiguousResponse, {
+    code: "provider_operation_timeout",
+    providerDeadlineMs: 3_000,
+    acceptedHostResponseDelayMs: 3_250,
   });
+  assert.equal(ambiguousRecovery.lookupOperation, "harness-run.lookup");
+  assert.match(ambiguousRecovery.lookupOperationAuditId, /^audit-[a-f0-9]{24}$/);
+  assert.match(ambiguousRecovery.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(
+    ambiguousRecovery.idempotencyKeyHash,
+    evidence.auditReferences.start.details.idempotencyKeyHash,
+  );
+  assert.equal(ambiguousRecovery.lookupUsedSameIdempotencyKey, true);
+  assert.equal(
+    ambiguousRecovery.lookupReturnedExistingHarnessRunId,
+    evidence.identities.harnessRunId,
+  );
+  assert.equal(ambiguousRecovery.canonicalStartAuditId, evidence.auditReferences.start.auditId);
+  assert.equal(ambiguousRecovery.startRequestsBeforeRecoveryReturned, 1);
+  assert.equal(ambiguousRecovery.canonicalStartEffectsBeforeRecoveryReturned, 1);
+  assert.equal(ambiguousRecovery.canonicalRunCountBeforeRecoveryReturned, 1);
+  assert.equal(ambiguousRecovery.canonicalStartOutcomeCountBeforeRecoveryReturned, 1);
+  assert.equal(ambiguousRecovery.duplicateStartRequestedDuringRecovery, false);
+  assert.equal(ambiguousRecovery.visibleCanonicalRecovery, true);
   assert.deepEqual(evidence.duplicateEffectAssertions, {
     runtimeCount: 1,
     providerSessionCount: 1,

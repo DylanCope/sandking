@@ -19,14 +19,14 @@
         "#14 one reusable runtime, resumable browser events, and runtime-owned provider PTY reconnection",
         "#17 cockpit-visible vertical-slice acceptance boundary"
       ],
-      "environment": "npm-packed Sand-King; npm-pinned real headless Chromium; one explicit local Project; real reusable Controller runtime; runtime-owned focused conformance Controller PTY; real local Host and Host-private retained state",
+      "environment": "npm-packed Sand-King; npm-pinned real headless Chromium; one explicit local Project; real reusable Controller runtime; runtime-owned focused conformance Controller PTY; real local Host with a deterministic delayed accepted-response fault; and Host-private retained state",
       "transport": "served Cockpit and opaque Controller terminal -> versioned typed browser protocol -> existing Controller runtime -> versioned framed stdio local Host with separate opaque log ranges -> Host-private canonical registration, Launch request, Harness run, events, logs, outcome, keyed outcomes, and audits",
       "initialState": "one running Controller runtime and no Project, provider session, Launch request, or Harness run",
       "actions": [
         "open one explicit Project and one focused conformance Controller session through the packaged Cockpit",
         "prepare one immutable Launch request and submit the same exact approval twice",
         "start the approved request twice with the same deterministic idempotency key",
-        "recover an ambiguously answered run-start mutation by looking up the same idempotency key",
+        "delay the real local Host's already-committed run-start response beyond the provider deadline, then recover by looking up the same idempotency key",
         "acknowledge an observed Harness-run sequence, refresh the real browser, and resume from that cursor",
         "reattach the same runtime-owned provider PTY with its next input sequence and retained output",
         "supply an incompatible Harness-run cursor and receive typed resync-required with a canonical snapshot",

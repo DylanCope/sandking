@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createControllerSessionManager } from "../src/controller-sessions.mjs";
 
 const waitFor = async (predicate) => {
-  const deadline = Date.now() + 3_000;
+  const deadline = Date.now() + 6_000;
   while (Date.now() < deadline) {
     if (predicate()) {
       return;
@@ -26,7 +26,8 @@ test("a project-focused conformance Controller invokes typed Launch operations",
   const harnessId = `harness-${"3".repeat(24)}`;
   const pinnedRevision = "4".repeat(40);
   const overlongIssueNumber = "9".repeat(400);
-  let ambiguousStartAttempted = false;
+  let canonicalStartOutcome = null;
+  let startAttempts = 0;
   const recordAudit = async (action, outcome, details) => {
     const auditId = `audit-${String(audits.length + 1).padStart(24, "0")}`;
     audits.push({ auditId, action, outcome, details });
@@ -90,20 +91,24 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       };
     }
     if (request.operation === "harness-run.start") {
-      ambiguousStartAttempted = true;
-      throw new Error("ambiguous_provider_response");
+      startAttempts += 1;
+      canonicalStartOutcome = {
+        type: "harness.run.start.result",
+        code: "harness_run_created",
+        idempotentReplay: false,
+        run: { harnessRunId },
+      };
+      await new Promise((resolve) => setTimeout(resolve, 3_250));
+      return canonicalStartOutcome;
     }
     if (request.operation === "harness-run.lookup") {
       return {
         type: "harness.run.lookup.result",
-        code: "harness_run_start_outcome_found",
-        found: true,
-        startOutcome: {
-          type: "harness.run.start.result",
-          code: "harness_run_created",
-          idempotentReplay: false,
-          run: { harnessRunId },
-        },
+        code: canonicalStartOutcome
+          ? "harness_run_start_outcome_found"
+          : "harness_run_start_outcome_absent",
+        found: Boolean(canonicalStartOutcome),
+        startOutcome: canonicalStartOutcome,
       };
     }
     throw new Error("unexpected_provider_operation");
@@ -188,8 +193,12 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       `Launch request ${launchRequestId} approved at revision 2.`,
     ));
     await enter(`start ${launchRequestId} 2`);
-    await waitFor(() => output.join("").includes(`Harness run ${harnessRunId} created`));
-    assert.equal(ambiguousStartAttempted, true);
+    await waitFor(() => output.join("").includes(
+      "Recovered the accepted outcome by exact idempotency-key lookup",
+    ));
+    assert.match(output.join(""), new RegExp(`Harness run ${harnessRunId} created`));
+    assert.match(output.join(""), /Recovered the accepted outcome by exact idempotency-key lookup/);
+    assert.equal(startAttempts, 1);
     const downgraded = await manager.attach({
       socket,
       sessionId: session.sessionId,
@@ -241,25 +250,6 @@ test("a project-focused conformance Controller invokes typed Launch operations",
       operations[4].input.idempotencyKey,
       operations[5].input.idempotencyKey,
     );
-    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-      await writeFile(
-        join(
-          process.env.SANDKING_ACCEPTANCE_RESULT_DIR,
-          "ambiguous-mutation-lookup-contract.json",
-        ),
-        `${JSON.stringify({
-          kind: "ambiguous_mutation_lookup_contract",
-          operation: "harness-run.start",
-          ambiguousResponse: true,
-          lookupOperation: operations[5].operation,
-          lookupUsedSameIdempotencyKey:
-            operations[4].input.idempotencyKey === operations[5].input.idempotencyKey,
-          lookupReturnedExistingHarnessRunId: harnessRunId,
-          duplicateStartRequested: false,
-        }, null, 2)}\n`,
-        { mode: 0o600 },
-      );
-    }
     const sessionStartAudit = audits.find((entry) =>
       entry.action === "controller.session.start"
       && entry.outcome === "accepted"

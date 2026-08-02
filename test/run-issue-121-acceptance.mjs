@@ -63,14 +63,12 @@ try {
       demonstratedPaths: ISSUE_121_DEMONSTRATED_PATHS,
       expectedRevision: evidenceSourceRevision,
     });
-    const [observation, launchDecisionContract, harnessRunContract, ambiguousLookupContract] =
+    const [observation, launchDecisionContract, harnessRunContract] =
       await Promise.all([
         readFile(observationPath, "utf8").then(JSON.parse),
         readFile(join(resultDirectory, "launch-decision-contract.json"), "utf8")
           .then(JSON.parse),
         readFile(join(resultDirectory, "harness-run-success-contract.json"), "utf8")
-          .then(JSON.parse),
-        readFile(join(resultDirectory, "ambiguous-mutation-lookup-contract.json"), "utf8")
           .then(JSON.parse),
       ]);
     if (observation.scenario !== manifest.scenarios[0].id || observation.issue !== 121) {
@@ -100,6 +98,7 @@ try {
     ) {
       throw new Error("issue_116_source_revision_mismatch");
     }
+    const { ambiguousMutationLookup, ...browserObservation } = observation;
     const evidence = {
       schemaVersion: 2,
       issue: 121,
@@ -107,11 +106,11 @@ try {
       sourceSpecification,
       generatedFromCommit: evidenceSourceRevision,
       recordedAt: new Date().toISOString(),
-      ...observation,
+      ...browserObservation,
       contractEvidence: {
         launchDecision: launchDecisionContract,
         harnessRun: harnessRunContract,
-        ambiguousMutationLookup: ambiguousLookupContract,
+        ambiguousMutationLookup,
       },
       verificationCommands: manifest.verification.commands,
     };

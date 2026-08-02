@@ -120,6 +120,7 @@ const openControl = async (endpoint, readyMessage) => new Promise((resolve, reje
   let input = "";
   let operationSequence = 0;
   const pending = new Map();
+  const timedOutOperationIds = new Set();
   /** @param {Error | null} error @param {unknown} [value] */
   const finish = (error, value) => {
     if (settled) {
@@ -146,6 +147,7 @@ const openControl = async (endpoint, readyMessage) => new Promise((resolve, reje
         operationSequence += 1;
         const timeout = setTimeout(() => {
           pending.delete(operationId);
+          timedOutOperationIds.add(operationId);
           rejectOperation(new Error("provider_operation_timeout"));
         }, 3_000);
         pending.set(operationId, {
@@ -186,8 +188,15 @@ const openControl = async (endpoint, readyMessage) => new Promise((resolve, reje
         socket.destroy(new Error("provider_control_protocol_invalid"));
         return;
       }
-      const pendingOperation = pending.get(response?.operationId);
-      if (!pendingOperation || response?.type !== "provider.operation.result") {
+      if (response?.type !== "provider.operation.result") {
+        socket.destroy(new Error("provider_control_protocol_invalid"));
+        return;
+      }
+      const pendingOperation = pending.get(response.operationId);
+      if (!pendingOperation) {
+        if (timedOutOperationIds.delete(response.operationId)) {
+          continue;
+        }
         socket.destroy(new Error("provider_control_protocol_invalid"));
         return;
       }
@@ -206,6 +215,7 @@ const openControl = async (endpoint, readyMessage) => new Promise((resolve, reje
       operation.reject(new Error("provider_control_unavailable"));
     }
     pending.clear();
+    timedOutOperationIds.clear();
     if (!settled) {
       finish(new Error("provider_control_unavailable"));
     }
@@ -351,15 +361,23 @@ const run = async (argv) => {
       const idempotencyKey =
         `provider:${sessionId}:harness-run:start:${launchRequestId}:${expectedRevision}`;
       let outcome;
+      let recoveredFromAmbiguousResponse = false;
       try {
         outcome = await control.request("harness-run.start", {
           launchRequestId,
           expectedRevision,
           idempotencyKey,
         });
-      } catch {
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== "provider_operation_timeout") {
+          process.stdout.write(
+            `Harness run did not start: ${error instanceof Error ? error.message : "provider_operation_failed"}.\r\ncontroller> `,
+          );
+          return;
+        }
         const lookup = await control.request("harness-run.lookup", { idempotencyKey });
         outcome = lookup?.found ? lookup.startOutcome : null;
+        recoveredFromAmbiguousResponse = Boolean(lookup?.found);
       }
       if (outcome?.type !== "harness.run.start.result") {
         process.stdout.write(
@@ -369,6 +387,9 @@ const run = async (argv) => {
       }
       process.stdout.write(
         `Harness run ${outcome.run.harnessRunId} ${outcome.code === "harness_run_created" ? "created" : "found"}. `
+          + (recoveredFromAmbiguousResponse
+            ? "Recovered the accepted outcome by exact idempotency-key lookup after the start response timed out. "
+            : "")
           + "Terminal observation continues asynchronously in the Cockpit.\r\ncontroller> ",
       );
       return;

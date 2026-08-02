@@ -1,5 +1,5 @@
 import { spawn as spawnChild } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -518,6 +518,19 @@ const openProviderControl = async (context) => {
           if (!context.handleOperation) {
             throw new ControllerSessionError("provider_operation_unsupported");
           }
+          const operationInput = operationRequest.input
+            && typeof operationRequest.input === "object"
+            && !Array.isArray(operationRequest.input)
+            ? operationRequest.input
+            : null;
+          const idempotencyKey = operationInput && "idempotencyKey" in operationInput
+            ? operationInput.idempotencyKey
+            : null;
+          const idempotencyKeyHash = typeof idempotencyKey === "string"
+            && idempotencyKey.length > 0
+            && idempotencyKey.length <= 256
+            ? `sha256:${createHash("sha256").update(idempotencyKey).digest("hex")}`
+            : null;
           try {
             const outcome = await context.handleOperation({
               sessionId: context.sessionId,
@@ -532,6 +545,7 @@ const openProviderControl = async (context) => {
               workContextId: context.workContext.workContextId,
               operation: operationRequest.operation,
               operationId: operationRequest.operationId,
+              idempotencyKeyHash,
               inputRetained: false,
             });
             socket.write(`${JSON.stringify({
@@ -566,6 +580,7 @@ const openProviderControl = async (context) => {
                 workContextId: context.workContext.workContextId,
                 operation: operationRequest.operation,
                 operationId: operationRequest.operationId,
+                idempotencyKeyHash,
                 code,
                 ...(retainedOutcome ? {
                   idempotentReplay,
