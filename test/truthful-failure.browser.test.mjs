@@ -173,6 +173,19 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
         start: stream.availableStart,
         end: stream.availableEnd,
       })));
+      const auditsBeforeDisconnect = await readFile(join(dataDir, "audit.jsonl"), "utf8")
+        .then((text) => text.trim().split("\n").filter(Boolean).map(JSON.parse));
+      const retainedEventIdsBefore = failedRun.events.map(({ eventId }) => eventId);
+      const retainedAuditIdsBefore = auditsBeforeDisconnect
+        .filter((entry) => (
+          ["launch.request.decision", "harness.run.start"].includes(entry.action)
+            && entry.outcome === "accepted"
+        ) || (
+          entry.action === "harness.run.outcome" && entry.outcome === "observed"
+        ))
+        .map(({ auditId }) => auditId);
+      assert.ok(retainedEventIdsBefore.length >= 3);
+      assert.ok(retainedAuditIdsBefore.length >= 3);
 
       const runtimeStateBeforeDisconnect = await readJson(join(dataDir, "runtime-state.json"));
       const hostPid = await findLocalHostPid(runtimeStateBeforeDisconnect.pid);
@@ -326,6 +339,12 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       assert.equal(retainedAfterDisconnect.harnessId, harnessId);
       assert.equal(retainedAfterDisconnect.harnessPinnedRevision, harnessPin);
       assert.equal(retainedAfterDisconnect.launchRequestId, launchRequestId);
+      assert.deepEqual(
+        retainedAfterDisconnect.events.map(({ eventId }) => eventId),
+        retainedEventIdsBefore,
+      );
+      assert.ok(retainedAuditIdsBefore.every((auditId) =>
+        audits.some((entry) => entry.auditId === auditId)));
       assert.equal(retainedLaunch.status, "approved");
       assert.deepEqual(retainedLaunch.execution, {
         status: "failed",
@@ -421,11 +440,16 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
           runCount: runStateBeforeDisconnect.runs.length,
           harnessRunId: failedRun.harnessRunId,
           outcomeId: failedRun.outcome.outcomeId,
+          eventIds: retainedEventIdsBefore,
+          auditIds: retainedAuditIdsBefore,
         },
         canonicalStateAfter: {
           runCount: runStateAfterDisconnect.runs.length,
           harnessRunId: retainedAfterDisconnect.harnessRunId,
           outcomeId: retainedAfterDisconnect.outcome.outcomeId,
+          eventIds: retainedAfterDisconnect.events.map(({ eventId }) => eventId),
+          retainedAuditIds: retainedAuditIdsBefore.filter((auditId) =>
+            audits.some((entry) => entry.auditId === auditId)),
           launchExecution: retainedLaunch.execution,
         },
         auditReferences: [
