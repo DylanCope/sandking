@@ -18,7 +18,7 @@ const controllerId = `runtime-${"2".repeat(24)}`;
 const controllerSessionId = `controller-session-${"3".repeat(24)}`;
 
 const waitForTerminal = async (manager, harnessRunId) => {
-  const deadline = Date.now() + 3_000;
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     const observation = await manager.observe({
       requestId: "observe-run",
@@ -308,7 +308,7 @@ test("an approved Launch request starts one asynchronous canonical conformance H
   }
 });
 
-test("process exit and success-looking diagnostics cannot replace one valid terminal envelope", async () => {
+test("invalid adapter lifecycles fail truthfully without corrupting canonical run state", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-incomplete-harness-run-"));
   const dataDir = join(root, "host-state");
   const projectPath = join(root, "selected-project");
@@ -459,6 +459,51 @@ test("process exit and success-looking diagnostics cannot replace one valid term
       false,
     );
 
+    const excessiveProgressLaunch = await prepareAndDecide(999_999_997);
+    const excessiveProgressStart = await manager.start({
+      requestId: "start-excessive-progress-run",
+      launchRequestId: excessiveProgressLaunch.prepared.launchRequest.launchRequestId,
+      controllerId,
+      controllerSessionId,
+      authorizationClass: "approved_launch_request_execution",
+      idempotencyKey: "start-excessive-progress-run",
+      expectedRevision: excessiveProgressLaunch.decided.revision,
+    });
+    const excessiveProgressObservation = await waitForTerminal(
+      manager,
+      excessiveProgressStart.run.harnessRunId,
+    );
+    assert.equal(excessiveProgressObservation.run.status, "failed");
+    assert.equal(
+      excessiveProgressObservation.outcome.code,
+      "harness_adapter_protocol_invalid",
+    );
+    assert.equal(excessiveProgressObservation.events.length, 1_024);
+    assert.equal(
+      excessiveProgressObservation.events.filter((event) =>
+        event.type === "harness_progress_published").length,
+      1_021,
+    );
+    assert.deepEqual(
+      excessiveProgressObservation.events.map((event) => event.sequence),
+      Array.from({ length: 1_024 }, (_, index) => index + 1),
+    );
+    assert.equal(excessiveProgressObservation.events.at(-1).type, "harness_run_failed");
+    const reloadedManager = await createHarnessRunManager({
+      dataDir,
+      hostId,
+      recordAudit,
+      launchRequests,
+      loadLaunchContext: registry.loadLaunchContext,
+    });
+    const reloadedExcessiveProgress = await reloadedManager.observe({
+      requestId: "observe-reloaded-excessive-progress-run",
+      harnessRunId: excessiveProgressStart.run.harnessRunId,
+      afterSequence: 0,
+    });
+    assert.equal(reloadedExcessiveProgress.events.length, 1_024);
+    assert.equal(reloadedExcessiveProgress.run.status, "failed");
+
     const rejectedLaunch = await prepareAndDecide(121, "rejected");
     const rejected = await manager.start({
       requestId: "start-rejected-run",
@@ -534,8 +579,18 @@ test("process exit and success-looking diagnostics cannot replace one valid term
     assert.equal(restoredRetry.code, "launch_request_terminal");
     assert.equal(restoredRetry.prohibitedSideEffects.harnessRunStarted, false);
 
+    const outcomeAuditDeadline = Date.now() + 5_000;
+    while (!audits.some((entry) =>
+      entry.action === "harness.run.outcome"
+      && entry.details.harnessRunId === excessiveProgressStart.run.harnessRunId)) {
+      if (Date.now() >= outcomeAuditDeadline) {
+        throw new Error("harness_run_outcome_audit_timeout");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
     const retained = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
-    assert.equal(retained.runs.length, 2);
+    assert.equal(retained.runs.length, 3);
     assert.equal(retained.runs[0].status, "failed");
     if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
       await writeFile(
@@ -568,8 +623,95 @@ test("process exit and success-looking diagnostics cannot replace one valid term
             malformedRecordPublished: malformedProgressObservation.events.some((event) =>
               event.type === "harness_progress_published"),
           },
+          excessiveProgress: {
+            harnessRunId: excessiveProgressStart.run.harnessRunId,
+            status: excessiveProgressObservation.run.status,
+            outcome: excessiveProgressObservation.outcome,
+            retainedEventCount: excessiveProgressObservation.events.length,
+            retainedProgressCount: excessiveProgressObservation.events.filter((event) =>
+              event.type === "harness_progress_published").length,
+            terminalEvent: excessiveProgressObservation.events.at(-1),
+            reloadObservable: reloadedExcessiveProgress.run.status === "failed",
+          },
           canonicalRunCount: retained.runs.length,
           auditReferences: audits.filter((entry) => entry.action.startsWith("harness.run")),
+        }, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("distinct start outcomes remain durable and lookup-safe past 256 keys", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-harness-start-outcomes-"));
+  const dataDir = join(root, "host-state");
+  let auditSequence = 0;
+  const recordAudit = async () => {
+    auditSequence += 1;
+    return `audit-${String(auditSequence).padStart(24, "0")}`;
+  };
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir,
+      hostId,
+      recordAudit,
+      launchRequests: {
+        get: async () => null,
+      },
+      loadLaunchContext: async () => {
+        throw new Error("launch_context_must_not_be_loaded");
+      },
+    });
+    let firstOutcome;
+    for (let index = 0; index < 257; index += 1) {
+      const outcome = await manager.start({
+        requestId: `missing-launch-request-${index}`,
+        launchRequestId: `launch-request-${"4".repeat(24)}`,
+        controllerId,
+        controllerSessionId,
+        authorizationClass: "approved_launch_request_execution",
+        idempotencyKey: `missing-launch-request-key-${index}`,
+        expectedRevision: 1,
+      });
+      assert.equal(outcome.code, "launch_request_not_found");
+      firstOutcome ??= outcome;
+    }
+
+    const lookup = await manager.lookup({
+      requestId: "lookup-first-of-257-start-outcomes",
+      idempotencyKey: "missing-launch-request-key-0",
+    });
+    assert.equal(lookup.found, true);
+    assert.equal(lookup.startOutcome.auditId, firstOutcome.auditId);
+    const replay = await manager.start({
+      requestId: "replay-first-of-257-start-outcomes",
+      launchRequestId: `launch-request-${"4".repeat(24)}`,
+      controllerId,
+      controllerSessionId,
+      authorizationClass: "approved_launch_request_execution",
+      idempotencyKey: "missing-launch-request-key-0",
+      expectedRevision: 1,
+    });
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.auditId, firstOutcome.auditId);
+    const retained = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
+    assert.equal(retained.startOutcomes.length, 257);
+    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
+      await writeFile(
+        join(
+          process.env.SANDKING_ACCEPTANCE_RESULT_DIR,
+          "harness-run-start-retention-contract.json",
+        ),
+        `${JSON.stringify({
+          kind: "harness_run_start_retention_contract",
+          distinctKeyCount: 257,
+          retainedOutcomeCount: retained.startOutcomes.length,
+          firstLookupCode: lookup.code,
+          firstLookupFound: lookup.found,
+          replayIdempotent: replay.idempotentReplay,
+          replayReturnedOriginalAudit: replay.auditId === firstOutcome.auditId,
         }, null, 2)}\n`,
         { mode: 0o600 },
       );

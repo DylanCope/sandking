@@ -62,13 +62,16 @@ try {
       demonstratedPaths: ISSUE_120_DEMONSTRATED_PATHS,
       expectedRevision: evidenceSourceRevision,
     });
-    const [observation, successContract, failureContract] = await Promise.all([
-      readFile(observationPath, "utf8").then(JSON.parse),
-      readFile(join(resultDirectory, "harness-run-success-contract.json"), "utf8")
-        .then(JSON.parse),
-      readFile(join(resultDirectory, "harness-run-failure-contract.json"), "utf8")
-        .then(JSON.parse),
-    ]);
+    const [observation, successContract, failureContract, startRetentionContract] =
+      await Promise.all([
+        readFile(observationPath, "utf8").then(JSON.parse),
+        readFile(join(resultDirectory, "harness-run-success-contract.json"), "utf8")
+          .then(JSON.parse),
+        readFile(join(resultDirectory, "harness-run-failure-contract.json"), "utf8")
+          .then(JSON.parse),
+        readFile(join(resultDirectory, "harness-run-start-retention-contract.json"), "utf8")
+          .then(JSON.parse),
+      ]);
     if (observation.scenario !== manifest.scenarios[0].id || observation.issue !== 120) {
       throw new Error("issue_120_browser_observation_invalid");
     }
@@ -107,6 +110,7 @@ try {
       contractEvidence: {
         success: successContract,
         truthfulFailure: failureContract,
+        startOutcomeRetention: startRetentionContract,
       },
       verificationCommands: manifest.verification.commands,
     };

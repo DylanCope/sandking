@@ -32,6 +32,10 @@ const controllerIdSchema = z.string().regex(/^runtime-[a-f0-9]{24}$/);
 const controllerSessionIdSchema = z.string().regex(/^controller-session-[a-f0-9]{24}$/);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const runStatusSchema = z.enum(["starting", "running", "succeeded", "failed", "cancelled"]);
+const MAX_RETAINED_RUN_EVENTS = 1_024;
+// Creation and readiness consume two lifecycle slots. Always reserve the final
+// slot for the truthful terminal event, including protocol-invalid outcomes.
+const MAX_PROGRESS_RECORDS_PER_RUN = MAX_RETAINED_RUN_EVENTS - 3;
 
 const progressRecordSchema = z.object({
   recordId: z.string().regex(/^progress-[a-f0-9]{24}$/),
@@ -123,7 +127,7 @@ export const harnessRunSchema = z.object({
 }).strict();
 
 const storedRunSchema = harnessRunSchema.extend({
-  events: z.array(harnessRunEventSchema).max(1_024),
+  events: z.array(harnessRunEventSchema).max(MAX_RETAINED_RUN_EVENTS),
   outcome: harnessRunOutcomeSchema.nullable(),
   terminalEnvelopeValidation: terminalEnvelopeValidationSchema,
   logStreams: z.tuple([logStreamSchema, logStreamSchema]),
@@ -135,8 +139,11 @@ const retainedOutcomeSchema = z.object({
 }).strict();
 const stateSchema = z.object({
   schemaVersion: z.literal(1),
-  runs: z.array(storedRunSchema).max(256),
-  startOutcomes: z.array(retainedOutcomeSchema).max(256),
+  // Canonical runs and keyed mutation outcomes cannot be evicted without
+  // breaking reconnect and ambiguous-outcome lookup. Retention/cleanup is a
+  // later explicit workflow; the records themselves remain schema-bounded.
+  runs: z.array(storedRunSchema),
+  startOutcomes: z.array(retainedOutcomeSchema),
 }).strict();
 
 const initialState = () => ({ schemaVersion: 1, runs: [], startOutcomes: [] });
@@ -178,6 +185,9 @@ const publicRun = (run) => harnessRunSchema.parse({
  * @param {{progressRecord?: z.infer<typeof progressRecordSchema> | null, outcomeReference?: string | null}} [details]
  */
 const appendEvent = (run, type, details = {}) => {
+  if (run.events.length >= MAX_RETAINED_RUN_EVENTS) {
+    throw new Error("harness_run_event_capacity_exceeded");
+  }
   run.events.push(harnessRunEventSchema.parse({
     eventId: `harness-event-${randomBytes(12).toString("hex")}`,
     harnessRunId: run.harnessRunId,
@@ -287,6 +297,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
         if (
           !adapterReadyObserved
           || terminalEnvelopes.length > 0
+          || publishedProgressRecordIds.size >= MAX_PROGRESS_RECORDS_PER_RUN
           || publishedProgressRecordIds.has(message.record.recordId)
           || (message.record.parentRecordId !== null
             && !publishedProgressRecordIds.has(message.record.parentRecordId))
@@ -347,7 +358,10 @@ export const createHarnessRunManager = async (options) => {
     await readJson(statePath(options.dataDir), initialState()),
   );
   /** @param {z.infer<typeof stateSchema>} state */
-  const persist = (state) => writePrivateJson(statePath(options.dataDir), state);
+  const persist = (state) => writePrivateJson(
+    statePath(options.dataDir),
+    stateSchema.parse(state),
+  );
 
   /** @param {string} harnessRunId @param {(run: z.infer<typeof storedRunSchema>, state: z.infer<typeof stateSchema>) => Promise<void> | void} update */
   const updateRun = (harnessRunId, update) => withMutationLock(async () => {

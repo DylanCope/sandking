@@ -535,27 +535,36 @@ if (command === "probe") {
   if (execution.parameters.issueNumber === 999999999) {
     process.stdout.write("SUCCESS: process exited cleanly without a terminal envelope.\\n");
   } else {
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    writeFrame({
-      type: "harness.run.progress",
-      adapterProtocol,
-      adapterId,
-      harnessRunId: execution.harnessRunId,
-      record: {
-        recordId: \`progress-\${"1".repeat(24)}\`,
-        schemaVersion: "1.0.0",
-        type: "conformance.step",
-        parentRecordId: execution.parameters.issueNumber === 999999998
-          ? \`progress-\${"9".repeat(24)}\`
-          : null,
-        label: "Exercise approved conformance Launch",
-        summary: "The deterministic conformance workflow crossed its pinned adapter boundary.",
-        status: "complete",
-        timestamp: now(),
-        payload: { issueNumber: execution.parameters.issueNumber },
-      },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 140));
+    const progressRecordCount = execution.parameters.issueNumber === 999999997 ? 1023 : 1;
+    if (progressRecordCount === 1) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    for (let index = 0; index < progressRecordCount; index += 1) {
+      writeFrame({
+        type: "harness.run.progress",
+        adapterProtocol,
+        adapterId,
+        harnessRunId: execution.harnessRunId,
+        record: {
+          recordId: execution.parameters.issueNumber === 999999997
+            ? \`progress-\${index.toString(16).padStart(24, "0")}\`
+            : \`progress-\${"1".repeat(24)}\`,
+          schemaVersion: "1.0.0",
+          type: "conformance.step",
+          parentRecordId: execution.parameters.issueNumber === 999999998
+            ? \`progress-\${"9".repeat(24)}\`
+            : null,
+          label: "Exercise approved conformance Launch",
+          summary: "The deterministic conformance workflow crossed its pinned adapter boundary.",
+          status: "complete",
+          timestamp: now(),
+          payload: { issueNumber: execution.parameters.issueNumber, index },
+        },
+      });
+    }
+    if (progressRecordCount === 1) {
+      await new Promise((resolve) => setTimeout(resolve, 140));
+    }
     writeFrame({
       type: "harness.run.terminal",
       adapterProtocol,
