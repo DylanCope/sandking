@@ -298,48 +298,42 @@ test("an approved Launch request starts one asynchronous canonical conformance H
     const retained = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
     assert.equal(retained.runs.length, 1);
     assert.doesNotMatch(JSON.stringify(retained), /start-approved-run-secret-key/);
-    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-      await writeFile(
-        join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "harness-run-success-contract.json"),
-        `${JSON.stringify({
-          kind: "harness_run_success_contract",
-          start: {
-            code: started.code,
-            harnessRunId: started.run.harnessRunId,
-            auditId: started.auditId,
-            returnedStatus: started.run.status,
-            completedAtOnReturn: started.run.completedAt,
-          },
-          idempotency: {
-            replayCode: replay.code,
-            replayIdempotent: replay.idempotentReplay,
-            replayReturnedCanonicalRun: replay.run.harnessRunId === started.run.harnessRunId,
-            replayReturnedOriginalAudit: replay.auditId === started.auditId,
-            changedContentCode: keyConflict.code,
-            lookupCode: lookup.code,
-            lookupReturnedCanonicalRun:
-              lookup.startOutcome.run.harnessRunId === started.run.harnessRunId,
-            differentKeyFoundCode: found.code,
-            differentKeyReturnedCanonicalRun:
-              found.run.harnessRunId === started.run.harnessRunId,
-            postExpiryFoundCode: foundAfterApprovalExpiry.code,
-            postExpiryReturnedCanonicalRun:
-              foundAfterApprovalExpiry.run.harnessRunId === started.run.harnessRunId,
-          },
-          unapproved: {
-            code: unapproved.code,
-            replayCode: unapprovedReplay.code,
-            replayIdempotent: unapprovedReplay.idempotentReplay,
-            noRunStarted: unapproved.prohibitedSideEffects.harnessRunStarted === false,
-          },
-          observation,
-          logRanges: [stdout.response, stderr.response],
-          auditReferences: audits.filter((entry) => entry.action.startsWith("harness.run")),
-          canonicalRunCount: retained.runs.length,
-        }, null, 2)}\n`,
-        { mode: 0o600 },
-      );
-    }
+    const acceptanceContract = {
+      kind: "harness_run_success_contract",
+      start: {
+        code: started.code,
+        harnessRunId: started.run.harnessRunId,
+        auditId: started.auditId,
+        returnedStatus: started.run.status,
+        completedAtOnReturn: started.run.completedAt,
+      },
+      idempotency: {
+        replayCode: replay.code,
+        replayIdempotent: replay.idempotentReplay,
+        replayReturnedCanonicalRun: replay.run.harnessRunId === started.run.harnessRunId,
+        replayReturnedOriginalAudit: replay.auditId === started.auditId,
+        changedContentCode: keyConflict.code,
+        lookupCode: lookup.code,
+        lookupReturnedCanonicalRun:
+          lookup.startOutcome.run.harnessRunId === started.run.harnessRunId,
+        differentKeyFoundCode: found.code,
+        differentKeyReturnedCanonicalRun:
+          found.run.harnessRunId === started.run.harnessRunId,
+        postExpiryFoundCode: foundAfterApprovalExpiry.code,
+        postExpiryReturnedCanonicalRun:
+          foundAfterApprovalExpiry.run.harnessRunId === started.run.harnessRunId,
+      },
+      unapproved: {
+        code: unapproved.code,
+        replayCode: unapprovedReplay.code,
+        replayIdempotent: unapprovedReplay.idempotentReplay,
+        noRunStarted: unapproved.prohibitedSideEffects.harnessRunStarted === false,
+      },
+      observation,
+      logRanges: [stdout.response, stderr.response],
+      auditReferences: audits.filter((entry) => entry.action.startsWith("harness.run")),
+      canonicalRunCount: retained.runs.length,
+    };
 
     retained.runs[0].events = retained.runs[0].events.filter((event) => event.sequence !== 2);
     await writeFile(
@@ -356,6 +350,35 @@ test("an approved Launch request starts one asynchronous canonical conformance H
     assert.equal(historyGap.resynchronization.reason, "history_gap");
     assert.equal(historyGap.resynchronization.canonicalSnapshot, true);
     assert.deepEqual(historyGap.events.map((event) => event.sequence), [1, 3, 4]);
+    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
+      await writeFile(
+        join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "harness-run-success-contract.json"),
+        `${JSON.stringify({
+          ...acceptanceContract,
+          continuity: {
+            resume: {
+              mode: resumed.mode,
+              acknowledgedSequence: 2,
+              returnedEventSequences: resumed.events.map((event) => event.sequence),
+              nextSequence: resumed.nextSequence,
+            },
+            incompatibleCursor: {
+              code: resynchronization.code,
+              mode: resynchronization.mode,
+              resynchronization: resynchronization.resynchronization,
+              returnedEventSequences: resynchronization.events.map((event) => event.sequence),
+            },
+            historyGap: {
+              code: historyGap.code,
+              mode: historyGap.mode,
+              resynchronization: historyGap.resynchronization,
+              returnedEventSequences: historyGap.events.map((event) => event.sequence),
+            },
+          },
+        }, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
