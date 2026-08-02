@@ -9,8 +9,8 @@ test("WSL opens the one-use Cockpit bootstrap through the Windows browser bridge
     platform: "linux",
     environment: { WSL_DISTRO_NAME: "Ubuntu" },
   }), {
-    command: "explorer.exe",
-    args: [bootstrapUrl],
+    command: "cmd.exe",
+    args: ["/c", "start", "", `"${bootstrapUrl}"`],
   });
 });
 
