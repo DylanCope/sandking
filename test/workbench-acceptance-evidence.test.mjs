@@ -109,6 +109,7 @@ test("retained issue 146 evidence proves the unchanged packaged public seam", {
   assert.equal(evidence.layout.regions.navigationWidth, "220px");
   assert.equal(evidence.layout.regions.contextWidth, "310px");
   assert.equal(evidence.layout.narrowViewport.horizontalPageOverflow, false);
+  assert.ok(Object.values(evidence.workbenchChrome).every((value) => value === true));
   assert.equal(evidence.terminal.ansiVtFixture.intendedFinalScreen, true);
   assert.equal(evidence.terminal.ansiVtFixture.transcriptRetained, false);
   assert.equal(evidence.terminal.keyboard.exactBytesOnce, true);
@@ -143,13 +144,29 @@ test("retained issue 146 evidence proves the unchanged packaged public seam", {
 
 test("retained issue 146 real-Claude evidence is structural and prohibits Launch effects", {
   skip: realEvidenceExists ? false : "real installed-Claude environment evidence unavailable",
-}, () => {
+}, async () => {
   assert.equal(realEvidence.issue, 146);
+  assert.equal(realEvidence.schemaVersion, 2);
   assert.equal(realEvidence.environment.provider, "claude-code");
   assert.equal(realEvidence.observations.productionPublicPath, true);
+  assert.equal(realEvidence.observations.workbenchChromeCurrent, true);
   assert.equal(realEvidence.observations.ptyRuntimeOwned, true);
   assert.equal(realEvidence.observations.browserReconnection, true);
   assert.ok(Object.values(realEvidence.prohibitedEffects).every((value) => value === false));
+  assert.match(realEvidence.generatedFromCommit, /^[a-f0-9]{40}$/);
+  const { stdout: resolvedCommit } = await execFileAsync("git", [
+    "rev-parse", "--verify", `${realEvidence.generatedFromCommit}^{commit}`,
+  ], { cwd: repositoryRoot });
+  assert.equal(resolvedCommit.trim(), realEvidence.generatedFromCommit);
+  await execFileAsync("git", [
+    "merge-base", "--is-ancestor", realEvidence.generatedFromCommit, "HEAD",
+  ], { cwd: repositoryRoot });
+  const { stdout: changes } = await execFileAsync("git", [
+    "diff", "--name-only", `${realEvidence.generatedFromCommit}..HEAD`, "--",
+    ...ISSUE_146_DEMONSTRATED_PATHS,
+  ], { cwd: repositoryRoot });
+  assert.equal(changes.trim(), "",
+    `retained real-Claude evidence predates demonstrated changes:\n${changes}`);
   assert.doesNotMatch(JSON.stringify(realEvidence),
     /bootstrap\?token=|sandking_session=|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN/);
 });

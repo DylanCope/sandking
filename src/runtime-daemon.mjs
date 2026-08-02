@@ -264,6 +264,17 @@ const retainCanonicalHarnessRunObservation = (observation) => {
   };
 };
 
+/** @param {any} launchRequest */
+const retainCanonicalLaunchRequestProjection = (launchRequest) => {
+  if (!launchRequest) {
+    return;
+  }
+  currentHarnessRunObservation = {
+    ...currentHarnessRunObservation,
+    launchRequest: structuredClone(launchRequest),
+  };
+};
+
 /** @param {"host_disconnected" | "host_protocol_invalid" | "host_observation_resynchronization_failed"} code */
 const markHostDisconnected = async (code) => {
   if (!state) {
@@ -1744,7 +1755,7 @@ const handleProviderOperation = async (request) => {
       expectedRevision: 0,
       expiresInSeconds: "expiresInSeconds" in input ? Number(input.expiresInSeconds) : 0,
     };
-    return requestFocusedHostMutation("launch.request.prepare", message, {
+    const outcome = await requestFocusedHostMutation("launch.request.prepare", message, {
       projectId: message.projectId,
       parameters: message.parameters,
       controllerId: message.controllerId,
@@ -1752,6 +1763,8 @@ const handleProviderOperation = async (request) => {
       authorizationClass: message.authorizationClass,
       expiresInSeconds: message.expiresInSeconds,
     });
+    retainCanonicalLaunchRequestProjection(outcome.launchRequest);
+    return outcome;
   }
   if (request.operation === "launch-request.decide") {
     const message = {
@@ -1765,13 +1778,15 @@ const handleProviderOperation = async (request) => {
       idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
       expectedRevision: "expectedRevision" in input ? Number(input.expectedRevision) : -1,
     };
-    return requestFocusedHostMutation("launch.request.decision", message, {
+    const outcome = await requestFocusedHostMutation("launch.request.decision", message, {
       launchRequestId: message.launchRequestId,
       decision: message.decision,
       controllerId: message.controllerId,
       controllerSessionId: message.controllerSessionId,
       authorizationClass: message.authorizationClass,
     });
+    retainCanonicalLaunchRequestProjection(outcome.launchRequest);
+    return outcome;
   }
   if (request.operation === "harness-run.start") {
     const message = {
@@ -2438,11 +2453,18 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           if (observation.type !== "harness.run.observe.result") {
             throw new BrowserProtocolError("harness_run_observation_failed");
           }
-          retainCanonicalHarnessRunObservation(observation);
+          const visibleObservation = !observation.run
+            && currentHarnessRunObservation.launchRequest
+            ? {
+                ...observation,
+                launchRequest: structuredClone(currentHarnessRunObservation.launchRequest),
+              }
+            : observation;
+          retainCanonicalHarnessRunObservation(visibleObservation);
           socket.send(serializeRuntimeControl({
             type: "runtime.harness-run.observation",
             requestId: control.requestId,
-            observation,
+            observation: visibleObservation,
           }));
           return;
         }

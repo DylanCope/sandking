@@ -125,12 +125,67 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
       timeout: 10_000,
     });
+    const selectedProjectId = await page.locator("#project-readiness").getAttribute(
+      "data-project-id",
+    );
+    assert.match(selectedProjectId, /^project-[a-f0-9]{24}$/);
+    assert.equal(await page.locator("#workbench-selected-project").getAttribute(
+      "data-project-id",
+    ), selectedProjectId);
+    assert.match(await page.locator("#workbench-selected-project").textContent(),
+      /selected-project/);
+    assert.match(await page.locator("#workbench-project-breadcrumb").textContent(),
+      /Projects \/ selected-project/);
     await page.locator("#open-project-controller").click();
     await page.waitForSelector(
       "#project-focused-controller-session[data-terminal-attachment='read-write']",
       { timeout: 10_000 },
     );
     const terminalPanel = page.locator("#project-focused-controller-session");
+    const focusedContextId = await terminalPanel.getAttribute("data-work-context-id");
+    assert.equal(focusedContextId, selectedProjectId);
+    assert.equal(await page.locator("#workbench-focused-controller").getAttribute(
+      "data-work-context-id",
+    ), focusedContextId);
+    assert.match(await page.locator("#workbench-focused-controller").textContent(),
+      new RegExp(focusedContextId));
+    assert.equal(await page.locator("#workbench-focused-context").getAttribute(
+      "data-work-context-id",
+    ), focusedContextId);
+    assert.match(await page.locator("#workbench-focused-context").textContent(),
+      new RegExp(focusedContextId));
+    assert.equal(await page.locator("#workbench-attachment-status").getAttribute(
+      "data-provider",
+    ), "conformance-controller-v1");
+    assert.equal(await page.locator("#workbench-attachment-status").getAttribute(
+      "data-attachment",
+    ), "read-write");
+    assert.match(await page.locator("#workbench-attachment-status").textContent(),
+      /conformance-controller-v1 · runtime-owned PTY · read-write/);
+    await sendTerminalLine(page, "prepare 146 sandcastle/issue-146");
+    await page.waitForFunction(() => document.querySelector(
+      "#project-controller-terminal-output .xterm-accessibility-tree",
+    )?.textContent?.includes("Launch request:"));
+    const launchRequestId = /Launch request: (launch-request-[a-f0-9]{24})/.exec(
+      await page.locator(
+        "#project-controller-terminal-output .xterm-accessibility-tree",
+      ).textContent(),
+    )?.[1];
+    assert.match(launchRequestId, /^launch-request-[a-f0-9]{24}$/);
+    await page.waitForSelector(
+      "#workbench-person-action.is-pending[data-person-action='launch-approval']",
+      { timeout: 10_000 },
+    );
+    assert.match(await page.locator("#workbench-person-action").textContent(),
+      /Person required.*Review Launch request in Controller/s);
+    const liveChrome = {
+      selectedProjectCurrent: true,
+      focusedWorkContextCurrent: true,
+      providerAndAttachmentCurrent: true,
+      pendingPersonActionVisible: true,
+      pendingPersonActionSurvivedReconnect: false,
+      pendingPersonActionClearedAfterDecision: false,
+    };
     await page.waitForFunction(() => {
       const panel = document.querySelector("#project-focused-controller-session");
       return Number(panel?.getAttribute("data-terminal-columns")) >= 20
@@ -400,6 +455,24 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       "#project-focused-controller-session[data-reconnected='true'][data-terminal-attachment='read-write']",
       { timeout: 10_000 },
     );
+    assert.equal(await reconnectPage.locator("#workbench-selected-project").getAttribute(
+      "data-project-id",
+    ), selectedProjectId);
+    assert.equal(await reconnectPage.locator("#workbench-focused-context").getAttribute(
+      "data-work-context-id",
+    ), focusedContextId);
+    await reconnectPage.waitForSelector(
+      "#workbench-person-action.is-pending[data-person-action='launch-approval']",
+      { timeout: 10_000 },
+    );
+    liveChrome.pendingPersonActionSurvivedReconnect = true;
+    await sendTerminalLine(reconnectPage, `reject ${launchRequestId} 1`);
+    await reconnectPage.waitForFunction(() => {
+      const action = document.querySelector("#workbench-person-action");
+      return action?.getAttribute("data-person-action") === "none"
+        && !action.classList.contains("is-pending");
+    });
+    liveChrome.pendingPersonActionClearedAfterDecision = true;
     await reconnectPage.waitForFunction((previous) => Number(document.querySelector(
       "#project-focused-controller-session",
     )?.getAttribute("data-terminal-resize-sequence")) > previous,
@@ -483,6 +556,7 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
           mainLandmarkCount: 1,
           nestedMainLandmark: false,
         },
+        workbenchChrome: liveChrome,
         terminal: {
           emulator: "@xterm/xterm@6.0.0",
           localAssetsOnly: true,

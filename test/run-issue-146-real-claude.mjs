@@ -7,6 +7,11 @@ import { promisify } from "node:util";
 import { probeClaude } from "../src/claude-provider-adapter.mjs";
 import { launchBrowser } from "./browser-launch.mjs";
 import { installCurrentPackage } from "./installed-package.mjs";
+import {
+  captureCleanIssue146EvidenceRevision,
+  ISSUE_146_DEMONSTRATED_PATHS,
+  verifyIssue146EvidenceRevisionUnchanged,
+} from "./issue-146-evidence-source.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -47,6 +52,10 @@ if (probe.availability.status !== "available") {
       ?? probe.availability.status}`,
   );
 }
+const evidenceSourceRevision = await captureCleanIssue146EvidenceRevision({
+  repositoryRoot,
+  demonstratedPaths: ISSUE_146_DEMONSTRATED_PATHS,
+});
 
 const root = await mkdtemp(join(tmpdir(), "sandking-issue-146-real-"));
 const dataDir = join(root, "state");
@@ -79,12 +88,28 @@ try {
   await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
     timeout: 15_000,
   });
+  const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");
+  await page.waitForFunction((selectedProjectId) => {
+    const selectedProject = document.querySelector("#workbench-selected-project");
+    const breadcrumb = document.querySelector("#workbench-project-breadcrumb");
+    return selectedProject?.getAttribute("data-project-id") === selectedProjectId
+      && breadcrumb?.textContent?.includes("Projects / ");
+  }, projectId);
   await page.locator("#open-project-claude-controller").click();
   await page.waitForSelector(
     "#project-focused-controller-session[data-provider-id='claude-code'][data-terminal-attachment='read-write']",
     { timeout: 30_000 },
   );
   const panel = page.locator("#project-focused-controller-session");
+  await page.waitForFunction((selectedProjectId) => {
+    const focusedController = document.querySelector("#workbench-focused-controller");
+    const focusedContext = document.querySelector("#workbench-focused-context");
+    const attachment = document.querySelector("#workbench-attachment-status");
+    return focusedController?.getAttribute("data-work-context-id") === selectedProjectId
+      && focusedContext?.getAttribute("data-work-context-id") === selectedProjectId
+      && attachment?.getAttribute("data-provider") === "claude-code"
+      && attachment?.getAttribute("data-attachment") === "read-write";
+  }, projectId);
   await page.waitForFunction(() => {
     const target = document.querySelector("#project-focused-controller-session");
     return Number(target?.getAttribute("data-terminal-columns")) >= 20
@@ -180,11 +205,17 @@ try {
   if (projectStatusAfter !== projectStatusBefore) {
     throw new Error("issue_146_real_acceptance_project_state_changed");
   }
+  await verifyIssue146EvidenceRevisionUnchanged({
+    repositoryRoot,
+    demonstratedPaths: ISSUE_146_DEMONSTRATED_PATHS,
+    expectedRevision: evidenceSourceRevision,
+  });
 
   const evidence = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     issue: 146,
     parentPrd: 125,
+    generatedFromCommit: evidenceSourceRevision,
     scenario: "cockpit-workbench/operates-real-installed-claude-terminal",
     recordedAt: new Date().toISOString(),
     environment: {
@@ -198,6 +229,7 @@ try {
     observations: {
       productionPublicPath: true,
       workbenchRendered: true,
+      workbenchChromeCurrent: true,
       fullScreenRowsRendered: true,
       terminalFocused: true,
       printableInput: true,

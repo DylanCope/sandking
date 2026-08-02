@@ -448,6 +448,7 @@ const renderProjectPreparation = (
         const replacement = renderPreparedProject(outcome.project);
         currentNode.replaceWith(replacement);
         currentNode = replacement;
+        updateWorkbenchChrome({ currentProject: outcome.project });
       }
       if (
         outcome.code === "mutation_revision_conflict"
@@ -468,6 +469,7 @@ const renderProjectPreparation = (
     const replacement = renderPreparedProject(outcome.project);
     currentNode.replaceWith(replacement);
     currentNode = replacement;
+    updateWorkbenchChrome({ currentProject: outcome.project });
     feedback.textContent = "Project and conformance Harness are ready for Launch preparation.";
     openController.disabled = hostConnectionStatus !== "connected"
       || !outcome.project.canPrepareLaunchRequest;
@@ -478,6 +480,7 @@ const renderProjectPreparation = (
   });
 
   const attachFocusedController = (focused, reconnected) => {
+    updateWorkbenchChrome({ focusedControllerSession: focused });
     controllerPanel.hidden = false;
     controllerPanel.dataset.sessionState = "open";
     controllerPanel.dataset.reconnected = String(reconnected);
@@ -712,6 +715,7 @@ const applyHarnessRunObservation = (observation) => {
       }
     : observation;
   currentHarnessRunObservation = visibleObservation;
+  updateWorkbenchChrome({ harnessRunObservation: visibleObservation });
   if (visibleObservation.run) {
     sessionStorage.setItem(harnessRunCursorStorageKey, JSON.stringify({
       harnessRunId: visibleObservation.run.harnessRunId,
@@ -853,6 +857,7 @@ const renderPlanning = (planning, session) => {
           outcome.body.session.terminal.runtimeOwned,
         );
         sessionPanel.dataset.terminalAttachment = "attaching";
+        updateWorkbenchChrome({ focusedControllerSession: outcome.body.session });
         attachTerminalSurface({
           focused: outcome.body.session,
           panel: sessionPanel,
@@ -916,17 +921,154 @@ const renderPlanning = (planning, session) => {
   return section;
 };
 
-const workbenchLink = (label, destination, active = false) => element("a", {
+const workbenchLink = (label, destination, active = false, attributes = {}) => element("a", {
+  ...attributes,
   class: `workbench-nav__link${active ? " is-active" : ""}`,
   href: destination,
   ...(active ? { "aria-current": "page" } : {}),
 }, label);
+
+const workbenchChromeState = {
+  currentProject: null,
+  focusedControllerSession: null,
+  harnessRunObservation: null,
+  terminalAttachment: { sessionId: null, mode: "none" },
+};
+
+const setWorkbenchDestinationActive = (destination, active) => {
+  destination.classList.toggle("is-active", active);
+  if (active) {
+    destination.setAttribute("aria-current", "page");
+  } else {
+    destination.removeAttribute("aria-current");
+  }
+};
+
+const synchronizeWorkbenchChrome = () => {
+  const currentProject = workbenchChromeState.currentProject;
+  const focused = workbenchChromeState.focusedControllerSession;
+  const focusedContextId = focused?.workContext?.workContextId ?? "";
+  const selectedProject = document.getElementById("workbench-selected-project");
+  if (selectedProject) {
+    selectedProject.dataset.projectId = currentProject?.projectId ?? "";
+    selectedProject.textContent = currentProject?.displayName ?? "No Project selected";
+  }
+  const breadcrumb = document.getElementById("workbench-project-breadcrumb");
+  if (breadcrumb) {
+    breadcrumb.textContent = `Projects / ${currentProject?.displayName ?? "Select a Project"}`;
+  }
+  const focusedWorkContext = document.getElementById("workbench-focused-work-context");
+  if (focusedWorkContext) {
+    focusedWorkContext.dataset.workContextId = focusedContextId;
+    focusedWorkContext.textContent = focusedContextId || "No focused work context";
+    setWorkbenchDestinationActive(focusedWorkContext, Boolean(focused));
+  }
+  for (const destination of document.querySelectorAll(
+    "[data-workbench-controller-destination]",
+  )) {
+    setWorkbenchDestinationActive(destination, Boolean(focused));
+  }
+  const focusedController = document.getElementById("workbench-focused-controller");
+  if (focusedController) {
+    focusedController.dataset.workContextId = focusedContextId;
+    const title = focusedController.querySelector("h1");
+    if (title) {
+      title.textContent = focused
+        ? `Work context ${focusedContextId}`
+        : "Open a Project and focused Controller";
+    }
+  }
+  const focusedContext = document.getElementById("workbench-focused-context");
+  if (focusedContext) {
+    focusedContext.dataset.workContextId = focusedContextId;
+    const title = focusedContext.querySelector("h2");
+    if (title) {
+      title.textContent = focusedContextId || "No focused context";
+    }
+  }
+  const attachment = document.getElementById("workbench-attachment-status");
+  if (attachment) {
+    const attachmentMode = focused
+      && workbenchChromeState.terminalAttachment.sessionId === focused.sessionId
+      ? workbenchChromeState.terminalAttachment.mode
+      : focused ? "attaching" : "none";
+    attachment.dataset.provider = focused?.provider?.providerId ?? "none";
+    attachment.dataset.sessionId = focused?.sessionId ?? "";
+    attachment.dataset.attachment = attachmentMode;
+    const status = attachment.querySelector("p");
+    if (status) {
+      status.textContent = focused
+        ? `${focused.provider.providerId} · runtime-owned PTY · ${
+            attachmentMode === "attaching"
+              ? "attachment negotiating"
+              : attachmentMode === "exited" ? "exited · read-only" : attachmentMode
+          }`
+        : "No Controller provider is attached.";
+    }
+  }
+  const launchRequestPending =
+    workbenchChromeState.harnessRunObservation?.launchRequest?.status === "pending";
+  const personAction = document.getElementById("workbench-person-action");
+  if (personAction) {
+    personAction.classList.toggle("is-pending", launchRequestPending);
+    personAction.dataset.personAction = launchRequestPending ? "launch-approval" : "none";
+    const eyebrow = personAction.querySelector(".workbench-eyebrow");
+    const title = personAction.querySelector("h3");
+    const description = personAction.querySelector("h3 + p");
+    if (eyebrow) {
+      eyebrow.textContent = launchRequestPending ? "Person required" : "Person action";
+    }
+    if (title) {
+      title.textContent = launchRequestPending
+        ? "Review Launch request in Controller"
+        : "No pending person action";
+    }
+    if (description) {
+      description.textContent = launchRequestPending
+        ? "Approval remains inside the focused Controller conversation."
+        : "The Cockpit cannot assert Launch approval.";
+    }
+  }
+};
+
+const updateWorkbenchChrome = (patch) => {
+  if (Object.hasOwn(patch, "currentProject")) {
+    workbenchChromeState.currentProject = patch.currentProject;
+  }
+  if (Object.hasOwn(patch, "focusedControllerSession")) {
+    const previousSessionId = workbenchChromeState.focusedControllerSession?.sessionId ?? null;
+    workbenchChromeState.focusedControllerSession = patch.focusedControllerSession;
+    const nextSessionId = patch.focusedControllerSession?.sessionId ?? null;
+    if (nextSessionId !== previousSessionId) {
+      workbenchChromeState.terminalAttachment = {
+        sessionId: nextSessionId,
+        mode: nextSessionId ? "attaching" : "none",
+      };
+    }
+  }
+  if (Object.hasOwn(patch, "harnessRunObservation")) {
+    workbenchChromeState.harnessRunObservation = patch.harnessRunObservation;
+  }
+  if (Object.hasOwn(patch, "terminalAttachment")) {
+    const terminalAttachment = patch.terminalAttachment;
+    if (terminalAttachment.sessionId
+      === workbenchChromeState.focusedControllerSession?.sessionId) {
+      workbenchChromeState.terminalAttachment = terminalAttachment;
+    }
+  }
+  synchronizeWorkbenchChrome();
+};
 
 const renderWorkbench = (message) => {
   const viewModel = message.viewModel;
   const focused = viewModel.focusedControllerSession;
   const currentProject = viewModel.projectPreparation.current;
   const observation = viewModel.harnessRunObservation;
+  updateWorkbenchChrome({
+    currentProject,
+    focusedControllerSession: focused,
+    harnessRunObservation: observation,
+  });
   const project = renderProjectPreparation(
     viewModel.projectPreparation,
     message.session,
@@ -966,9 +1108,22 @@ const renderWorkbench = (message) => {
   });
   projectNavigation.append(
     element("p", { class: "workbench-eyebrow" }, "Selected Project"),
-    workbenchLink(currentProject?.displayName ?? "No Project selected", "#project-preparation", true),
+    workbenchLink(
+      currentProject?.displayName ?? "No Project selected",
+      "#project-preparation",
+      true,
+      {
+        id: "workbench-selected-project",
+        "data-project-id": currentProject?.projectId ?? "",
+      },
+    ),
     element("p", { class: "workbench-eyebrow" }, "Project workspace"),
-    workbenchLink("Controller", "#project-focused-controller-session", Boolean(focused)),
+    workbenchLink(
+      "Controller",
+      "#project-focused-controller-session",
+      Boolean(focused),
+      { "data-workbench-controller-destination": "true" },
+    ),
     workbenchLink("Planning", "#planning-spine"),
     workbenchLink("Runs", "#harness-run-observation"),
     workbenchLink("Project", "#project-readiness"),
@@ -977,6 +1132,10 @@ const renderWorkbench = (message) => {
       focused?.workContext?.workContextId ?? "No focused work context",
       "#project-focused-controller-session",
       Boolean(focused),
+      {
+        id: "workbench-focused-work-context",
+        "data-work-context-id": focused?.workContext?.workContextId ?? "",
+      },
     ),
   );
   navigation.append(brand, productNavigation, projectNavigation);
@@ -1030,7 +1189,10 @@ const renderWorkbench = (message) => {
   }, "Context");
   topbar.append(
     navigationToggle,
-    element("div", { class: "workbench-breadcrumbs" },
+    element("div", {
+      id: "workbench-project-breadcrumb",
+      class: "workbench-breadcrumbs",
+    },
       `Projects / ${currentProject?.displayName ?? "Select a Project"}`),
     connectionStatus,
     externalProvider,
@@ -1040,7 +1202,10 @@ const renderWorkbench = (message) => {
 
   const stage = element("div", { class: "workbench-stage" });
   const stageHeader = element("header", { class: "workbench-stage__header" });
-  const title = element("div");
+  const title = element("div", {
+    id: "workbench-focused-controller",
+    "data-work-context-id": focused?.workContext?.workContextId ?? "",
+  });
   title.append(
     element("p", { class: "workbench-eyebrow" }, "Focused Controller"),
     element("h1", {}, focused
@@ -1052,7 +1217,12 @@ const renderWorkbench = (message) => {
     "aria-label": "Project workspace",
   });
   workspaceDestinations.append(
-    workbenchLink("Controller", "#project-focused-controller-session", Boolean(focused)),
+    workbenchLink(
+      "Controller",
+      "#project-focused-controller-session",
+      Boolean(focused),
+      { "data-workbench-controller-destination": "true" },
+    ),
     workbenchLink("Planning", "#planning-spine"),
     workbenchLink("Runs", "#harness-run-observation"),
     workbenchLink("Project", "#project-readiness"),
@@ -1066,7 +1236,11 @@ const renderWorkbench = (message) => {
     class: "workbench-context",
     "aria-label": "Current work context and operational status",
   });
-  const contextHeader = element("header", { class: "workbench-context__header" });
+  const contextHeader = element("header", {
+    id: "workbench-focused-context",
+    class: "workbench-context__header",
+    "data-work-context-id": focused?.workContext?.workContextId ?? "",
+  });
   contextHeader.append(
     element("p", { class: "workbench-eyebrow" }, "Current work context"),
     element("h2", {}, focused?.workContext?.workContextId ?? "No focused context"),
@@ -1102,6 +1276,7 @@ const renderWorkbench = (message) => {
   );
   context.append(contextHeader, attachment, personAction, planning, harnessRun);
   shell.append(navigation, main, context);
+  queueMicrotask(synchronizeWorkbenchChrome);
 
   const setDrawer = (drawer, open) => {
     shell.classList.toggle(`is-${drawer}-open`, open);
@@ -1163,6 +1338,9 @@ socket.addEventListener("message", (event) => {
         terminal.panel.dataset.sessionState = "exited";
         terminal.emulator.options.disableStdin = true;
         terminal.attachmentStatus.textContent = "Exited · read-only";
+        updateWorkbenchChrome({
+          terminalAttachment: { sessionId: terminal.sessionId, mode: "exited" },
+        });
       }
     } else if (opaque) {
       const diagnostic = diagnosticStreams.get(opaque.streamId);
@@ -1259,15 +1437,9 @@ socket.addEventListener("message", (event) => {
       ? `Connected · read-write${message.resynchronized ? " · retained tail" : ""}`
       : `Connected · read-only${message.resynchronized ? " · retained tail" : ""}`;
     terminal.panel.dataset.terminalOutputResynchronized = String(message.resynchronized);
-    const workbenchAttachment = document.getElementById("workbench-attachment-status");
-    if (workbenchAttachment && terminal.sessionId === message.sessionId) {
-      workbenchAttachment.dataset.attachment = message.mode;
-      const status = workbenchAttachment.querySelector("p");
-      if (status) {
-        status.textContent = `${terminal.panel.dataset.providerId} · runtime-owned PTY · ${
-          message.mode}`;
-      }
-    }
+    updateWorkbenchChrome({
+      terminalAttachment: { sessionId: message.sessionId, mode: message.mode },
+    });
     scheduleTerminalFit(terminal);
     return;
   }
@@ -1409,6 +1581,11 @@ socket.addEventListener("message", (event) => {
     && resynchronizationConsistent
     && (harnessObservation.run === null
       ? harnessObservation.launchRequest === null
+        || (
+          harnessObservation.launchRequest?.project?.projectId
+            === message?.viewModel?.projectPreparation?.current?.projectId
+          && harnessObservation.launchRequest?.execution?.status === "not_started"
+        )
       : harnessObservation.launchRequest?.launchRequestId
         === harnessObservation.run.launchRequestId);
 
