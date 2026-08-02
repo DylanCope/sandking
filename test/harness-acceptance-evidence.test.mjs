@@ -72,6 +72,7 @@ test("issue 120 manifest traces the approved supervised Harness scenario", () =>
   }
   assert.ok(scenario.prohibitedSideEffects.includes("duplicate Harness run"));
   assert.ok(scenario.prohibitedSideEffects.includes("success inferred from process exit or log text"));
+  assert.ok(scenario.actions.some((action) => action.includes("257 distinct keyed start outcomes")));
   assert.ok(manifest.verification.typedStartFailures.includes("launch_request_unapproved"));
   assert.ok(manifest.verification.typedStartFailures.includes("launch_request_stale"));
   assert.ok(manifest.verification.truthfulTerminalFailures.includes("harness_result_incomplete"));
@@ -212,7 +213,7 @@ test("retained issue 120 evidence proves idempotency and truthful incomplete fai
   }
 
   const failure = evidence.contractEvidence.truthfulFailure;
-  assert.equal(failure.canonicalRunCount, 2);
+  assert.equal(failure.canonicalRunCount, 3);
   assert.equal(failure.incompleteResult.status, "failed");
   assert.equal(failure.incompleteResult.outcome.code, "harness_result_incomplete");
   assert.equal(failure.incompleteResult.outcome.incompleteResult, true);
@@ -246,6 +247,26 @@ test("retained issue 120 evidence proves idempotency and truthful incomplete fai
     "harness_adapter_protocol_invalid",
   );
   assert.equal(failure.malformedProgress.malformedRecordPublished, false);
+  assert.equal(failure.excessiveProgress.status, "failed");
+  assert.equal(
+    failure.excessiveProgress.outcome.code,
+    "harness_adapter_protocol_invalid",
+  );
+  assert.equal(failure.excessiveProgress.retainedEventCount, 1_024);
+  assert.equal(failure.excessiveProgress.retainedProgressCount, 1_021);
+  assert.equal(failure.excessiveProgress.terminalEvent.sequence, 1_024);
+  assert.equal(failure.excessiveProgress.terminalEvent.type, "harness_run_failed");
+  assert.equal(failure.excessiveProgress.reloadObservable, true);
+
+  assert.deepEqual(evidence.contractEvidence.startOutcomeRetention, {
+    kind: "harness_run_start_retention_contract",
+    distinctKeyCount: 257,
+    retainedOutcomeCount: 257,
+    firstLookupCode: "harness_run_start_outcome_found",
+    firstLookupFound: true,
+    replayIdempotent: true,
+    replayReturnedOriginalAudit: true,
+  });
 });
 
 test("retained issue 120 evidence is sanitized and excludes prohibited effects", () => {
