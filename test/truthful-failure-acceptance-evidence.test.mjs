@@ -330,6 +330,16 @@ test("retained issue 122 evidence preserves an accepted Project across composite
     projectFileWrite: false,
     privilegedMutation: false,
   });
+  assert.equal(retained.queuedReplay.status, retained.typedFailure.status);
+  assert.equal(retained.queuedReplay.body.code, "host_disconnected");
+  assert.equal(retained.queuedReplay.body.idempotentReplay, true);
+  assert.equal(retained.queuedReplay.body.auditId, retained.typedFailure.body.auditId);
+  assert.equal(retained.queuedReplay.body.project.projectId,
+    retained.acceptedProject.projectId);
+  assert.equal(
+    retained.queuedReplay.body.mutations.projectRegistration.auditId,
+    retained.acceptedProject.registrationAuditId,
+  );
   assert.deepEqual(retained.cockpit, {
     retainedProjectVisible: true,
     launchRequestReady: false,
@@ -351,6 +361,12 @@ test("retained issue 122 evidence preserves an accepted Project across composite
   assert.equal(retained.audit.failure.details.projectRegistrationAuditId,
     retained.acceptedProject.registrationAuditId);
   assert.equal(retained.audit.failure.details.projectRegistrationCreated, true);
+  assert.equal(retained.audit.replay.action, "project.prepare");
+  assert.equal(retained.audit.replay.outcome, "observed");
+  assert.equal(retained.audit.replay.details.originalAuditId,
+    retained.typedFailure.body.auditId);
+  assert.equal(retained.audit.replay.details.projectId,
+    retained.acceptedProject.projectId);
 });
 
 test("retained issue 122 evidence keeps negotiated Host framing failure Host-scoped", () => {

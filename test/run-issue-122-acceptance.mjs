@@ -112,6 +112,16 @@ try {
         !== acceptedProjectHostLoss.acceptedProject?.projectId
       || acceptedProjectHostLoss.typedFailure?.body?.prohibitedSideEffects
         ?.projectRegistrationCreated !== true
+      || acceptedProjectHostLoss.queuedReplay?.status
+        !== acceptedProjectHostLoss.typedFailure?.status
+      || acceptedProjectHostLoss.queuedReplay?.body?.code !== "host_disconnected"
+      || acceptedProjectHostLoss.queuedReplay?.body?.idempotentReplay !== true
+      || acceptedProjectHostLoss.queuedReplay?.body?.auditId
+        !== acceptedProjectHostLoss.typedFailure?.body?.auditId
+      || acceptedProjectHostLoss.queuedReplay?.body?.project?.projectId
+        !== acceptedProjectHostLoss.acceptedProject?.projectId
+      || acceptedProjectHostLoss.audit?.replay?.details?.originalAuditId
+        !== acceptedProjectHostLoss.typedFailure?.body?.auditId
       || acceptedProjectHostLoss.canonicalState?.registrationAuditRetained !== true
       || postNegotiationHostProtocol.kind
         !== "post_negotiation_host_protocol_contract"

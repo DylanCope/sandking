@@ -1048,6 +1048,21 @@ test("Host loss after accepted Project registration preserves its identity and e
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
+      let acceptedRequest = null;
+      page.on("request", (request) => {
+        if (
+          request.method() === "POST"
+          && request.url().endsWith("/projects/open")
+          && !acceptedRequest
+        ) {
+          acceptedRequest = {
+            body: request.postDataJSON(),
+            csrfToken: request.headers()["x-sandking-csrf"],
+            idempotencyKey: request.headers()["x-sandking-idempotency-key"],
+            expectedRevision: request.headers()["x-sandking-expected-revision"],
+          };
+        }
+      });
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
       await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
@@ -1084,14 +1099,34 @@ test("Host loss after accepted Project registration preserves its identity and e
       assert.ok(acceptedRegistrationAudit);
       assert.equal(acceptedProject.harness, null);
       assert.equal(acceptedProject.readiness.launchRequest, "blocked");
+      assert.ok(acceptedRequest);
 
       const runtimeState = await readJson(join(dataDir, "runtime-state.json"));
       pausedHostPid = await findLocalHostPid(runtimeState.pid);
       process.kill(pausedHostPid, "SIGSTOP");
+      const duplicateRequestStarted = page.waitForRequest((request) =>
+        request.method() === "POST" && request.url().endsWith("/projects/open"));
+      const duplicateProjectResponse = page.evaluate(async (parameters) => {
+        const mutation = await fetch("/projects/open", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-sandking-csrf": parameters.csrfToken,
+            "x-sandking-idempotency-key": parameters.idempotencyKey,
+            "x-sandking-expected-revision": parameters.expectedRevision,
+          },
+          body: JSON.stringify(parameters.body),
+        });
+        return { status: mutation.status, body: await mutation.json() };
+      }, acceptedRequest);
+      await duplicateRequestStarted;
       process.kill(pausedHostPid, "SIGKILL");
       pausedHostPid = null;
 
-      const failedResponse = await projectResponse;
+      const [failedResponse, duplicateFailure] = await Promise.all([
+        projectResponse,
+        duplicateProjectResponse,
+      ]);
       const failure = {
         status: failedResponse.status(),
         body: await failedResponse.json(),
@@ -1104,6 +1139,15 @@ test("Host loss after accepted Project registration preserves its identity and e
       assert.equal(failure.body.mutations.projectRegistration.code, "project_registered");
       assert.equal(
         failure.body.mutations.projectRegistration.auditId,
+        acceptedRegistrationAudit.auditId,
+      );
+      assert.equal(duplicateFailure.status, failure.status);
+      assert.equal(duplicateFailure.body.code, failure.body.code);
+      assert.equal(duplicateFailure.body.idempotentReplay, true);
+      assert.equal(duplicateFailure.body.auditId, failure.body.auditId);
+      assert.equal(duplicateFailure.body.project.projectId, acceptedProject.projectId);
+      assert.equal(
+        duplicateFailure.body.mutations.projectRegistration.auditId,
         acceptedRegistrationAudit.auditId,
       );
       assert.deepEqual(failure.body.prohibitedSideEffects, {
@@ -1145,6 +1189,13 @@ test("Host loss after accepted Project registration preserves its identity and e
         acceptedRegistrationAudit.auditId);
       assert.equal(failureAudit.details.projectRegistrationCreated, true);
       assert.equal(failureAudit.details.harnessRegistrationCreated, false);
+      const queuedReplayAudit = auditsAfter.find((entry) =>
+        entry.action === "project.prepare"
+        && entry.outcome === "observed"
+        && entry.details.idempotentReplay === true
+        && entry.details.originalAuditId === failure.body.auditId
+        && entry.details.projectId === acceptedProject.projectId);
+      assert.ok(queuedReplayAudit);
       if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
         await writeFile(
           join(
@@ -1155,6 +1206,7 @@ test("Host loss after accepted Project registration preserves its identity and e
             kind: "accepted_project_host_loss_contract",
             packagedPublicSeam: installed.observation,
             typedFailure: failure,
+            queuedReplay: duplicateFailure,
             acceptedProject: {
               projectId: acceptedProject.projectId,
               revision: acceptedProject.revision,
@@ -1176,6 +1228,7 @@ test("Host loss after accepted Project registration preserves its identity and e
             audit: {
               registration: acceptedRegistrationAudit,
               failure: failureAudit,
+              replay: queuedReplayAudit,
             },
           }, null, 2)}\n`,
           { mode: 0o600 },

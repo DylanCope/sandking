@@ -1403,24 +1403,13 @@ const runtimeProjectFailure = async (
  * @param {{path: unknown, configuration: unknown, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number}} request
  */
 const prepareExplicitProject = (request) => withProjectPreparationLock(async () => {
-  if (
+  const mutationContractValid = !(
     typeof request.idempotencyKey !== "string"
     || request.idempotencyKey.length === 0
     || request.idempotencyKey.length > 256
     || !Number.isSafeInteger(request.expectedRevision)
     || request.expectedRevision < 0
-  ) {
-    return {
-      status: 400,
-      body: await runtimeProjectFailure(
-        "mutation_contract_invalid",
-        request.expectedRevision,
-        0,
-        request.idempotencyKeyHash,
-        ["retry_with_valid_mutation_contract"],
-      ),
-    };
-  }
+  );
 
   const requestContent = {
     path: request.path,
@@ -1432,17 +1421,41 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     trackedSandKingFileWrite: false,
     approvalRequest: false,
   };
-  const retained = await replayHostMutationOutcome(
-    "project.prepare",
-    "host_local_project_preparation",
-    request.expectedRevision,
-    /** @type {string} */ (request.idempotencyKeyHash),
-    requestContent,
-    currentProjectPreparation.current?.revision ?? 0,
-    prohibitedSideEffects,
-  );
-  if (retained) {
-    return retained;
+  if (mutationContractValid) {
+    const retained = await replayHostMutationOutcome(
+      "project.prepare",
+      "host_local_project_preparation",
+      request.expectedRevision,
+      /** @type {string} */ (request.idempotencyKeyHash),
+      requestContent,
+      currentProjectPreparation.current?.revision ?? 0,
+      prohibitedSideEffects,
+    );
+    if (retained) {
+      return retained;
+    }
+  }
+  if (state.host.status === "disconnected") {
+    return hostMutationFailure(
+      "host_disconnected",
+      "project.prepare",
+      "host_local_project_preparation",
+      request.expectedRevision,
+      request.idempotencyKeyHash,
+      requestContent,
+    );
+  }
+  if (!mutationContractValid) {
+    return {
+      status: 400,
+      body: await runtimeProjectFailure(
+        "mutation_contract_invalid",
+        request.expectedRevision,
+        0,
+        request.idempotencyKeyHash,
+        ["retry_with_valid_mutation_contract"],
+      ),
+    };
   }
   /** @param {{status: number, body: any}} outcome */
   const retainProjectPreparation = (outcome) => {
@@ -1581,17 +1594,25 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
         harnessRegistration: projectMutationSummary(harnessRegistration),
         harnessPin: projectMutationSummary(pin),
       };
-      throw new ControllerSessionError(error.code, {
-        project: currentProjectPreparation.current,
-        harness,
-        mutations,
-        effects: {
-          projectRegistrationCreated: projectRegistration.code === "project_registered",
-          harnessRegistrationCreated:
-            mutations.harnessRegistration?.code === "conformance_harness_registered",
-          harnessPinChanged: mutations.harnessPin?.code === "project_harness_pinned",
+      return hostMutationFailure(
+        error.code,
+        "project.prepare",
+        "host_local_project_preparation",
+        request.expectedRevision,
+        request.idempotencyKeyHash,
+        requestContent,
+        {
+          project: currentProjectPreparation.current,
+          harness,
+          mutations,
+          effects: {
+            projectRegistrationCreated: projectRegistration.code === "project_registered",
+            harnessRegistrationCreated:
+              mutations.harnessRegistration?.code === "conformance_harness_registered",
+            harnessPinChanged: mutations.harnessPin?.code === "project_harness_pinned",
+          },
         },
-      });
+      );
     }
     throw error;
   }
@@ -2702,18 +2723,6 @@ const main = async () => {
             path: "path" in record ? record.path : null,
             configuration: "configuration" in record ? record.configuration : null,
           };
-          if (state.host.status === "disconnected") {
-            const failure = await hostMutationFailure(
-              "host_disconnected",
-              "project.prepare",
-              "host_local_project_preparation",
-              expectedRevision,
-              idempotencyKeyHash,
-              requestContent,
-            );
-            sendJson(response, failure.status, failure.body);
-            return;
-          }
           let outcome;
           try {
             outcome = await prepareExplicitProject({
