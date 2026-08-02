@@ -385,6 +385,53 @@ else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list 
   }
 });
 
+test("the Claude adapter reports auth probe failures as adapter failures", async () => {
+  const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-auth-probe-"));
+  const fakeClaudePath = join(fixtureDirectory, "claude");
+  const writeFixture = (mode) => writeFile(fakeClaudePath, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const authProbeMode = ${JSON.stringify(mode)};
+if (args[0] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");
+else if (args[0] === "--help") process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+else if (args[0] === "plugin" && args[1] === "validate" && args.at(-1) === "--strict") {
+  process.stdout.write("Validated plugin\\n");
+}
+else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
+  process.stdout.write('[{"name":"sandking-controller","version":"1.0.0"}]');
+} else if (args.join(" ") === "auth status") {
+  if (authProbeMode === "malformed") process.stdout.write('{"loggedIn":');
+  else if (authProbeMode === "invalid-response") process.stdout.write('{"loggedIn":"yes"}');
+  else if (authProbeMode === "execution-error") process.exitCode = 2;
+  else if (authProbeMode === "timeout") setTimeout(() => undefined, 10_000);
+  else process.exitCode = 97;
+} else process.exitCode = 97;
+`, { mode: 0o700 });
+
+  try {
+    for (const mode of ["malformed", "invalid-response", "execution-error", "timeout"]) {
+      await writeFixture(mode);
+      await chmod(fakeClaudePath, 0o700);
+      const probe = JSON.parse((await execFileAsync(process.execPath, [adapterPath, "probe"], {
+        env: {
+          LANG: "C.UTF-8",
+          PATH: process.env.PATH,
+          SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
+        },
+      })).stdout);
+      assert.deepEqual(probe.availability, {
+        status: "unavailable",
+        command: "claude",
+        version: "2.1.141",
+        authentication: { status: "unknown", source: "destination-local" },
+        failure: { code: "provider_adapter_failed", retryable: true },
+      }, mode);
+      assert.equal(probe.capabilities.length, 9, mode);
+    }
+  } finally {
+    await rm(fixtureDirectory, { recursive: true, force: true });
+  }
+});
+
 test("the Claude adapter entry point executes from a URL-encoded filesystem path", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-path-"));
   const copiedAdapterPath = join(fixtureDirectory, "adapter with spaces.mjs");

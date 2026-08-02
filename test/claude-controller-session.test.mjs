@@ -14,6 +14,65 @@ const waitFor = async (predicate) => {
   assert.fail("claude_controller_contract_timeout");
 };
 
+test("the public provider boundary preserves an authentication probe adapter failure", async () => {
+  const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-auth-boundary-"));
+  const dataDir = join(fixtureDirectory, "state");
+  const projectDir = join(fixtureDirectory, "project");
+  const fakeClaudePath = join(fixtureDirectory, "claude");
+  await Promise.all([mkdir(dataDir), mkdir(projectDir)]);
+  await writeFile(fakeClaudePath, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");
+else if (args[0] === "--help") process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+else if (args[0] === "plugin" && args[1] === "validate" && args.at(-1) === "--strict") {
+  process.stdout.write("Validated plugin\\n");
+} else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
+  process.stdout.write('[{"name":"sandking-controller","version":"1.0.0"}]');
+} else if (args.join(" ") === "auth status") process.stdout.write('{"loggedIn":');
+else process.exitCode = 97;
+`, { mode: 0o700 });
+
+  const audits = [];
+  let manager;
+  try {
+    manager = await createControllerSessionManager({
+      dataDir,
+      providerEnvironment: {
+        HOME: fixtureDirectory,
+        PATH: process.env.PATH,
+        LANG: "C.UTF-8",
+        SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
+      },
+      recordAudit: async (action, outcome, details = {}) => {
+        audits.push({ action, outcome, details });
+        return `audit-${String(audits.length).padStart(24, "0")}`;
+      },
+    });
+    const probe = await manager.probeProvider("claude-code");
+    assert.equal(probe.availability.status, "unavailable");
+    assert.equal(probe.availability.authentication.status, "unknown");
+    assert.deepEqual(probe.availability.failure, {
+      code: "provider_adapter_failed",
+      retryable: true,
+    });
+    const projectId = `project-${"9".repeat(24)}`;
+    await assert.rejects(manager.start({
+      workContextId: projectId,
+      kind: "project",
+      canonicalReference: `sandking:project:${projectId}`,
+    }, {
+      providerId: "claude-code",
+      workingDirectory: projectDir,
+    }), (error) => error.code === "provider_adapter_failed");
+    assert.ok(audits.some((entry) => entry.action === "controller.session.start"
+      && entry.outcome === "rejected"
+      && entry.details.code === "provider_adapter_failed"));
+  } finally {
+    await manager?.shutdown();
+    await rm(fixtureDirectory, { recursive: true, force: true });
+  }
+});
+
 test("an installed Claude Controller uses the shared PTY, work-context, and approval seams", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-session-"));
   const dataDir = join(fixtureDirectory, "state");

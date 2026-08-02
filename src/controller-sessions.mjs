@@ -83,6 +83,7 @@ const availabilitySchema = z.object({
       "provider_cli_probe_failed",
       "provider_cli_incompatible",
       "provider_authentication_missing",
+      "provider_adapter_failed",
     ]),
     retryable: z.boolean(),
   }).strict().nullable(),
@@ -364,6 +365,7 @@ const invokeAdapter = async (
         "provider_cli_probe_failed",
         "provider_cli_incompatible",
         "provider_authentication_missing",
+        "provider_adapter_failed",
       ]).has(diagnostic) ? diagnostic : "provider_adapter_failed";
       finish(new ControllerSessionError(typedCode));
       return;

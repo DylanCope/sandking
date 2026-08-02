@@ -15,8 +15,10 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { probeClaude } from "../src/claude-provider-adapter.mjs";
-import { selectInstalledClaudeAcceptanceAuditChain } from
-  "./installed-claude-acceptance-audits.mjs";
+import {
+  selectInstalledClaudeAcceptanceAuditChain,
+  selectInstalledClaudeProjectRegistration,
+} from "./installed-claude-acceptance-audits.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -116,12 +118,18 @@ try {
     readline.close();
   }
 
-  const [controllerState, launchState, harnessState, auditText] = await Promise.all([
-    readFile(join(dataDir, "controller-sessions.json"), "utf8").then(JSON.parse),
-    readFile(join(dataDir, "launch-requests.json"), "utf8").then(JSON.parse),
-    readFile(join(dataDir, "harness-runs.json"), "utf8").then(JSON.parse),
-    readFile(join(dataDir, "audit.jsonl"), "utf8"),
-  ]);
+  const [projectState, controllerState, launchState, harnessState, auditText] =
+    await Promise.all([
+      readFile(join(dataDir, "project-registrations.json"), "utf8").then(JSON.parse),
+      readFile(join(dataDir, "controller-sessions.json"), "utf8").then(JSON.parse),
+      readFile(join(dataDir, "launch-requests.json"), "utf8").then(JSON.parse),
+      readFile(join(dataDir, "harness-runs.json"), "utf8").then(JSON.parse),
+      readFile(join(dataDir, "audit.jsonl"), "utf8"),
+    ]);
+  const projectRegistration = selectInstalledClaudeProjectRegistration({
+    projectState,
+    projectPath,
+  });
   const claudeSessions = controllerState.sessions.filter((session) =>
     session.providerId === "claude-code");
   if (claudeSessions.length !== 1) {
@@ -154,6 +162,7 @@ try {
   const requiredAudits = selectInstalledClaudeAcceptanceAuditChain({
     audits,
     session,
+    projectRegistration,
     launchRequest,
     run: runs[0],
   });
@@ -195,6 +204,13 @@ try {
       stableProviderSessionIdentity: session.sessionIdentity?.stable === true,
       ptyRuntimeOwned: session.terminal.runtimeOwned,
       browserDisconnectionSurvivalHumanConfirmed: true,
+      selectedProjectId: projectRegistration.projectId,
+      selectedWorkContextId: session.workContextId,
+      selectedWorkContextCanonicalReference: session.canonicalReference,
+      sanitizedWorkContextInspectedThroughClaude: true,
+      acceptedWorkContextInspectionCount: requiredAudits.filter((entry) =>
+        entry.action === "controller.provider.operation"
+        && entry.details?.operation === "work-context.inspect").length,
       launchRequestPrepared: true,
       exactLaunchRequestApprovedInConversation: true,
       approvalSeparatedFromRunStart: true,

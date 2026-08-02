@@ -190,6 +190,31 @@ const invokeClaudeMetadataCommand = async (executable, args) => execFileAsync(
   },
 );
 
+/** @param {string} stdout */
+const parseClaudeAuthenticationStatus = (stdout) => {
+  const status = JSON.parse(stdout);
+  if (!status || typeof status !== "object" || Array.isArray(status)) {
+    throw new Error("provider_authentication_status_invalid");
+  }
+  /** @type {boolean[]} */
+  const declarations = [];
+  for (const property of ["loggedIn", "authenticated"]) {
+    if (Object.hasOwn(status, property)) {
+      if (typeof status[property] !== "boolean") {
+        throw new Error("provider_authentication_status_invalid");
+      }
+      declarations.push(status[property]);
+    }
+  }
+  if (
+    declarations.length === 0
+    || declarations.some((value) => value !== declarations[0])
+  ) {
+    throw new Error("provider_authentication_status_invalid");
+  }
+  return declarations[0];
+};
+
 /** @param {unknown} inventory */
 const hasLoadedControllerPlugin = (inventory) => {
   const records = Array.isArray(inventory)
@@ -298,11 +323,52 @@ export const probeClaude = async () => {
     };
   }
 
+  const missingAuthentication = () => ({
+    ...baseProbe(detectedCapabilities),
+    availability: {
+      status: "unauthenticated",
+      command: "claude",
+      version,
+      authentication: { status: "missing", source: "destination-local" },
+      failure: { code: "provider_authentication_missing", retryable: false },
+    },
+  });
+  const failedAuthenticationProbe = () => ({
+    ...baseProbe(detectedCapabilities),
+    availability: {
+      status: "unavailable",
+      command: "claude",
+      version,
+      authentication: { status: "unknown", source: "destination-local" },
+      failure: { code: "provider_adapter_failed", retryable: true },
+    },
+  });
+
+  let result;
   try {
-    const result = await invokeClaudeMetadataCommand(executable, ["auth", "status"]);
-    const status = JSON.parse(result.stdout);
-    if (status?.loggedIn !== true && status?.authenticated !== true) {
-      throw new Error("provider_authentication_missing");
+    result = await invokeClaudeMetadataCommand(executable, ["auth", "status"]);
+  } catch (error) {
+    if (
+      error
+      && typeof error === "object"
+      && "code" in error
+      && error.code === 1
+      && "stdout" in error
+      && typeof error.stdout === "string"
+    ) {
+      try {
+        if (parseClaudeAuthenticationStatus(error.stdout) === false) {
+          return missingAuthentication();
+        }
+      } catch {
+        // Invalid output from a failed process is an adapter/protocol failure.
+      }
+    }
+    return failedAuthenticationProbe();
+  }
+  try {
+    if (parseClaudeAuthenticationStatus(result.stdout) === false) {
+      return missingAuthentication();
     }
     return {
       ...baseProbe(detectedCapabilities),
@@ -315,16 +381,7 @@ export const probeClaude = async () => {
       },
     };
   } catch {
-    return {
-      ...baseProbe(detectedCapabilities),
-      availability: {
-        status: "unauthenticated",
-        command: "claude",
-        version,
-        authentication: { status: "missing", source: "destination-local" },
-        failure: { code: "provider_authentication_missing", retryable: false },
-      },
-    };
+    return failedAuthenticationProbe();
   }
 };
 
