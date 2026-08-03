@@ -11,7 +11,10 @@ const execFileAsync = promisify(execFile);
 const cliPath = join(process.cwd(), "src", "cli.mjs");
 
 const runCli = async (args, options = {}) => {
-  const result = await execFileAsync("node", [cliPath, ...args], {
+  const boundedArgs = args[0] === "launch" && !args.includes("--startup-timeout-ms")
+    ? [args[0], "--startup-timeout-ms", "30000", ...args.slice(1)]
+    : args;
+  const result = await execFileAsync("node", [cliPath, ...boundedArgs], {
     cwd: process.cwd(),
     env: { ...process.env, ...options.env },
   });
