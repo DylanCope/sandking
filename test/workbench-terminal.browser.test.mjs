@@ -195,30 +195,6 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     ), "read-write");
     assert.match(await page.locator("#workbench-attachment-status").textContent(),
       /conformance-controller-v1 · runtime-owned PTY · read-write/);
-    await sendTerminalLine(page, "prepare 146 sandcastle/issue-146");
-    await page.waitForFunction(() => document.querySelector(
-      "#project-controller-terminal-output .xterm-accessibility-tree",
-    )?.textContent?.includes("Launch request:"));
-    const launchRequestId = /Launch request: (launch-request-[a-f0-9]{24})/.exec(
-      await page.locator(
-        "#project-controller-terminal-output .xterm-accessibility-tree",
-      ).textContent(),
-    )?.[1];
-    assert.match(launchRequestId, /^launch-request-[a-f0-9]{24}$/);
-    await page.waitForSelector(
-      "#workbench-person-action.is-pending[data-person-action='launch-approval']",
-      { timeout: 60_000 },
-    );
-    assert.match(await page.locator("#workbench-person-action").textContent(),
-      /Person required.*Review Launch request in Controller/s);
-    const liveChrome = {
-      selectedProjectCurrent: true,
-      focusedWorkContextCurrent: true,
-      providerAndAttachmentCurrent: true,
-      pendingPersonActionVisible: true,
-      pendingPersonActionSurvivedReconnect: false,
-      pendingPersonActionClearedAfterDecision: false,
-    };
     await page.waitForFunction(() => {
       const panel = document.querySelector("#project-focused-controller-session");
       return Number(panel?.getAttribute("data-terminal-columns")) >= 20
@@ -474,6 +450,35 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       invalidBounds: "browser_control_schema_invalid",
       wrongCorrelation: "controller_terminal_not_found",
     });
+
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator("#workbench-context-toggle").getAttribute(
+      "aria-expanded",
+    ), "false");
+    await sendTerminalLine(page, "prepare 146 sandcastle/issue-146");
+    await page.waitForFunction(() => document.querySelector(
+      "#project-controller-terminal-output .xterm-accessibility-tree",
+    )?.textContent?.includes("Launch request:"));
+    const launchRequestId = /Launch request: (launch-request-[a-f0-9]{24})/.exec(
+      await page.locator(
+        "#project-controller-terminal-output .xterm-accessibility-tree",
+      ).textContent(),
+    )?.[1];
+    assert.match(launchRequestId, /^launch-request-[a-f0-9]{24}$/);
+    await page.waitForSelector(
+      "#workbench-person-action.is-pending[data-person-action='launch-approval']",
+      { timeout: 60_000 },
+    );
+    assert.match(await page.locator("#workbench-person-action").textContent(),
+      /Person required.*Review Launch request in Controller/s);
+    const liveChrome = {
+      selectedProjectCurrent: true,
+      focusedWorkContextCurrent: true,
+      providerAndAttachmentCurrent: true,
+      pendingPersonActionVisible: true,
+      pendingPersonActionSurvivedReconnect: false,
+      pendingPersonActionClearedAfterDecision: false,
+    };
 
     const resizeSequenceBeforeReconnect = Number(await terminalPanel.getAttribute(
       "data-terminal-resize-sequence",
