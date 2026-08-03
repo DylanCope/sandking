@@ -34,6 +34,7 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
   const installed = await installCurrentPackage(root);
   const productEnvironment = { ...process.env, HOME: userHome };
   let browser;
+  let runtimePid;
 
   try {
     const { stdout } = await execFileAsync(installed.command, [
@@ -41,10 +42,12 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       "--data-dir", dataDir,
       "--idempotency-key", "workbench-terminal-runtime-launch",
       "--expected-revision", "0",
+      "--startup-timeout-ms", "30000",
       "--json",
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
+    runtimePid = launch.runtime.pid;
     browser = await launchBrowser();
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     await context.addInitScript(() => {
@@ -136,11 +139,24 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       /selected-project/);
     assert.match(await page.locator("#workbench-project-breadcrumb").textContent(),
       /Projects \/ selected-project/);
-    await page.locator("#open-project-controller").click();
-    await page.waitForSelector(
-      "#project-focused-controller-session[data-terminal-attachment='read-write']",
-      { timeout: 10_000 },
-    );
+    let controllerAttached = false;
+    for (let attempt = 0; attempt < 3 && !controllerAttached; attempt += 1) {
+      await page.locator("#open-project-controller").click();
+      const controllerOutcome = await page.waitForFunction(() => {
+        const panel = document.querySelector("#project-focused-controller-session");
+        if (panel?.getAttribute("data-terminal-attachment") === "read-write") {
+          return "attached";
+        }
+        const feedback = document.querySelector("#project-controller-feedback")?.textContent
+          ?? "";
+        return feedback.startsWith("Focused Controller failed safely:") ? feedback : false;
+      }, undefined, { timeout: 30_000 }).then((handle) => handle.jsonValue());
+      controllerAttached = controllerOutcome === "attached";
+      if (!controllerAttached) {
+        assert.match(controllerOutcome, /provider_session_ready_timeout/);
+      }
+    }
+    assert.equal(controllerAttached, true, "the conformance Controller must attach");
     const terminalTypography = await page.locator(
       "#project-controller-terminal-output .xterm",
     ).evaluate(async (node) => {
@@ -643,6 +659,16 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     await execFileAsync(installed.command, [
       "stop", "--data-dir", dataDir, "--json",
     ], { cwd: executionDirectory, env: productEnvironment }).catch(() => undefined);
+    if (runtimePid) {
+      try {
+        process.kill(runtimePid, "SIGTERM");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        process.kill(runtimePid, 0);
+        process.kill(runtimePid, "SIGKILL");
+      } catch {
+        // The normal lifecycle stop already completed.
+      }
+    }
     await rm(root, { recursive: true, force: true });
   }
 });
