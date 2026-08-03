@@ -457,9 +457,18 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       "aria-expanded",
     ), "false");
     await sendTerminalLine(page, "prepare 146 sandcastle/issue-146");
-    await page.waitForFunction(() => document.querySelector(
-      "#project-controller-terminal-output .xterm-accessibility-tree",
-    )?.textContent?.includes("Launch request:"));
+    const launchPreparationOutcome = await page.waitForFunction(() => {
+      const screen = document.querySelector(
+        "#project-controller-terminal-output .xterm-accessibility-tree",
+      )?.textContent ?? "";
+      if (screen.includes("Launch request:")) return "prepared";
+      if (
+        screen.includes("Launch preparation failed safely:")
+        || screen.includes("Controller operation failed safely:")
+      ) return "failed";
+      return false;
+    }, undefined, { timeout: 90_000 }).then((handle) => handle.jsonValue());
+    assert.equal(launchPreparationOutcome, "prepared");
     const launchRequestId = /Launch request: (launch-request-[a-f0-9]{24})/.exec(
       await page.locator(
         "#project-controller-terminal-output .xterm-accessibility-tree",
@@ -510,7 +519,7 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       const action = document.querySelector("#workbench-person-action");
       return action?.getAttribute("data-person-action") === "none"
         && !action.classList.contains("is-pending");
-    });
+    }, undefined, { timeout: 90_000 });
     liveChrome.pendingPersonActionClearedAfterDecision = true;
     await reconnectPage.waitForFunction((previous) => Number(document.querySelector(
       "#project-focused-controller-session",

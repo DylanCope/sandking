@@ -318,17 +318,6 @@ const attachTerminalSurface = ({
         requireReload("runtime_terminal_container_unavailable");
         return;
       }
-      socket.send(JSON.stringify({
-        channel: "control",
-        message: {
-          type: "browser.terminal.attach",
-          sessionId: focused.sessionId,
-          streamId: focused.terminal.streamId,
-          attachmentId: focused.terminal.writableAttachment.attachmentId,
-          mode: requestedMode,
-          outputCursor: 0,
-        },
-      }));
       await document.fonts?.load?.('13px "Fira Code"');
       await document.fonts?.ready;
       emulator.open(terminalOutput);
@@ -417,6 +406,17 @@ const attachTerminalSurface = ({
         "resize",
         () => scheduleTerminalFit(terminalState),
       );
+      socket.send(JSON.stringify({
+        channel: "control",
+        message: {
+          type: "browser.terminal.attach",
+          sessionId: focused.sessionId,
+          streamId: focused.terminal.streamId,
+          attachmentId: focused.terminal.writableAttachment.attachmentId,
+          mode: requestedMode,
+          outputCursor: 0,
+        },
+      }));
     };
     openTerminal().catch(() =>
       requireReload("runtime_terminal_surface_initialization_failed"));
