@@ -21,11 +21,30 @@ import {
 
 const execFileAsync = promisify(execFile);
 const cliPath = join(process.cwd(), "src", "cli.mjs");
+const runtimePids = new Map();
+
+const stop = async (dataDir) => {
+  await execFileAsync(process.execPath, [
+    cliPath, "stop", "--data-dir", dataDir, "--json",
+  ], { cwd: tmpdir(), env: process.env }).catch(() => undefined);
+  const pid = runtimePids.get(dataDir);
+  runtimePids.delete(dataDir);
+  if (!pid) return;
+  try {
+    process.kill(pid, "SIGTERM");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    process.kill(pid, 0);
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // The normal lifecycle stop already completed.
+  }
+};
 
 /** @param {string} dataDir @param {NodeJS.ProcessEnv} [env] */
 const launch = async (dataDir, env = process.env) => {
   const { stdout } = await execFileAsync(process.execPath, [
-    cliPath, "launch", "--data-dir", dataDir, "--json", "--no-open",
+    cliPath, "launch", "--data-dir", dataDir,
+    "--startup-timeout-ms", "60000", "--json", "--no-open",
   ], {
     cwd: tmpdir(),
     env: {
@@ -33,7 +52,9 @@ const launch = async (dataDir, env = process.env) => {
       SANDKING_CLAUDE_EXECUTABLE: join(dataDir, "claude-not-installed"),
     },
   });
-  return JSON.parse(stdout);
+  const result = JSON.parse(stdout);
+  runtimePids.set(dataDir, result.runtime.pid);
+  return result;
 };
 
 /** @param {string} bootstrapUrl */
@@ -200,10 +221,7 @@ test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and 
     });
     reconnect.close();
   } finally {
-    await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
-      cwd: tmpdir(),
-      env: process.env,
-    }).catch(() => undefined);
+    await stop(dataDir);
     await rm(dataDir, { recursive: true, force: true });
   }
 });
@@ -313,10 +331,7 @@ test("session termination declares authorization, idempotency, revision, audit, 
     });
     assert.match(accepted.details.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
   } finally {
-    await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
-      cwd: tmpdir(),
-      env: process.env,
-    }).catch(() => undefined);
+    await stop(dataDir);
     await rm(dataDir, { recursive: true, force: true });
   }
 });
@@ -332,10 +347,13 @@ test("browser credentials are non-persistent and expire in the runtime", async (
       dataDir,
       "--browser-session-ttl-ms",
       "250",
+      "--startup-timeout-ms",
+      "60000",
       "--json",
       "--no-open",
     ], { cwd: tmpdir(), env: process.env });
     const runtime = JSON.parse(stdout);
+    runtimePids.set(dataDir, runtime.runtime.pid);
     const bootstrap = await fetch(runtime.bootstrapUrl, { redirect: "manual" });
     assert.equal(bootstrap.status, 302);
     const setCookie = bootstrap.headers.get("set-cookie");
@@ -392,10 +410,7 @@ test("browser credentials are non-persistent and expire in the runtime", async (
       );
     }
   } finally {
-    await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
-      cwd: tmpdir(),
-      env: process.env,
-    }).catch(() => undefined);
+    await stop(dataDir);
     await rm(dataDir, { recursive: true, force: true });
   }
 });
@@ -439,10 +454,7 @@ test("negotiated WebSockets enforce typed control separately from bounded opaque
     });
     socket.close();
   } finally {
-    await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
-      cwd: tmpdir(),
-      env: process.env,
-    }).catch(() => undefined);
+    await stop(dataDir);
     await rm(dataDir, { recursive: true, force: true });
   }
 });
@@ -488,10 +500,7 @@ test("browser/runtime version and required-capability mismatches require an expl
     });
     missingRuntimeCapabilitySocket.close();
   } finally {
-    await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
-      cwd: tmpdir(),
-      env: process.env,
-    }).catch(() => undefined);
+    await stop(dataDir);
     await rm(dataDir, { recursive: true, force: true });
   }
 });
