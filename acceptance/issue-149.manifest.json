@@ -91,6 +91,7 @@
       [
         "node",
         "--test",
+        "--test-concurrency=1",
         "test/browser-protocol.test.mjs",
         "test/controller-launch-session.test.mjs",
         "test/security-boundary.test.mjs"
@@ -98,6 +99,7 @@
       [
         "node",
         "--test",
+        "--test-concurrency=1",
         "test/controller-terminal-attachment.test.mjs",
         "test/claude-controller-session.test.mjs"
       ],
@@ -114,6 +116,7 @@
       [
         "node",
         "--test",
+        "--test-concurrency=1",
         "test/project-preparation.browser.test.mjs",
         "test/planning-spine.browser.test.mjs",
         "test/launch-request.browser.test.mjs",
