@@ -385,12 +385,12 @@ test("expired bootstrap tokens return a typed retryable outcome without creating
       "--data-dir",
       dataDir,
       "--bootstrap-ttl-ms",
-      "500",
+      "5000",
       "--json",
       "--no-open",
     ]);
     assert.equal((await request({ url: redeemedLaunch.bootstrapUrl })).status, 302);
-    await new Promise((resolve) => setTimeout(resolve, 575));
+    await new Promise((resolve) => setTimeout(resolve, 5_075));
     const expiredReplay = await request({ url: redeemedLaunch.bootstrapUrl });
     assert.equal(expiredReplay.status, 410);
     const expiredReplayFailure = await expiredReplay.json();
