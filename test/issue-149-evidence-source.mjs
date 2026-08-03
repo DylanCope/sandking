@@ -9,6 +9,7 @@ export const ISSUE_149_DEMONSTRATED_PATHS = Object.freeze([
   "src/cockpit.js",
   "src/conformance-provider-adapter.mjs",
   "src/controller-sessions.mjs",
+  "src/runtime.mjs",
   "src/runtime-daemon.mjs",
   "acceptance/issue-149.manifest.json",
   "test/browser-protocol.test.mjs",
