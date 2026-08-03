@@ -345,7 +345,7 @@ const invokeAdapter = async (
   const timeout = setTimeout(() => {
     child.kill("SIGKILL");
     finish(new ControllerSessionError("provider_adapter_timeout"));
-  }, 8_000);
+  }, 30_000);
   child.stdout.on("data", (/** @type {Buffer} */ chunk) => {
     size += chunk.byteLength;
     if (size <= 32_768) {

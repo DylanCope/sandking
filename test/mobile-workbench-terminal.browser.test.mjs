@@ -125,10 +125,11 @@ test("the production Workbench terminal is usable at a touch phone viewport", as
         }
         const feedback = document.querySelector("#project-controller-feedback")?.textContent ?? "";
         return feedback.startsWith("Focused Controller failed safely:") ? feedback : false;
-      }, undefined, { timeout: 30_000 }).then((handle) => handle.jsonValue());
+      }, undefined, { timeout: 90_000 }).then((handle) => handle.jsonValue());
       controllerAttached = controllerOutcome === "attached";
       if (!controllerAttached) {
-        assert.match(controllerOutcome, /provider_session_ready_timeout/);
+        assert.match(controllerOutcome,
+          /provider_adapter_timeout|provider_session_ready_timeout/);
       }
     }
     assert.equal(controllerAttached, true, "the conformance Controller must attach");
