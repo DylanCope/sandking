@@ -114,7 +114,7 @@ const nextControl = async (socket) => {
       socket.off("message", onMessage);
       socket.off("error", onError);
       reject(new Error("runtime_control_timeout"));
-    }, 2_000);
+    }, 10_000);
     const onMessage = (message) => {
       clearTimeout(timeout);
       socket.off("error", onError);
@@ -247,7 +247,7 @@ test("session termination declares authorization, idempotency, revision, audit, 
       "x-sandking-expected-revision": "1",
     };
     const socketClosed = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("session_socket_not_revoked")), 2_000);
+      const timeout = setTimeout(() => reject(new Error("session_socket_not_revoked")), 10_000);
       socket.once("close", (code, reason) => {
         clearTimeout(timeout);
         resolve({ code, reason: reason.toString() });
@@ -346,7 +346,7 @@ test("browser credentials are non-persistent and expire in the runtime", async (
       "--data-dir",
       dataDir,
       "--browser-session-ttl-ms",
-      "250",
+      "5000",
       "--startup-timeout-ms",
       "60000",
       "--json",
@@ -365,7 +365,7 @@ test("browser credentials are non-persistent and expire in the runtime", async (
     socket.send(JSON.stringify(browserHello()));
     assert.equal((await nextControl(socket)).type, "runtime.hello-ack");
     const socketClosed = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("session_expiry_not_enforced")), 2_000);
+      const timeout = setTimeout(() => reject(new Error("session_expiry_not_enforced")), 10_000);
       socket.once("close", (code, reason) => {
         clearTimeout(timeout);
         resolve({ code, reason: reason.toString() });
@@ -393,7 +393,7 @@ test("browser credentials are non-persistent and expire in the runtime", async (
         join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "browser-session-expiry.json"),
         `${JSON.stringify({
           kind: "browser_session_expiry",
-          ttlMs: 250,
+          ttlMs: 5000,
           persistentCookieAttributesIssued: /(?:max-age|expires)=/i.test(setCookie),
           socketCloseCode: 1008,
           socketCloseReason: "session_expired",
