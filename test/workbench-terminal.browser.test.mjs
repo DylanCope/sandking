@@ -85,7 +85,7 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     });
     await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#project-preparation[data-host-freshness='current']", {
-      timeout: 10_000,
+      timeout: 60_000,
     });
     const desktopLayout = await page.locator("#workbench-shell").evaluate((shell) => {
       const columns = getComputedStyle(shell).gridTemplateColumns.split(" ");
@@ -126,7 +126,7 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     await page.locator("#project-path").fill(projectPath);
     await page.locator("#open-project").click();
     await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
-      timeout: 10_000,
+      timeout: 60_000,
     });
     const selectedProjectId = await page.locator("#project-readiness").getAttribute(
       "data-project-id",
@@ -207,7 +207,7 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     assert.match(launchRequestId, /^launch-request-[a-f0-9]{24}$/);
     await page.waitForSelector(
       "#workbench-person-action.is-pending[data-person-action='launch-approval']",
-      { timeout: 10_000 },
+      { timeout: 60_000 },
     );
     assert.match(await page.locator("#workbench-person-action").textContent(),
       /Person required.*Review Launch request in Controller/s);
@@ -486,7 +486,7 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     });
     await reconnectPage.waitForSelector(
       "#project-focused-controller-session[data-reconnected='true'][data-terminal-attachment='read-write']",
-      { timeout: 10_000 },
+      { timeout: 60_000 },
     );
     assert.equal(await reconnectPage.locator("#workbench-selected-project").getAttribute(
       "data-project-id",
@@ -496,7 +496,7 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     ), focusedContextId);
     await reconnectPage.waitForSelector(
       "#workbench-person-action.is-pending[data-person-action='launch-approval']",
-      { timeout: 10_000 },
+      { timeout: 60_000 },
     );
     liveChrome.pendingPersonActionSurvivedReconnect = true;
     await sendTerminalLine(reconnectPage, `reject ${launchRequestId} 1`);

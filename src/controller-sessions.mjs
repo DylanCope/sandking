@@ -640,7 +640,7 @@ const openProviderControl = async (context) => {
     if (readySettled || timeout) return;
     timeout = setTimeout(() => {
       finishReady(new ControllerSessionError("provider_session_ready_timeout"));
-    }, 3_000);
+    }, 30_000);
   };
   const close = async () => {
     if (closed) {
