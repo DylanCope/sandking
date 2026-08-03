@@ -356,12 +356,88 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     }));
     assert.deepEqual(narrowLayout, { document: 700, body: 700, viewport: 700 });
 
-    const terminalCorrelation = {
-      sessionId: await terminalPanel.getAttribute("data-session-id"),
-      streamId: await terminalPanel.getAttribute("data-terminal-stream-id"),
-      attachmentId: await terminalPanel.getAttribute("data-terminal-attachment-id"),
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator("#workbench-context-toggle").getAttribute(
+      "aria-expanded",
+    ), "false");
+    await sendTerminalLine(page, "prepare 146 sandcastle/issue-146");
+    const launchPreparationOutcome = await page.waitForFunction(() => {
+      const screen = document.querySelector(
+        "#project-controller-terminal-output .xterm-accessibility-tree",
+      )?.textContent ?? "";
+      if (screen.includes("Launch request:")) return "prepared";
+      const failureCode = /(?:Launch preparation|Controller operation) failed safely: ([a-z0-9_]+)/
+        .exec(screen)?.[1];
+      if (failureCode) return failureCode;
+      return false;
+    }, undefined, { timeout: 90_000 }).then((handle) => handle.jsonValue());
+    assert.equal(launchPreparationOutcome, "prepared");
+    const launchRequestId = /Launch request: (launch-request-[a-f0-9]{24})/.exec(
+      await page.locator(
+        "#project-controller-terminal-output .xterm-accessibility-tree",
+      ).textContent(),
+    )?.[1];
+    assert.match(launchRequestId, /^launch-request-[a-f0-9]{24}$/);
+    await page.waitForSelector(
+      "#workbench-person-action.is-pending[data-person-action='launch-approval']",
+      { timeout: 60_000 },
+    );
+    assert.match(await page.locator("#workbench-person-action").textContent(),
+      /Person required.*Review Launch request in Controller/s);
+    const liveChrome = {
+      selectedProjectCurrent: true,
+      focusedWorkContextCurrent: true,
+      providerAndAttachmentCurrent: true,
+      pendingPersonActionVisible: true,
+      pendingPersonActionSurvivedReconnect: false,
+      pendingPersonActionClearedAfterDecision: false,
     };
-    const prohibitedOutcomes = await page.evaluate(async (correlation) => {
+
+    const resizeSequenceBeforeReconnect = Number(await terminalPanel.getAttribute(
+      "data-terminal-resize-sequence",
+    ));
+    await page.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const reconnectPage = await context.newPage();
+    await reconnectPage.goto(`http://127.0.0.1:${launch.runtime.port}/`, {
+      waitUntil: "domcontentloaded",
+    });
+    await reconnectPage.waitForSelector(
+      "#project-focused-controller-session[data-reconnected='true'][data-terminal-attachment='read-write']",
+      { timeout: 60_000 },
+    );
+    assert.equal(await reconnectPage.locator("#workbench-selected-project").getAttribute(
+      "data-project-id",
+    ), selectedProjectId);
+    assert.equal(await reconnectPage.locator("#workbench-focused-context").getAttribute(
+      "data-work-context-id",
+    ), focusedContextId);
+    await reconnectPage.waitForSelector(
+      "#workbench-person-action.is-pending[data-person-action='launch-approval']",
+      { timeout: 60_000 },
+    );
+    liveChrome.pendingPersonActionSurvivedReconnect = true;
+    await sendTerminalLine(reconnectPage, `reject ${launchRequestId} 1`);
+    await reconnectPage.waitForFunction(() => {
+      const action = document.querySelector("#workbench-person-action");
+      return action?.getAttribute("data-person-action") === "none"
+        && !action.classList.contains("is-pending");
+    }, undefined, { timeout: 90_000 });
+    liveChrome.pendingPersonActionClearedAfterDecision = true;
+    await reconnectPage.waitForFunction((previous) => Number(document.querySelector(
+      "#project-focused-controller-session",
+    )?.getAttribute("data-terminal-resize-sequence")) > previous,
+    resizeSequenceBeforeReconnect);
+    const reconnectedPanel = reconnectPage.locator("#project-focused-controller-session");
+    const reconnectSequence = Number(await reconnectedPanel.getAttribute(
+      "data-terminal-resize-sequence",
+    ));
+    const terminalCorrelation = {
+      sessionId: await reconnectedPanel.getAttribute("data-session-id"),
+      streamId: await reconnectedPanel.getAttribute("data-terminal-stream-id"),
+      attachmentId: await reconnectedPanel.getAttribute("data-terminal-attachment-id"),
+    };
+    const prohibitedOutcomes = await reconnectPage.evaluate(async (correlation) => {
       const hello = JSON.parse(window.__workbenchSentFrames.find((frame) => {
         if (frame.kind !== "control") return false;
         try {
@@ -451,84 +527,6 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       invalidBounds: "browser_control_schema_invalid",
       wrongCorrelation: "controller_terminal_not_found",
     });
-
-    await page.keyboard.press("Escape");
-    assert.equal(await page.locator("#workbench-context-toggle").getAttribute(
-      "aria-expanded",
-    ), "false");
-    await sendTerminalLine(page, "prepare 146 sandcastle/issue-146");
-    const launchPreparationOutcome = await page.waitForFunction(() => {
-      const screen = document.querySelector(
-        "#project-controller-terminal-output .xterm-accessibility-tree",
-      )?.textContent ?? "";
-      if (screen.includes("Launch request:")) return "prepared";
-      if (
-        screen.includes("Launch preparation failed safely:")
-        || screen.includes("Controller operation failed safely:")
-      ) return "failed";
-      return false;
-    }, undefined, { timeout: 90_000 }).then((handle) => handle.jsonValue());
-    assert.equal(launchPreparationOutcome, "prepared");
-    const launchRequestId = /Launch request: (launch-request-[a-f0-9]{24})/.exec(
-      await page.locator(
-        "#project-controller-terminal-output .xterm-accessibility-tree",
-      ).textContent(),
-    )?.[1];
-    assert.match(launchRequestId, /^launch-request-[a-f0-9]{24}$/);
-    await page.waitForSelector(
-      "#workbench-person-action.is-pending[data-person-action='launch-approval']",
-      { timeout: 60_000 },
-    );
-    assert.match(await page.locator("#workbench-person-action").textContent(),
-      /Person required.*Review Launch request in Controller/s);
-    const liveChrome = {
-      selectedProjectCurrent: true,
-      focusedWorkContextCurrent: true,
-      providerAndAttachmentCurrent: true,
-      pendingPersonActionVisible: true,
-      pendingPersonActionSurvivedReconnect: false,
-      pendingPersonActionClearedAfterDecision: false,
-    };
-
-    const resizeSequenceBeforeReconnect = Number(await terminalPanel.getAttribute(
-      "data-terminal-resize-sequence",
-    ));
-    await page.close();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const reconnectPage = await context.newPage();
-    await reconnectPage.goto(`http://127.0.0.1:${launch.runtime.port}/`, {
-      waitUntil: "domcontentloaded",
-    });
-    await reconnectPage.waitForSelector(
-      "#project-focused-controller-session[data-reconnected='true'][data-terminal-attachment='read-write']",
-      { timeout: 60_000 },
-    );
-    assert.equal(await reconnectPage.locator("#workbench-selected-project").getAttribute(
-      "data-project-id",
-    ), selectedProjectId);
-    assert.equal(await reconnectPage.locator("#workbench-focused-context").getAttribute(
-      "data-work-context-id",
-    ), focusedContextId);
-    await reconnectPage.waitForSelector(
-      "#workbench-person-action.is-pending[data-person-action='launch-approval']",
-      { timeout: 60_000 },
-    );
-    liveChrome.pendingPersonActionSurvivedReconnect = true;
-    await sendTerminalLine(reconnectPage, `reject ${launchRequestId} 1`);
-    await reconnectPage.waitForFunction(() => {
-      const action = document.querySelector("#workbench-person-action");
-      return action?.getAttribute("data-person-action") === "none"
-        && !action.classList.contains("is-pending");
-    }, undefined, { timeout: 90_000 });
-    liveChrome.pendingPersonActionClearedAfterDecision = true;
-    await reconnectPage.waitForFunction((previous) => Number(document.querySelector(
-      "#project-focused-controller-session",
-    )?.getAttribute("data-terminal-resize-sequence")) > previous,
-    resizeSequenceBeforeReconnect);
-    const reconnectedPanel = reconnectPage.locator("#project-focused-controller-session");
-    const reconnectSequence = Number(await reconnectedPanel.getAttribute(
-      "data-terminal-resize-sequence",
-    ));
     const staleResizeOutcome = await reconnectPage.evaluate((sequence) =>
       new Promise((resolve, reject) => {
         const sent = window.__workbenchSentFrames.findLast((frame) => {
