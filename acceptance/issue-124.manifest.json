@@ -84,6 +84,7 @@
       [
         "node",
         "--test",
+        "--test-concurrency=1",
         "test/browser-protocol.test.mjs",
         "test/claude-controller.browser.test.mjs"
       ]

@@ -73,7 +73,7 @@
   "verification": {
     "commands": [
       ["node", "--test", "test/protocol.test.mjs", "test/launch-request.test.mjs", "test/harness-run.test.mjs", "test/controller-launch-session.test.mjs"],
-      ["node", "--test", "test/browser-protocol.test.mjs", "test/harness-run.browser.test.mjs"]
+      ["node", "--test", "--test-concurrency=1", "test/browser-protocol.test.mjs", "test/harness-run.browser.test.mjs"]
     ],
     "typedStartFailures": [
       "authorization_failed",
