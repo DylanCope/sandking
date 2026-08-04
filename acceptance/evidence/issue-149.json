@@ -10,14 +10,14 @@
     "normalizationDifference": "one terminal LF",
     "exactContentEquivalentAfterApprovedExportNormalization": true
   },
-  "generatedFromCommit": "9306f527674874b8ce84b908ce62ef22ab69dae6",
-  "recordedAt": "2026-08-04T04:16:50.672Z",
+  "generatedFromCommit": "45dfc18172b9dc4a4c274173764322305e2b9ec5",
+  "recordedAt": "2026-08-04T12:40:58.993Z",
   "scenario": "cockpit-workbench/operates-mobile-controller-terminal",
   "packagedPublicSeam": {
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "9cda25d2240bc29a98a945306f98eb9178e9eb6b9ca91ad314726b2e62cb4351"
+    "tarballSha256": "b6c747268be9192a17dfcedae33b81e924b8804cb5fe8c53d5ede47c8615407c"
   },
   "mobileBrowser": {
     "engine": "chromium",
@@ -79,52 +79,52 @@
   },
   "auditReferences": [
     {
-      "auditId": "audit-f8f793de25e86a364c7baf8a",
+      "auditId": "audit-f9844330e3562eda7034b091",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-b791361f891f81583a3cf675",
-        "providerSessionId": "conformance-provider-session-be1c1a27a768e3f394d818c1",
-        "streamId": "controller-terminal-c96d5ea61b23096a814114d3",
+        "sessionId": "controller-session-760d72c20ab9b48ba9029d11",
+        "providerSessionId": "conformance-provider-session-14f1ebc5194df32bebd37470",
+        "streamId": "controller-terminal-6d9967fdc6b70a3507601853",
         "sequence": 66,
         "byteLength": 13,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-f649246dd1fac5eb34beb742",
+      "auditId": "audit-c70688a48933012f8880a88c",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-b791361f891f81583a3cf675",
-        "providerSessionId": "conformance-provider-session-be1c1a27a768e3f394d818c1",
-        "streamId": "controller-terminal-c96d5ea61b23096a814114d3",
+        "sessionId": "controller-session-760d72c20ab9b48ba9029d11",
+        "providerSessionId": "conformance-provider-session-14f1ebc5194df32bebd37470",
+        "streamId": "controller-terminal-6d9967fdc6b70a3507601853",
         "sequence": 67,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-5518f4d34b6e89ff204f6735",
+      "auditId": "audit-d434bcbf74cb0034bc369167",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-b791361f891f81583a3cf675",
-        "providerSessionId": "conformance-provider-session-be1c1a27a768e3f394d818c1",
-        "streamId": "controller-terminal-c96d5ea61b23096a814114d3",
+        "sessionId": "controller-session-760d72c20ab9b48ba9029d11",
+        "providerSessionId": "conformance-provider-session-14f1ebc5194df32bebd37470",
+        "streamId": "controller-terminal-6d9967fdc6b70a3507601853",
         "sequence": 68,
         "byteLength": 13,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-d184d2c1998d5bf5e0769796",
+      "auditId": "audit-6a360863987f80e656d16092",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-b791361f891f81583a3cf675",
-        "providerSessionId": "conformance-provider-session-be1c1a27a768e3f394d818c1",
-        "streamId": "controller-terminal-c96d5ea61b23096a814114d3",
+        "sessionId": "controller-session-760d72c20ab9b48ba9029d11",
+        "providerSessionId": "conformance-provider-session-14f1ebc5194df32bebd37470",
+        "streamId": "controller-terminal-6d9967fdc6b70a3507601853",
         "sequence": 69,
         "byteLength": 1,
         "contentRetained": false

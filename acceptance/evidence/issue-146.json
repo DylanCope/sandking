@@ -15,14 +15,14 @@
     "variant": "A — Workbench",
     "immutableCommit": "2467a8d"
   },
-  "generatedFromCommit": "a53f2fc945ed8d8c5f199941e7d5aebfa90790b7",
-  "recordedAt": "2026-08-02T23:03:27.128Z",
+  "generatedFromCommit": "45dfc18172b9dc4a4c274173764322305e2b9ec5",
+  "recordedAt": "2026-08-04T12:38:12.379Z",
   "scenario": "cockpit-workbench/operates-interactive-controller-terminal",
   "packagedPublicSeam": {
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "8a171310bda5c632711b46bfd587bf52acdc730ad899a5e8fbe29f96e440aa79"
+    "tarballSha256": "b6c747268be9192a17dfcedae33b81e924b8804cb5fe8c53d5ede47c8615407c"
   },
   "layout": {
     "referenceViewport": {
@@ -89,13 +89,13 @@
     },
     "resize": {
       "initial": {
-        "columns": 68,
-        "rows": 33,
+        "columns": 105,
+        "rows": 35,
         "sequence": 0
       },
       "containerDriven": {
-        "columns": 52,
-        "rows": 33,
+        "columns": 81,
+        "rows": 35,
         "sequence": 1
       },
       "providerObservedAcceptedDimensions": true,
@@ -122,58 +122,58 @@
   },
   "auditReferences": [
     {
-      "auditId": "audit-ad1d37eca7af412a562ce059",
+      "auditId": "audit-2f0fb7e06e58ce379de244c8",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-0f1d7601fda49aff6c33833d",
-        "providerSessionId": "conformance-provider-session-db7a04bb7ca0e72fab53af14",
-        "streamId": "controller-terminal-e4675fceaceecfeedd4d2372",
+        "sessionId": "controller-session-09b2b28e31f5e7b0ece082de",
+        "providerSessionId": "conformance-provider-session-da7e40ccfd5c0a82cf3b5f27",
+        "streamId": "controller-terminal-f5b21a0f824bf3b8f99034f2",
         "sequence": 132,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-a9315d0f6c6d537effde503f",
+      "auditId": "audit-8bdf861a70a91599298a2392",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-0f1d7601fda49aff6c33833d",
-        "providerSessionId": "conformance-provider-session-db7a04bb7ca0e72fab53af14",
-        "streamId": "controller-terminal-e4675fceaceecfeedd4d2372",
+        "sessionId": "controller-session-09b2b28e31f5e7b0ece082de",
+        "providerSessionId": "conformance-provider-session-da7e40ccfd5c0a82cf3b5f27",
+        "streamId": "controller-terminal-f5b21a0f824bf3b8f99034f2",
         "sequence": 133,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-61dcdade494cbd0f460a3ce6",
+      "auditId": "audit-0dee9f3bbc24536368248392",
       "action": "controller.terminal.resize",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-0f1d7601fda49aff6c33833d",
-        "providerSessionId": "conformance-provider-session-db7a04bb7ca0e72fab53af14",
-        "streamId": "controller-terminal-e4675fceaceecfeedd4d2372",
-        "attachmentId": "terminal-attachment-2304d4c63b9b009971ef6fd5",
+        "sessionId": "controller-session-09b2b28e31f5e7b0ece082de",
+        "providerSessionId": "conformance-provider-session-da7e40ccfd5c0a82cf3b5f27",
+        "streamId": "controller-terminal-f5b21a0f824bf3b8f99034f2",
+        "attachmentId": "terminal-attachment-abcf87f4f49d7385a3960e0c",
         "sequence": 2,
-        "columns": 53,
-        "rows": 20,
+        "columns": 82,
+        "rows": 18,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-de9d41428fa32cd86280f5cb",
+      "auditId": "audit-01e37b4fc1ff63ebb506522b",
       "action": "controller.terminal.resize",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-0f1d7601fda49aff6c33833d",
-        "providerSessionId": "conformance-provider-session-db7a04bb7ca0e72fab53af14",
-        "streamId": "controller-terminal-e4675fceaceecfeedd4d2372",
-        "attachmentId": "terminal-attachment-2304d4c63b9b009971ef6fd5",
+        "sessionId": "controller-session-09b2b28e31f5e7b0ece082de",
+        "providerSessionId": "conformance-provider-session-da7e40ccfd5c0a82cf3b5f27",
+        "streamId": "controller-terminal-f5b21a0f824bf3b8f99034f2",
+        "attachmentId": "terminal-attachment-abcf87f4f49d7385a3960e0c",
         "sequence": 3,
-        "columns": 68,
-        "rows": 33,
+        "columns": 105,
+        "rows": 35,
         "contentRetained": false
       }
     }
