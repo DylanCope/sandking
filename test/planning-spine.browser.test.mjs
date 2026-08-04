@@ -46,7 +46,7 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
 
     try {
       const context = await browser.newContext();

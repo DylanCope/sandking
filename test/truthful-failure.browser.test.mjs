@@ -82,7 +82,7 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -757,7 +757,7 @@ test("Host loss during an active Cockpit mutation returns one typed idempotent f
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -905,7 +905,7 @@ test("accepted Cockpit Project preparation replays its public outcome after Host
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -1071,7 +1071,7 @@ test("Host loss after accepted Project registration preserves its identity and e
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -1302,7 +1302,7 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();

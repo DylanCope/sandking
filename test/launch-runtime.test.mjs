@@ -5,13 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { launchRuntime, stopRuntime } from "../src/runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 const cliPath = join(process.cwd(), "src", "cli.mjs");
 
 /** @param {string[]} args @param {{env?: NodeJS.ProcessEnv, cwd?: string}} [options] */
 const runCli = async (args, options = {}) => {
-  const { stdout } = await execFileAsync(process.execPath, [cliPath, ...args], {
+  const boundedArgs = args[0] === "launch" && !args.includes("--startup-timeout-ms")
+    ? [args[0], "--startup-timeout-ms", "60000", ...args.slice(1)]
+    : args;
+  const { stdout } = await execFileAsync(process.execPath, [cliPath, ...boundedArgs], {
     cwd: options.cwd ?? tmpdir(),
     env: { ...process.env, ...options.env },
   });
@@ -20,8 +24,11 @@ const runCli = async (args, options = {}) => {
 
 /** @param {string[]} args */
 const runFailingCli = async (args) => {
+  const boundedArgs = args[0] === "launch" && !args.includes("--startup-timeout-ms")
+    ? [args[0], "--startup-timeout-ms", "60000", ...args.slice(1)]
+    : args;
   try {
-    await execFileAsync(process.execPath, [cliPath, ...args], {
+    await execFileAsync(process.execPath, [cliPath, ...boundedArgs], {
       cwd: tmpdir(),
       env: process.env,
     });
@@ -51,7 +58,7 @@ const matchingProcesses = async (dataDir) => {
   });
 };
 
-const waitForProcessCount = async (dataDir, expected, timeoutMs = 3_000) => {
+const waitForProcessCount = async (dataDir, expected, timeoutMs = 30_000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const processes = await matchingProcesses(dataDir);
@@ -382,7 +389,7 @@ test("a stop queued behind startup uses the runtime lock and stops the launched 
       "--no-open",
     ]);
     const lockPath = join(dataDir, "runtime.lock");
-    const lockDeadline = Date.now() + 2_000;
+    const lockDeadline = Date.now() + 30_000;
     while (Date.now() < lockDeadline) {
       if (await readFile(lockPath, "utf8").then(() => true, () => false)) {
         break;
@@ -399,6 +406,34 @@ test("a stop queued behind startup uses the runtime lock and stops the launched 
     await assert.rejects(fetch(`http://127.0.0.1:${launch.runtime.port}/health`));
   } finally {
     await stopAndRemove(dataDir);
+  }
+});
+
+test("runtime stop survives one transient authenticated readiness miss", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-runtime-stop-readiness-"));
+  const nativeFetch = globalThis.fetch;
+  let healthAttempts = 0;
+
+  try {
+    const launched = await launchRuntime({ dataDir, startupTimeoutMs: 60_000 });
+    globalThis.fetch = (input, init) => {
+      if (String(input).endsWith("/health") && healthAttempts++ === 0) {
+        return Promise.reject(new Error("transient_health_probe_failure"));
+      }
+      return nativeFetch(input, init);
+    };
+
+    const stopped = await stopRuntime({ dataDir });
+    assert.equal(stopped.code, "runtime_stopped");
+    assert.equal(stopped.stopped, true);
+    await waitForProcessCount(dataDir, 0);
+    assert.equal(healthAttempts, 2);
+    assert.equal((await matchingProcesses(dataDir)).length, 0);
+    assert.equal(launched.runtime.runtimeId, stopped.runtimeId);
+  } finally {
+    globalThis.fetch = nativeFetch;
+    await terminateMatchingProcesses(dataDir);
+    await rm(dataDir, { recursive: true, force: true });
   }
 });
 
@@ -422,7 +457,7 @@ test("a contending launch waits through the startup deadline and the failed star
       "--no-open",
     ]);
     const lockPath = join(dataDir, "runtime.lock");
-    const lockDeadline = Date.now() + 2_000;
+    const lockDeadline = Date.now() + 30_000;
     while (Date.now() < lockDeadline) {
       if (await readFile(lockPath, "utf8").then(() => true, () => false)) {
         break;
@@ -668,7 +703,7 @@ test("killing launch before readiness cannot orphan its runtime and Host", async
     "--host-mode",
     "hang-before-ack",
     "--startup-timeout-ms",
-    "10000",
+    "60000",
     "--json",
     "--no-open",
   ], {

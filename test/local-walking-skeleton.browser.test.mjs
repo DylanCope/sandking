@@ -126,7 +126,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
     const launch = JSON.parse(stdout);
     const nonLoopbackProbe = await probeNonLoopbackListener(launch.runtime.port);
     assert.deepEqual(nonLoopbackProbe.acceptedAddresses, []);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     const browserVersion = browser.version();
     hostileOrigin = await startHostileOrigin(launch.runtime.port);
 

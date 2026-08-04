@@ -72,7 +72,7 @@ test("the production Workbench terminal is usable at a touch phone viewport", as
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
     runtimePid = launch.runtime.pid;
-    browser = await launchBrowser();
+    browser = await launchBrowser({ niceAdjustment: 10 });
     const { defaultBrowserType: _defaultBrowserType, ...phone } = devices["iPhone 13"];
     const context = await browser.newContext({
       ...phone,

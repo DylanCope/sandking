@@ -662,6 +662,22 @@ const probeRuntime = async (state) => {
   }
 };
 
+/**
+ * A responsive authenticated runtime can briefly miss one health request while
+ * it is servicing its single-threaded Host or provider queues. Lifecycle
+ * mutations retry that observation once before treating the recorded PID as an
+ * untrusted process. The individual probe deadline and startup deadline remain
+ * unchanged.
+ * @param {z.infer<typeof runtimeStateSchema>} state
+ */
+const probeRuntimeForLifecycle = async (state) => {
+  if (await probeRuntime(state)) {
+    return true;
+  }
+  await delay(25);
+  return probeRuntime(state);
+};
+
 /** @param {number} pid @param {NodeJS.Signals} signal */
 const signalProcessTree = (pid, signal) => {
   if (!pidIsRunning(pid)) {
@@ -1029,7 +1045,7 @@ export const launchRuntime = async (options = {}) => {
       ) {
         await rejectLiveRuntime("runtime_incompatible");
       }
-      if (!(await probeRuntime(existingState.data))) {
+      if (!(await probeRuntimeForLifecycle(existingState.data))) {
         await rejectLiveRuntime("runtime_not_ready");
       }
       runtimeState = existingState.data;
@@ -1308,7 +1324,7 @@ export const stopRuntime = async (options = {}) => {
       await writeStopOutcomes(resolvedDataDir, outcomes);
       return response;
     }
-    if (!(await probeRuntime(parsed.data))) {
+    if (!(await probeRuntimeForLifecycle(parsed.data))) {
       const auditId = await recordLifecycleAudit(
         resolvedDataDir,
         "runtime.stop",

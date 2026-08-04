@@ -46,7 +46,7 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
     const runtimeBefore = JSON.parse(
       await readFile(join(dataDir, "runtime-state.json"), "utf8"),
     );
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();

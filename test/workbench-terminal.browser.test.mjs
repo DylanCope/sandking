@@ -48,7 +48,7 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
     runtimePid = launch.runtime.pid;
-    browser = await launchBrowser();
+    browser = await launchBrowser({ niceAdjustment: 10 });
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     await context.addInitScript(() => {
       const NativeWebSocket = window.WebSocket;

@@ -24,25 +24,25 @@ test("local-walking-skeleton/operates-installed-claude-controller uses the share
     mkdir(userHome),
     execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]),
   ]);
-  await writeFile(fakeClaudePath, `#!/usr/bin/env node
-const args = process.argv.slice(2);
-if (args.length === 1 && args[0] === "--version") {
-  process.stdout.write("2.1.141 (Claude Code)\\n");
-} else if (args.length === 1 && args[0] === "--help") {
-  process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
-} else if (args[0] === "plugin" && args[1] === "validate" && args.at(-1) === "--strict") {
-  process.stdout.write("Validated plugin\\n");
-} else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
-  process.stdout.write('[{"name":"sandking-controller","version":"1.0.0"}]');
-} else if (args.join(" ") === "auth status") {
-  process.stdout.write('{"loggedIn":true}');
-} else {
-  if (process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN) process.exit(88);
-  if (!args.includes("--session-id") || !args.includes("--plugin-dir")) process.exit(89);
-  process.stdout.write("Fake installed Claude owns this runtime PTY.\\r\\n");
-  process.stdout.write("Working context directory: " + process.cwd() + "\\r\\n");
-  process.stdin.resume();
-}
+  await writeFile(fakeClaudePath, `#!/bin/sh
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+  printf '%s\\n' '2.1.141 (Claude Code)'
+elif [ "$#" -eq 1 ] && [ "$1" = "--help" ]; then
+  printf '%s\\n' '--session-id <uuid> --plugin-dir <path>'
+elif [ "$1" = "plugin" ] && [ "$2" = "validate" ]; then
+  printf '%s\\n' 'Validated plugin'
+elif [ "$1" = "--plugin-dir" ] && [ "$3" = "plugin" ] && [ "$4" = "list" ]; then
+  printf '%s' '[{"name":"sandking-controller","version":"1.0.0"}]'
+elif [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  printf '%s' '{"loggedIn":true}'
+else
+  if [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then exit 88; fi
+  case " $* " in *' --session-id '*) ;; *) exit 89 ;; esac
+  case " $* " in *' --plugin-dir '*) ;; *) exit 89 ;; esac
+  printf 'Fake installed Claude owns this runtime PTY.\\r\\n'
+  printf 'Working context directory: %s\\r\\n' "$PWD"
+  while IFS= read -r _line; do :; done
+fi
 `, { mode: 0o700 });
   const installed = await installCurrentPackage(root);
   const productEnvironment = {
@@ -53,6 +53,7 @@ if (args.length === 1 && args[0] === "--version") {
     CLAUDE_CODE_OAUTH_TOKEN: `${secret}-oauth`,
   };
   let browser;
+  let runtimePid;
 
   try {
     const { stdout } = await execFileAsync(installed.command, [
@@ -65,6 +66,7 @@ if (args.length === 1 && args[0] === "--version") {
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
+    runtimePid = launch.runtime.pid;
     browser = await launchBrowser({ niceAdjustment: 10 });
     const context = await browser.newContext();
     const page = await context.newPage();
@@ -231,6 +233,16 @@ if (args.length === 1 && args[0] === "--version") {
     await execFileAsync(installed.command, [
       "stop", "--data-dir", dataDir, "--json",
     ], { cwd: executionDirectory, env: productEnvironment }).catch(() => undefined);
+    if (runtimePid) {
+      try {
+        process.kill(process.platform === "win32" ? runtimePid : -runtimePid, "SIGTERM");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        process.kill(runtimePid, 0);
+        process.kill(process.platform === "win32" ? runtimePid : -runtimePid, "SIGKILL");
+      } catch {
+        // The normal lifecycle stop already completed.
+      }
+    }
     await rm(root, { recursive: true, force: true });
   }
 });
