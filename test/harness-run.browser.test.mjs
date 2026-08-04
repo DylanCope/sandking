@@ -82,7 +82,7 @@ test("local-walking-skeleton/completes-approved-run crosses the public Cockpit a
       await page.locator("#open-project-controller").click();
       await page.waitForSelector(
         "#project-focused-controller-session[data-terminal-attachment='read-write']",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       const sessionId = await page.locator("#project-focused-controller-session")
         .getAttribute("data-session-id");

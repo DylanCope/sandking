@@ -7,6 +7,7 @@ export const ISSUE_149_DEMONSTRATED_PATHS = Object.freeze([
   "package.json",
   "src/cockpit.css",
   "src/cockpit.js",
+  "src/claude-provider-adapter.mjs",
   "src/conformance-provider-adapter.mjs",
   "src/controller-sessions.mjs",
   "src/launch-requests.mjs",

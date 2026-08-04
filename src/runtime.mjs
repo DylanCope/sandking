@@ -647,7 +647,7 @@ const probeRuntime = async (state) => {
         host: `127.0.0.1:${state.port}`,
         "x-sandking-readiness": state.readinessToken,
       },
-      signal: AbortSignal.timeout(500),
+      signal: AbortSignal.timeout(5_000),
     });
     if (!response.ok) {
       return false;

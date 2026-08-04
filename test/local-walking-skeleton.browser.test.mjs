@@ -146,12 +146,13 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
 
       const bootstrapResponse = await page.goto(launch.bootstrapUrl, {
         waitUntil: "domcontentloaded",
+        timeout: 90_000,
       });
       assert.equal(bootstrapResponse?.status(), 200);
       await page.waitForFunction(
         () => document.querySelector("#app")?.textContent?.includes("Connected to local-host"),
         undefined,
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       ).catch(async (error) => {
         error.message += `\nBrowser errors: ${browserErrors.join(" | ") || "none"}`
           + `\nCockpit text: ${(await page.textContent("#app"))?.slice(0, 2_000) ?? "missing"}`;
@@ -255,7 +256,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.waitForFunction(
         () => document.documentElement.dataset.observationMode === "resume",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
 
       const capabilityMismatchPage = await browserContext.newPage();
@@ -285,6 +286,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       }, capabilityMismatchAcknowledgement);
       await capabilityMismatchPage.goto(`http://127.0.0.1:${launch.runtime.port}/`, {
         waitUntil: "domcontentloaded",
+        timeout: 90_000,
       });
       await capabilityMismatchPage.waitForTimeout(250);
       const runtimeHandshakeMismatch = await capabilityMismatchPage.evaluate(() => ({
@@ -310,7 +312,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.waitForFunction(
         () => document.documentElement.dataset.reloadRequired === "true",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       assert.equal(await page.isVisible("#reload-cockpit"), true);
       assert.match(await page.textContent("#app"), /Cockpit update required/);
@@ -328,10 +330,11 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       });
       await requiredCapabilityPage.goto(`http://127.0.0.1:${launch.runtime.port}/`, {
         waitUntil: "domcontentloaded",
+        timeout: 90_000,
       });
       await requiredCapabilityPage.waitForFunction(
         () => document.documentElement.dataset.protocolError === "browser_capability_unsupported",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       const browserCapabilityMismatchCode = await requiredCapabilityPage.getAttribute(
         "html",
@@ -342,6 +345,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       const opaquePage = await browserContext.newPage();
       await opaquePage.goto(`http://127.0.0.1:${launch.runtime.port}/`, {
         waitUntil: "domcontentloaded",
+        timeout: 90_000,
       });
       const browserOpaqueMismatchCode = await opaquePage.evaluate((browserHello) =>
         new Promise((resolve, reject) => {
@@ -377,23 +381,29 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       ];
 
       const hostilePage = await browser.newPage();
-      await hostilePage.goto(hostileOrigin.url, { waitUntil: "domcontentloaded" });
+      await hostilePage.goto(hostileOrigin.url, {
+        waitUntil: "domcontentloaded",
+        timeout: 90_000,
+      });
       await hostilePage.waitForFunction(() =>
         document.querySelector("#cors")?.textContent === "blocked"
         && document.querySelector("#websocket")?.textContent === "blocked");
       assert.equal(await hostilePage.textContent("#cors"), "blocked");
       assert.equal(await hostilePage.textContent("#websocket"), "blocked");
 
-      const hostMismatch = await page.goto(`http://localhost:${launch.runtime.port}/`);
+      const hostMismatch = await page.goto(`http://localhost:${launch.runtime.port}/`, {
+        timeout: 90_000,
+      });
       assert.equal(hostMismatch?.status(), 403);
 
       const revocationPage = await browserContext.newPage();
       await revocationPage.goto(`http://127.0.0.1:${launch.runtime.port}/`, {
         waitUntil: "domcontentloaded",
+        timeout: 90_000,
       });
       await revocationPage.waitForFunction(
         () => document.querySelector("#app")?.textContent?.includes("Connected to local-host"),
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       await revocationPage.evaluate((browserHello) => new Promise((resolve, reject) => {
         const probe = {

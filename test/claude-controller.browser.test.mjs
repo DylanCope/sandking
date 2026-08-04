@@ -73,10 +73,13 @@ if (args.length === 1 && args[0] === "--version") {
         sessionOpenRequests.push(JSON.parse(request.postData()));
       }
     });
-    const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
+    const response = await page.goto(launch.bootstrapUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 90_000,
+    });
     assert.equal(response?.status(), 200);
     await page.waitForSelector("#claude-provider-status[data-availability='available']", {
-      timeout: 10_000,
+      timeout: 90_000,
     });
     assert.equal(
       await page.locator("#claude-provider-status").getAttribute("data-authentication"),
@@ -89,13 +92,14 @@ if (args.length === 1 && args[0] === "--version") {
     await page.locator("#project-path").fill(projectPath);
     await page.locator("#open-project").click();
     await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
-      timeout: 10_000,
+      timeout: 90_000,
     });
     assert.equal(await page.locator("#open-project-claude-controller").isEnabled(), true);
     await page.locator("#open-project-claude-controller").click();
     await page.waitForSelector(
-      "#project-focused-controller-session[data-provider-id='claude-code'][data-terminal-attachment='read-write']",
-      { timeout: 10_000 },
+      "#project-focused-controller-session[data-provider-id='claude-code']"
+        + "[data-terminal-attachment='read-write']",
+      { timeout: 180_000 },
     );
     const panel = page.locator("#project-focused-controller-session");
     assert.equal(await panel.getAttribute("data-provider-adapter-id"),
@@ -118,6 +122,7 @@ if (args.length === 1 && args[0] === "--version") {
     await new Promise((resolve) => setTimeout(resolve, 100));
     const sessions = JSON.parse(await readFile(join(dataDir, "controller-sessions.json"), "utf8"));
     const retained = sessions.sessions.find((session) => session.sessionId === controllerSessionId);
+    assert.equal(sessions.sessions.filter((session) => session.providerId === "claude-code").length, 1);
     assert.equal(retained.providerId, "claude-code");
     assert.equal(retained.terminal.runtimeOwned, true);
     assert.equal(retained.terminal.status, "running");

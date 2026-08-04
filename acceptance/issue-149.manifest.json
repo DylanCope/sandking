@@ -116,14 +116,41 @@
       [
         "node",
         "--test",
-        "--test-concurrency=1",
-        "test/project-preparation.browser.test.mjs",
-        "test/planning-spine.browser.test.mjs",
-        "test/launch-request.browser.test.mjs",
-        "test/harness-run.browser.test.mjs",
-        "test/reconnect-canonical.browser.test.mjs",
-        "test/truthful-failure.browser.test.mjs",
-        "test/claude-controller.browser.test.mjs",
+        "test/project-preparation.browser.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/planning-spine.browser.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/launch-request.browser.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/harness-run.browser.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/reconnect-canonical.browser.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/truthful-failure.browser.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "test/claude-controller.browser.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
         "test/local-walking-skeleton.browser.test.mjs"
       ]
     ]

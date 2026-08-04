@@ -186,7 +186,7 @@ const invokeClaudeMetadataCommand = async (executable, args) => execFileAsync(
   {
     encoding: "utf8",
     env: createClaudeDestinationEnvironment(),
-    timeout: 3_000,
+    timeout: 30_000,
     maxBuffer: 32_768,
   },
 );

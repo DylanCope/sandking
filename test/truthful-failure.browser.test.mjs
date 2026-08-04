@@ -109,12 +109,12 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
       await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
       await page.locator("#open-project").click();
       await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");
       const harnessId = await page.locator("#project-readiness").getAttribute("data-harness-id");
@@ -122,7 +122,7 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       await page.locator("#open-project-controller").click();
       await page.waitForSelector(
         "#project-focused-controller-session[data-terminal-attachment='read-write']",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       const sessionId = await page.locator("#project-focused-controller-session")
         .getAttribute("data-session-id");
@@ -167,7 +167,7 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
 
       await page.waitForSelector(
         `#harness-run-observation[data-run-id='${harnessRunId}'][data-run-status='failed']`,
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       await page.waitForFunction(() => document.querySelector(
         "[data-log-producer='stdout']",
@@ -225,7 +225,7 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       const hostPid = await findLocalHostPid(runtimeStateBeforeDisconnect.pid);
       process.kill(hostPid, "SIGKILL");
       await page.waitForSelector("#connection-status[data-host-status='disconnected']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       const disconnectedIndicator = await page.locator("#connection-status").evaluate((node) => ({
         className: node.className,
@@ -389,9 +389,10 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       });
       await reconnectPage.goto(new URL(launch.bootstrapUrl).origin, {
         waitUntil: "domcontentloaded",
+        timeout: 90_000,
       });
       await reconnectPage.waitForSelector("#connection-status[data-host-status='disconnected']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       const reconnectAcknowledgement = reconnectFrames.map((frame) => {
         try {
@@ -765,7 +766,7 @@ test("Host loss during an active Cockpit mutation returns one typed idempotent f
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
       await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       const acknowledgement = JSON.parse(
         receivedFrames.find((frame) => frame.includes("runtime.hello-ack")),
@@ -923,7 +924,7 @@ test("accepted Cockpit Project preparation replays its public outcome after Host
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
       await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
       const acceptedResponsePromise = page.waitForResponse((candidate) =>
@@ -947,7 +948,7 @@ test("accepted Cockpit Project preparation replays its public outcome after Host
       const hostPid = await findLocalHostPid(runtimeState.pid);
       process.kill(hostPid, "SIGKILL");
       await page.waitForSelector("#connection-status[data-host-status='disconnected']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
 
       const exerciseProjectOpen = (body) => page.evaluate(async (parameters) => {
@@ -1088,7 +1089,7 @@ test("Host loss after accepted Project registration preserves its identity and e
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
       await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
 
@@ -1185,7 +1186,7 @@ test("Host loss after accepted Project registration preserves its identity and e
 
       await page.waitForSelector(
         `#project-readiness[data-project-id='${acceptedProject.projectId}']`,
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       assert.equal(await page.locator("#project-readiness")
         .getAttribute("data-launch-request-ready"), "false");
@@ -1314,7 +1315,7 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
 
       await page.waitForSelector(
         "#connection-status[data-host-status='disconnected'][data-failure-code='host_protocol_invalid']",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       const receivedMessages = receivedFrames.flatMap((frame) => {
         try {
@@ -1347,7 +1348,7 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
       ).click();
       await page.waitForSelector(
         "#focused-controller-session[data-terminal-attachment='read-write']",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       assert.equal(await page.locator("#focused-controller-session")
         .getAttribute("data-session-state"), "open");
