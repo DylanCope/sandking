@@ -42,6 +42,18 @@ const findLocalHostPid = async (runtimePid) => {
   throw new Error("local_host_process_not_found");
 };
 
+const waitForStoppedProcess = async (pid) => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const { stdout } = await execFileAsync("ps", ["-o", "stat=", "-p", String(pid)]);
+    if (stdout.trim().startsWith("T")) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("local_host_process_not_stopped");
+};
+
 test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-truthful-failure-browser-"));
   const dataDir = join(root, "host-state");
@@ -1065,6 +1077,7 @@ test("Host loss after accepted Project registration preserves its identity and e
       "launch",
       "--data-dir", dataDir,
       "--startup-timeout-ms", "60000",
+      "--host-mode", "pause-after-project-registration",
       "--idempotency-key", "partial-project-host-loss-runtime-start",
       "--expected-revision", "0",
       "--json",
@@ -1130,7 +1143,7 @@ test("Host loss after accepted Project registration preserves its identity and e
 
       const runtimeState = await readJson(join(dataDir, "runtime-state.json"));
       pausedHostPid = await findLocalHostPid(runtimeState.pid);
-      process.kill(pausedHostPid, "SIGSTOP");
+      await waitForStoppedProcess(pausedHostPid);
       const duplicateRequestStarted = page.waitForRequest((request) =>
         request.method() === "POST" && request.url().endsWith("/projects/open"));
       const duplicateProjectResponse = page.evaluate(async (parameters) => {
