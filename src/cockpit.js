@@ -106,6 +106,9 @@ const element = (name, attributes = {}, text = "") => {
 const scheduleTerminalFit = (terminal) => {
   clearTimeout(terminal.fitTimer);
   terminal.fitTimer = setTimeout(() => {
+    if (terminal.disposed || !terminal.output.isConnected) {
+      return;
+    }
     terminal.fitAddon.fit();
     const columns = terminal.emulator.cols;
     const rows = terminal.emulator.rows;
@@ -138,6 +141,34 @@ const scheduleTerminalFit = (terminal) => {
       },
     }));
   }, 80);
+};
+
+const disposeTerminalSurface = (terminal) => {
+  if (terminal.disposed) {
+    return;
+  }
+  terminal.disposed = true;
+  clearTimeout(terminal.fitTimer);
+  terminal.resizeObserver?.disconnect();
+  if (terminal.visualViewportResizeHandler) {
+    globalThis.visualViewport?.removeEventListener(
+      "resize",
+      terminal.visualViewportResizeHandler,
+    );
+  }
+  for (const disposable of terminal.disposables) {
+    disposable.dispose();
+  }
+  terminal.emulator.dispose();
+  if (terminalStreams.get(terminal.streamId) === terminal) {
+    terminalStreams.delete(terminal.streamId);
+  }
+};
+
+const disposeAllTerminalSurfaces = () => {
+  for (const terminal of [...terminalStreams.values()]) {
+    disposeTerminalSurface(terminal);
+  }
 };
 
 const sendTerminalData = (terminal, data) => {
@@ -187,6 +218,11 @@ const attachTerminalSurface = ({
   requestedMode,
   description,
 }) => {
+  for (const terminal of [...terminalStreams.values()]) {
+    if (terminal.panel === panel || terminal.streamId === focused.terminal.streamId) {
+      disposeTerminalSurface(terminal);
+    }
+  }
   const terminalOutput = element("div", {
     id: outputId,
     class: "controller-terminal__output",
@@ -279,6 +315,9 @@ const attachTerminalSurface = ({
     fitTimer: undefined,
     lastRequestedDimensions: null,
     lastEmulatorData: null,
+    disposables: [],
+    visualViewportResizeHandler: undefined,
+    disposed: false,
   };
   const mobileKeys = element("div", {
     class: "controller-terminal__mobile-keys",
@@ -314,12 +353,18 @@ const attachTerminalSurface = ({
   terminalStreams.set(focused.terminal.streamId, terminalState);
   queueMicrotask(() => {
     const openTerminal = async () => {
+      if (terminalState.disposed) {
+        return;
+      }
       if (!terminalOutput.isConnected) {
         requireReload("runtime_terminal_container_unavailable");
         return;
       }
       await document.fonts?.load?.('13px "Fira Code"');
       await document.fonts?.ready;
+      if (terminalState.disposed || !terminalOutput.isConnected) {
+        return;
+      }
       emulator.open(terminalOutput);
       const textarea = emulator.textarea;
       textarea?.setAttribute("inputmode", "text");
@@ -334,8 +379,10 @@ const attachTerminalSurface = ({
         terminalOutput.dataset.terminalScrollLine = String(position);
         terminalOutput.dataset.terminalScrollbackLines = String(emulator.buffer.active.baseY);
       };
-      emulator.onScroll(updateTerminalScrollState);
-      emulator.onWriteParsed(() => updateTerminalScrollState());
+      terminalState.disposables.push(
+        emulator.onScroll(updateTerminalScrollState),
+        emulator.onWriteParsed(() => updateTerminalScrollState()),
+      );
       updateTerminalScrollState();
       let terminalTouch;
       terminalOutput.addEventListener("touchstart", (event) => {
@@ -377,10 +424,10 @@ const attachTerminalSurface = ({
       };
       terminalOutput.addEventListener("touchend", endTerminalTouch);
       terminalOutput.addEventListener("touchcancel", endTerminalTouch);
-      emulator.onData((data) => {
+      terminalState.disposables.push(emulator.onData((data) => {
         terminalState.lastEmulatorData = { data, observedAt: performance.now() };
         sendTerminalData(terminalState, data);
-      });
+      }));
       textarea?.addEventListener("beforeinput", (event) => {
         if (
           navigator.maxTouchPoints < 1
@@ -402,9 +449,11 @@ const attachTerminalSurface = ({
       terminalState.resizeObserver = new ResizeObserver(() =>
         scheduleTerminalFit(terminalState));
       terminalState.resizeObserver.observe(terminalOutput);
+      terminalState.visualViewportResizeHandler = () =>
+        scheduleTerminalFit(terminalState);
       globalThis.visualViewport?.addEventListener(
         "resize",
-        () => scheduleTerminalFit(terminalState),
+        terminalState.visualViewportResizeHandler,
       );
       socket.send(JSON.stringify({
         channel: "control",
@@ -1456,6 +1505,7 @@ const renderWorkbench = (message) => {
 };
 
 const requireReload = (code) => {
+  disposeAllTerminalSurfaces();
   document.documentElement.dataset.reloadRequired = "true";
   document.documentElement.dataset.protocolError = code;
   app.textContent = "Cockpit update required. Reload to reconnect safely.";
@@ -1783,6 +1833,7 @@ socket.addEventListener("message", (event) => {
 
 socket.addEventListener("close", (event) => {
   clearTimeout(harnessObservationTimer);
+  disposeAllTerminalSurfaces();
   if (!document.documentElement.dataset.protocolError && !event.wasClean) {
     app.textContent = "Controller runtime connection is stale. Retry by reloading the Cockpit.";
   }

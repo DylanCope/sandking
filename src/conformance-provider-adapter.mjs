@@ -145,12 +145,11 @@ const openControl = async (endpoint, readyMessage) => new Promise((resolve, reje
       request: (operation, operationInput) => new Promise((resolveOperation, rejectOperation) => {
         const operationId = `provider-operation-${operationSequence}`;
         operationSequence += 1;
-        const operationTimeoutMs = operation === "harness-run.start" ? 3_000 : 60_000;
         const timeout = setTimeout(() => {
           pending.delete(operationId);
           timedOutOperationIds.add(operationId);
           rejectOperation(new Error("provider_operation_timeout"));
-        }, operationTimeoutMs);
+        }, 3_000);
         pending.set(operationId, {
           /** @param {unknown} value */
           resolve: (value) => {

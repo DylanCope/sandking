@@ -249,7 +249,7 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
       child.kill("SIGKILL");
       throw new Error("harness_adapter_protocol_invalid");
     }
-    const timeout = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 3_000);
     try {
       const [message, exit] = await Promise.all([
         readHarnessAdapterFrame(adapterChannel),

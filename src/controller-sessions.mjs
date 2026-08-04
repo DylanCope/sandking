@@ -345,7 +345,7 @@ const invokeAdapter = async (
   const timeout = setTimeout(() => {
     child.kill("SIGKILL");
     finish(new ControllerSessionError("provider_adapter_timeout"));
-  }, 30_000);
+  }, 8_000);
   child.stdout.on("data", (/** @type {Buffer} */ chunk) => {
     size += chunk.byteLength;
     if (size <= 32_768) {
@@ -640,7 +640,7 @@ const openProviderControl = async (context) => {
     if (readySettled || timeout) return;
     timeout = setTimeout(() => {
       finishReady(new ControllerSessionError("provider_session_ready_timeout"));
-    }, 30_000);
+    }, 3_000);
   };
   const close = async () => {
     if (closed) {

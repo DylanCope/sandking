@@ -36,6 +36,7 @@ const MAX_RETAINED_RUN_EVENTS = 1_024;
 // Creation and readiness consume two lifecycle slots. Always reserve the final
 // slot for the truthful terminal event, including protocol-invalid outcomes.
 const MAX_PROGRESS_RECORDS_PER_RUN = MAX_RETAINED_RUN_EVENTS - 3;
+const PROGRESS_PERSIST_BATCH_SIZE = 32;
 
 const progressRecordSchema = z.object({
   recordId: z.string().regex(/^progress-[a-f0-9]{24}$/),
@@ -260,6 +261,16 @@ const superviseConformanceHarness = async (run, context, observer) => {
   let adapterReadyObserved = false;
   let protocolInvalid = false;
   let adapterChannelClosedObserved = false;
+  adapterChannel.once("close", () => {
+    adapterChannelClosedObserved = true;
+  });
+  const terminateProtocolInvalidAdapter = () => {
+    protocolInvalid = true;
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+    }
+    adapterChannel.destroy();
+  };
   const publishedProgressRecordIds = new Set();
   /** @type {Array<z.infer<typeof harnessTerminalEnvelopeSchema>>} */
   const terminalEnvelopes = [];
@@ -276,14 +287,14 @@ const superviseConformanceHarness = async (run, context, observer) => {
           adapterChannelClosedObserved = true;
           return;
         }
-        protocolInvalid = true;
+        terminateProtocolInvalidAdapter();
         return;
       }
       if (
         message.type === "harness.adapter.probe"
         || message.type === "harness.launch.prepared"
       ) {
-        protocolInvalid = true;
+        terminateProtocolInvalidAdapter();
         continue;
       }
       if (
@@ -291,12 +302,12 @@ const superviseConformanceHarness = async (run, context, observer) => {
         || message.adapterId !== run.adapterId
         || message.adapterProtocol !== run.adapterProtocol
       ) {
-        protocolInvalid = true;
+        terminateProtocolInvalidAdapter();
         continue;
       }
       if (message.type === "harness.run.ready") {
         if (adapterReadyObserved) {
-          protocolInvalid = true;
+          terminateProtocolInvalidAdapter();
           continue;
         }
         adapterReadyObserved = true;
@@ -312,7 +323,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
           || (message.record.parentRecordId !== null
             && !publishedProgressRecordIds.has(message.record.parentRecordId))
         ) {
-          protocolInvalid = true;
+          terminateProtocolInvalidAdapter();
           continue;
         }
         publishedProgressRecordIds.add(message.record.recordId);
@@ -326,7 +337,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
         terminalEnvelopes.push(message);
         continue;
       }
-      protocolInvalid = true;
+      terminateProtocolInvalidAdapter();
     }
   };
   const exit = new Promise((resolve) => {
@@ -409,6 +420,22 @@ export const createHarnessRunManager = async (options) => {
   /** @param {z.infer<typeof storedRunSchema>} initialRun @param {any} context */
   const supervise = async (initialRun, context) => {
     let supervision;
+    /** @type {Array<z.infer<typeof progressRecordSchema>>} */
+    const pendingProgressRecords = [];
+    let progressRecordCount = 0;
+    const persistProgressRecords = async () => {
+      if (pendingProgressRecords.length === 0) {
+        return;
+      }
+      const records = pendingProgressRecords.slice();
+      await updateRun(initialRun.harnessRunId, (run) => {
+        for (const record of records) {
+          run.revision += 1;
+          appendEvent(run, "harness_progress_published", { progressRecord: record });
+        }
+      });
+      pendingProgressRecords.splice(0, records.length);
+    };
     try {
       supervision = await superviseConformanceHarness(initialRun, context, {
         onReady: async (readyAt) => {
@@ -423,10 +450,14 @@ export const createHarnessRunManager = async (options) => {
           });
         },
         onProgress: async (record) => {
-          await updateRun(initialRun.harnessRunId, (run) => {
-            run.revision += 1;
-            appendEvent(run, "harness_progress_published", { progressRecord: record });
-          });
+          progressRecordCount += 1;
+          pendingProgressRecords.push(record);
+          if (
+            progressRecordCount === 1
+            || pendingProgressRecords.length >= PROGRESS_PERSIST_BATCH_SIZE
+          ) {
+            await persistProgressRecords();
+          }
         },
         onDiagnostic: (producer, data) =>
           appendDiagnostic(initialRun.harnessRunId, producer, data),
@@ -440,6 +471,7 @@ export const createHarnessRunManager = async (options) => {
         exit: { code: null, signal: null, startFailed: true },
       };
     }
+    await persistProgressRecords();
     const terminal = supervision.terminalEnvelopes.length === 1
       ? supervision.terminalEnvelopes[0]
       : null;

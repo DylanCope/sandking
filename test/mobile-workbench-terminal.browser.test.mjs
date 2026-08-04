@@ -82,7 +82,31 @@ test("the production Workbench terminal is usable at a touch phone viewport", as
     await context.addInitScript(() => {
       const NativeWebSocket = window.WebSocket;
       window.__mobileWorkbenchSentFrames = [];
+      const viewportResizeListeners = new Set();
+      const nativeViewportAddEventListener = window.visualViewport?.addEventListener.bind(
+        window.visualViewport,
+      );
+      const nativeViewportRemoveEventListener = window.visualViewport?.removeEventListener.bind(
+        window.visualViewport,
+      );
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener = (type, listener, options) => {
+          if (type === "resize") viewportResizeListeners.add(listener);
+          return nativeViewportAddEventListener(type, listener, options);
+        };
+        window.visualViewport.removeEventListener = (type, listener, options) => {
+          if (type === "resize") viewportResizeListeners.delete(listener);
+          return nativeViewportRemoveEventListener(type, listener, options);
+        };
+      }
+      window.__mobileWorkbenchViewportResizeListenerCount = () =>
+        viewportResizeListeners.size;
       window.WebSocket = class ObservedWebSocket extends NativeWebSocket {
+        constructor(...args) {
+          super(...args);
+          window.__mobileWorkbenchSocket = this;
+        }
+
         send(data) {
           if (typeof data === "string") {
             window.__mobileWorkbenchSentFrames.push({ kind: "control", data });
@@ -133,6 +157,8 @@ test("the production Workbench terminal is usable at a touch phone viewport", as
       }
     }
     assert.equal(controllerAttached, true, "the conformance Controller must attach");
+    assert.equal(await page.evaluate(() =>
+      window.__mobileWorkbenchViewportResizeListenerCount()), 1);
     await page.waitForFunction(() => {
       const panel = document.querySelector("#project-focused-controller-session");
       return Number(panel?.getAttribute("data-terminal-columns")) >= 20
@@ -486,6 +512,9 @@ test("the production Workbench terminal is usable at a touch phone viewport", as
         mode: 0o600,
       });
     }
+    await page.evaluate(() => window.__mobileWorkbenchSocket.close(1_000));
+    await page.waitForFunction(() =>
+      window.__mobileWorkbenchViewportResizeListenerCount() === 0);
   } finally {
     await browser?.close().catch(() => undefined);
     await execFileAsync(installed.command, [

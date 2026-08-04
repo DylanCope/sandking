@@ -25,7 +25,7 @@ import { capabilitySetSchema, framingSchema, releaseVersion, versionSchema } fro
 const COMPATIBILITY_KEY = "runtime-v3-controller-terminal";
 export const BOOTSTRAP_TTL_MS = 60_000;
 export const BROWSER_SESSION_TTL_MS = 15 * 60_000;
-const DEFAULT_STARTUP_TIMEOUT_MS = 60_000;
+const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 const LOCK_TIMEOUT_MS = DEFAULT_STARTUP_TIMEOUT_MS + 2_000;
 const daemonPath = fileURLToPath(new URL("./runtime-daemon.mjs", import.meta.url));
 
@@ -647,7 +647,7 @@ const probeRuntime = async (state) => {
         host: `127.0.0.1:${state.port}`,
         "x-sandking-readiness": state.readinessToken,
       },
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(500),
     });
     if (!response.ok) {
       return false;
