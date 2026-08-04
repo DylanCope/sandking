@@ -10,6 +10,37 @@ import { launchBrowser } from "./browser-launch.mjs";
 import { installCurrentPackage } from "./installed-package.mjs";
 
 const execFileAsync = promisify(execFile);
+const PACKAGED_BROWSER_READINESS_TIMEOUT_MS = 90_000;
+
+const waitForCockpitReadiness = async (page, selector, browserErrors) => {
+  try {
+    await page.waitForSelector(selector, {
+      timeout: PACKAGED_BROWSER_READINESS_TIMEOUT_MS,
+    });
+  } catch (error) {
+    const cockpitState = await page.evaluate(() => {
+      const attributes = (selector) => Object.fromEntries(
+        [...(document.querySelector(selector)?.attributes ?? [])]
+          .filter((attribute) => attribute.name.startsWith("data-"))
+          .map((attribute) => [attribute.name, attribute.value]),
+      );
+      return {
+        documentReadyState: document.readyState,
+        projectPreparation: attributes("#project-preparation"),
+        projectReadiness: attributes("#project-readiness"),
+        projectFeedback: document.querySelector("#project-feedback")?.textContent?.slice(0, 500)
+          ?? "missing",
+      };
+    }).catch((diagnosticError) => ({
+      diagnosticFailure: diagnosticError instanceof Error
+        ? diagnosticError.message
+        : String(diagnosticError),
+    }));
+    error.message += `\nBrowser errors: ${browserErrors.join(" | ") || "none"}`
+      + `\nCockpit state: ${JSON.stringify(cockpitState)}`;
+    throw error;
+  }
+};
 
 const opaqueInputBytes = async (page, start) => page.evaluate((offset) =>
   window.__mobileWorkbenchSentFrames
@@ -130,15 +161,28 @@ test("the production Workbench terminal is usable at a touch phone viewport", as
       };
     });
     const page = await context.newPage();
-    await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector("#project-preparation[data-host-freshness='current']", {
-      timeout: 10_000,
+    const browserErrors = [];
+    page.on("pageerror", (error) => browserErrors.push(error.message));
+    page.on("requestfailed", (request) => {
+      const requestUrl = new URL(request.url());
+      browserErrors.push(
+        `${requestUrl.origin}${requestUrl.pathname}: ${request.failure()?.errorText
+          ?? "request failed"}`,
+      );
     });
+    await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
+    await waitForCockpitReadiness(
+      page,
+      "#project-preparation[data-host-freshness='current']",
+      browserErrors,
+    );
     await page.locator("#project-path").fill(projectPath);
     await page.locator("#open-project").click();
-    await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
-      timeout: 10_000,
-    });
+    await waitForCockpitReadiness(
+      page,
+      "#project-readiness[data-launch-request-ready='true']",
+      browserErrors,
+    );
     let controllerAttached = false;
     for (let attempt = 0; attempt < 3 && !controllerAttached; attempt += 1) {
       await page.locator("#open-project-controller").click();
