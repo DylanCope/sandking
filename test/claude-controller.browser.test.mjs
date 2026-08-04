@@ -65,7 +65,7 @@ if (args.length === 1 && args[0] === "--version") {
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    browser = await launchBrowser();
+    browser = await launchBrowser({ niceAdjustment: 10 });
     const context = await browser.newContext();
     const page = await context.newPage();
     const sessionOpenRequests = [];
