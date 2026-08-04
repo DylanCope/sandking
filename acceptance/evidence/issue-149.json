@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 2,
+  "issue": 149,
+  "parentPrd": 125,
+  "sourceSpecification": {
+    "issue": 116,
+    "githubBodyUtf8Sha256": "34ebbde096564621b14a68d4bc64cdbd8ba9e448a42cb75c084d80c0e201308a",
+    "parentApprovedTextExportSha256": "bf695dc3483e1d8b2e6a67a011ac7c77bfae7f3d96d596598803862c1e496a23",
+    "parentApprovedHashBasis": "exact GitHub body UTF-8 plus one terminal LF",
+    "normalizationDifference": "one terminal LF",
+    "exactContentEquivalentAfterApprovedExportNormalization": true
+  },
+  "generatedFromCommit": "9306f527674874b8ce84b908ce62ef22ab69dae6",
+  "recordedAt": "2026-08-04T04:16:50.672Z",
+  "scenario": "cockpit-workbench/operates-mobile-controller-terminal",
+  "packagedPublicSeam": {
+    "command": "sandking",
+    "installed": true,
+    "launchedOutsideCheckout": true,
+    "tarballSha256": "9cda25d2240bc29a98a945306f98eb9178e9eb6b9ca91ad314726b2e62cb4351"
+  },
+  "mobileBrowser": {
+    "engine": "chromium",
+    "deviceProfile": "iPhone 13",
+    "touchEmulation": true,
+    "virtualKeyboardInputEmulation": true,
+    "devicePixelRatio": 3
+  },
+  "layout": {
+    "phoneViewport": {
+      "width": 390,
+      "height": 844
+    },
+    "phoneScreen": {
+      "width": 390,
+      "height": 844
+    },
+    "viewportScale": 1,
+    "horizontalPageOverflow": false,
+    "terminalContained": true,
+    "terminalInternalOverflow": false,
+    "navigationDrawer": true,
+    "contextDrawer": true,
+    "desktopAndTabletCoverageRetained": true
+  },
+  "terminal": {
+    "emulator": "@xterm/xterm@6.0.0",
+    "fontReadyBeforeOpen": true,
+    "fittedColumns": 42,
+    "fittedRows": 16,
+    "ansiVtFixture": {
+      "sameIntendedFinalScreenAsDesktop": true,
+      "cursorMovement": true,
+      "eraseAndRedraw": true,
+      "color": true,
+      "alternateScreen": true,
+      "splitEscapeSequence": true,
+      "transcriptRetained": false
+    },
+    "mobileInput": {
+      "terminalTapFocusesTextarea": true,
+      "printableExactlyOnce": true,
+      "enterExactlyOnce": true,
+      "backspaceExactlyOnce": true,
+      "escapeExactlyOnce": true,
+      "arrowsExactlyOnce": true,
+      "applicationCursorModePreserved": true,
+      "observedInputAuditCount": 70
+    },
+    "touchIsolation": {
+      "terminalScrollbackMoved": true,
+      "pageDidNotScroll": true,
+      "stageDidNotScroll": true,
+      "drawersDidNotToggle": true,
+      "unintendedSelection": false,
+      "drawerGestureChangedTerminalScroll": false,
+      "drawerGestureSentTerminalInput": false
+    }
+  },
+  "auditReferences": [
+    {
+      "auditId": "audit-f8f793de25e86a364c7baf8a",
+      "action": "controller.terminal.input",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-b791361f891f81583a3cf675",
+        "providerSessionId": "conformance-provider-session-be1c1a27a768e3f394d818c1",
+        "streamId": "controller-terminal-c96d5ea61b23096a814114d3",
+        "sequence": 66,
+        "byteLength": 13,
+        "contentRetained": false
+      }
+    },
+    {
+      "auditId": "audit-f649246dd1fac5eb34beb742",
+      "action": "controller.terminal.input",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-b791361f891f81583a3cf675",
+        "providerSessionId": "conformance-provider-session-be1c1a27a768e3f394d818c1",
+        "streamId": "controller-terminal-c96d5ea61b23096a814114d3",
+        "sequence": 67,
+        "byteLength": 1,
+        "contentRetained": false
+      }
+    },
+    {
+      "auditId": "audit-5518f4d34b6e89ff204f6735",
+      "action": "controller.terminal.input",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-b791361f891f81583a3cf675",
+        "providerSessionId": "conformance-provider-session-be1c1a27a768e3f394d818c1",
+        "streamId": "controller-terminal-c96d5ea61b23096a814114d3",
+        "sequence": 68,
+        "byteLength": 13,
+        "contentRetained": false
+      }
+    },
+    {
+      "auditId": "audit-d184d2c1998d5bf5e0769796",
+      "action": "controller.terminal.input",
+      "outcome": "observed",
+      "details": {
+        "sessionId": "controller-session-b791361f891f81583a3cf675",
+        "providerSessionId": "conformance-provider-session-be1c1a27a768e3f394d818c1",
+        "streamId": "controller-terminal-c96d5ea61b23096a814114d3",
+        "sequence": 69,
+        "byteLength": 1,
+        "contentRetained": false
+      }
+    }
+  ],
+  "securityAssertions": {
+    "credentialValueRetained": false,
+    "terminalTranscriptRetained": false,
+    "recognizableSecretFixtureRetained": false,
+    "providerAccountMetadataRetained": false,
+    "browserApprovalAssertion": false,
+    "providerTerminationFromBrowserDetach": false
+  },
+  "inheritedAcceptance": {
+    "desktop1440Workbench": "passed",
+    "tablet700WorkbenchAndDrawers": "passed",
+    "terminalAttachmentAndResizeAuthority": "passed",
+    "projectPreparation": "passed",
+    "planningProjectionAndMutation": "passed",
+    "launchRequestInteraction": "passed",
+    "activeAndTerminalHarnessRunObservation": "passed",
+    "diagnosticsAndStructuredOutcome": "passed",
+    "truthfulFailure": "passed",
+    "canonicalReconnection": "passed",
+    "installedClaudeContractFixture": "passed"
+  },
+  "installedClaudeHumanAcceptance": {
+    "ownerIssue": 126,
+    "actualMobileBrowserRequired": true,
+    "productionPublicPathRequired": true,
+    "workerMayApproveLaunchRequest": false,
+    "deterministicMergeOracleRequiresAuthenticatedExecution": false,
+    "statusAfterDeterministicAcceptance": "ready-for-human-checklist",
+    "performedByThisDeterministicWorker": false
+  },
+  "verificationCommands": [
+    [
+      "node",
+      "--test",
+      "--test-concurrency=1",
+      "test/browser-protocol.test.mjs",
+      "test/controller-launch-session.test.mjs",
+      "test/security-boundary.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "--test-concurrency=1",
+      "test/controller-terminal-attachment.test.mjs",
+      "test/claude-controller-session.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/workbench-terminal.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/mobile-workbench-terminal.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/project-preparation.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/planning-spine.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/launch-request.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/harness-run.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/reconnect-canonical.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/truthful-failure.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/claude-controller.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "test/local-walking-skeleton.browser.test.mjs"
+    ]
+  ]
+}
