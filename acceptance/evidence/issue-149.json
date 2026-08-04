@@ -10,14 +10,14 @@
     "normalizationDifference": "one terminal LF",
     "exactContentEquivalentAfterApprovedExportNormalization": true
   },
-  "generatedFromCommit": "45dfc18172b9dc4a4c274173764322305e2b9ec5",
-  "recordedAt": "2026-08-04T12:40:58.993Z",
+  "generatedFromCommit": "4257174154e8ef09fd15880d231c3338646b67ea",
+  "recordedAt": "2026-08-04T14:15:15.114Z",
   "scenario": "cockpit-workbench/operates-mobile-controller-terminal",
   "packagedPublicSeam": {
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "b6c747268be9192a17dfcedae33b81e924b8804cb5fe8c53d5ede47c8615407c"
+    "tarballSha256": "14ab34462c20573f05c8893fb946cd8ad52c948e6d79caa1cb1e3d50813adba5"
   },
   "mobileBrowser": {
     "engine": "chromium",
@@ -79,52 +79,52 @@
   },
   "auditReferences": [
     {
-      "auditId": "audit-f9844330e3562eda7034b091",
+      "auditId": "audit-8b8c51080efda057a71d9b86",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-760d72c20ab9b48ba9029d11",
-        "providerSessionId": "conformance-provider-session-14f1ebc5194df32bebd37470",
-        "streamId": "controller-terminal-6d9967fdc6b70a3507601853",
+        "sessionId": "controller-session-156d300cbf9ad0f63dec3818",
+        "providerSessionId": "conformance-provider-session-f1a3e582684ca21d8aa7e8f6",
+        "streamId": "controller-terminal-847804f02fd9497f0b0fe118",
         "sequence": 66,
         "byteLength": 13,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-c70688a48933012f8880a88c",
+      "auditId": "audit-62ddb2c6d6351f420cbe38bf",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-760d72c20ab9b48ba9029d11",
-        "providerSessionId": "conformance-provider-session-14f1ebc5194df32bebd37470",
-        "streamId": "controller-terminal-6d9967fdc6b70a3507601853",
+        "sessionId": "controller-session-156d300cbf9ad0f63dec3818",
+        "providerSessionId": "conformance-provider-session-f1a3e582684ca21d8aa7e8f6",
+        "streamId": "controller-terminal-847804f02fd9497f0b0fe118",
         "sequence": 67,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-d434bcbf74cb0034bc369167",
+      "auditId": "audit-8ea3df73d9ac87a74e86855f",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-760d72c20ab9b48ba9029d11",
-        "providerSessionId": "conformance-provider-session-14f1ebc5194df32bebd37470",
-        "streamId": "controller-terminal-6d9967fdc6b70a3507601853",
+        "sessionId": "controller-session-156d300cbf9ad0f63dec3818",
+        "providerSessionId": "conformance-provider-session-f1a3e582684ca21d8aa7e8f6",
+        "streamId": "controller-terminal-847804f02fd9497f0b0fe118",
         "sequence": 68,
         "byteLength": 13,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-6a360863987f80e656d16092",
+      "auditId": "audit-cb3fab5463fa697ccd2cb973",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-760d72c20ab9b48ba9029d11",
-        "providerSessionId": "conformance-provider-session-14f1ebc5194df32bebd37470",
-        "streamId": "controller-terminal-6d9967fdc6b70a3507601853",
+        "sessionId": "controller-session-156d300cbf9ad0f63dec3818",
+        "providerSessionId": "conformance-provider-session-f1a3e582684ca21d8aa7e8f6",
+        "streamId": "controller-terminal-847804f02fd9497f0b0fe118",
         "sequence": 69,
         "byteLength": 1,
         "contentRetained": false

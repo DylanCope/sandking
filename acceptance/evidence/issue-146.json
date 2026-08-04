@@ -15,14 +15,14 @@
     "variant": "A — Workbench",
     "immutableCommit": "2467a8d"
   },
-  "generatedFromCommit": "45dfc18172b9dc4a4c274173764322305e2b9ec5",
-  "recordedAt": "2026-08-04T12:38:12.379Z",
+  "generatedFromCommit": "4257174154e8ef09fd15880d231c3338646b67ea",
+  "recordedAt": "2026-08-04T14:12:30.341Z",
   "scenario": "cockpit-workbench/operates-interactive-controller-terminal",
   "packagedPublicSeam": {
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "b6c747268be9192a17dfcedae33b81e924b8804cb5fe8c53d5ede47c8615407c"
+    "tarballSha256": "14ab34462c20573f05c8893fb946cd8ad52c948e6d79caa1cb1e3d50813adba5"
   },
   "layout": {
     "referenceViewport": {
@@ -122,40 +122,40 @@
   },
   "auditReferences": [
     {
-      "auditId": "audit-2f0fb7e06e58ce379de244c8",
+      "auditId": "audit-1881971fcec424db96d9eab6",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-09b2b28e31f5e7b0ece082de",
-        "providerSessionId": "conformance-provider-session-da7e40ccfd5c0a82cf3b5f27",
-        "streamId": "controller-terminal-f5b21a0f824bf3b8f99034f2",
+        "sessionId": "controller-session-5c6110c864693cff9f2ca038",
+        "providerSessionId": "conformance-provider-session-d4382180fcd2930b43438e4e",
+        "streamId": "controller-terminal-bf17b6e331b4186d7ac9277a",
         "sequence": 132,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-8bdf861a70a91599298a2392",
+      "auditId": "audit-0813bfd7e4f5b1a6105e8d59",
       "action": "controller.terminal.input",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-09b2b28e31f5e7b0ece082de",
-        "providerSessionId": "conformance-provider-session-da7e40ccfd5c0a82cf3b5f27",
-        "streamId": "controller-terminal-f5b21a0f824bf3b8f99034f2",
+        "sessionId": "controller-session-5c6110c864693cff9f2ca038",
+        "providerSessionId": "conformance-provider-session-d4382180fcd2930b43438e4e",
+        "streamId": "controller-terminal-bf17b6e331b4186d7ac9277a",
         "sequence": 133,
         "byteLength": 1,
         "contentRetained": false
       }
     },
     {
-      "auditId": "audit-0dee9f3bbc24536368248392",
+      "auditId": "audit-fbb6dfbca6c07c80940d12c8",
       "action": "controller.terminal.resize",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-09b2b28e31f5e7b0ece082de",
-        "providerSessionId": "conformance-provider-session-da7e40ccfd5c0a82cf3b5f27",
-        "streamId": "controller-terminal-f5b21a0f824bf3b8f99034f2",
-        "attachmentId": "terminal-attachment-abcf87f4f49d7385a3960e0c",
+        "sessionId": "controller-session-5c6110c864693cff9f2ca038",
+        "providerSessionId": "conformance-provider-session-d4382180fcd2930b43438e4e",
+        "streamId": "controller-terminal-bf17b6e331b4186d7ac9277a",
+        "attachmentId": "terminal-attachment-f02080155ff0bab34df20f32",
         "sequence": 2,
         "columns": 82,
         "rows": 18,
@@ -163,14 +163,14 @@
       }
     },
     {
-      "auditId": "audit-01e37b4fc1ff63ebb506522b",
+      "auditId": "audit-1ad72c5de63dde930d07b611",
       "action": "controller.terminal.resize",
       "outcome": "observed",
       "details": {
-        "sessionId": "controller-session-09b2b28e31f5e7b0ece082de",
-        "providerSessionId": "conformance-provider-session-da7e40ccfd5c0a82cf3b5f27",
-        "streamId": "controller-terminal-f5b21a0f824bf3b8f99034f2",
-        "attachmentId": "terminal-attachment-abcf87f4f49d7385a3960e0c",
+        "sessionId": "controller-session-5c6110c864693cff9f2ca038",
+        "providerSessionId": "conformance-provider-session-d4382180fcd2930b43438e4e",
+        "streamId": "controller-terminal-bf17b6e331b4186d7ac9277a",
+        "attachmentId": "terminal-attachment-f02080155ff0bab34df20f32",
         "sequence": 3,
         "columns": 105,
         "rows": 35,
