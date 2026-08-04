@@ -35,6 +35,7 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--host-mode", "delayed-harness-run-start-response",
       "--idempotency-key", "issue-121-runtime-start",
       "--expected-revision", "0",

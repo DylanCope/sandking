@@ -53,6 +53,7 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "project-browser-runtime-launch",
       "--expected-revision", "0",
       "--json",

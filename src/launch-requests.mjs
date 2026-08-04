@@ -224,9 +224,11 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
     timeout: 3_000,
     maxBuffer: 32_768,
   })).stdout.trim();
-  /** @param {string[]} args */
-  const invoke = async (args) => {
-    const pinnedAdapter = await loadPinnedHarnessAdapter({ workspacePath, pinnedRevision });
+  /**
+   * @param {Awaited<ReturnType<typeof loadPinnedHarnessAdapter>>} pinnedAdapter
+   * @param {string[]} args
+   */
+  const invoke = async (pinnedAdapter, args) => {
     if (
       pinnedAdapter.compatibility.adapterId !== context.harness.adapterId
       || pinnedAdapter.compatibility.adapterProtocol
@@ -268,12 +270,12 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
       clearTimeout(timeout);
     }
   };
-  const observedRevision = await git("rev-parse", "HEAD");
   const statusBefore = await git("status", "--porcelain");
-  if (observedRevision !== pinnedRevision || statusBefore !== "") {
+  if (statusBefore !== "") {
     throw new Error("harness_workspace_invalid");
   }
-  const probeInvocation = await invoke(["probe"]);
+  const pinnedAdapter = await loadPinnedHarnessAdapter({ workspacePath, pinnedRevision });
+  const probeInvocation = await invoke(pinnedAdapter, ["probe"]);
   const probe = harnessAdapterProbeSchema.parse(probeInvocation.message);
   if (
     probe.adapterId !== probeInvocation.compatibility.adapterId
@@ -286,7 +288,7 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
   }
   const encodedParameters = Buffer.from(JSON.stringify(parsedParameters), "utf8")
     .toString("base64url");
-  const preparedInvocation = await invoke(["prepare", encodedParameters]);
+  const preparedInvocation = await invoke(pinnedAdapter, ["prepare", encodedParameters]);
   const prepared = harnessPreparedEnvelopeSchema.parse(preparedInvocation.message);
   if (
     prepared.adapterId !== preparedInvocation.compatibility.adapterId

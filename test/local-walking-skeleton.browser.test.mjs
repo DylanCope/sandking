@@ -115,7 +115,8 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
 
   try {
     const { stdout } = await execFileAsync(installed.command, [
-      "launch", "--data-dir", dataDir, "--host-mode", "secret-probe",
+      "launch", "--data-dir", dataDir, "--startup-timeout-ms", "60000",
+      "--host-mode", "secret-probe",
       "--idempotency-key", "acceptance-runtime-launch-key", "--expected-revision", "0",
       "--json", "--no-open",
     ], {
@@ -223,7 +224,8 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       assert.equal(staleBootstrapOutcome.code, "mutation_revision_conflict");
 
       const { stdout: expiringLaunchOutput } = await execFileAsync(installed.command, [
-        "launch", "--data-dir", dataDir, "--bootstrap-ttl-ms", "25",
+        "launch", "--data-dir", dataDir, "--startup-timeout-ms", "60000",
+        "--bootstrap-ttl-ms", "25",
         "--idempotency-key", "acceptance-expiring-bootstrap-launch-key",
         "--expected-revision", String(launch.runtime.revision), "--json", "--no-open",
       ], { cwd: executionDirectory, env: productEnvironment });

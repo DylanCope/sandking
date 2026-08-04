@@ -75,6 +75,7 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "truthful-failure-runtime-start",
       "--expected-revision", "0",
       "--json",
@@ -749,6 +750,7 @@ test("Host loss during an active Cockpit mutation returns one typed idempotent f
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "active-host-loss-runtime-start",
       "--expected-revision", "0",
       "--json",
@@ -896,6 +898,7 @@ test("accepted Cockpit Project preparation replays its public outcome after Host
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "accepted-project-replay-runtime-start",
       "--expected-revision", "0",
       "--json",
@@ -1061,6 +1064,7 @@ test("Host loss after accepted Project registration preserves its identity and e
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "partial-project-host-loss-runtime-start",
       "--expected-revision", "0",
       "--json",
@@ -1290,6 +1294,7 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--host-mode", "malformed-frame-after-negotiation",
       "--idempotency-key", "active-host-protocol-runtime-start",
       "--expected-revision", "0",

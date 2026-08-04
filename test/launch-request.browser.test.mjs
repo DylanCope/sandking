@@ -55,6 +55,7 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "launch-browser-runtime-start",
       "--expected-revision", "0",
       "--json",

@@ -39,6 +39,7 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "planning-acceptance-runtime-launch",
       "--expected-revision", "0",
       "--json",

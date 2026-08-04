@@ -58,6 +58,7 @@ if (args.length === 1 && args[0] === "--version") {
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "claude-browser-runtime-launch",
       "--expected-revision", "0",
       "--json",

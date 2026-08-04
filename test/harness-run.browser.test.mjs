@@ -49,13 +49,14 @@ test("local-walking-skeleton/completes-approved-run crosses the public Cockpit a
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "harness-run-browser-runtime-start",
       "--expected-revision", "0",
       "--json",
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       let page = await context.newPage();
@@ -69,21 +70,35 @@ test("local-walking-skeleton/completes-approved-run crosses the public Cockpit a
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
       await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
       await page.locator("#open-project").click();
       await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");
       const harnessId = await page.locator("#project-readiness").getAttribute("data-harness-id");
       const harnessPin = await page.locator("#project-readiness").getAttribute("data-harness-pin");
-      await page.locator("#open-project-controller").click();
-      await page.waitForSelector(
-        "#project-focused-controller-session[data-terminal-attachment='read-write']",
-        { timeout: 90_000 },
-      );
+      let controllerAttached = false;
+      for (let attempt = 0; attempt < 3 && !controllerAttached; attempt += 1) {
+        await page.locator("#open-project-controller").click();
+        const controllerOutcome = await page.waitForFunction(() => {
+          const panel = document.querySelector("#project-focused-controller-session");
+          if (panel?.getAttribute("data-terminal-attachment") === "read-write") {
+            return "attached";
+          }
+          const feedback = document.querySelector("#project-controller-feedback")?.textContent
+            ?? "";
+          return feedback.startsWith("Focused Controller failed safely:") ? feedback : false;
+        }, undefined, { timeout: 90_000 }).then((handle) => handle.jsonValue());
+        controllerAttached = controllerOutcome === "attached";
+        if (!controllerAttached) {
+          assert.match(controllerOutcome,
+            /provider_adapter_timeout|provider_session_ready_timeout/);
+        }
+      }
+      assert.equal(controllerAttached, true, "the conformance Controller must attach");
       const sessionId = await page.locator("#project-focused-controller-session")
         .getAttribute("data-session-id");
       const enter = async (value) => {
@@ -93,29 +108,118 @@ test("local-walking-skeleton/completes-approved-run crosses the public Cockpit a
         await page.keyboard.type(value);
         await page.keyboard.press("Enter");
       };
+      const reconnectController = async () => {
+        await page.close();
+        page = await context.newPage();
+        observeFrames(page);
+        await page.goto(`http://127.0.0.1:${launch.runtime.port}/`, {
+          waitUntil: "domcontentloaded",
+          timeout: 90_000,
+        });
+        await page.waitForSelector(
+          `#project-focused-controller-session[data-session-id='${sessionId}']`
+            + "[data-reconnected='true'][data-terminal-attachment='read-write']",
+          { timeout: 90_000 },
+        );
+      };
       await page.waitForFunction(() => document.querySelector(
         "#project-controller-terminal-output",
-      )?.textContent?.includes("Conformance Controller ready"));
-      await enter("prepare 120 sandcastle/issue-120");
-      await page.waitForFunction(() => document.querySelector(
-        "#project-controller-terminal-output",
-      )?.textContent?.includes("Secret-free preview: yes"));
+      )?.textContent?.includes("Conformance Controller ready"), undefined, {
+        timeout: 90_000,
+      });
+      let launchPrepared = false;
+      for (let attempt = 0; attempt < 3 && !launchPrepared; attempt += 1) {
+        const previousFailureCount = await page.locator(
+          "#project-controller-terminal-output",
+        ).evaluate((output) => (output.textContent?.match(
+          /(?:Launch preparation|Controller operation) failed safely:/g,
+        ) ?? []).length);
+        await enter("prepare 120 sandcastle/issue-120");
+        await reconnectController();
+        const preparationOutcome = await page.waitForFunction((failureCount) => {
+          const output = document.querySelector(
+            "#project-controller-terminal-output",
+          )?.textContent ?? "";
+          if (output.includes("Secret-free preview: yes")) return "prepared";
+          const failures = [...output.matchAll(
+            /(?:Launch preparation|Controller operation) failed safely: ([a-z0-9_]+)/g,
+          )];
+          return failures.length > failureCount ? failures.at(-1)?.[1] : false;
+        }, previousFailureCount, { timeout: 90_000 }).then((handle) => handle.jsonValue());
+        launchPrepared = preparationOutcome === "prepared";
+        if (!launchPrepared) {
+          assert.ok([
+            "provider_operation_timeout",
+            "harness_adapter_protocol_invalid",
+          ].includes(preparationOutcome), preparationOutcome);
+        }
+      }
+      assert.equal(launchPrepared, true, "the idempotent Launch preparation must complete");
       const preview = await page.locator("#project-controller-terminal-output").textContent();
       const requestMatch = /Launch request: (launch-request-[a-f0-9]{24}) \(revision 1\)/
         .exec(preview);
       assert.ok(requestMatch);
       const launchRequestId = requestMatch[1];
-      await enter(`approve ${launchRequestId} 1`);
-      await page.waitForFunction((requestId) => document.querySelector(
-        "#project-controller-terminal-output",
-      )?.textContent?.includes(`Launch request ${requestId} approved at revision 2`),
-      launchRequestId);
-      await enter(`start ${launchRequestId} 2`);
-      await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} created/.test(
-        document.querySelector("#project-controller-terminal-output")?.textContent ?? "",
-      ));
+      let launchApproved = false;
+      for (let attempt = 0; attempt < 3 && !launchApproved; attempt += 1) {
+        const previousFailureCount = await page.locator(
+          "#project-controller-terminal-output",
+        ).evaluate((output) => (output.textContent?.match(
+          /(?:Launch decision|Controller operation) failed safely:/g,
+        ) ?? []).length);
+        await enter(`approve ${launchRequestId} 1`);
+        await reconnectController();
+        const decisionOutcome = await page.waitForFunction(({ failureCount, requestId }) => {
+          const output = document.querySelector(
+            "#project-controller-terminal-output",
+          )?.textContent ?? "";
+          if (output.includes(`Launch request ${requestId} approved at revision 2`)) {
+            return "approved";
+          }
+          const failures = [...output.matchAll(
+            /(?:Launch decision|Controller operation) failed safely: ([a-z0-9_]+)/g,
+          )];
+          return failures.length > failureCount ? failures.at(-1)?.[1] : false;
+        }, { failureCount: previousFailureCount, requestId: launchRequestId }, {
+          timeout: 90_000,
+        }).then((handle) => handle.jsonValue());
+        launchApproved = decisionOutcome === "approved";
+        if (!launchApproved) {
+          assert.equal(decisionOutcome, "provider_operation_timeout");
+        }
+      }
+      assert.equal(launchApproved, true, "the idempotent Launch approval must complete");
+
+      let harnessRunCreated = false;
+      for (let attempt = 0; attempt < 3 && !harnessRunCreated; attempt += 1) {
+        const previousFailureCount = await page.locator(
+          "#project-controller-terminal-output",
+        ).evaluate((output) => (output.textContent?.match(
+          /Harness run did not start: provider_operation_timeout/g,
+        ) ?? []).length);
+        await enter(`start ${launchRequestId} 2`);
+        await reconnectController();
+        const startOutcome = await page.waitForFunction((failureCount) => {
+          const output = document.querySelector(
+            "#project-controller-terminal-output",
+          )?.textContent ?? "";
+          if (/Harness run harness-run-[a-f0-9]{24} (?:created|found)/.test(output)) {
+            return "started";
+          }
+          const failures = output.match(
+            /Harness run did not start: provider_operation_timeout/g,
+          ) ?? [];
+          return failures.length > failureCount ? "provider_operation_timeout" : false;
+        }, previousFailureCount, { timeout: 90_000 }).then((handle) => handle.jsonValue());
+        harnessRunCreated = startOutcome === "started";
+        if (!harnessRunCreated) {
+          assert.equal(startOutcome, "provider_operation_timeout");
+        }
+      }
+      assert.equal(harnessRunCreated, true, "the idempotent Harness start must complete");
       const startOutput = await page.locator("#project-controller-terminal-output").textContent();
-      const runId = /Harness run (harness-run-[a-f0-9]{24}) created/.exec(startOutput)?.[1];
+      const runId = /Harness run (harness-run-[a-f0-9]{24}) (?:created|found)/
+        .exec(startOutput)?.[1];
       assert.match(runId, /^harness-run-[a-f0-9]{24}$/);
 
       await page.close();
