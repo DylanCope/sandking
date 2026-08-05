@@ -211,7 +211,6 @@ export function createGitHubDelivery({
         "checks",
         String(pullRequest.number),
         "--watch",
-        "--fail-fast",
       ]);
       const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
       return {
