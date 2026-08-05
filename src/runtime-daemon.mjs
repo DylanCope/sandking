@@ -118,6 +118,15 @@ const startupErrorPath = join(args.dataDir, "startup-error.json");
 const runtimeErrorPath = join(args.dataDir, "runtime-error.log");
 const auditPath = join(args.dataDir, "audit.jsonl");
 const sessionCookieName = "sandking_session";
+/**
+ * Opt-in escape hatch for hosting the runtime behind a public URL (e.g. a Fly.io
+ * preview app) instead of loopback-only. Unset by default; when set, the exact
+ * Host/Origin checks below accept this origin in addition to loopback, the
+ * listener binds beyond 127.0.0.1, and the session cookie is marked Secure.
+ */
+const publicOrigin = process.env.SANDKING_PUBLIC_ORIGIN
+  ? new URL(process.env.SANDKING_PUBLIC_ORIGIN)
+  : null;
 
 /** @typedef {{createdAt: number, expiresAt: number, runtimeId: string, csrfToken: string, auditId: string, revision: number}} BrowserSession */
 /** @type {Map<string, BrowserSession>} */
@@ -334,10 +343,13 @@ const parseCookies = (header) => {
 };
 
 /** @param {import("node:http").IncomingMessage} request */
-const exactHostAccepted = (request) => request.headers.host === `127.0.0.1:${state.port}`;
+const exactHostAccepted = (request) =>
+  request.headers.host === `127.0.0.1:${state.port}`
+  || (publicOrigin !== null && request.headers.host === publicOrigin.host);
 /** @param {import("node:http").IncomingMessage} request */
 const exactOriginAccepted = (request) =>
-  request.headers.origin === `http://127.0.0.1:${state.port}`;
+  request.headers.origin === `http://127.0.0.1:${state.port}`
+  || (publicOrigin !== null && request.headers.origin === publicOrigin.origin);
 
 /** @param {import("node:http").ServerResponse} response @param {number} status @param {unknown} body */
 const sendJson = (response, status, body) => {
@@ -2768,7 +2780,9 @@ const main = async () => {
           response.writeHead(302, {
             ...securityHeaders,
             location: "/",
-            "set-cookie": `${sessionCookieName}=${exchange.session.sessionId}; HttpOnly; SameSite=Strict; Path=/`,
+            "set-cookie": `${sessionCookieName}=${exchange.session.sessionId}; HttpOnly; SameSite=Strict; Path=/${
+              publicOrigin ? "; Secure" : ""
+            }`,
           });
           response.end();
           return;
@@ -3040,9 +3054,13 @@ const main = async () => {
       });
     });
 
+    const bindAddress = publicOrigin ? "0.0.0.0" : "127.0.0.1";
+    const requestedPort = publicOrigin && process.env.SANDKING_PORT
+      ? Number(process.env.SANDKING_PORT)
+      : 0;
     await new Promise((resolve, reject) => {
       httpServer?.once("error", reject);
-      httpServer?.listen(0, "127.0.0.1", () => resolve(undefined));
+      httpServer?.listen(requestedPort, bindAddress, () => resolve(undefined));
     });
     const address = httpServer.address();
     if (!address || typeof address === "string") {
@@ -3072,7 +3090,9 @@ const main = async () => {
         failure: null,
       },
       protocol: host.protocol,
-      listener: { address: "127.0.0.1", class: "loopback" },
+      listener: publicOrigin
+        ? { address: "0.0.0.0", class: "public" }
+        : { address: "127.0.0.1", class: "loopback" },
       negotiationAuditId,
       hostIdentityAuditId: negotiation.hostIdentityOutcome?.auditId ?? null,
       startedAt: new Date().toISOString(),

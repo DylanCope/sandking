@@ -1,0 +1,25 @@
+app = "sandking-preview"
+primary_region = "lhr"
+
+[build]
+  dockerfile = "preview.Dockerfile"
+
+[env]
+  SANDKING_PUBLIC_ORIGIN = "https://sandking-preview.fly.dev"
+  SANDKING_PORT = "8080"
+
+[mounts]
+  source = "sandking_home"
+  destination = "/root"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  processes = ["app"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"

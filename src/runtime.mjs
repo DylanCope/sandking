@@ -218,8 +218,8 @@ const runtimeStateSchema = z.object({
   }).strict(),
   protocol: versionSchema,
   listener: z.object({
-    address: z.literal("127.0.0.1"),
-    class: z.literal("loopback"),
+    address: z.enum(["127.0.0.1", "0.0.0.0"]),
+    class: z.enum(["loopback", "public"]),
   }).strict(),
   negotiationAuditId: z.string().min(1).max(128),
   hostIdentityAuditId: z.string().regex(/^audit-[a-f0-9]{24}$/).nullable().optional(),
