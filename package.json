@@ -17,6 +17,7 @@
   "scripts": {
     "pretest": "node test/ensure-playwright.mjs",
     "sandcastle": "tsx .sandcastle/main.mts",
+    "sandcastle:quick": "tsx .sandcastle/quick.mts",
     "cockpit": "node src/cli.mjs launch",
     "cockpit:stop": "node src/cli.mjs stop",
     "acceptance:issue-117": "node test/run-issue-117-acceptance.mjs acceptance/issue-117.manifest.json",

@@ -3,5 +3,5 @@
   "compilerOptions": {
     "checkJs": false
   },
-  "include": [".sandcastle/main.mts", ".sandcastle/*.mjs"]
+  "include": [".sandcastle/main.mts", ".sandcastle/quick.mts", ".sandcastle/*.mjs"]
 }
