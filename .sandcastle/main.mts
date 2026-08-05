@@ -30,6 +30,7 @@ import {
 } from "./sandbox-settings.mjs";
 import { retryOperation } from "./resilience.mjs";
 import {
+  createIssueScope,
   createParentScope,
   parseRunScope,
   selectScopedIssues,
@@ -109,16 +110,20 @@ if (targetBranch !== "main") {
 const repository = createGitRepository();
 const github = createGitHubDelivery();
 const scopeOptions = parseRunScope(process.argv.slice(2));
-const parentScope = scopeOptions
-  ? await createParentScope({
-      parentIssueId: scopeOptions.parentIssueId,
-      github,
-    })
+const runScope = scopeOptions
+  ? "issueId" in scopeOptions
+    ? await createIssueScope({ issueId: scopeOptions.issueId, github })
+    : await createParentScope({
+        parentIssueId: scopeOptions.parentIssueId,
+        github,
+      })
   : null;
 
-if (parentScope) {
+if (runScope && scopeOptions) {
   console.log(
-    `Harness run scoped to ${parentScope.issueIds.size} descendant issue(s) of #${parentScope.parentIssueId}.`,
+    "issueId" in scopeOptions
+      ? `Harness run scoped to issue #${scopeOptions.issueId}.`
+      : `Harness run scoped to ${runScope.issueIds.size} descendant issue(s) of #${scopeOptions.parentIssueId}.`,
   );
 }
 
@@ -200,9 +205,11 @@ const runPullRequestReviewer = async (
 
 const main = async () => {
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
-    if (parentScope && await parentScope.isComplete()) {
+    if (runScope && scopeOptions && await runScope.isComplete()) {
       console.log(
-        `Parent issue #${parentScope.parentIssueId} is complete. Scoped Harness run finished.`,
+        "issueId" in scopeOptions
+          ? `Issue #${scopeOptions.issueId} is complete. Scoped Harness run finished.`
+          : `Parent issue #${scopeOptions.parentIssueId} is complete. Scoped Harness run finished.`,
       );
       break;
     }
@@ -238,14 +245,16 @@ const main = async () => {
 
   const issues: z.infer<typeof planSchema>["issues"] = selectScopedIssues(
     plan.output.issues,
-    parentScope,
+    runScope,
   );
 
   if (issues.length === 0) {
     console.log(
-      parentScope
-        ? `No unblocked descendants of #${parentScope.parentIssueId} are ready. Exiting.`
-        : "No unblocked issues to work on. Exiting.",
+      scopeOptions && "issueId" in scopeOptions
+        ? `Issue #${scopeOptions.issueId} is not unblocked yet. Exiting.`
+        : scopeOptions
+          ? `No unblocked descendants of #${scopeOptions.parentIssueId} are ready. Exiting.`
+          : "No unblocked issues to work on. Exiting.",
     );
     break;
   }

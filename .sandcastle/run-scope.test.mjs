@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createIssueScope,
   createParentScope,
   parseRunScope,
   selectScopedIssues,
@@ -64,4 +65,47 @@ test("a parent scope is complete only when GitHub reports its parent closed", as
   const scope = await createParentScope({ parentIssueId: "25", github });
 
   assert.equal(await scope.isComplete(), true);
+});
+
+test("--issue accepts a GitHub issue number and rejects combination with --parent", () => {
+  assert.deepEqual(parseRunScope(["--issue", "152"]), { issueId: "152" });
+  assert.deepEqual(parseRunScope(["--issue=152"]), { issueId: "152" });
+  assert.throws(() => parseRunScope(["--issue"]), /issue number/);
+  assert.throws(() => parseRunScope(["--issue", "not-a-number"]), /issue number/);
+  assert.throws(
+    () => parseRunScope(["--parent", "25", "--issue", "152"]),
+    /cannot be combined/,
+  );
+});
+
+test("an issue scope targets exactly one issue, ignoring everything else in the plan", async () => {
+  const github = {
+    async getIssue(issueId) {
+      return { id: issueId, state: issueId === "152" ? "open" : "closed" };
+    },
+  };
+
+  const scope = await createIssueScope({ issueId: "152", github });
+
+  assert.deepEqual([...scope.issueIds], ["152"]);
+  assert.deepEqual(
+    selectScopedIssues(
+      [
+        { id: "129", title: "Older follow-up" },
+        { id: "152", title: "Simplify the launch lifecycle" },
+      ],
+      scope,
+    ),
+    [{ id: "152", title: "Simplify the launch lifecycle" }],
+  );
+  assert.equal(await scope.isComplete(), false);
+});
+
+test("an issue scope rejects an issue GitHub does not know about", async () => {
+  const github = { async getIssue() { return null; } };
+
+  await assert.rejects(
+    () => createIssueScope({ issueId: "9999", github }),
+    /was not found/,
+  );
 });
