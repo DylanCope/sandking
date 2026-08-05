@@ -1,5 +1,8 @@
+import { execFileSync } from "node:child_process";
+
 export const createCodexSandboxSettings = (
   hostAuthPath = "~/.codex/auth.json",
+  githubToken = execFileSync("gh", ["auth", "token"], { encoding: "utf8" }).trim(),
 ) => ({
   docker: {
     mounts: [
@@ -9,6 +12,9 @@ export const createCodexSandboxSettings = (
         readonly: true,
       },
     ],
+    env: {
+      GH_TOKEN: githubToken,
+    },
   },
   hooks: {
     sandbox: {
