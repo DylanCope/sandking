@@ -85,7 +85,7 @@ try {
   });
   await page.locator("#project-path").fill(projectPath);
   await page.locator("#open-project").click();
-  await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
+  await page.waitForSelector("#project-readiness[data-harness-launch-ready='true']", {
     timeout: 15_000,
   });
   const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");

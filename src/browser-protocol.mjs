@@ -7,8 +7,13 @@ import {
   harnessRunOutcomeSchema,
   harnessRunSchema,
 } from "./harness-runs.mjs";
-import { launchRequestSchema } from "./launch-requests.mjs";
-import { protocolVersion, releaseVersion, versionSchema } from "./protocol.mjs";
+import { launchParametersSchema } from "./harness-launch.mjs";
+import {
+  harnessRunLaunchOutcomeSchema,
+  protocolVersion,
+  releaseVersion,
+  versionSchema,
+} from "./protocol.mjs";
 
 export const BROWSER_PROTOCOL_VERSION = protocolVersion;
 export const MAX_BROWSER_CONTROL_BYTES = 32_768;
@@ -25,7 +30,7 @@ export const browserCapabilities = Object.freeze([
   "cockpit.controller-terminal.v1",
   "cockpit.controller-terminal-resize.v1",
   "cockpit.project-preparation.v1",
-  "cockpit.launch-request.v1",
+  "cockpit.harness-run-launch.v1",
   "cockpit.harness-run-observation.v1",
 ]);
 export const runtimeRequiredBrowserCapabilities = Object.freeze([
@@ -35,14 +40,14 @@ export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.controller-terminal.v1",
   "cockpit.controller-terminal-resize.v1",
   "cockpit.project-preparation.v1",
-  "cockpit.launch-request.v1",
+  "cockpit.harness-run-launch.v1",
   "cockpit.harness-run-observation.v1",
 ]);
 export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-workbench-terminal-resize-and-retained-tail")
+  .update("sandking-browser-runtime-schema-v1-with-single-harness-launch")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -119,7 +124,6 @@ const harnessRunObservationProjectionSchema = z.object({
     availableFromSequence: z.number().int().nonnegative(),
     canonicalSnapshot: z.literal(true),
   }).strict().nullable(),
-  launchRequest: launchRequestSchema.nullable(),
   run: harnessRunSchema.nullable(),
   events: z.array(harnessRunEventSchema).max(1_024),
   nextSequence: z.number().int().nonnegative(),
@@ -184,6 +188,14 @@ const browserHarnessRunObserveSchema = z.object({
   afterSequence: z.number().int().nonnegative(),
 }).strict();
 
+const browserHarnessRunLaunchSchema = z.object({
+  type: z.literal("browser.harness-run.launch"),
+  requestId: identifierSchema,
+  projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
+  parameters: launchParametersSchema,
+  idempotencyKey: z.string().min(1).max(256),
+}).strict();
+
 const browserHarnessRunLogsGetSchema = z.object({
   type: z.literal("browser.harness-run.logs.get"),
   requestId: identifierSchema,
@@ -200,6 +212,7 @@ const browserControlEnvelopeSchema = z.object({
     browserPingSchema,
     browserTerminalAttachSchema,
     browserTerminalResizeSchema,
+    browserHarnessRunLaunchSchema,
     browserHarnessRunObserveSchema,
     browserHarnessRunLogsGetSchema,
   ]),
@@ -261,7 +274,7 @@ export const runtimeHelloAckSchema = z.object({
         "claude-code-controller-adapter-v1",
       ]),
       adapterProtocol: z.string().regex(/^1\.[0-9]+\.[0-9]+$/),
-      capabilities: z.array(identifierSchema).max(9),
+      capabilities: z.array(identifierSchema).max(6),
       availability: z.object({
         status: z.enum(["available", "unavailable", "unauthenticated"]),
         version: z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+$/).nullable(),
@@ -273,15 +286,6 @@ export const runtimeHelloAckSchema = z.object({
         ptyRequired: z.literal(true),
         runtimeOwnershipRequired: z.literal(true),
       }).strict(),
-      integration: z.object({
-        pluginId: z.literal("sandking-controller"),
-        pluginVersion: z.literal("1.0.0"),
-        scope: z.literal("session"),
-        loading: z.literal("--plugin-dir"),
-        installed: z.literal(false),
-        boundary: z.literal("session-plugin-private-typed-shim"),
-        credentialsTransferred: z.literal(false),
-      }).strict().optional(),
     }).strict()).length(2),
     harnessRunObservation: harnessRunObservationProjectionSchema,
   }).strict(),
@@ -329,6 +333,12 @@ const runtimeHarnessRunObservationSchema = z.object({
   observation: harnessRunObservationProjectionSchema,
 }).strict();
 
+const runtimeHarnessRunLaunchResultSchema = z.object({
+  type: z.literal("runtime.harness-run.launch-result"),
+  requestId: identifierSchema,
+  outcome: harnessRunLaunchOutcomeSchema,
+}).strict();
+
 export const runtimeConnectionStateSchema = z.object({
   type: z.literal("runtime.connection-state"),
   boundary: z.literal("host"),
@@ -373,6 +383,7 @@ export const runtimeControlEnvelopeSchema = z.object({
     runtimePongSchema,
     runtimeTerminalAttachedSchema,
     runtimeTerminalResizedSchema,
+    runtimeHarnessRunLaunchResultSchema,
     runtimeHarnessRunObservationSchema,
     runtimeHarnessRunLogsResultSchema,
     runtimeConnectionStateSchema,

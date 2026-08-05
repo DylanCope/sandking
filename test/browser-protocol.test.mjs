@@ -170,7 +170,6 @@ test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and 
       code: "harness_run_absent",
       mode: "snapshot",
       resynchronization: null,
-      launchRequest: null,
       run: null,
       events: [],
       nextSequence: 0,

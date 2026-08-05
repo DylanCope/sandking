@@ -59,12 +59,9 @@ const reportedCapabilitiesSchema = z.array(z.enum([
   "controller.session.interactive",
   "controller.session.terminate",
   "controller.work-context.inspect",
-  "controller.launch-request.prepare",
-  "controller.launch-request.decide",
-  "controller.harness-run.start",
+  "controller.harness-run.launch",
   "controller.session.stable-identity",
-  "controller.session.typed-exit",
-])).max(9).refine((capabilities) => new Set(capabilities).size === capabilities.length);
+])).max(6).refine((capabilities) => new Set(capabilities).size === capabilities.length);
 const operationalCapabilitiesSchema = reportedCapabilitiesSchema.refine((capabilities) =>
   capabilities.includes("controller.session.start")
   && capabilities.includes("controller.session.interactive")
@@ -88,15 +85,6 @@ const availabilitySchema = z.object({
     retryable: z.boolean(),
   }).strict().nullable(),
 }).strict();
-const integrationSchema = z.object({
-  pluginId: z.literal("sandking-controller"),
-  pluginVersion: z.literal("1.0.0"),
-  scope: z.literal("session"),
-  loading: z.literal("--plugin-dir"),
-  installed: z.literal(false),
-  boundary: z.literal("session-plugin-private-typed-shim"),
-  credentialsTransferred: z.literal(false),
-}).strict();
 const probeSchema = z.object({
   type: z.literal("provider.adapter.probe"),
   adapterProtocol: adapterProtocolSchema,
@@ -108,7 +96,6 @@ const probeSchema = z.object({
     ptyRequired: z.literal(true),
     runtimeOwnershipRequired: z.literal(true),
   }).strict(),
-  integration: integrationSchema.optional(),
 }).strict().superRefine((probe, context) => {
   const expected = providerDefinitions[probe.provider.providerId];
   if (expected.adapterId !== probe.adapterId) {
@@ -119,7 +106,7 @@ const probeSchema = z.object({
   }
   if (
     probe.availability?.status === "available"
-    && probe.capabilities.length !== 9
+    && probe.capabilities.length !== 5
   ) {
     context.addIssue({ code: "custom", message: "available provider capabilities incomplete" });
   }
@@ -147,9 +134,6 @@ const preparedSchema = z.object({
     endpoint: z.string().min(1).max(512),
   }).strict(),
   sessionIdentity: sessionIdentitySchema.optional(),
-  integration: integrationSchema.extend({
-    pluginDirectory: z.string().min(1).max(4_096),
-  }).strict().optional(),
   command: z.object({
     executable: z.string().min(1),
     args: z.array(z.string()).min(1).max(32),
@@ -246,9 +230,7 @@ const providerOperationRequestSchema = z.object({
   providerSessionId: providerSessionIdSchema,
   operation: z.enum([
     "work-context.inspect",
-    "launch-request.prepare",
-    "launch-request.decide",
-    "harness-run.start",
+    "harness-run.launch",
     "harness-run.lookup",
   ]),
   input: z.unknown(),
@@ -1107,7 +1089,6 @@ export const createControllerSessionManager = async (options) => {
         },
         ...(adapter.availability ? { availability: adapter.availability } : {}),
         ...(prepared.sessionIdentity ? { sessionIdentity: prepared.sessionIdentity } : {}),
-        ...(adapter.integration ? { integration: adapter.integration } : {}),
       },
       terminal: {
         streamId,

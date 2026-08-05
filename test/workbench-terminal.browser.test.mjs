@@ -125,7 +125,7 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       getComputedStyle(node).outlineStyle), "none");
     await page.locator("#project-path").fill(projectPath);
     await page.locator("#open-project").click();
-    await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
+    await page.waitForSelector("#project-readiness[data-harness-launch-ready='true']", {
       timeout: 60_000,
     });
     const selectedProjectId = await page.locator("#project-readiness").getAttribute(
@@ -360,37 +360,14 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     assert.equal(await page.locator("#workbench-context-toggle").getAttribute(
       "aria-expanded",
     ), "false");
-    await sendTerminalLine(page, "prepare 146 sandcastle/issue-146");
-    const launchPreparationOutcome = await page.waitForFunction(() => {
-      const screen = document.querySelector(
-        "#project-controller-terminal-output .xterm-accessibility-tree",
-      )?.textContent ?? "";
-      if (screen.includes("Launch request:")) return "prepared";
-      const failureCode = /(?:Launch preparation|Controller operation) failed safely: ([a-z0-9_]+)/
-        .exec(screen)?.[1];
-      if (failureCode) return failureCode;
-      return false;
-    }, undefined, { timeout: 90_000 }).then((handle) => handle.jsonValue());
-    assert.equal(launchPreparationOutcome, "prepared");
-    const launchRequestId = /Launch request: (launch-request-[a-f0-9]{24})/.exec(
-      await page.locator(
-        "#project-controller-terminal-output .xterm-accessibility-tree",
-      ).textContent(),
-    )?.[1];
-    assert.match(launchRequestId, /^launch-request-[a-f0-9]{24}$/);
-    await page.waitForSelector(
-      "#workbench-person-action.is-pending[data-person-action='launch-approval']",
-      { timeout: 60_000 },
-    );
-    assert.match(await page.locator("#workbench-person-action").textContent(),
-      /Person required.*Review Launch request in Controller/s);
+    assert.equal(await page.locator("#workbench-person-action").getAttribute(
+      "data-person-action",
+    ), "none");
     const liveChrome = {
       selectedProjectCurrent: true,
       focusedWorkContextCurrent: true,
       providerAndAttachmentCurrent: true,
-      pendingPersonActionVisible: true,
-      pendingPersonActionSurvivedReconnect: false,
-      pendingPersonActionClearedAfterDecision: false,
+      pendingPersonActionAbsent: true,
     };
 
     const resizeSequenceBeforeReconnect = Number(await terminalPanel.getAttribute(
@@ -412,18 +389,9 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     assert.equal(await reconnectPage.locator("#workbench-focused-context").getAttribute(
       "data-work-context-id",
     ), focusedContextId);
-    await reconnectPage.waitForSelector(
-      "#workbench-person-action.is-pending[data-person-action='launch-approval']",
-      { timeout: 60_000 },
-    );
-    liveChrome.pendingPersonActionSurvivedReconnect = true;
-    await sendTerminalLine(reconnectPage, `reject ${launchRequestId} 1`);
-    await reconnectPage.waitForFunction(() => {
-      const action = document.querySelector("#workbench-person-action");
-      return action?.getAttribute("data-person-action") === "none"
-        && !action.classList.contains("is-pending");
-    }, undefined, { timeout: 90_000 });
-    liveChrome.pendingPersonActionClearedAfterDecision = true;
+    assert.equal(await reconnectPage.locator("#workbench-person-action").getAttribute(
+      "data-person-action",
+    ), "none");
     await reconnectPage.waitForFunction((previous) => Number(document.querySelector(
       "#project-focused-controller-session",
     )?.getAttribute("data-terminal-resize-sequence")) > previous,

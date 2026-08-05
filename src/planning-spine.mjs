@@ -201,10 +201,8 @@ const focusedSessionSchema = z.object({
       "controller.session.interactive",
       "controller.session.terminate",
       "controller.work-context.inspect",
-      "controller.launch-request.prepare",
-      "controller.launch-request.decide",
-      "controller.harness-run.start",
-    ])).min(3).max(7),
+      "controller.harness-run.launch",
+    ])).min(3).max(5),
     providerSessionId: z.string()
       .regex(/^conformance-provider-session-[a-f0-9]{24}$/),
     readiness: z.object({

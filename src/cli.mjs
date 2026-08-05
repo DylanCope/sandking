@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
 import { openBrowser } from "./browser-launch.mjs";
+import { requestControllerLaunch } from "./controller-cli.mjs";
 import { RuntimeStartupError, launchRuntime, stopRuntime } from "./runtime.mjs";
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
   const [command = "launch", ...rest] = argv;
-  /** @type {{command: string, noOpen: boolean, json: boolean, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
+  /** @type {{command: string, noOpen: boolean, json: boolean, projectId?: string, issueNumber?: number, targetBranch?: string, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
   const options = { command, noOpen: false, json: false };
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -50,9 +52,20 @@ const parseArgs = (argv) => {
     } else if (current === "--idempotency-key") {
       options.idempotencyKey = rest[index + 1];
       index += 1;
+    } else if (current === "--issue") {
+      options.issueNumber = Number(rest[index + 1]);
+      index += 1;
+      if (!Number.isSafeInteger(options.issueNumber) || options.issueNumber < 1) {
+        throw new Error("Invalid --issue value.");
+      }
+    } else if (current === "--target-branch") {
+      options.targetBranch = rest[index + 1];
+      index += 1;
     } else if (current === "--expected-revision") {
       options.expectedRevision = Number(rest[index + 1]);
       index += 1;
+    } else if (command === "launch" && !current.startsWith("-") && !options.projectId) {
+      options.projectId = current;
     } else {
       throw new Error(`Unsupported option: ${current}`);
     }
@@ -65,7 +78,19 @@ const main = async () => {
   const options = parseArgs(process.argv.slice(2));
   let output;
 
-  if (options.command === "launch") {
+  if (options.command === "launch" && options.projectId) {
+    if (!options.issueNumber) {
+      throw new Error("Harness launch requires --issue.");
+    }
+    output = await requestControllerLaunch({
+      projectId: options.projectId,
+      parameters: {
+        issueNumber: options.issueNumber,
+        targetBranch: options.targetBranch ?? `sandcastle/issue-${options.issueNumber}`,
+      },
+      idempotencyKey: options.idempotencyKey ?? randomUUID(),
+    });
+  } else if (options.command === "launch") {
     output = await launchRuntime({
       dataDir: options.dataDir,
       hostMode: options.hostMode,
@@ -94,6 +119,10 @@ const main = async () => {
     process.stdout.write(`${output.bootstrapUrl}\n`);
   } else if ("stopped" in output) {
     process.stdout.write(`${output.stopped ? "stopped" : "not-running"}\n`);
+  } else if ("run" in output && output.run?.harnessRunId) {
+    process.stdout.write(`${output.run.harnessRunId}\n`);
+  } else if ("code" in output) {
+    process.stdout.write(`${output.code}\n`);
   }
 };
 

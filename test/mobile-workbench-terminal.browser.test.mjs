@@ -180,7 +180,7 @@ test("the production Workbench terminal is usable at a touch phone viewport", as
     await page.locator("#open-project").click();
     await waitForCockpitReadiness(
       page,
-      "#project-readiness[data-launch-request-ready='true']",
+      "#project-readiness[data-harness-launch-ready='true']",
       browserErrors,
     );
     let controllerAttached = false;

@@ -8,6 +8,7 @@ import test from "node:test";
 import { createControllerSessionManager } from "../src/controller-sessions.mjs";
 
 const execFileAsync = promisify(execFile);
+const cliPath = join(process.cwd(), "src", "cli.mjs");
 
 const waitFor = async (predicate) => {
   const deadline = Date.now() + 5_000;
@@ -18,7 +19,6 @@ const waitFor = async (predicate) => {
   assert.fail("claude_controller_contract_timeout");
 };
 
-/** @param {string} executable */
 const matchingProviderProcesses = async (executable) => {
   const { stdout } = await execFileAsync("ps", ["-eo", "pid=,args="]);
   return stdout.trim().split("\n").flatMap((line) => {
@@ -79,12 +79,8 @@ test("the public provider boundary preserves an authentication probe adapter fai
   await writeFile(fakeClaudePath, `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");
-else if (args[0] === "--help") process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
-else if (args[0] === "plugin" && args[1] === "validate" && args.at(-1) === "--strict") {
-  process.stdout.write("Validated plugin\\n");
-} else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
-  process.stdout.write('[{"name":"sandking-controller","version":"1.0.0"}]');
-} else if (args.join(" ") === "auth status") process.stdout.write('{"loggedIn":');
+else if (args[0] === "--help") process.stdout.write("--session-id <uuid>\\n");
+else if (args.join(" ") === "auth status") process.stdout.write('{"loggedIn":');
 else process.exitCode = 97;
 `, { mode: 0o700 });
 
@@ -129,25 +125,23 @@ else process.exitCode = 97;
   }
 });
 
-test("an installed Claude Controller uses the shared PTY, work-context, and approval seams", async () => {
+test("an installed Claude Controller launches through the ordinary sandking CLI without a plugin", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-session-"));
   const dataDir = join(fixtureDirectory, "state");
   const projectDir = join(fixtureDirectory, "project");
   const fakeClaudePath = join(fixtureDirectory, "claude");
+  const sandkingPath = join(fixtureDirectory, "sandking");
   await Promise.all([mkdir(dataDir), mkdir(projectDir)]);
+  await writeFile(sandkingPath, `#!/bin/sh
+exec ${JSON.stringify(process.execPath)} ${JSON.stringify(cliPath)} "$@"
+`, { mode: 0o700 });
   await writeFile(fakeClaudePath, `#!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
 const args = process.argv.slice(2);
-await new Promise((resolve) => setTimeout(resolve, 700));
 if (args.length === 1 && args[0] === "--version") {
   process.stdout.write("2.1.141 (Claude Code)\\n");
 } else if (args.length === 1 && args[0] === "--help") {
-  process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
-} else if (args[0] === "plugin" && args[1] === "validate" && args.at(-1) === "--strict") {
-  process.stdout.write("Validated plugin\\n");
-} else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
-  process.stdout.write('[{"name":"sandking-controller","version":"1.0.0"}]');
+  process.stdout.write("--session-id <uuid>\\n");
 } else if (args.join(" ") === "auth status") {
   process.stdout.write('{"loggedIn":true}');
 } else {
@@ -155,22 +149,11 @@ if (args.length === 1 && args[0] === "--version") {
     process.stderr.write("unsafe environment reached Claude\\n");
     process.exit(88);
   }
-  const sessionIndex = args.indexOf("--session-id");
-  const pluginIndex = args.indexOf("--plugin-dir");
-  const sessionId = args[sessionIndex + 1];
-  const pluginDir = args[pluginIndex + 1];
-  const shim = join(pluginDir, "bin", "sandking-controller");
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  const sessionContext = execFileSync(process.execPath, [shim, "session-start"], {
-    encoding: "utf8",
-    env: process.env,
-    input: JSON.stringify({
-      hook_event_name: "SessionStart",
-      session_id: sessionId,
-      source: "startup",
-    }),
-  });
-  process.stdout.write("SESSION_CONTEXT " + sessionContext.trim() + "\\r\\n");
+  if (args.includes("--plugin-dir")) {
+    process.stderr.write("plugin argument reached Claude\\n");
+    process.exit(89);
+  }
+  process.stdout.write("CLAUDE_ARGS " + JSON.stringify(args) + "\\r\\n");
   process.stdout.write("Fake installed Claude Controller ready.\\r\\nclaude> ");
   process.stdin.setEncoding("utf8");
   let input = "";
@@ -180,38 +163,17 @@ if (args.length === 1 && args[0] === "--version") {
       const match = /\\r\\n|\\r|\\n/.exec(input);
       const line = input.slice(0, match.index).trim();
       input = input.slice(match.index + match[0].length);
-      if (line === "inspect") {
-        const output = execFileSync(process.execPath, [shim, "inspect"], {
-          encoding: "utf8", env: process.env,
-        });
-        process.stdout.write("INSPECTED " + output.trim() + "\\r\\nclaude> ");
-      } else if (line.startsWith("prepare ")) {
-        const output = execFileSync(process.execPath, [shim, ...line.split(" ")], {
-          encoding: "utf8", env: process.env,
-        });
-        process.stdout.write("PREPARED " + output.trim() + "\\r\\nclaude> ");
-      } else if (line.startsWith("approve ")) {
-        const output = execFileSync(process.execPath, [shim, ...line.split(" ")], {
-          encoding: "utf8", env: process.env,
-        });
-        process.stdout.write("DECIDED " + output.trim() + "\\r\\nclaude> ");
-      } else if (line.startsWith("start ")) {
-        const output = execFileSync(process.execPath, [shim, ...line.split(" ")], {
-          encoding: "utf8", env: process.env,
-        });
-        process.stdout.write("STARTED " + output.trim() + "\\r\\nclaude> ");
-      } else if (line === "network-fail") {
-        execFileSync(process.execPath, [shim, "stop-failure"], {
-          encoding: "utf8",
-          env: process.env,
-          input: JSON.stringify({
-            hook_event_name: "StopFailure",
-            session_id: sessionId,
-            error: "unknown",
-            error_details: "DNS lookup failed",
-          }),
-        });
-        process.exit(9);
+      if (line.startsWith("launch ")) {
+        const issue = line.split(" ")[1];
+        const output = execFileSync("sandking", [
+          "launch", process.env.SANDKING_WORK_CONTEXT_ID,
+          "--issue", issue,
+          "--target-branch", "sandcastle/issue-" + issue,
+          "--json",
+        ], { encoding: "utf8", env: process.env });
+        process.stdout.write("LAUNCHED " + output.trim() + "\\r\\nclaude> ");
+      } else if (line === "exit") {
+        process.exit(0);
       }
     }
   });
@@ -221,14 +183,13 @@ if (args.length === 1 && args[0] === "--version") {
   const audits = [];
   const operations = [];
   const projectId = `project-${"1".repeat(24)}`;
-  const launchRequestId = `launch-request-${"2".repeat(24)}`;
   let manager;
   try {
     manager = await createControllerSessionManager({
       dataDir,
       providerEnvironment: {
         HOME: fixtureDirectory,
-        PATH: process.env.PATH,
+        PATH: `${fixtureDirectory}:${process.env.PATH}`,
         LANG: "C.UTF-8",
         SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
         ANTHROPIC_API_KEY: "manager-secret-must-not-cross",
@@ -242,42 +203,11 @@ if (args.length === 1 && args[0] === "--version") {
       },
       handleProviderOperation: async (request) => {
         operations.push(request);
-        if (request.operation === "work-context.inspect") {
+        if (request.operation === "harness-run.launch") {
           return {
-            type: "project.work-context",
-            projectId,
-            revision: 3,
-            displayName: "fixture-project",
-            harnessId: `harness-${"3".repeat(24)}`,
-            pinnedRevision: "4".repeat(40),
-          };
-        }
-        if (request.operation === "launch-request.decide") {
-          return {
-            type: "launch.request.decision.result",
-            code: "launch_request_approved",
-            revision: 2,
-            launchRequest: {
-              launchRequestId,
-              status: "approved",
-              revision: 2,
-              execution: { status: "not_started" },
-            },
-          };
-        }
-        if (request.operation === "launch-request.prepare") {
-          return {
-            type: "launch.request.prepare.result",
-            code: "launch_request_prepared",
-            revision: 1,
-            launchRequest: { launchRequestId, revision: 1, status: "prepared" },
-          };
-        }
-        if (request.operation === "harness-run.start") {
-          return {
-            type: "harness.run.start.result",
+            type: "harness.run.launch.result",
             code: "harness_run_created",
-            harnessRunId: `harness-run-${"5".repeat(24)}`,
+            run: { harnessRunId: `harness-run-${"5".repeat(24)}` },
           };
         }
         throw new Error("unexpected_provider_operation");
@@ -285,7 +215,14 @@ if (args.length === 1 && args[0] === "--version") {
     });
     const probe = await manager.probeProvider("claude-code");
     assert.equal(probe.availability.status, "available");
-    assert.equal(probe.availability.version, "2.1.141");
+    assert.deepEqual(probe.capabilities, [
+      "controller.session.start",
+      "controller.session.interactive",
+      "controller.session.terminate",
+      "controller.harness-run.launch",
+      "controller.session.stable-identity",
+    ]);
+    assert.equal("integration" in probe, false);
     const session = await manager.start({
       workContextId: projectId,
       kind: "project",
@@ -295,42 +232,21 @@ if (args.length === 1 && args[0] === "--version") {
       workingDirectory: projectDir,
     });
     assert.equal(session.provider.providerId, "claude-code");
-    assert.equal(session.provider.fixture, false);
-    assert.match(session.provider.providerSessionId,
-      /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
-    assert.deepEqual(session.provider.sessionIdentity, {
-      stable: true,
-      source: "controller-assigned-supported-cli-flag",
-    });
-    assert.equal(session.terminal.runtimeOwned, true);
+    assert.equal("integration" in session.provider, false);
 
     const output = [];
     const writer = { readyState: 1 };
-    const observer = { readyState: 1 };
     const attachment = {
+      socket: writer,
       sessionId: session.sessionId,
       streamId: session.terminal.streamId,
       attachmentId: session.terminal.writableAttachment.attachmentId,
+      mode: "read-write",
       outputCursor: 0,
       onOutput: (_socket, frame) => output.push(frame.data.toString("utf8")),
     };
-    const writerAttachment = await manager.attach({
-      ...attachment,
-      socket: writer,
-      mode: "read-write",
-    });
-    assert.equal(writerAttachment.activate(), true);
-    const observerAttachment = await manager.attach({
-      ...attachment,
-      socket: observer,
-      mode: "read-only",
-    });
-    assert.equal(observerAttachment.activate(), true);
-    await assert.rejects(manager.attach({
-      ...attachment,
-      socket: observer,
-      mode: "read-write",
-    }), (error) => error.code === "terminal_write_attachment_conflict");
+    const attached = await manager.attach(attachment);
+    assert.equal(attached.activate(), true);
     let sequence = 0;
     const enter = (line) => manager.write({
       socket: writer,
@@ -339,63 +255,23 @@ if (args.length === 1 && args[0] === "--version") {
       eof: false,
       data: Buffer.from(`${line}\n`),
     });
-    await waitFor(() => output.join("").includes(
-      "SESSION_CONTEXT {\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\"",
-    ));
-    await enter("inspect");
-    await waitFor(() => output.join("").includes(`INSPECTED {"type":"project.work-context"`));
-    await enter("prepare 124 sandcastle/issue-124");
-    await waitFor(() => output.join("").includes(`PREPARED {"type":"launch.request.prepare.result"`));
-    await enter(`approve ${launchRequestId} 1`);
-    await waitFor(() => output.join("").includes(`DECIDED {"type":"launch.request.decision.result"`));
-    await enter(`start ${launchRequestId} 2`);
-    await waitFor(() => output.join("").includes(`STARTED {"type":"harness.run.start.result"`));
-    manager.detach(writer);
-    assert.equal(manager.inspect(session.sessionId).terminal.status, "running");
-    const reattachment = await manager.attach({
-      ...attachment,
-      socket: writer,
-      mode: "read-write",
+    await waitFor(() => output.join("").includes("Fake installed Claude Controller ready"));
+    await enter("launch 152");
+    await waitFor(() => output.join("").includes(`LAUNCHED {"type":"harness.run.launch.result"`))
+      .catch(() => assert.fail(`ordinary CLI launch output missing:\n${output.join("")}`));
+    assert.equal(operations.length, 1);
+    assert.equal(operations[0].operation, "harness-run.launch");
+    assert.deepEqual(operations[0].input.parameters, {
+      issueNumber: 152,
+      targetBranch: "sandcastle/issue-152",
     });
-    assert.equal(reattachment.activate(), true);
-    await enter("network-fail");
+    assert.equal("expectedRevision" in operations[0].input, false);
+    assert.doesNotMatch(output.join(""), /--plugin-dir|sandking-controller|approve|prepare/i);
+    await enter("exit");
     await waitFor(() => manager.inspect(session.sessionId).terminal.status === "exited");
-    assert.deepEqual(manager.inspect(session.sessionId).terminal.exitReason, {
-      code: "provider_network_unavailable",
-      retryable: true,
-      source: "claude-stop-failure",
-    });
-    assert.deepEqual(operations.map((operation) => operation.operation), [
-      "work-context.inspect",
-      "work-context.inspect",
-      "launch-request.prepare",
-      "launch-request.decide",
-      "harness-run.start",
-    ]);
-    assert.deepEqual(operations[2].input.parameters, {
-      issueNumber: 124,
-      targetBranch: "sandcastle/issue-124",
-    });
-    assert.equal(operations[2].input.expiresInSeconds, 300);
-    assert.match(operations[2].input.idempotencyKey,
-      new RegExp(`^provider:${session.sessionId}:prepare:[a-f0-9]{64}$`));
-    assert.equal(operations[3].input.launchRequestId, launchRequestId);
-    assert.equal(operations[3].input.expectedRevision, 1);
-    assert.equal(operations[3].input.decision, "approved");
-    assert.match(operations[3].input.idempotencyKey,
-      new RegExp(`^provider:${session.sessionId}:decision:${launchRequestId}:1:approved$`));
-    assert.equal(operations[4].input.launchRequestId, launchRequestId);
-    assert.equal(operations[4].input.expectedRevision, 2);
-    assert.match(operations[4].input.idempotencyKey,
-      new RegExp(`^provider:${session.sessionId}:harness-run:start:${launchRequestId}:2$`));
-    const sessionStartAudit = audits.find((audit) =>
-      audit.action === "controller.session.start"
-      && audit.outcome === "accepted"
-      && audit.details.sessionId === session.sessionId);
-    assert.equal(sessionStartAudit?.details.controllerSessionId, session.sessionId);
     assert.ok(audits.some((audit) =>
-      audit.action === "controller.session.failure"
-      && audit.details.code === "provider_network_unavailable"));
+      audit.action === "controller.provider.operation"
+      && audit.details.operation === "harness-run.launch"));
     assert.doesNotMatch(JSON.stringify(audits) + JSON.stringify(operations) + output.join(""),
       /manager-secret-must-not-cross|oauth-secret-must-not-cross/);
   } finally {

@@ -26,32 +26,19 @@ const capabilities = Object.freeze([
   "controller.session.start",
   "controller.session.interactive",
   "controller.session.terminate",
-  "controller.work-context.inspect",
-  "controller.launch-request.prepare",
-  "controller.launch-request.decide",
-  "controller.harness-run.start",
+  "controller.harness-run.launch",
   "controller.session.stable-identity",
-  "controller.session.typed-exit",
 ]);
 const baseSessionCapabilities = Object.freeze([
   "controller.session.start",
   "controller.session.interactive",
   "controller.session.terminate",
 ]);
-const pluginCapabilities = Object.freeze([
-  "controller.work-context.inspect",
-  "controller.launch-request.prepare",
-  "controller.launch-request.decide",
-  "controller.harness-run.start",
-  "controller.session.typed-exit",
-]);
 const adapterPath = fileURLToPath(import.meta.url);
-const pluginDirectory = fileURLToPath(new URL("./claude-controller-plugin", import.meta.url));
 const controllerSessionPattern = /^controller-session-[a-f0-9]{24}$/;
 const providerSessionPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const workContextPattern = /^[a-zA-Z0-9._:-]{1,160}$/;
 const canonicalReferencePattern = /^(?:github:fixture:issue:[0-9]+|sandking:project:project-[a-f0-9]{24})$/;
-const launchRequestPattern = /^launch-request-[a-f0-9]{24}$/;
 const claudeStopFailureTypes = new Set([
   "authentication_failed",
   "oauth_org_not_allowed",
@@ -216,22 +203,6 @@ const parseClaudeAuthenticationStatus = (stdout) => {
   return declarations[0];
 };
 
-/** @param {unknown} inventory */
-const hasLoadedControllerPlugin = (inventory) => {
-  const records = Array.isArray(inventory)
-    ? inventory
-    : inventory && typeof inventory === "object" && "plugins" in inventory
-      && Array.isArray(inventory.plugins)
-      ? inventory.plugins
-      : [];
-  return records.some((record) => record && typeof record === "object"
-    && (record.name === "sandking-controller"
-      || record.id === "sandking-controller"
-      || record.id === "sandking-controller@inline")
-    && record.version === "1.0.0"
-    && record.enabled !== false);
-};
-
 /** @param {string[]} detectedCapabilities */
 const baseProbe = (detectedCapabilities) => ({
   type: "provider.adapter.probe",
@@ -242,15 +213,6 @@ const baseProbe = (detectedCapabilities) => ({
   terminal: {
     ptyRequired: true,
     runtimeOwnershipRequired: true,
-  },
-  integration: {
-    pluginId: "sandking-controller",
-    pluginVersion: "1.0.0",
-    scope: "session",
-    loading: "--plugin-dir",
-    installed: false,
-    boundary: "session-plugin-private-typed-shim",
-    credentialsTransferred: false,
   },
 });
 
@@ -266,21 +228,7 @@ const detectClaudeCapabilities = async (executable) => {
   for (const capability of baseSessionCapabilities) detected.add(capability);
   if (/(?:^|\s)--session-id(?:[=\s,]|$)/m.test(help)) {
     detected.add("controller.session.stable-identity");
-  }
-  if (/(?:^|\s)--plugin-dir(?:[=\s,]|$)/m.test(help)) {
-    try {
-      await invokeClaudeMetadataCommand(executable, [
-        "plugin", "validate", pluginDirectory, "--strict",
-      ]);
-      const result = await invokeClaudeMetadataCommand(executable, [
-        "--plugin-dir", pluginDirectory, "plugin", "list", "--json",
-      ]);
-      if (hasLoadedControllerPlugin(JSON.parse(result.stdout))) {
-        for (const capability of pluginCapabilities) detected.add(capability);
-      }
-    } catch {
-      // A CLI that cannot load and enumerate the shipped plugin does not support its capabilities.
-    }
+    detected.add("controller.harness-run.launch");
   }
   return capabilities.filter((capability) => detected.has(capability));
 };
@@ -413,8 +361,6 @@ const prepareClaude = async (argv) => {
   }
   const environment = {
     ...createClaudeDestinationEnvironment(),
-    SANDKING_CLAUDE_SESSION_ID: providerSessionId,
-    SANDKING_CONTROLLER_SESSION_ID: sessionId,
   };
   return {
     type: "provider.session.prepared",
@@ -438,16 +384,6 @@ const prepareClaude = async (argv) => {
       stable: true,
       source: "controller-assigned-supported-cli-flag",
     },
-    integration: {
-      pluginDirectory,
-      pluginId: "sandking-controller",
-      pluginVersion: "1.0.0",
-      scope: "session",
-      loading: "--plugin-dir",
-      installed: false,
-      boundary: "session-plugin-private-typed-shim",
-      credentialsTransferred: false,
-    },
     command: {
       executable: process.execPath,
       args: [
@@ -461,7 +397,6 @@ const prepareClaude = async (argv) => {
       ],
       providerArgs: [
         "--session-id", providerSessionId,
-        "--plugin-dir", pluginDirectory,
       ],
       environment,
     },
@@ -581,132 +516,47 @@ const canonicalDigest = (value) => createHash("sha256")
   .digest("hex");
 
 /**
- * @param {{sessionId: string, providerSessionId: string, control: any, recordProviderFailure: (failure: {code: string, retryable: boolean, source: string}) => void}} options
+ * @param {{sessionId: string, workContextId: string, control: any}} options
  */
-const openPluginShimServer = async ({
+const openControllerCliServer = async ({
   sessionId,
-  providerSessionId,
+  workContextId,
   control,
-  recordProviderFailure,
 }) => {
   const directory = process.platform === "win32"
     ? null
-    : await mkdtemp(join(tmpdir(), "sandking-claude-shim-"));
+    : await mkdtemp(join(tmpdir(), "sandking-controller-cli-"));
   const endpoint = directory
     ? join(directory, "operations.sock")
-    : `\\\\.\\pipe\\sandking-claude-shim-${canonicalDigest({ sessionId }).slice(0, 24)}`;
+    : `\\\\.\\pipe\\sandking-controller-cli-${canonicalDigest({ sessionId }).slice(0, 24)}`;
   let closed = false;
 
   /** @param {any} request */
   const handle = async (request) => {
     if (
-      request?.type !== "claude.plugin.operation.request"
+      request?.type !== "sandking.cli.request"
       || request.protocol !== "1.0.0"
-      || typeof request.operationId !== "string"
-      || !/^claude-plugin-operation-[a-f0-9]{24}$/.test(request.operationId)
+      || !/^sandking-cli-[a-f0-9]{16}$/.test(request.requestId ?? "")
+      || request.operation !== "harness-run.launch"
       || request.controllerSessionId !== sessionId
-      || request.providerSessionId !== providerSessionId
-      || !request.input
-      || typeof request.input !== "object"
+      || request.projectId !== workContextId
+      || !request.parameters
+      || typeof request.parameters !== "object"
+      || !Number.isSafeInteger(request.parameters.issueNumber)
+      || request.parameters.issueNumber < 1
+      || request.parameters.issueNumber > 999_999_999
+      || request.parameters.targetBranch
+        !== `sandcastle/issue-${request.parameters.issueNumber}`
+      || typeof request.idempotencyKey !== "string"
+      || request.idempotencyKey.length < 1
+      || request.idempotencyKey.length > 256
     ) {
-      throw new Error("claude_plugin_protocol_invalid");
+      throw new Error("controller_cli_contract_invalid");
     }
-    if (request.operation === "work-context.inspect") {
-      return control.request("work-context.inspect", {});
-    }
-    if (request.operation === "launch-request.prepare") {
-      const parameters = request.input.parameters;
-      const expiresInSeconds = Number(request.input.expiresInSeconds);
-      if (
-        !parameters
-        || typeof parameters !== "object"
-        || !Number.isSafeInteger(parameters.issueNumber)
-        || parameters.issueNumber < 1
-        || parameters.issueNumber > 4_095
-        || parameters.targetBranch !== `sandcastle/issue-${parameters.issueNumber}`
-        || expiresInSeconds !== 300
-      ) {
-        throw new Error("launch_request_parameters_invalid");
-      }
-      return control.request("launch-request.prepare", {
-        parameters,
-        expiresInSeconds,
-        idempotencyKey: `provider:${sessionId}:prepare:${canonicalDigest(parameters)}`,
-      });
-    }
-    if (request.operation === "launch-request.decide") {
-      const { launchRequestId, decision } = request.input;
-      const expectedRevision = Number(request.input.expectedRevision);
-      if (
-        !launchRequestPattern.test(String(launchRequestId))
-        || (decision !== "approved" && decision !== "rejected")
-        || !Number.isSafeInteger(expectedRevision)
-        || expectedRevision < 1
-      ) {
-        throw new Error("launch_request_decision_invalid");
-      }
-      return control.request("launch-request.decide", {
-        launchRequestId,
-        decision,
-        expectedRevision,
-        idempotencyKey:
-          `provider:${sessionId}:decision:${launchRequestId}:${expectedRevision}:${decision}`,
-      });
-    }
-    if (request.operation === "harness-run.start") {
-      const { launchRequestId } = request.input;
-      const expectedRevision = Number(request.input.expectedRevision);
-      if (
-        !launchRequestPattern.test(String(launchRequestId))
-        || !Number.isSafeInteger(expectedRevision)
-        || expectedRevision < 1
-      ) {
-        throw new Error("harness_run_start_invalid");
-      }
-      return control.request("harness-run.start", {
-        launchRequestId,
-        expectedRevision,
-        idempotencyKey:
-          `provider:${sessionId}:harness-run:start:${launchRequestId}:${expectedRevision}`,
-      });
-    }
-    if (request.operation === "claude.session-start") {
-      if (
-        request.input.hookEventName !== "SessionStart"
-        || request.input.sessionId !== providerSessionId
-        || !["startup", "resume"].includes(request.input.source)
-      ) {
-        throw new Error("claude_session_identity_mismatch");
-      }
-      const inspected = await control.request("work-context.inspect", {});
-      return {
-        hookSpecificOutput: {
-          hookEventName: "SessionStart",
-          additionalContext:
-            `Sand-King selected work context (sanitized): ${JSON.stringify(inspected)}`,
-        },
-      };
-    }
-    if (request.operation === "claude.stop-failure") {
-      if (
-        request.input.hookEventName !== "StopFailure"
-        || request.input.sessionId !== providerSessionId
-      ) {
-        throw new Error("claude_session_identity_mismatch");
-      }
-      const failure = classifyClaudeStopFailure(request.input);
-      recordProviderFailure(failure);
-      control.notify({
-        type: "provider.session.failure",
-        controlProtocol: adapterProtocol,
-        adapterId,
-        sessionId,
-        providerSessionId,
-        failure,
-      });
-      return { reported: true, failure };
-    }
-    throw new Error("claude_plugin_operation_unsupported");
+    return control.request("harness-run.launch", {
+      parameters: request.parameters,
+      idempotencyKey: request.idempotencyKey,
+    });
   };
 
   const server = createNetServer((socket) => {
@@ -729,28 +579,28 @@ const openPluginShimServer = async ({
       }
       handle(request).then(
         (outcome) => socket.end(`${JSON.stringify({
-          type: "claude.plugin.operation.result",
+          type: "sandking.cli.result",
           protocol: "1.0.0",
-          operationId: request.operationId,
+          requestId: request.requestId,
           ok: true,
           outcome,
         })}\n`),
         (error) => socket.end(`${JSON.stringify({
-          type: "claude.plugin.operation.result",
+          type: "sandking.cli.result",
           protocol: "1.0.0",
-          operationId: request.operationId,
+          requestId: request.requestId,
           ok: false,
           failure: {
             code: error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
               ? error.message
-              : "claude_plugin_operation_failed",
+              : "controller_cli_operation_failed",
           },
         })}\n`),
       );
     });
   });
   await new Promise((resolve, reject) => {
-    const onError = () => reject(new Error("claude_plugin_channel_unavailable"));
+    const onError = () => reject(new Error("controller_cli_unavailable"));
     server.once("error", onError);
     server.listen(endpoint, () => {
       server.off("error", onError);
@@ -805,17 +655,13 @@ const runClaude = async (argv) => {
     terminal: { stdinTty: true, stdoutTty: true },
   };
   const control = await openRuntimeControl(controlEndpoint, readyMessage);
-  let providerFailure = null;
-  const shim = await openPluginShimServer({
+  const controllerCli = await openControllerCliServer({
     sessionId,
-    providerSessionId,
+    workContextId,
     control,
-    recordProviderFailure: (failure) => {
-      providerFailure = failure;
-    },
   });
   const executable = process.env.SANDKING_CLAUDE_EXECUTABLE ?? "claude";
-  const providerArgs = ["--session-id", providerSessionId, "--plugin-dir", pluginDirectory];
+  const providerArgs = ["--session-id", providerSessionId];
   let runtimeTerminated = false;
   /** @type {import("node:child_process").ChildProcess} */
   let child;
@@ -825,9 +671,9 @@ const runClaude = async (argv) => {
       stdio: "inherit",
       env: {
         ...createClaudeDestinationEnvironment(),
-        SANDKING_CLAUDE_SHIM_ENDPOINT: shim.endpoint,
-        SANDKING_CLAUDE_SESSION_ID: providerSessionId,
+        SANDKING_CONTROLLER_ENDPOINT: controllerCli.endpoint,
         SANDKING_CONTROLLER_SESSION_ID: sessionId,
+        SANDKING_WORK_CONTEXT_ID: workContextId,
       },
     });
     await new Promise((resolve, reject) => {
@@ -849,7 +695,7 @@ const runClaude = async (argv) => {
       providerSessionId,
       reason,
     });
-    await shim.close();
+    await controllerCli.close();
     await control.close();
     throw new Error(reason.code);
   }
@@ -869,7 +715,7 @@ const runClaude = async (argv) => {
     child.once("exit", (exitCode, signal) => resolve({ exitCode, signal }));
   });
   for (const [signal, handler] of signalHandlers) process.off(signal, handler);
-  const reason = providerFailure ?? (runtimeTerminated || outcome.signal
+  const reason = runtimeTerminated || outcome.signal
     ? { code: "runtime_terminated", retryable: false, source: "controller-runtime" }
     : outcome.exitCode === 0
       ? { code: "provider_session_completed", retryable: false, source: "claude-cli" }
@@ -877,7 +723,7 @@ const runClaude = async (argv) => {
           code: "provider_model_behavior_unconfirmed",
           retryable: true,
           source: "claude-cli",
-        });
+        };
   control.notify({
     type: "provider.session.exit",
     controlProtocol: adapterProtocol,
@@ -886,7 +732,7 @@ const runClaude = async (argv) => {
     providerSessionId,
     reason,
   });
-  await shim.close();
+  await controllerCli.close();
   await control.close();
   process.exitCode = outcome.exitCode ?? (outcome.signal ? 1 : 0);
 };

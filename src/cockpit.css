@@ -599,3 +599,22 @@ button:disabled {
     transition: none;
   }
 }
+
+#harness-launch-confirmation {
+  max-width: min(32rem, calc(100vw - 2rem));
+  border: 1px solid #3f4654;
+  border-radius: 10px;
+  background: #111620;
+  color: #f4f4f5;
+  padding: 20px;
+}
+
+#harness-launch-confirmation::backdrop {
+  background: rgb(0 0 0 / 65%);
+}
+
+.harness-launch-confirmation__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}

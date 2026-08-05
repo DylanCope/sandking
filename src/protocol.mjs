@@ -5,9 +5,6 @@ import {
   projectRegistrationSchema,
 } from "./project-registration.mjs";
 import {
-  launchRequestSchema,
-} from "./launch-requests.mjs";
-import {
   harnessRunEventSchema,
   harnessRunOutcomeSchema,
   harnessRunSchema,
@@ -34,7 +31,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.bulk-stream.v1",
   "sandking.project-registration.v1",
   "sandking.conformance-harness-registration.v1",
-  "sandking.launch-request.v1",
+  "sandking.harness-run.launch.v1",
   "sandking.harness-run.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
@@ -334,36 +331,34 @@ const projectOperationFailureSchema = z.object({
   }).strip(),
 }).strip();
 
-const launchAuthorizationClassSchema = z.literal("focused_controller_launch");
-const launchRequestPrepareSchema = z.object({
-  type: z.literal("launch.request.prepare"),
+const harnessRunAuthorizationClassSchema = z.literal("harness_run_launch");
+const harnessRunLaunchSourceSchema = z.enum(["controller-cli", "cockpit"]);
+const harnessRunLaunchSchema = z.object({
+  type: z.literal("harness.run.launch"),
   requestId: identifierSchema,
   projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
-  // Mutation frames carry candidate configuration to the Host, which owns
-  // bounded validation and the durable typed failure outcome. Successful
-  // Launch requests remain constrained by launchRequestSchema below.
   parameters: z.unknown(),
   controllerId: runtimeIdSchema,
-  controllerSessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
-  authorizationClass: launchAuthorizationClassSchema,
+  controllerSessionId: z.string()
+    .regex(/^controller-session-[a-f0-9]{24}$/)
+    .nullable(),
+  source: harnessRunLaunchSourceSchema,
+  authorizationClass: harnessRunAuthorizationClassSchema,
   idempotencyKey: z.string().min(1).max(256),
-  expectedRevision: z.literal(0),
-  expiresInSeconds: z.number().int().min(1).max(900),
 }).strip();
-const launchRequestPrepareResultSchema = z.object({
-  type: z.literal("launch.request.prepare.result"),
+export const harnessRunLaunchResultSchema = z.object({
+  type: z.literal("harness.run.launch.result"),
   requestId: identifierSchema,
-  code: z.literal("launch_request_prepared"),
-  authorizationClass: launchAuthorizationClassSchema,
+  code: z.enum(["harness_run_created", "harness_run_found"]),
+  authorizationClass: harnessRunAuthorizationClassSchema,
   idempotencyKeyHash: digestSchema,
-  expectedRevision: z.literal(0),
-  revision: z.literal(1),
+  revision: z.number().int().positive(),
   idempotentReplay: z.boolean(),
   auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
-  launchRequest: launchRequestSchema,
+  run: harnessRunSchema,
 }).strip();
-const launchRequestPrepareFailureSchema = z.object({
-  type: z.literal("launch.request.prepare.failure"),
+export const harnessRunLaunchFailureSchema = z.object({
+  type: z.literal("harness.run.launch.failure"),
   requestId: identifierSchema,
   code: z.enum([
     "mutation_contract_invalid",
@@ -373,133 +368,25 @@ const launchRequestPrepareFailureSchema = z.object({
     "harness_not_found",
     "harness_pin_missing",
     "harness_pin_invalid",
-    "launch_precondition_invalid",
     "harness_workspace_invalid",
     "harness_capability_unsupported",
     "harness_adapter_protocol_invalid",
     "harness_preparation_side_effect_detected",
   ]),
   retryable: z.boolean(),
-  authorizationClass: launchAuthorizationClassSchema,
+  authorizationClass: harnessRunAuthorizationClassSchema,
   idempotencyKeyHash: digestSchema.nullable(),
-  expectedRevision: z.number().int().nonnegative().nullable(),
-  actualRevision: z.literal(0),
   idempotentReplay: z.boolean(),
   auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
   prohibitedSideEffects: z.object({
-    delegatedWorkStarted: z.literal(false),
-    projectWrite: z.literal(false),
-    harnessWorkspaceWrite: z.literal(false),
-    approvalRecorded: z.literal(false),
-  }).strict(),
-}).strip();
-const launchRequestDecisionSchema = z.object({
-  type: z.literal("launch.request.decision"),
-  requestId: identifierSchema,
-  launchRequestId: z.string().regex(/^launch-request-[a-f0-9]{24}$/),
-  decision: z.enum(["approved", "rejected"]),
-  controllerId: runtimeIdSchema,
-  controllerSessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
-  authorizationClass: launchAuthorizationClassSchema,
-  idempotencyKey: z.string().min(1).max(256),
-  expectedRevision: z.number().int().nonnegative(),
-}).strip();
-const launchRequestDecisionResultSchema = z.object({
-  type: z.literal("launch.request.decision.result"),
-  requestId: identifierSchema,
-  code: z.enum(["launch_request_approved", "launch_request_rejected"]),
-  authorizationClass: launchAuthorizationClassSchema,
-  idempotencyKeyHash: digestSchema,
-  expectedRevision: z.number().int().positive(),
-  revision: z.number().int().min(2),
-  idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
-  launchRequest: launchRequestSchema,
-}).strip();
-const launchRequestDecisionFailureSchema = z.object({
-  type: z.literal("launch.request.decision.failure"),
-  requestId: identifierSchema,
-  code: z.enum([
-    "mutation_contract_invalid",
-    "idempotency_key_conflict",
-    "mutation_revision_conflict",
-    "launch_request_not_found",
-    "authorization_failed",
-    "launch_request_terminal",
-    "launch_request_expired",
-    "launch_request_materially_changed",
-  ]),
-  retryable: z.boolean(),
-  authorizationClass: launchAuthorizationClassSchema,
-  idempotencyKeyHash: digestSchema.nullable(),
-  expectedRevision: z.number().int().nonnegative().nullable(),
-  actualRevision: z.number().int().nonnegative(),
-  idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
-  current: z.object({
-    launchRequestId: z.string().regex(/^launch-request-[a-f0-9]{24}$/),
-    revision: z.number().int().positive(),
-    status: z.enum(["pending", "approved", "rejected", "expired"]),
-    preview: launchRequestSchema.shape.preview,
-  }).strict().nullable(),
-  prohibitedSideEffects: z.object({
-    harnessRunStarted: z.literal(false),
-    browserApprovalAccepted: z.literal(false),
-  }).strict(),
-}).strip();
-
-const harnessRunAuthorizationClassSchema = z.literal("approved_launch_request_execution");
-const harnessRunStartSchema = z.object({
-  type: z.literal("harness.run.start"),
-  requestId: identifierSchema,
-  launchRequestId: z.string().regex(/^launch-request-[a-f0-9]{24}$/),
-  controllerId: runtimeIdSchema,
-  controllerSessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
-  authorizationClass: harnessRunAuthorizationClassSchema,
-  idempotencyKey: z.string().min(1).max(256),
-  expectedRevision: z.number().int().positive(),
-}).strip();
-const harnessRunStartResultSchema = z.object({
-  type: z.literal("harness.run.start.result"),
-  requestId: identifierSchema,
-  code: z.enum(["harness_run_created", "harness_run_found"]),
-  authorizationClass: harnessRunAuthorizationClassSchema,
-  idempotencyKeyHash: digestSchema,
-  expectedRevision: z.number().int().positive(),
-  launchRequestRevision: z.number().int().positive(),
-  revision: z.number().int().positive(),
-  idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
-  run: harnessRunSchema,
-}).strip();
-const harnessRunStartFailureSchema = z.object({
-  type: z.literal("harness.run.start.failure"),
-  requestId: identifierSchema,
-  code: z.enum([
-    "mutation_contract_invalid",
-    "idempotency_key_conflict",
-    "mutation_revision_conflict",
-    "authorization_failed",
-    "launch_request_not_found",
-    "launch_request_unapproved",
-    "launch_request_terminal",
-    "launch_request_expired",
-    "launch_request_stale",
-    "launch_request_already_started",
-  ]),
-  retryable: z.boolean(),
-  authorizationClass: harnessRunAuthorizationClassSchema,
-  idempotencyKeyHash: digestSchema.nullable(),
-  expectedRevision: z.number().int().nonnegative().nullable(),
-  actualRevision: z.number().int().nonnegative(),
-  idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
-  current: launchRequestSchema.nullable(),
-  prohibitedSideEffects: z.object({
-    harnessRunStarted: z.literal(false),
+    harnessRunCreated: z.literal(false),
     projectWrite: z.literal(false),
   }).strict(),
 }).strip();
+export const harnessRunLaunchOutcomeSchema = z.union([
+  harnessRunLaunchResultSchema,
+  harnessRunLaunchFailureSchema,
+]);
 const harnessRunLookupSchema = z.object({
   type: z.literal("harness.run.lookup"),
   requestId: identifierSchema,
@@ -509,15 +396,12 @@ const harnessRunLookupResultSchema = z.object({
   type: z.literal("harness.run.lookup.result"),
   requestId: identifierSchema,
   code: z.enum([
-    "harness_run_start_outcome_found",
-    "harness_run_start_outcome_absent",
+    "harness_run_launch_outcome_found",
+    "harness_run_launch_outcome_absent",
   ]),
   idempotencyKeyHash: digestSchema.nullable(),
   found: z.boolean(),
-  startOutcome: z.union([
-    harnessRunStartResultSchema,
-    harnessRunStartFailureSchema,
-  ]).nullable(),
+  launchOutcome: harnessRunLaunchOutcomeSchema.nullable(),
 }).strip();
 const harnessRunObserveSchema = z.object({
   type: z.literal("harness.run.observe"),
@@ -552,7 +436,6 @@ const harnessRunObserveResultSchema = z.object({
     availableFromSequence: z.number().int().nonnegative(),
     canonicalSnapshot: z.literal(true),
   }).strict().nullable(),
-  launchRequest: launchRequestSchema.nullable(),
   run: harnessRunSchema.nullable(),
   events: z.array(harnessRunEventSchema).max(1_024),
   nextSequence: z.number().int().nonnegative(),
@@ -613,15 +496,9 @@ export const controlMessageSchema = z.discriminatedUnion("type", [
   projectHarnessPinSchema,
   projectHarnessPinResultSchema,
   projectOperationFailureSchema,
-  launchRequestPrepareSchema,
-  launchRequestPrepareResultSchema,
-  launchRequestPrepareFailureSchema,
-  launchRequestDecisionSchema,
-  launchRequestDecisionResultSchema,
-  launchRequestDecisionFailureSchema,
-  harnessRunStartSchema,
-  harnessRunStartResultSchema,
-  harnessRunStartFailureSchema,
+  harnessRunLaunchSchema,
+  harnessRunLaunchResultSchema,
+  harnessRunLaunchFailureSchema,
   harnessRunLookupSchema,
   harnessRunLookupResultSchema,
   harnessRunObserveSchema,

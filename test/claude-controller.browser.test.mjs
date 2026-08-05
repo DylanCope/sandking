@@ -28,17 +28,13 @@ test("local-walking-skeleton/operates-installed-claude-controller uses the share
 if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
   printf '%s\\n' '2.1.141 (Claude Code)'
 elif [ "$#" -eq 1 ] && [ "$1" = "--help" ]; then
-  printf '%s\\n' '--session-id <uuid> --plugin-dir <path>'
-elif [ "$1" = "plugin" ] && [ "$2" = "validate" ]; then
-  printf '%s\\n' 'Validated plugin'
-elif [ "$1" = "--plugin-dir" ] && [ "$3" = "plugin" ] && [ "$4" = "list" ]; then
-  printf '%s' '[{"name":"sandking-controller","version":"1.0.0"}]'
+  printf '%s\\n' '--session-id <uuid>'
 elif [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   printf '%s' '{"loggedIn":true}'
 else
   if [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then exit 88; fi
   case " $* " in *' --session-id '*) ;; *) exit 89 ;; esac
-  case " $* " in *' --plugin-dir '*) ;; *) exit 89 ;; esac
+  case " $* " in *' --plugin-dir '*) exit 89 ;; esac
   printf 'Fake installed Claude owns this runtime PTY.\\r\\n'
   printf 'Working context directory: %s\\r\\n' "$PWD"
   while IFS= read -r _line; do :; done
@@ -94,7 +90,7 @@ fi
 
     await page.locator("#project-path").fill(projectPath);
     await page.locator("#open-project").click();
-    await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
+    await page.waitForSelector("#project-readiness[data-harness-launch-ready='true']", {
       timeout: 90_000,
     });
     assert.equal(await page.locator("#open-project-claude-controller").isEnabled(), true);
@@ -153,15 +149,10 @@ fi
             adapterProtocol: retained.adapterProtocol,
             reportedVersion: "2.1.141",
             destinationLocalAuthentication: true,
-            capabilityProbe:
-              "non-model-cli-help-strict-plugin-validation-and-session-plugin-inventory",
+            capabilityProbe: "non-model-cli-help-and-stable-session-identity",
             reportedCapabilities: retained.capabilities,
-            pluginId: "sandking-controller",
-            pluginVersion: "1.0.0",
-            pluginScope: "session",
-            pluginLoading: "--plugin-dir",
             pluginInstalled: false,
-            shimBoundary: "session-plugin-private-typed-shim",
+            controllerCommand: "ordinary-sandking-cli",
           },
           focusedSession: {
             sessionId: controllerSessionId,
@@ -178,9 +169,7 @@ fi
             "cockpit.project-focused-session",
             "controller-runtime.provider-session",
             "controller.work-context.inspect",
-            "controller.launch-request.prepare",
-            "controller.launch-request.decide",
-            "controller.harness-run.start",
+            "controller.harness-run.launch",
             "cockpit.harness-run.observe"
           ],
           typedProviderOutcomesTested: [

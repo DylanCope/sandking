@@ -74,25 +74,12 @@ if (args.length === 1 && args[0] === "--version") {
         "controller.session.start",
         "controller.session.interactive",
         "controller.session.terminate",
-        "controller.work-context.inspect",
-        "controller.launch-request.prepare",
-        "controller.launch-request.decide",
-        "controller.harness-run.start",
+        "controller.harness-run.launch",
         "controller.session.stable-identity",
-        "controller.session.typed-exit",
       ],
       terminal: {
         ptyRequired: true,
         runtimeOwnershipRequired: true,
-      },
-      integration: {
-        pluginId: "sandking-controller",
-        pluginVersion: "1.0.0",
-        scope: "session",
-        loading: "--plugin-dir",
-        installed: false,
-        boundary: "session-plugin-private-typed-shim",
-        credentialsTransferred: false,
       },
     });
     assert.doesNotMatch(stdout, /probe-secret-must-not-be-used/);
@@ -101,7 +88,7 @@ if (args.length === 1 && args[0] === "--version") {
   }
 });
 
-test("the Claude adapter accepts the current native CLI session-plugin identity", async () => {
+test("the Claude adapter accepts the native CLI without plugin support", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-native-probe-"));
   const fakeClaudePath = join(fixtureDirectory, "claude");
   await writeFile(fakeClaudePath, `#!/bin/sh
@@ -128,7 +115,7 @@ fi
     assert.equal(probe.availability.status, "available", JSON.stringify(probe));
     assert.equal(probe.availability.version, "2.1.220");
     assert.equal(probe.availability.authentication.status, "authenticated");
-    assert.equal(probe.integration.pluginId, "sandking-controller");
+    assert.equal("integration" in probe, false);
   } finally {
     if (previousExecutable === undefined) delete process.env.SANDKING_CLAUDE_EXECUTABLE;
     else process.env.SANDKING_CLAUDE_EXECUTABLE = previousExecutable;
@@ -171,7 +158,7 @@ if (args.length === 1 && args[0] === "--version") {
   }
 });
 
-test("the Claude adapter requires an exact loaded-plugin inventory record", async () => {
+test("the Claude adapter ignores unrelated plugin inventory", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-inventory-"));
   const fakeClaudePath = join(fixtureDirectory, "claude");
   await writeFile(fakeClaudePath, `#!/usr/bin/env node
@@ -204,19 +191,21 @@ if (args.length === 1 && args[0] === "--version") {
         SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
       },
     })).stdout);
-    assert.equal(probe.availability.status, "unavailable");
+    assert.equal(probe.availability.status, "available");
     assert.deepEqual(probe.capabilities, [
       "controller.session.start",
       "controller.session.interactive",
       "controller.session.terminate",
+      "controller.harness-run.launch",
       "controller.session.stable-identity",
     ]);
+    assert.equal("integration" in probe, false);
   } finally {
     await rm(fixtureDirectory, { recursive: true, force: true });
   }
 });
 
-test("the Claude adapter withholds plugin capabilities when strict validation fails", async () => {
+test("the Claude adapter does not invoke plugin validation", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-validation-"));
   const fakeClaudePath = join(fixtureDirectory, "claude");
   await writeFile(fakeClaudePath, `#!/usr/bin/env node
@@ -246,19 +235,21 @@ if (args.length === 1 && args[0] === "--version") {
         SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
       },
     })).stdout);
-    assert.equal(probe.availability.status, "unavailable");
+    assert.equal(probe.availability.status, "available");
     assert.deepEqual(probe.capabilities, [
       "controller.session.start",
       "controller.session.interactive",
       "controller.session.terminate",
+      "controller.harness-run.launch",
       "controller.session.stable-identity",
     ]);
+    assert.equal("integration" in probe, false);
   } finally {
     await rm(fixtureDirectory, { recursive: true, force: true });
   }
 });
 
-test("the Claude adapter prepares a stable plugin-backed session with a sanitized environment", async () => {
+test("the Claude adapter prepares a stable plugin-free session with a sanitized environment", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-prepare-"));
   const fakeClaudePath = join(fixtureDirectory, "claude");
   await writeFile(fakeClaudePath, `#!/usr/bin/env node
@@ -310,24 +301,19 @@ else process.exitCode = 97;
     assert.equal(prepared.command.args[1], "run");
     assert.equal(prepared.command.environment.HOME, fixtureDirectory);
     assert.equal(prepared.command.environment.SANDKING_CLAUDE_EXECUTABLE, fakeClaudePath);
-    assert.equal(prepared.command.environment.SANDKING_CLAUDE_SESSION_ID, providerSessionId);
-    assert.equal(prepared.command.environment.SANDKING_CONTROLLER_SESSION_ID, sessionId);
+    assert.equal(prepared.command.environment.SANDKING_CLAUDE_SESSION_ID, undefined);
+    assert.equal(prepared.command.environment.SANDKING_CONTROLLER_SESSION_ID, undefined);
     assert.equal(prepared.command.environment.TERM, "xterm-256color");
     assert.equal(prepared.command.environment.COLORTERM, "truecolor");
     assert.equal(prepared.command.environment.ANTHROPIC_API_KEY, undefined);
     assert.equal(prepared.command.environment.CLAUDE_CODE_OAUTH_TOKEN, undefined);
     assert.equal(prepared.command.environment.AWS_SECRET_ACCESS_KEY, undefined);
     assert.equal(prepared.command.environment.NODE_OPTIONS, undefined);
-    assert.match(prepared.integration.pluginDirectory,
-      /src\/claude-controller-plugin$/);
-    assert.equal(prepared.integration.scope, "session");
-    assert.equal(prepared.integration.loading, "--plugin-dir");
-    assert.equal(prepared.integration.installed, false);
-    assert.equal(prepared.integration.boundary, "session-plugin-private-typed-shim");
     assert.deepEqual(prepared.command.providerArgs, [
       "--session-id", providerSessionId,
-      "--plugin-dir", prepared.integration.pluginDirectory,
     ]);
+    assert.equal("integration" in prepared, false);
+    assert.doesNotMatch(JSON.stringify(prepared), /plugin|hook|skill/i);
     assert.doesNotMatch(stdout,
       /api-secret-must-be-stripped|oauth-secret-must-be-stripped|cloud-secret-must-be-stripped|--no-warnings/);
   } finally {
@@ -419,7 +405,7 @@ else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list 
       authentication: { status: "missing", source: "destination-local" },
       failure: { code: "provider_authentication_missing", retryable: false },
     });
-    assert.equal(unauthenticated.capabilities.length, 9);
+    assert.equal(unauthenticated.capabilities.length, 5);
   } finally {
     await rm(fixtureDirectory, { recursive: true, force: true });
   }
@@ -465,7 +451,7 @@ else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list 
         authentication: { status: "unknown", source: "destination-local" },
         failure: { code: "provider_adapter_failed", retryable: true },
       }, mode);
-      assert.equal(probe.capabilities.length, 9, mode);
+      assert.equal(probe.capabilities.length, 5, mode);
     }
   } finally {
     await rm(fixtureDirectory, { recursive: true, force: true });

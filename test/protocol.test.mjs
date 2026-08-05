@@ -72,87 +72,53 @@ test("Host identity acceptance is an explicit revisioned and idempotent mutation
   );
 });
 
-test("Launch preparation and decision are capability-negotiated typed Host operations", async () => {
-  assert.ok(hostCapabilities.includes("sandking.launch-request.v1"));
+test("Harness launch is one capability-negotiated revision-free Host operation", async () => {
+  assert.ok(hostCapabilities.includes("sandking.harness-run.launch.v1"));
+  assert.ok(!hostCapabilities.includes("sandking.launch-request.v1"));
   const stream = new PassThrough();
-  const launchRequestId = `launch-request-${"1".repeat(24)}`;
-  const prepare = {
-    type: "launch.request.prepare",
-    requestId: "prepare-launch-protocol-request",
+  const launch = {
+    type: "harness.run.launch",
+    requestId: "launch-harness-run-protocol-request",
     projectId: `project-${"2".repeat(24)}`,
     parameters: {
-      issueNumber: 119,
-      targetBranch: "sandcastle/issue-119",
+      issueNumber: 152,
+      targetBranch: "sandcastle/issue-152",
     },
     controllerId: `runtime-${"3".repeat(24)}`,
     controllerSessionId: `controller-session-${"4".repeat(24)}`,
-    authorizationClass: "focused_controller_launch",
-    idempotencyKey: "prepare-launch-protocol-request",
-    expectedRevision: 0,
-    expiresInSeconds: 300,
-  };
-  const decision = {
-    type: "launch.request.decision",
-    requestId: "decide-launch-protocol-request",
-    launchRequestId,
-    decision: "approved",
-    controllerId: prepare.controllerId,
-    controllerSessionId: prepare.controllerSessionId,
-    authorizationClass: "focused_controller_launch",
-    idempotencyKey: "decide-launch-protocol-request",
-    expectedRevision: 1,
+    source: "controller-cli",
+    authorizationClass: "harness_run_launch",
+    idempotencyKey: "launch-harness-run-protocol-request",
   };
 
-  writeFrame(stream, prepare);
-  const semanticallyInvalidPrepare = {
-    ...prepare,
-    requestId: "prepare-launch-bounded-configuration-invalid",
-    parameters: {
-      issueNumber: 1_000_000_000,
-      targetBranch: "sandcastle/issue-1000000000",
-    },
-    idempotencyKey: "prepare-launch-bounded-configuration-invalid",
-  };
-  writeFrame(stream, semanticallyInvalidPrepare);
-  writeFrame(stream, decision);
-  writeFrame(stream, {
-    ...decision,
-    requestId: "decide-launch-protocol-stale-request",
-    idempotencyKey: "decide-launch-protocol-stale-request",
-    expectedRevision: 0,
-  });
-  assert.deepEqual(await readFrame(stream), prepare);
-  assert.deepEqual(await readFrame(stream), semanticallyInvalidPrepare);
-  assert.deepEqual(await readFrame(stream), decision);
-  assert.equal((await readFrame(stream)).expectedRevision, 0);
+  writeFrame(stream, launch);
+  assert.deepEqual(await readFrame(stream), launch);
+  assert.equal("expectedRevision" in launch, false);
   assert.throws(
     () => writeFrame(stream, {
-      ...decision,
-      requestId: "decision-without-owner",
-      controllerSessionId: undefined,
+      ...launch,
+      type: "launch.request.prepare",
     }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+  assert.throws(
+    () => writeFrame(stream, { ...launch, type: "launch.request.decision" }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+  assert.throws(
+    () => writeFrame(stream, { ...launch, type: "harness.run.start" }),
     (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
   );
 });
 
-test("Harness-run start, lookup, cursor observation, and ranged logs are typed Host operations", async () => {
+test("Harness-run lookup, cursor observation, and ranged logs are typed Host operations", async () => {
   assert.ok(hostCapabilities.includes("sandking.harness-run.v1"));
   const stream = new PassThrough();
   const harnessRunId = `harness-run-${"1".repeat(24)}`;
-  const start = {
-    type: "harness.run.start",
-    requestId: "start-harness-run-protocol",
-    launchRequestId: `launch-request-${"2".repeat(24)}`,
-    controllerId: `runtime-${"3".repeat(24)}`,
-    controllerSessionId: `controller-session-${"4".repeat(24)}`,
-    authorizationClass: "approved_launch_request_execution",
-    idempotencyKey: "start-harness-run-protocol-key",
-    expectedRevision: 2,
-  };
   const lookup = {
     type: "harness.run.lookup",
     requestId: "lookup-harness-run-protocol",
-    idempotencyKey: start.idempotencyKey,
+    idempotencyKey: "launch-harness-run-protocol-key",
   };
   const observe = {
     type: "harness.run.observe",
@@ -168,17 +134,12 @@ test("Harness-run start, lookup, cursor observation, and ranged logs are typed H
     offset: 12,
     limit: 1_024,
   };
-  for (const message of [start, lookup, observe, logs]) {
+  for (const message of [lookup, observe, logs]) {
     writeFrame(stream, message);
   }
-  assert.deepEqual(await readFrame(stream), start);
   assert.deepEqual(await readFrame(stream), lookup);
   assert.deepEqual(await readFrame(stream), observe);
   assert.deepEqual(await readFrame(stream), logs);
-  assert.throws(
-    () => writeFrame(stream, { ...start, authorizationClass: "browser_launch" }),
-    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
-  );
   assert.throws(
     () => writeFrame(stream, { ...logs, limit: MAX_BULK_CHUNK_BYTES + 1 }),
     (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",

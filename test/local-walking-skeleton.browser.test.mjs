@@ -177,7 +177,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         "cockpit.controller-terminal.v1",
         "cockpit.controller-terminal-resize.v1",
         "cockpit.project-preparation.v1",
-        "cockpit.launch-request.v1",
+        "cockpit.harness-run-launch.v1",
         "cockpit.harness-run-observation.v1",
       ]);
       assert.deepEqual(hello.message.framing, {
@@ -198,7 +198,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         "sandking.bulk-stream.v1",
         "sandking.project-registration.v1",
         "sandking.conformance-harness-registration.v1",
-        "sandking.launch-request.v1",
+        "sandking.harness-run.launch.v1",
         "sandking.harness-run.v1",
       ]);
 

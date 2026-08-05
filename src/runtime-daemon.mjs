@@ -169,7 +169,6 @@ let currentHarnessRunObservation = {
   code: "harness_run_absent",
   mode: "snapshot",
   resynchronization: null,
-  launchRequest: null,
   run: null,
   events: [],
   nextSequence: 0,
@@ -279,17 +278,6 @@ const retainCanonicalHarnessRunObservation = (observation) => {
   };
 };
 
-/** @param {any} launchRequest */
-const retainCanonicalLaunchRequestProjection = (launchRequest) => {
-  if (!launchRequest) {
-    return;
-  }
-  currentHarnessRunObservation = {
-    ...currentHarnessRunObservation,
-    launchRequest: structuredClone(launchRequest),
-  };
-};
-
 /** @param {"host_disconnected" | "host_protocol_invalid" | "host_observation_resynchronization_failed"} code */
 const markHostDisconnected = async (code) => {
   if (!state) {
@@ -308,8 +296,7 @@ const markHostDisconnected = async (code) => {
         retainedProjectId: currentProjectPreparation.current?.projectId ?? null,
         retainedHarnessRunId: currentHarnessRunObservation.run?.harnessRunId ?? null,
         registrationCreated: false,
-        approvalRecorded: false,
-        harnessRunStarted: false,
+        harnessRunLaunched: false,
         privilegedMutation: false,
         inventedSuccess: false,
       });
@@ -529,9 +516,7 @@ const hostMutationFailure = async (
     projectRegistrationCreated: acceptedState?.effects?.projectRegistrationCreated ?? false,
     harnessRegistrationCreated: acceptedState?.effects?.harnessRegistrationCreated ?? false,
     harnessPinChanged: acceptedState?.effects?.harnessPinChanged ?? false,
-    launchRequestPrepared: false,
-    approvalRecorded: false,
-    harnessRunStarted: false,
+    harnessRunLaunched: false,
     projectFileWrite: false,
     privilegedMutation: false,
   };
@@ -1297,59 +1282,39 @@ const requestFocusedHostMutation = async (action, message, requestContent) => {
     && message.idempotencyKey.length <= 256
     ? hashIdempotencyKey(message.idempotencyKey)
     : null;
-  const fingerprint = mutationRequestFingerprint({
-    expectedRevision: message.expectedRevision,
-    requestContent,
-  });
+  const fingerprint = mutationRequestFingerprint(requestContent);
   const outcomeKey = idempotencyKeyHash ? `${action}\0${idempotencyKeyHash}` : null;
   const existing = outcomeKey ? focusedHostMutationOutcomes.get(outcomeKey) : null;
   if (existing) {
     if (existing.fingerprint !== fingerprint) {
-      const actualRevision = Number.isSafeInteger(existing.response.revision)
-        ? existing.response.revision
-        : Number.isSafeInteger(existing.response.actualRevision)
-          ? existing.response.actualRevision
-          : message.expectedRevision;
       const auditId = await recordAudit(action, "rejected", {
         code: "idempotency_key_conflict",
         authorizationClass: message.authorizationClass,
         idempotencyKeyHash,
-        expectedRevision: message.expectedRevision,
-        actualRevision,
         originalAuditId: existing.response.auditId,
-        launchRequestPrepared: false,
-        approvalRecorded: false,
-        harnessRunStarted: false,
-        privilegedMutation: false,
+        harnessRunCreated: false,
       });
-      throw new ControllerSessionError("idempotency_key_conflict", {
-        ...mutationFailure(
-          "idempotency_key_conflict",
-          message.authorizationClass,
-          message.expectedRevision,
-          actualRevision,
-          auditId,
-        ),
+      return {
+        type: "harness.run.launch.failure",
+        requestId: message.requestId,
+        code: "idempotency_key_conflict",
         retryable: false,
+        authorizationClass: message.authorizationClass,
+        idempotencyKeyHash,
         idempotentReplay: false,
+        auditId,
         prohibitedSideEffects: {
-          launchRequestPrepared: false,
-          approvalRecorded: false,
-          harnessRunStarted: false,
-          privilegedMutation: false,
+          harnessRunCreated: false,
+          projectWrite: false,
         },
-      });
+      };
     }
     await recordAudit(action, "observed", {
       code: existing.response.code,
       authorizationClass: message.authorizationClass,
       idempotencyKeyHash,
-      expectedRevision: message.expectedRevision,
       idempotentReplay: true,
       originalAuditId: existing.response.auditId,
-      launchRequestId: existing.response.launchRequest?.launchRequestId
-        ?? existing.response.run?.launchRequestId
-        ?? null,
       harnessRunId: existing.response.run?.harnessRunId ?? null,
     });
     return {
@@ -1358,39 +1323,20 @@ const requestFocusedHostMutation = async (action, message, requestContent) => {
       idempotentReplay: true,
     };
   }
-  try {
-    const outcome = /** @type {any} */ (await requestHostOperation(message));
-    if (
-      outcomeKey
-      && outcome
-      && typeof outcome === "object"
-      && typeof outcome.auditId === "string"
-      && outcome.code !== "idempotency_key_conflict"
-    ) {
-      focusedHostMutationOutcomes.set(outcomeKey, {
-        fingerprint,
-        response: structuredClone(outcome),
-      });
-    }
-    return outcome;
-  } catch (error) {
-    const failureCode = error instanceof ControllerSessionError
-      && (error.code === "host_disconnected" || error.code === "host_protocol_invalid")
-      ? error.code
-      : null;
-    if (!failureCode) {
-      throw error;
-    }
-    const failure = await hostMutationFailure(
-      failureCode,
-      action,
-      message.authorizationClass,
-      message.expectedRevision,
-      idempotencyKeyHash,
-      requestContent,
-    );
-    throw new ControllerSessionError(failure.body.code, failure.body);
+  const outcome = /** @type {any} */ (await requestHostOperation(message));
+  if (
+    outcomeKey
+    && outcome
+    && typeof outcome === "object"
+    && typeof outcome.auditId === "string"
+    && outcome.code !== "idempotency_key_conflict"
+  ) {
+    focusedHostMutationOutcomes.set(outcomeKey, {
+      fingerprint,
+      response: structuredClone(outcome),
+    });
   }
+  return outcome;
 };
 
 /** @param {string} key @param {string} operation */
@@ -1760,67 +1706,24 @@ const handleProviderOperation = async (request) => {
   if (request.workContext.kind !== "project") {
     throw new ControllerSessionError("provider_operation_unsupported");
   }
-  if (request.operation === "launch-request.prepare") {
+  if (request.operation === "harness-run.launch") {
     const message = {
-      type: "launch.request.prepare",
-      requestId: `launch-prepare-${randomBytes(8).toString("hex")}`,
+      type: "harness.run.launch",
+      requestId: `harness-run-launch-${randomBytes(8).toString("hex")}`,
       projectId: request.workContext.workContextId,
       parameters: "parameters" in input ? input.parameters : null,
       controllerId: state.runtimeId,
       controllerSessionId: request.sessionId,
-      authorizationClass: "focused_controller_launch",
+      source: "controller-cli",
+      authorizationClass: "harness_run_launch",
       idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
-      expectedRevision: 0,
-      expiresInSeconds: "expiresInSeconds" in input ? Number(input.expiresInSeconds) : 0,
     };
-    const outcome = await requestFocusedHostMutation("launch.request.prepare", message, {
+    return requestFocusedHostMutation("harness.run.launch", message, {
       projectId: message.projectId,
       parameters: message.parameters,
       controllerId: message.controllerId,
       controllerSessionId: message.controllerSessionId,
-      authorizationClass: message.authorizationClass,
-      expiresInSeconds: message.expiresInSeconds,
-    });
-    retainCanonicalLaunchRequestProjection(outcome.launchRequest);
-    return outcome;
-  }
-  if (request.operation === "launch-request.decide") {
-    const message = {
-      type: "launch.request.decision",
-      requestId: `launch-decision-${randomBytes(8).toString("hex")}`,
-      launchRequestId: "launchRequestId" in input ? String(input.launchRequestId) : "",
-      decision: "decision" in input ? String(input.decision) : "",
-      controllerId: state.runtimeId,
-      controllerSessionId: request.sessionId,
-      authorizationClass: "focused_controller_launch",
-      idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
-      expectedRevision: "expectedRevision" in input ? Number(input.expectedRevision) : -1,
-    };
-    const outcome = await requestFocusedHostMutation("launch.request.decision", message, {
-      launchRequestId: message.launchRequestId,
-      decision: message.decision,
-      controllerId: message.controllerId,
-      controllerSessionId: message.controllerSessionId,
-      authorizationClass: message.authorizationClass,
-    });
-    retainCanonicalLaunchRequestProjection(outcome.launchRequest);
-    return outcome;
-  }
-  if (request.operation === "harness-run.start") {
-    const message = {
-      type: "harness.run.start",
-      requestId: `harness-run-start-${randomBytes(8).toString("hex")}`,
-      launchRequestId: "launchRequestId" in input ? String(input.launchRequestId) : "",
-      controllerId: state.runtimeId,
-      controllerSessionId: request.sessionId,
-      authorizationClass: "approved_launch_request_execution",
-      idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
-      expectedRevision: "expectedRevision" in input ? Number(input.expectedRevision) : -1,
-    };
-    return requestFocusedHostMutation("harness.run.start", message, {
-      launchRequestId: message.launchRequestId,
-      controllerId: message.controllerId,
-      controllerSessionId: message.controllerSessionId,
+      source: message.source,
       authorizationClass: message.authorizationClass,
     });
   }
@@ -2005,9 +1908,7 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
       projectId: project.projectId,
       providerId: request.providerId,
       controllerSessionCreated: false,
-      launchRequestPrepared: false,
-      approvalRecorded: false,
-      harnessRunStarted: false,
+      harnessRunLaunched: false,
       projectFileWrite: false,
     });
     const status = 503;
@@ -2022,9 +1923,7 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
       idempotentReplay: false,
       prohibitedSideEffects: {
         controllerSessionCreated: false,
-        launchRequestPrepared: false,
-        approvalRecorded: false,
-        harnessRunStarted: false,
+        harnessRunLaunched: false,
         projectFileWrite: false,
       },
     };
@@ -2057,9 +1956,7 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
     auditId,
     session,
     prohibitedSideEffects: {
-      launchRequestPrepared: false,
-      approvalRecorded: false,
-      harnessRunStarted: false,
+      harnessRunLaunched: false,
       projectFileWrite: false,
     },
   };
@@ -2461,6 +2358,33 @@ const handleBrowserConnection = (socket, sessionId, session) => {
               : "controller_terminal_resize_failed");
           }
         }
+        if (control.type === "browser.harness-run.launch") {
+          const message = {
+            type: "harness.run.launch",
+            requestId: `harness-run-launch-${randomBytes(8).toString("hex")}`,
+            projectId: control.projectId,
+            parameters: control.parameters,
+            controllerId: state.runtimeId,
+            controllerSessionId: null,
+            source: "cockpit",
+            authorizationClass: "harness_run_launch",
+            idempotencyKey: control.idempotencyKey,
+          };
+          const outcome = await requestFocusedHostMutation("harness.run.launch", message, {
+            projectId: message.projectId,
+            parameters: message.parameters,
+            controllerId: message.controllerId,
+            controllerSessionId: message.controllerSessionId,
+            source: message.source,
+            authorizationClass: message.authorizationClass,
+          });
+          socket.send(serializeRuntimeControl({
+            type: "runtime.harness-run.launch-result",
+            requestId: control.requestId,
+            outcome,
+          }));
+          return;
+        }
         if (control.type === "browser.harness-run.observe") {
           const observation = await requestHostOperation({
             type: "harness.run.observe",
@@ -2471,18 +2395,11 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           if (observation.type !== "harness.run.observe.result") {
             throw new BrowserProtocolError("harness_run_observation_failed");
           }
-          const visibleObservation = !observation.run
-            && currentHarnessRunObservation.launchRequest
-            ? {
-                ...observation,
-                launchRequest: structuredClone(currentHarnessRunObservation.launchRequest),
-              }
-            : observation;
-          retainCanonicalHarnessRunObservation(visibleObservation);
+          retainCanonicalHarnessRunObservation(observation);
           socket.send(serializeRuntimeControl({
             type: "runtime.harness-run.observation",
             requestId: control.requestId,
-            observation: visibleObservation,
+            observation,
           }));
           return;
         }

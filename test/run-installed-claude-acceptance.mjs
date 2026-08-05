@@ -98,12 +98,10 @@ try {
     + `  1. Open the explicit Project: ${projectPath}\n`
     + "  2. Confirm the Cockpit reports the installed Claude Code CLI as available/authenticated.\n"
     + "  3. Click “Open installed Claude Code”.\n"
-    + "  4. In that Claude conversation run /sandking-controller:inspect-work-context.\n"
-    + "  5. Run /sandking-controller:prepare-launch with an issue number and its exact sandcastle/issue-<id> branch.\n"
-    + "  6. Inspect the sanitized immutable preview, then run /sandking-controller:approve-launch with the exact request ID and revision.\n"
-    + "  7. Separately run /sandking-controller:start-approved-run with the approved request ID and revision.\n"
-    + "  8. Wait for the Cockpit to show one structured conformance Harness outcome.\n"
-    + "  9. Close or refresh the browser once and confirm the Controller session survives.\n\n"
+    + "  4. In that Claude conversation, ask Claude to run the ordinary command `sandking launch <project-id> --issue <id> --target-branch sandcastle/issue-<id>`.\n"
+    + "  5. Confirm there is no plugin command, proposal, approval, revision, or separate start step.\n"
+    + "  6. Wait for the Cockpit to show one structured conformance Harness outcome.\n"
+    + "  7. Close or refresh the browser once and confirm the Controller session survives.\n\n"
     + "Do not paste or transfer credentials. Sand-King uses the destination-local Claude credential store in place.\n",
   );
   const readline = createInterface({ input: process.stdin, output: process.stdout });
@@ -118,11 +116,10 @@ try {
     readline.close();
   }
 
-  const [projectState, controllerState, launchState, harnessState, auditText] =
+  const [projectState, controllerState, harnessState, auditText] =
     await Promise.all([
       readFile(join(dataDir, "project-registrations.json"), "utf8").then(JSON.parse),
       readFile(join(dataDir, "controller-sessions.json"), "utf8").then(JSON.parse),
-      readFile(join(dataDir, "launch-requests.json"), "utf8").then(JSON.parse),
       readFile(join(dataDir, "harness-runs.json"), "utf8").then(JSON.parse),
       readFile(join(dataDir, "audit.jsonl"), "utf8"),
     ]);
@@ -139,17 +136,9 @@ try {
   if (session.terminal.runtimeOwned !== true || session.terminal.status !== "running") {
     throw new Error("issue_124_real_acceptance_runtime_owned_session_not_retained");
   }
-  const approvedRequests = launchState.launchRequests.filter((request) =>
-    request.owner?.controllerSessionId === session.sessionId
-    && request.status === "approved"
-    && request.decision?.decision === "approved");
-  if (approvedRequests.length !== 1) {
-    throw new Error("issue_124_real_acceptance_requires_one_exact_approval");
-  }
-  const launchRequest = approvedRequests[0];
   const runs = harnessState.runs.filter((run) =>
     run.controllerSessionId === session.sessionId
-    && run.launchRequestId === launchRequest.launchRequestId);
+    && run.source === "controller-cli");
   if (
     runs.length !== 1
     || !["succeeded", "failed", "cancelled"].includes(runs[0].status)
@@ -163,7 +152,6 @@ try {
     audits,
     session,
     projectRegistration,
-    launchRequest,
     run: runs[0],
   });
   const projectStatusAfter = (await execFileAsync("git", [
@@ -188,14 +176,8 @@ try {
       credentialSource: "destination-local",
       credentialsTransferred: false,
       modelInteractionPerformedByHuman: true,
-      integration: {
-        pluginId: probe.integration.pluginId,
-        pluginVersion: probe.integration.pluginVersion,
-        pluginScope: probe.integration.scope,
-        pluginLoading: probe.integration.loading,
-        pluginInstalled: probe.integration.installed,
-        shimBoundary: probe.integration.boundary,
-      },
+      controllerCommand: "ordinary-sandking-cli",
+      pluginInstalled: false,
     },
     observations: {
       projectFocusedControllerSessionOpened: true,
@@ -207,13 +189,13 @@ try {
       selectedProjectId: projectRegistration.projectId,
       selectedWorkContextId: session.workContextId,
       selectedWorkContextCanonicalReference: session.canonicalReference,
-      sanitizedWorkContextInspectedThroughClaude: true,
-      acceptedWorkContextInspectionCount: requiredAudits.filter((entry) =>
+      ordinaryCliLaunchObserved: true,
+      acceptedLaunchOperationCount: requiredAudits.filter((entry) =>
         entry.action === "controller.provider.operation"
-        && entry.details?.operation === "work-context.inspect").length,
-      launchRequestPrepared: true,
-      exactLaunchRequestApprovedInConversation: true,
-      approvalSeparatedFromRunStart: true,
+        && entry.details?.operation === "harness-run.launch").length,
+      launchRequestCreated: false,
+      approvalRecorded: false,
+      separateStartRequired: false,
       harnessRunId: run.harnessRunId,
       structuredHarnessOutcome: {
         status: run.outcome.status,
@@ -230,7 +212,7 @@ try {
     securityAssertions: {
       projectPathRetained: false,
       credentialValueRetained: false,
-      browserApprovalAssertion: false,
+      browserLaunchUsed: false,
       projectSandKingStateWrite: false,
     },
   };
