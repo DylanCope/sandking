@@ -138,8 +138,11 @@ test("the local Host replays the first identity mutation outcome for the same id
 
 /** @param {string[]} args */
 const runFailingCli = async (args) => {
+  const boundedArgs = args[0] === "launch" && !args.includes("--startup-timeout-ms")
+    ? [args[0], "--startup-timeout-ms", "60000", ...args.slice(1)]
+    : args;
   try {
-    await execFileAsync(process.execPath, [cliPath, ...args], {
+    await execFileAsync(process.execPath, [cliPath, ...boundedArgs], {
       cwd: tmpdir(),
       env: process.env,
     });
@@ -275,6 +278,7 @@ for (const [mode, expectedDiagnosis] of failureCases) {
       const acceptedLaunch = JSON.parse((await execFileAsync(process.execPath, [
         cliPath,
         "launch",
+        "--startup-timeout-ms", "60000",
         "--data-dir",
         dataDir,
         "--json",
@@ -384,6 +388,7 @@ test("replacing an accepted Host identity produces a typed hard stop without rew
     const acceptedLaunch = JSON.parse((await execFileAsync(process.execPath, [
       cliPath,
       "launch",
+      "--startup-timeout-ms", "60000",
       "--data-dir",
       dataDir,
       "--json",
@@ -467,6 +472,7 @@ test("Controller credentials are not inherited by the local Host process", async
     const { stdout } = await execFileAsync(process.execPath, [
       cliPath,
       "launch",
+      "--startup-timeout-ms", "60000",
       "--data-dir",
       dataDir,
       "--host-mode",

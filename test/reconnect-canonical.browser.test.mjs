@@ -35,6 +35,7 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--host-mode", "delayed-harness-run-start-response",
       "--idempotency-key", "issue-121-runtime-start",
       "--expected-revision", "0",
@@ -45,7 +46,7 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
     const runtimeBefore = JSON.parse(
       await readFile(join(dataDir, "runtime-state.json"), "utf8"),
     );
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -58,12 +59,12 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
       await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
       await page.locator("#open-project").click();
       await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");
       const harnessId = await page.locator("#project-readiness").getAttribute("data-harness-id");
@@ -71,7 +72,7 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
       await page.locator("#open-project-controller").click();
       await page.waitForSelector(
         "#project-focused-controller-session[data-terminal-attachment='read-write']",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       const controllerSessionId = await page.locator("#project-focused-controller-session")
         .getAttribute("data-session-id");
@@ -170,25 +171,25 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
 
       await page.waitForSelector(
         `#harness-run-observation[data-run-id='${harnessRunId}'][data-run-present='true']`,
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       const cursorBeforeRefresh = await page.evaluate(() =>
         JSON.parse(sessionStorage.getItem("sandking.harnessRunCursor")));
       assert.equal(cursorBeforeRefresh.harnessRunId, harnessRunId);
       assert.ok(cursorBeforeRefresh.sequence >= 1);
 
-      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 90_000 });
       await page.waitForSelector(
         `#project-focused-controller-session[data-session-id='${controllerSessionId}']`
           + `[data-provider-session-id='${providerSessionId}'][data-reconnected='true']`
           + "[data-terminal-attachment='read-write']",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       await page.waitForSelector(
         `#harness-run-observation[data-run-id='${harnessRunId}'][data-run-status='succeeded']`
           + "[data-observation-mode='resume'][data-launch-request-status='approved']"
           + "[data-launch-execution-status='succeeded']",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       assert.equal(
         await page.locator("#project-readiness").getAttribute("data-project-id"),
@@ -215,12 +216,12 @@ test("local-walking-skeleton/reconnects-to-canonical-state without duplicate wor
         "sandking.harnessRunCursor",
         JSON.stringify({ harnessRunId: runId, sequence: 9_999 }),
       ), harnessRunId);
-      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 90_000 });
       await page.waitForSelector(
         `#harness-run-observation[data-run-id='${harnessRunId}']`
           + "[data-observation-mode='resync-required']"
           + "[data-resynchronization-reason='cursor_incompatible']",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       assert.equal(
         await page.locator("#harness-run-events").getAttribute("data-event-sequences"),

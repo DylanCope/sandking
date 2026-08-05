@@ -9,13 +9,43 @@ import test from "node:test";
 
 const execFileAsync = promisify(execFile);
 const cliPath = join(process.cwd(), "src", "cli.mjs");
+const runtimePids = new Map();
+
+const terminateRuntime = async (dataDir) => {
+  const pid = runtimePids.get(dataDir);
+  runtimePids.delete(dataDir);
+  if (!pid) return;
+  try {
+    process.kill(pid, "SIGTERM");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    process.kill(pid, 0);
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // The normal lifecycle stop already completed.
+  }
+};
 
 const runCli = async (args, options = {}) => {
-  const result = await execFileAsync("node", [cliPath, ...args], {
-    cwd: process.cwd(),
-    env: { ...process.env, ...options.env },
-  });
-  return JSON.parse(result.stdout);
+  const boundedArgs = args[0] === "launch" && !args.includes("--startup-timeout-ms")
+    ? [args[0], "--startup-timeout-ms", "60000", ...args.slice(1)]
+    : args;
+  const dataDirIndex = boundedArgs.indexOf("--data-dir");
+  const dataDir = dataDirIndex >= 0 ? boundedArgs[dataDirIndex + 1] : undefined;
+  try {
+    const result = await execFileAsync("node", [cliPath, ...boundedArgs], {
+      cwd: process.cwd(),
+      env: { ...process.env, ...options.env },
+    });
+    const parsed = JSON.parse(result.stdout);
+    if (args[0] === "launch" && dataDir && Number.isSafeInteger(parsed.runtime?.pid)) {
+      runtimePids.set(dataDir, parsed.runtime.pid);
+    }
+    return parsed;
+  } finally {
+    if (args[0] === "stop" && dataDir) {
+      await terminateRuntime(dataDir);
+    }
+  }
 };
 
 const request = async ({ method = "GET", url, headers = {} }) => {
@@ -349,17 +379,18 @@ test("expired bootstrap tokens return a typed retryable outcome without creating
     });
     assert.match(expiredFailure.auditId, /^audit-/);
 
+    await runCli(["stop", "--data-dir", dataDir, "--json"]);
     const redeemedLaunch = await runCli([
       "launch",
       "--data-dir",
       dataDir,
       "--bootstrap-ttl-ms",
-      "500",
+      "5000",
       "--json",
       "--no-open",
     ]);
     assert.equal((await request({ url: redeemedLaunch.bootstrapUrl })).status, 302);
-    await new Promise((resolve) => setTimeout(resolve, 575));
+    await new Promise((resolve) => setTimeout(resolve, 5_075));
     const expiredReplay = await request({ url: redeemedLaunch.bootstrapUrl });
     assert.equal(expiredReplay.status, 410);
     const expiredReplayFailure = await expiredReplay.json();

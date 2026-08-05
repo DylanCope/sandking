@@ -306,6 +306,7 @@ export class ControllerSessionError extends Error {
  * @param {string} mode
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} environmentSource
+ * @param {Set<import("node:child_process").ChildProcess>} supervisedProcesses
  */
 const invokeAdapter = async (
   definition,
@@ -313,6 +314,7 @@ const invokeAdapter = async (
   mode,
   args = [],
   environmentSource = process.env,
+  supervisedProcesses = new Set(),
 ) => new Promise((resolve, reject) => {
   /** @type {NodeJS.ProcessEnv} */
   const environment = providerId === "claude-code"
@@ -320,15 +322,38 @@ const invokeAdapter = async (
     : { LANG: "C.UTF-8" };
   const child = spawnChild(process.execPath, [definition.adapterPath, mode, ...args], {
     cwd: process.cwd(),
+    detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
     env: environment,
   });
+  supervisedProcesses.add(child);
   /** @type {Buffer[]} */
   const stdout = [];
   /** @type {Buffer[]} */
   const stderr = [];
   let size = 0;
   let settled = false;
+  let timedOut = false;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let terminationFallback;
+  const terminateProcessTree = () => {
+    if (child.exitCode !== null || child.signalCode !== null || typeof child.pid !== "number") {
+      return;
+    }
+    try {
+      if (process.platform !== "win32") {
+        process.kill(-child.pid, "SIGKILL");
+      } else {
+        child.kill("SIGKILL");
+      }
+    } catch {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // The adapter exited between the liveness check and signal.
+      }
+    }
+  };
   /** @param {Error | null} error @param {unknown} [value] */
   const finish = (error, value) => {
     if (settled) {
@@ -336,6 +361,7 @@ const invokeAdapter = async (
     }
     settled = true;
     clearTimeout(timeout);
+    clearTimeout(terminationFallback);
     if (error) {
       reject(error);
     } else {
@@ -343,8 +369,12 @@ const invokeAdapter = async (
     }
   };
   const timeout = setTimeout(() => {
-    child.kill("SIGKILL");
-    finish(new ControllerSessionError("provider_adapter_timeout"));
+    timedOut = true;
+    terminateProcessTree();
+    terminationFallback = setTimeout(() => {
+      supervisedProcesses.delete(child);
+      finish(new ControllerSessionError("provider_adapter_timeout"));
+    }, 1_000);
   }, 8_000);
   child.stdout.on("data", (/** @type {Buffer} */ chunk) => {
     size += chunk.byteLength;
@@ -357,8 +387,16 @@ const invokeAdapter = async (
       stderr.push(Buffer.from(chunk).subarray(0, 1_024));
     }
   });
-  child.once("error", () => finish(new ControllerSessionError("provider_adapter_unavailable")));
+  child.once("error", () => {
+    supervisedProcesses.delete(child);
+    finish(new ControllerSessionError("provider_adapter_unavailable"));
+  });
   child.once("exit", (code) => {
+    supervisedProcesses.delete(child);
+    if (timedOut) {
+      finish(new ControllerSessionError("provider_adapter_timeout"));
+      return;
+    }
     if (code !== 0 || size > 32_768) {
       const diagnostic = Buffer.concat(stderr).toString("utf8").trim();
       const typedCode = new Set([
@@ -697,6 +735,8 @@ export const createControllerSessionManager = async (options) => {
   const activeBySession = new Map();
   /** @type {Map<string, any>} */
   const activeByStream = new Map();
+  /** @type {Set<import("node:child_process").ChildProcess>} */
+  const supervisedAdapterProcesses = new Set();
   let stateWriteQueue = Promise.resolve();
   /** @type {Map<string, Promise<z.infer<typeof probeSchema>>>} */
   const probePromises = new Map();
@@ -719,6 +759,7 @@ export const createControllerSessionManager = async (options) => {
         "probe",
         [],
         options.providerEnvironment ?? process.env,
+        supervisedAdapterProcesses,
       ).then((value) => probeSchema.parse(value)));
     }
     const probePromise = probePromises.get(selectedProviderId);
@@ -805,6 +846,7 @@ export const createControllerSessionManager = async (options) => {
         "--control-endpoint", providerControl.endpoint,
         ],
         options.providerEnvironment ?? process.env,
+        supervisedAdapterProcesses,
       ));
     } catch (error) {
       await providerControl?.close();
@@ -1315,8 +1357,23 @@ export const createControllerSessionManager = async (options) => {
       controlCloses.push(session.providerControl?.close().catch(() => undefined));
       exits.push(session.exited);
     }
+    const adapterExits = [...supervisedAdapterProcesses].map((child) => {
+      const exited = new Promise((resolve) => child.once("exit", resolve));
+      if (child.exitCode === null && child.signalCode === null && typeof child.pid === "number") {
+        try {
+          if (process.platform !== "win32") {
+            process.kill(-child.pid, "SIGKILL");
+          } else {
+            child.kill("SIGKILL");
+          }
+        } catch {
+          child.kill("SIGKILL");
+        }
+      }
+      return exited;
+    });
     await Promise.race([
-      Promise.all(exits),
+      Promise.all([...exits, ...adapterExits]),
       new Promise((resolve) => setTimeout(resolve, 1_000)),
     ]);
     await Promise.all(controlCloses);

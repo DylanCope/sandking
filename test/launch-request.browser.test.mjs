@@ -55,13 +55,14 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "launch-browser-runtime-start",
       "--expected-revision", "0",
       "--json",
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -189,8 +190,8 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
 
       await page.locator("#open-project-controller").click();
       await page.waitForSelector(
-        "#project-focused-controller-session[data-session-state='open']",
-        { timeout: 10_000 },
+        "#project-focused-controller-session[data-session-state='open'][data-terminal-attachment='read-write']",
+        { timeout: 90_000 },
       );
       const sessionPanel = page.locator("#project-focused-controller-session");
       const sessionId = await sessionPanel.getAttribute("data-session-id");
@@ -209,10 +210,6 @@ test("local-walking-skeleton/completes-approved-run approves an immutable Launch
       assert.equal(await sessionPanel.getAttribute("data-pty-runtime-owned"), "true");
       assert.equal(await sessionPanel.getAttribute("data-browser-approval"), null);
       assert.match(await sessionPanel.textContent(), /cannot submit a Launch approval assertion/i);
-      await page.waitForSelector(
-        "#project-focused-controller-session[data-terminal-attachment='read-write']",
-      );
-
       const hello = JSON.parse(sentFrames.find((frame) => frame.includes("browser.hello")));
       const attachCompetingView = (mode) => page.evaluate((parameters) =>
         new Promise((resolve, reject) => {

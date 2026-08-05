@@ -10,18 +10,18 @@
     "normalizationDifference": "one terminal LF",
     "exactContentEquivalentAfterApprovedExportNormalization": true
   },
-  "generatedFromCommit": "a53f2fc945ed8d8c5f199941e7d5aebfa90790b7",
-  "recordedAt": "2026-08-02T23:08:42.859Z",
+  "generatedFromCommit": "45dfc18172b9dc4a4c274173764322305e2b9ec5",
+  "recordedAt": "2026-08-04T12:35:41.945Z",
   "scenario": "local-walking-skeleton/operates-installed-claude-controller",
   "packagedPublicSeam": {
     "command": "sandking",
     "installed": true,
     "launchedOutsideCheckout": true,
-    "tarballSha256": "8a171310bda5c632711b46bfd587bf52acdc730ad899a5e8fbe29f96e440aa79"
+    "tarballSha256": "b6c747268be9192a17dfcedae33b81e924b8804cb5fe8c53d5ede47c8615407c"
   },
   "runtime": {
-    "runtimeId": "runtime-c182def564b7a1bde062f34a",
-    "hostId": "host-bd075e49ba51a805549d44c2"
+    "runtimeId": "runtime-3fae8c0afb28285e692c5e71",
+    "hostId": "host-b32fb3a61b22580f0e01adaf"
   },
   "automatedClaudeContract": {
     "executable": "no-model contract fixture",
@@ -51,11 +51,11 @@
     "shimBoundary": "session-plugin-private-typed-shim"
   },
   "focusedSession": {
-    "sessionId": "controller-session-09c333b69ad51a74a3b1cb65",
-    "providerSessionId": "e192723c-26fb-4f34-879d-e1560f1796f6",
+    "sessionId": "controller-session-d41ce1e0700f80075517cd1c",
+    "providerSessionId": "74240b7b-5bb4-4714-9ff0-bb32b4c2a089",
     "stableProviderSessionIdentity": true,
-    "workContextId": "project-65bf60c3b683725e5ff79abe",
-    "terminalStreamId": "controller-terminal-4bb3a2dda27994ebf4b1053b",
+    "workContextId": "project-45c087e6c2ce709da078c9ef",
+    "terminalStreamId": "controller-terminal-e66504fb29a84ba7bfbda7f1",
     "ptyRuntimeOwned": true,
     "survivedBrowserDisconnection": true,
     "oneWritableAttachmentContractTested": true,
@@ -83,13 +83,13 @@
   ],
   "auditReferences": [
     {
-      "auditId": "audit-3f9a346570e3a5635be313c7",
+      "auditId": "audit-71e0e567b4742935ffad2720",
       "action": "controller.session.start",
       "outcome": "accepted",
       "details": {
-        "sessionId": "controller-session-09c333b69ad51a74a3b1cb65",
-        "controllerSessionId": "controller-session-09c333b69ad51a74a3b1cb65",
-        "providerSessionId": "e192723c-26fb-4f34-879d-e1560f1796f6",
+        "sessionId": "controller-session-d41ce1e0700f80075517cd1c",
+        "controllerSessionId": "controller-session-d41ce1e0700f80075517cd1c",
+        "providerSessionId": "74240b7b-5bb4-4714-9ff0-bb32b4c2a089",
         "providerId": "claude-code",
         "providerAdapterId": "claude-code-controller-adapter-v1",
         "adapterProtocol": "1.0.0",
@@ -104,9 +104,9 @@
           "controller.session.stable-identity",
           "controller.session.typed-exit"
         ],
-        "workContextId": "project-65bf60c3b683725e5ff79abe",
-        "canonicalReference": "sandking:project:project-65bf60c3b683725e5ff79abe",
-        "streamId": "controller-terminal-4bb3a2dda27994ebf4b1053b",
+        "workContextId": "project-45c087e6c2ce709da078c9ef",
+        "canonicalReference": "sandking:project:project-45c087e6c2ce709da078c9ef",
+        "streamId": "controller-terminal-e66504fb29a84ba7bfbda7f1",
         "providerControlProtocol": "1.0.0",
         "providerReadySignal": "provider.session.ready",
         "providerObservedTty": true,
@@ -142,22 +142,12 @@
     "browserProtocol": "1.0.0"
   },
   "environmentGateDiagnostic": {
-    "status": "available",
-    "version": "2.1.220",
-    "authentication": "authenticated",
+    "status": "unavailable",
+    "version": null,
+    "authentication": "unknown",
     "authenticationSource": "destination-local",
-    "failureCode": null,
-    "capabilities": [
-      "controller.session.start",
-      "controller.session.interactive",
-      "controller.session.terminate",
-      "controller.work-context.inspect",
-      "controller.launch-request.prepare",
-      "controller.launch-request.decide",
-      "controller.harness-run.start",
-      "controller.session.stable-identity",
-      "controller.session.typed-exit"
-    ],
+    "failureCode": "provider_cli_unavailable",
+    "capabilities": [],
     "modelInvoked": false,
     "credentialsTransferred": false
   },
@@ -178,6 +168,7 @@
     [
       "node",
       "--test",
+      "--test-concurrency=1",
       "test/browser-protocol.test.mjs",
       "test/claude-controller.browser.test.mjs"
     ]

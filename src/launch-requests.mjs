@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import {
-  harnessAdapterProbeSchema,
   harnessAdapterEntryPointSchema,
   harnessPreparedEnvelopeSchema,
   loadPinnedHarnessAdapter,
@@ -224,9 +223,11 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
     timeout: 3_000,
     maxBuffer: 32_768,
   })).stdout.trim();
-  /** @param {string[]} args */
-  const invoke = async (args) => {
-    const pinnedAdapter = await loadPinnedHarnessAdapter({ workspacePath, pinnedRevision });
+  /**
+   * @param {Awaited<ReturnType<typeof loadPinnedHarnessAdapter>>} pinnedAdapter
+   * @param {string[]} args
+   */
+  const invoke = async (pinnedAdapter, args) => {
     if (
       pinnedAdapter.compatibility.adapterId !== context.harness.adapterId
       || pinnedAdapter.compatibility.adapterProtocol
@@ -268,25 +269,27 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
       clearTimeout(timeout);
     }
   };
-  const observedRevision = await git("rev-parse", "HEAD");
-  const statusBefore = await git("status", "--porcelain");
-  if (observedRevision !== pinnedRevision || statusBefore !== "") {
+  const [statusBefore, pinnedAdapter] = await Promise.all([
+    git("status", "--porcelain"),
+    loadPinnedHarnessAdapter({ workspacePath, pinnedRevision }),
+  ]);
+  if (statusBefore !== "") {
     throw new Error("harness_workspace_invalid");
-  }
-  const probeInvocation = await invoke(["probe"]);
-  const probe = harnessAdapterProbeSchema.parse(probeInvocation.message);
-  if (
-    probe.adapterId !== probeInvocation.compatibility.adapterId
-    || probe.adapterProtocol !== probeInvocation.compatibility.adapterProtocol
-  ) {
-    throw new Error("harness_adapter_protocol_invalid");
-  }
-  if (!probe.capabilities.includes("harness.launch.prepare.v1")) {
-    throw new Error("harness_capability_unsupported");
   }
   const encodedParameters = Buffer.from(JSON.stringify(parsedParameters), "utf8")
     .toString("base64url");
-  const preparedInvocation = await invoke(["prepare", encodedParameters]);
+  const preparedInvocation = await invoke(pinnedAdapter, ["prepare", encodedParameters]);
+  if (
+    preparedInvocation.message
+    && typeof preparedInvocation.message === "object"
+    && "type" in preparedInvocation.message
+    && preparedInvocation.message.type === "harness.launch.prepared"
+    && "negotiatedCapabilities" in preparedInvocation.message
+    && Array.isArray(preparedInvocation.message.negotiatedCapabilities)
+    && !preparedInvocation.message.negotiatedCapabilities.includes("harness.launch.prepare.v1")
+  ) {
+    throw new Error("harness_capability_unsupported");
+  }
   const prepared = harnessPreparedEnvelopeSchema.parse(preparedInvocation.message);
   if (
     prepared.adapterId !== preparedInvocation.compatibility.adapterId
@@ -294,11 +297,13 @@ export const prepareConformanceHarnessLaunch = async (context, parameters) => {
   ) {
     throw new Error("harness_adapter_protocol_invalid");
   }
-  const statusAfter = await git("status", "--porcelain");
+  const [statusAfter, finalAdapter] = await Promise.all([
+    git("status", "--porcelain"),
+    loadPinnedHarnessAdapter({ workspacePath, pinnedRevision }),
+  ]);
   if (statusAfter !== statusBefore) {
     throw new Error("harness_preparation_side_effect_detected");
   }
-  const finalAdapter = await loadPinnedHarnessAdapter({ workspacePath, pinnedRevision });
   if (finalAdapter.compatibility.entryPoint !== preparedInvocation.compatibility.entryPoint) {
     throw new Error("harness_workspace_invalid");
   }

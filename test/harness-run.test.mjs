@@ -618,6 +618,14 @@ test("invalid adapter lifecycles fail truthfully without corrupting canonical ru
       excessiveProgressObservation.outcome.code,
       "harness_adapter_protocol_invalid",
     );
+    assert.equal(
+      excessiveProgressObservation.terminalEnvelopeValidation.adapterChannelClosedObserved,
+      true,
+    );
+    assert.equal(
+      excessiveProgressObservation.terminalEnvelopeValidation.processExitObserved,
+      true,
+    );
     assert.equal(excessiveProgressObservation.events.length, 1_024);
     assert.equal(
       excessiveProgressObservation.events.filter((event) =>

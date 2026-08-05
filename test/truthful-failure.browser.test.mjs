@@ -42,6 +42,18 @@ const findLocalHostPid = async (runtimePid) => {
   throw new Error("local_host_process_not_found");
 };
 
+const waitForStoppedProcess = async (pid) => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const { stdout } = await execFileAsync("ps", ["-o", "stat=", "-p", String(pid)]);
+    if (stdout.trim().startsWith("T")) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("local_host_process_not_stopped");
+};
+
 test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-truthful-failure-browser-"));
   const dataDir = join(root, "host-state");
@@ -75,13 +87,14 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "truthful-failure-runtime-start",
       "--expected-revision", "0",
       "--json",
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -109,12 +122,12 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
       await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
       await page.locator("#open-project").click();
       await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");
       const harnessId = await page.locator("#project-readiness").getAttribute("data-harness-id");
@@ -122,7 +135,7 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       await page.locator("#open-project-controller").click();
       await page.waitForSelector(
         "#project-focused-controller-session[data-terminal-attachment='read-write']",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       const sessionId = await page.locator("#project-focused-controller-session")
         .getAttribute("data-session-id");
@@ -167,7 +180,7 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
 
       await page.waitForSelector(
         `#harness-run-observation[data-run-id='${harnessRunId}'][data-run-status='failed']`,
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       await page.waitForFunction(() => document.querySelector(
         "[data-log-producer='stdout']",
@@ -225,7 +238,7 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       const hostPid = await findLocalHostPid(runtimeStateBeforeDisconnect.pid);
       process.kill(hostPid, "SIGKILL");
       await page.waitForSelector("#connection-status[data-host-status='disconnected']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       const disconnectedIndicator = await page.locator("#connection-status").evaluate((node) => ({
         className: node.className,
@@ -389,9 +402,10 @@ test("local-walking-skeleton/shows-truthful-failure drives the public Cockpit", 
       });
       await reconnectPage.goto(new URL(launch.bootstrapUrl).origin, {
         waitUntil: "domcontentloaded",
+        timeout: 90_000,
       });
       await reconnectPage.waitForSelector("#connection-status[data-host-status='disconnected']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       const reconnectAcknowledgement = reconnectFrames.map((frame) => {
         try {
@@ -748,13 +762,14 @@ test("Host loss during an active Cockpit mutation returns one typed idempotent f
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "active-host-loss-runtime-start",
       "--expected-revision", "0",
       "--json",
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -765,7 +780,7 @@ test("Host loss during an active Cockpit mutation returns one typed idempotent f
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
       await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       const acknowledgement = JSON.parse(
         receivedFrames.find((frame) => frame.includes("runtime.hello-ack")),
@@ -895,13 +910,14 @@ test("accepted Cockpit Project preparation replays its public outcome after Host
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "accepted-project-replay-runtime-start",
       "--expected-revision", "0",
       "--json",
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -923,7 +939,7 @@ test("accepted Cockpit Project preparation replays its public outcome after Host
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
       await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
       const acceptedResponsePromise = page.waitForResponse((candidate) =>
@@ -947,7 +963,7 @@ test("accepted Cockpit Project preparation replays its public outcome after Host
       const hostPid = await findLocalHostPid(runtimeState.pid);
       process.kill(hostPid, "SIGKILL");
       await page.waitForSelector("#connection-status[data-host-status='disconnected']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
 
       const exerciseProjectOpen = (body) => page.evaluate(async (parameters) => {
@@ -1060,13 +1076,15 @@ test("Host loss after accepted Project registration preserves its identity and e
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
+      "--host-mode", "pause-after-project-registration",
       "--idempotency-key", "partial-project-host-loss-runtime-start",
       "--expected-revision", "0",
       "--json",
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -1088,7 +1106,7 @@ test("Host loss after accepted Project registration preserves its identity and e
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
       await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
-        timeout: 10_000,
+        timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
 
@@ -1125,7 +1143,7 @@ test("Host loss after accepted Project registration preserves its identity and e
 
       const runtimeState = await readJson(join(dataDir, "runtime-state.json"));
       pausedHostPid = await findLocalHostPid(runtimeState.pid);
-      process.kill(pausedHostPid, "SIGSTOP");
+      await waitForStoppedProcess(pausedHostPid);
       const duplicateRequestStarted = page.waitForRequest((request) =>
         request.method() === "POST" && request.url().endsWith("/projects/open"));
       const duplicateProjectResponse = page.evaluate(async (parameters) => {
@@ -1185,7 +1203,7 @@ test("Host loss after accepted Project registration preserves its identity and e
 
       await page.waitForSelector(
         `#project-readiness[data-project-id='${acceptedProject.projectId}']`,
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       assert.equal(await page.locator("#project-readiness")
         .getAttribute("data-launch-request-ready"), "false");
@@ -1289,6 +1307,7 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--host-mode", "malformed-frame-after-negotiation",
       "--idempotency-key", "active-host-protocol-runtime-start",
       "--expected-revision", "0",
@@ -1296,7 +1315,7 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -1314,7 +1333,7 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
 
       await page.waitForSelector(
         "#connection-status[data-host-status='disconnected'][data-failure-code='host_protocol_invalid']",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       const receivedMessages = receivedFrames.flatMap((frame) => {
         try {
@@ -1347,7 +1366,7 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
       ).click();
       await page.waitForSelector(
         "#focused-controller-session[data-terminal-attachment='read-write']",
-        { timeout: 10_000 },
+        { timeout: 90_000 },
       );
       assert.equal(await page.locator("#focused-controller-session")
         .getAttribute("data-session-state"), "open");

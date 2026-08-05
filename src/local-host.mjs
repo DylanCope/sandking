@@ -357,6 +357,7 @@ const main = async () => {
     loadLaunchContext: projectRegistry.loadLaunchContext,
   });
   let delayedHarnessRunStartResponse = false;
+  let pausedAfterProjectRegistration = false;
 
   // The Host is a durable process boundary. It remains available after
   // negotiation and keeps control and opaque bulk frames structurally distinct.
@@ -381,7 +382,19 @@ const main = async () => {
       continue;
     }
     if (frame.message.type === "project.register") {
-      writeFrame(process.stdout, await projectRegistry.registerProject(frame.message));
+      const outcome = await projectRegistry.registerProject(frame.message);
+      writeFrame(process.stdout, outcome);
+      if (
+        mode === "pause-after-project-registration"
+        && !pausedAfterProjectRegistration
+        && "type" in outcome
+        && outcome.type === "project.register.result"
+        && "code" in outcome
+        && outcome.code === "project_registered"
+      ) {
+        pausedAfterProjectRegistration = true;
+        process.kill(process.pid, "SIGSTOP");
+      }
       continue;
     }
     if (frame.message.type === "harness.conformance.inspect") {

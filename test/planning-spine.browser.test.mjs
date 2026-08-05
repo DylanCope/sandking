@@ -39,13 +39,14 @@ test("planning-spine/projects-an-optional-journey drives the served Cockpit", as
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "planning-acceptance-runtime-launch",
       "--expected-revision", "0",
       "--json",
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
 
     try {
       const context = await browser.newContext();

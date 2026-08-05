@@ -53,13 +53,14 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
       "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
       "--idempotency-key", "project-browser-runtime-launch",
       "--expected-revision", "0",
       "--json",
       "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment });
     const launch = JSON.parse(stdout);
-    const browser = await launchBrowser();
+    const browser = await launchBrowser({ niceAdjustment: 10 });
 
     try {
       const context = await browser.newContext();

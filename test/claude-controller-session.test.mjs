@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
 import { createControllerSessionManager } from "../src/controller-sessions.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const waitFor = async (predicate) => {
   const deadline = Date.now() + 5_000;
@@ -13,6 +17,58 @@ const waitFor = async (predicate) => {
   }
   assert.fail("claude_controller_contract_timeout");
 };
+
+/** @param {string} executable */
+const matchingProviderProcesses = async (executable) => {
+  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,args="]);
+  return stdout.trim().split("\n").flatMap((line) => {
+    const match = line.trim().match(/^(\d+)\s+(.*)$/);
+    return match && match[2].includes(executable)
+      ? [{ pid: Number(match[1]), command: match[2] }]
+      : [];
+  });
+};
+
+test("a timed-out provider adapter terminates its metadata process tree", async () => {
+  const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-timeout-tree-"));
+  const dataDir = join(fixtureDirectory, "state");
+  const fakeClaudePath = join(fixtureDirectory, "claude");
+  await mkdir(dataDir);
+  await writeFile(fakeClaudePath, `#!/usr/bin/env node
+process.on("SIGTERM", () => undefined);
+setInterval(() => undefined, 1_000);
+`, { mode: 0o700 });
+
+  let manager;
+  try {
+    manager = await createControllerSessionManager({
+      dataDir,
+      providerEnvironment: {
+        HOME: fixtureDirectory,
+        PATH: process.env.PATH,
+        LANG: "C.UTF-8",
+        SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
+      },
+      recordAudit: async () => `audit-${"0".repeat(24)}`,
+    });
+    await assert.rejects(
+      manager.probeProvider("claude-code"),
+      (error) => error.code === "provider_adapter_timeout",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(await matchingProviderProcesses(fakeClaudePath), []);
+  } finally {
+    await manager?.shutdown();
+    for (const child of await matchingProviderProcesses(fakeClaudePath)) {
+      try {
+        process.kill(child.pid, "SIGKILL");
+      } catch {
+        // The scoped provider process exited before fallback cleanup.
+      }
+    }
+    await rm(fixtureDirectory, { recursive: true, force: true });
+  }
+});
 
 test("the public provider boundary preserves an authentication probe adapter failure", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-auth-boundary-"));
