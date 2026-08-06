@@ -172,13 +172,16 @@ test("adapter lifecycle failures remain truthful under the single launch action"
   const fixture = await createFixture("sandking-harness-failure-");
   try {
     const expected = new Map([
-      [999_999_999, ["harness_result_incomplete", 0]],
-      [999_999_996, ["harness_result_incomplete", 2]],
-      [999_999_995, ["harness_adapter_protocol_invalid", 0]],
-      [999_999_998, ["harness_adapter_protocol_invalid", 0]],
-      [999_999_997, ["harness_adapter_protocol_invalid", 1]],
+      [999_999_999, ["harness_result_incomplete", [0]]],
+      [999_999_996, ["harness_result_incomplete", [2]]],
+      [999_999_995, ["harness_adapter_protocol_invalid", [0]]],
+      [999_999_998, ["harness_adapter_protocol_invalid", [0]]],
+      // The terminal frame may already be buffered when the over-limit progress
+      // frame terminates the adapter. Either count is truthful; it never makes
+      // the protocol-invalid outcome an exactly-one valid terminal result.
+      [999_999_997, ["harness_adapter_protocol_invalid", [0, 1]]],
     ]);
-    for (const [issueNumber, [outcomeCode, terminalCount]] of expected) {
+    for (const [issueNumber, [outcomeCode, terminalCounts]] of expected) {
       const launched = await fixture.manager.launch(launchRequest(
         fixture.registered.project.projectId,
         issueNumber,
@@ -188,11 +191,13 @@ test("adapter lifecycle failures remain truthful under the single launch action"
       assert.equal(observation.run.status, "failed");
       assert.equal(observation.outcome.code, outcomeCode);
       assert.equal(observation.outcome.incompleteResult, true);
-      assert.equal(
-        observation.terminalEnvelopeValidation.validTerminalEnvelopeCount,
-        terminalCount,
+      assert.ok(
+        terminalCounts.includes(
+          observation.terminalEnvelopeValidation.validTerminalEnvelopeCount,
+        ),
         `issue ${issueNumber}`,
       );
+      assert.equal(observation.terminalEnvelopeValidation.exactlyOne, false);
       assert.equal(observation.events.at(-1).type, "harness_run_failed");
       if (issueNumber === 999_999_998) {
         assert.equal(observation.events.some((event) =>
