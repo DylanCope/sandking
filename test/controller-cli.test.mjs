@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -37,7 +38,16 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
         } : {
           type: "harness.run.launch.result",
           code: "harness_run_created",
-          run: { harnessRunId: `harness-run-${"5".repeat(24)}` },
+          authorizationClass: "harness_run_launch",
+          idempotencyKeyHash: `sha256:${createHash("sha256")
+            .update(request.idempotencyKey).digest("hex")}`,
+          run: {
+            harnessRunId: `harness-run-${"5".repeat(24)}`,
+            projectId: request.projectId,
+            controllerSessionId: request.controllerSessionId,
+            source: "controller-cli",
+            parameters: request.parameters,
+          },
         },
       })}\n`);
     });
@@ -156,6 +166,87 @@ test("sandking self-description rejects a plugin-gated runtime contract", async 
       assert.match(error.stderr, /controller_cli_protocol_invalid/);
       return true;
     });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("sandking launch rejects uncorrelated success responses", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-controller-cli-correlation-"));
+  const endpoint = join(directory, "controller.sock");
+  const server = createServer((socket) => {
+    let input = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      input += chunk;
+      if (!input.includes("\n")) return;
+      const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+      const mismatchedParameters = {
+        issueNumber: 153,
+        targetBranch: "sandcastle/issue-153",
+      };
+      socket.end(`${JSON.stringify({
+        type: "sandking.cli.result",
+        protocol: "1.0.0",
+        requestId: request.requestId,
+        ok: true,
+        outcome: {
+          type: "harness.run.launch.result",
+          code: "harness_run_created",
+          authorizationClass: "harness_run_launch",
+          idempotencyKeyHash: `sha256:${createHash("sha256")
+            .update(request.idempotencyKey === "wrong-idempotency"
+              ? "another-idempotency-key"
+              : request.idempotencyKey).digest("hex")}`,
+          run: {
+            harnessRunId: `harness-run-${"5".repeat(24)}`,
+            projectId: request.idempotencyKey === "wrong-project"
+              ? `project-${"9".repeat(24)}`
+              : request.projectId,
+            controllerSessionId: request.idempotencyKey === "wrong-session"
+              ? `controller-session-${"9".repeat(24)}`
+              : request.controllerSessionId,
+            source: "controller-cli",
+            parameters: request.idempotencyKey === "wrong-parameters"
+              ? mismatchedParameters
+              : request.parameters,
+          },
+        },
+      })}\n`);
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(endpoint, resolve);
+  });
+  try {
+    const projectId = `project-${"7".repeat(24)}`;
+    for (const idempotencyKey of [
+      "wrong-project",
+      "wrong-session",
+      "wrong-parameters",
+      "wrong-idempotency",
+    ]) {
+      await assert.rejects(execFileAsync(process.execPath, [
+        cliPath,
+        "launch",
+        "--issue", "152",
+        "--idempotency-key", idempotencyKey,
+        "--json",
+      ], {
+        env: {
+          LANG: "C.UTF-8",
+          PATH: process.env.PATH,
+          SANDKING_CONTROLLER_ENDPOINT: endpoint,
+          SANDKING_CONTROLLER_SESSION_ID: `controller-session-${"8".repeat(24)}`,
+          SANDKING_WORK_CONTEXT_ID: projectId,
+        },
+      }), (error) => {
+        assert.match(error.stderr, /controller_cli_protocol_invalid/);
+        return true;
+      });
+    }
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(directory, { recursive: true, force: true });

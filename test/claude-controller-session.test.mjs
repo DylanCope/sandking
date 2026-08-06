@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -125,7 +126,7 @@ else process.exitCode = 97;
   }
 });
 
-test("an installed Claude Controller preserves typed outcomes after ambiguous CLI responses", async () => {
+test("an installed Claude Controller preserves typed and correlated CLI outcomes", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-session-"));
   const dataDir = join(fixtureDirectory, "state");
   const projectDir = join(fixtureDirectory, "project");
@@ -228,20 +229,44 @@ if (args.length === 1 && args[0] === "--version") {
             ? {
                 type: "harness.run.launch.result",
                 code: "harness_run_created",
-                run: { harnessRunId: `harness-run-${"5".repeat(24)}` },
+                authorizationClass: "harness_run_launch",
+                idempotencyKeyHash: `sha256:${createHash("sha256")
+                  .update(request.input.idempotencyKey).digest("hex")}`,
+                run: {
+                  harnessRunId: `harness-run-${"5".repeat(24)}`,
+                  projectId,
+                  controllerSessionId: request.sessionId,
+                  source: "controller-cli",
+                  parameters: request.input.parameters,
+                },
               }
-            : {
+            : launchAttempts === 2 ? {
                 type: "harness.run.launch.failure",
                 code: "harness_workspace_invalid",
+              } : {
+                type: "harness.run.launch.result",
+                code: "harness_run_created",
+                authorizationClass: "harness_run_launch",
+                idempotencyKeyHash: `sha256:${createHash("sha256")
+                  .update(request.input.idempotencyKey).digest("hex")}`,
+                run: {
+                  harnessRunId: `harness-run-${"6".repeat(24)}`,
+                  projectId: `project-${"9".repeat(24)}`,
+                  controllerSessionId: request.sessionId,
+                  source: "controller-cli",
+                  parameters: request.input.parameters,
+                },
               };
           // The Host retained the launch mutation outcome, but its response
           // arrives after the provider operation's ambiguity boundary. The
           // second launch also outlives the first queued lookup window, so the
           // ordinary CLI must retry only the exact same-key lookup.
-          await new Promise((resolve) => setTimeout(
-            resolve,
-            launchAttempts === 1 ? 5_250 : 12_250,
-          ));
+          if (launchAttempts <= 2) {
+            await new Promise((resolve) => setTimeout(
+              resolve,
+              launchAttempts === 1 ? 5_250 : 12_250,
+            ));
+          }
           return durableLaunchOutcome;
         }
         if (request.operation === "harness-run.lookup") {
@@ -318,14 +343,22 @@ if (args.length === 1 && args[0] === "--version") {
       ),
       18_000,
     ).catch(() => assert.fail(`typed CLI failure output missing:\n${output.join("")}`));
-    assert.equal(launchAttempts, 2);
-    assert.equal(operations.length, 6);
+    await enter("launch 152");
+    await waitFor(
+      () => output.join("").includes(
+        `LAUNCH_RESULT {"status":1,"stdout":"","stderr":"controller_cli_protocol_invalid"}`,
+      ),
+      5_000,
+    ).catch(() => assert.fail(`correlation failure output missing:\n${output.join("")}`));
+    assert.equal(launchAttempts, 3);
+    assert.equal(operations.length, 7);
     assert.equal(operations[0].operation, "controller-cli.describe");
     assert.equal(operations[1].operation, "harness-run.launch");
     assert.equal(operations[2].operation, "harness-run.lookup");
     assert.equal(operations[3].operation, "harness-run.launch");
     assert.equal(operations[4].operation, "harness-run.lookup");
     assert.equal(operations[5].operation, "harness-run.lookup");
+    assert.equal(operations[6].operation, "harness-run.launch");
     assert.deepEqual(operations[1].input.parameters, {
       issueNumber: 152,
       targetBranch: "sandcastle/issue-152",
@@ -335,6 +368,7 @@ if (args.length === 1 && args[0] === "--version") {
     assert.equal(operations[4].input.idempotencyKey, operations[3].input.idempotencyKey);
     assert.equal(operations[5].input.idempotencyKey, operations[3].input.idempotencyKey);
     assert.notEqual(operations[3].input.idempotencyKey, operations[1].input.idempotencyKey);
+    assert.notEqual(operations[6].input.idempotencyKey, operations[3].input.idempotencyKey);
     assert.doesNotMatch(output.join(""), /--plugin-dir|sandking-controller|approve|prepare/i);
     await enter("exit");
     await waitFor(() => manager.inspect(session.sessionId).terminal.status === "exited");

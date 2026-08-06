@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createConnection } from "node:net";
 import { z } from "zod";
 import { launchParametersSchema } from "./harness-launch.mjs";
@@ -13,6 +13,19 @@ const controllerCliDescriptionSchema = z.object({
   projectArgumentOptional: z.literal(true),
   pluginRequired: z.literal(false),
 }).strict();
+const controllerLaunchResultSchema = z.object({
+  type: z.literal("harness.run.launch.result"),
+  code: z.enum(["harness_run_created", "harness_run_found"]),
+  authorizationClass: z.literal("harness_run_launch"),
+  idempotencyKeyHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  run: z.object({
+    harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
+    projectId: z.string().regex(projectIdPattern),
+    parameters: launchParametersSchema,
+    source: z.literal("controller-cli"),
+    controllerSessionId: z.string().regex(controllerSessionPattern),
+  }).passthrough(),
+}).passthrough();
 // A launch may consume one provider-operation window, while the first exact
 // lookup can spend a second window queued behind it. Leave one final lookup
 // window plus bounded transport overhead without ever retrying the mutation.
@@ -118,6 +131,30 @@ export const requestControllerDescription = async (environment = process.env) =>
 };
 
 /**
+ * Accept only the exact durable run created for this ordinary CLI request.
+ * A success-shaped response for another Project or Controller session must
+ * never be reported to the provider as a successful launch.
+ * @param {unknown} outcome
+ * @param {{projectId: string, controllerSessionId: string, parameters: import("zod").infer<typeof launchParametersSchema>, idempotencyKey: string}} request
+ */
+export const requireCorrelatedControllerLaunchResult = (outcome, request) => {
+  const parsed = controllerLaunchResultSchema.safeParse(outcome);
+  const expectedIdempotencyKeyHash = `sha256:${createHash("sha256")
+    .update(request.idempotencyKey).digest("hex")}`;
+  if (
+    !parsed.success
+    || parsed.data.idempotencyKeyHash !== expectedIdempotencyKeyHash
+    || parsed.data.run.projectId !== request.projectId
+    || parsed.data.run.controllerSessionId !== request.controllerSessionId
+    || parsed.data.run.parameters.issueNumber !== request.parameters.issueNumber
+    || parsed.data.run.parameters.targetBranch !== request.parameters.targetBranch
+  ) {
+    throw new Error("controller_cli_protocol_invalid");
+  }
+  return parsed.data;
+};
+
+/**
  * Invoke the Controller runtime from the ordinary `sandking` executable made
  * available inside a Controller session.
  * @param {{projectId: string, parameters: unknown, idempotencyKey: string}} request
@@ -133,10 +170,16 @@ export const requestControllerLaunch = async (request, environment = process.env
   ) {
     throw new Error("controller_cli_contract_invalid");
   }
-  return requestControllerOperation({
+  const outcome = await requestControllerOperation({
     operation: "harness-run.launch",
     projectId: request.projectId,
     parameters: parameters.data,
     idempotencyKey: request.idempotencyKey,
   }, environment);
+  return requireCorrelatedControllerLaunchResult(outcome, {
+    projectId: request.projectId,
+    controllerSessionId: environment.SANDKING_CONTROLLER_SESSION_ID ?? "",
+    parameters: parameters.data,
+    idempotencyKey: request.idempotencyKey,
+  });
 };

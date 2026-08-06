@@ -558,17 +558,45 @@ const canonicalDigest = (value) => createHash("sha256")
   .digest("hex");
 
 /**
+ * Keep the adapter entry point self-contained while enforcing the same
+ * correlation contract as the packaged CLI at the provider/runtime seam.
+ * @param {any} outcome
+ * @param {{projectId: string, controllerSessionId: string, parameters: any, idempotencyKey: string}} request
+ */
+const requireCorrelatedControllerLaunchResult = (outcome, request) => {
+  const run = outcome?.run;
+  const expectedIdempotencyKeyHash = `sha256:${createHash("sha256")
+    .update(request.idempotencyKey).digest("hex")}`;
+  if (
+    outcome?.type !== "harness.run.launch.result"
+    || !["harness_run_created", "harness_run_found"].includes(outcome.code)
+    || outcome.authorizationClass !== "harness_run_launch"
+    || outcome.idempotencyKeyHash !== expectedIdempotencyKeyHash
+    || !/^harness-run-[a-f0-9]{24}$/.test(run?.harnessRunId ?? "")
+    || run?.projectId !== request.projectId
+    || run?.controllerSessionId !== request.controllerSessionId
+    || run?.source !== "controller-cli"
+    || run?.parameters?.issueNumber !== request.parameters.issueNumber
+    || run?.parameters?.targetBranch !== request.parameters.targetBranch
+  ) {
+    throw new Error("controller_cli_protocol_invalid");
+  }
+  return outcome;
+};
+
+/**
  * A successful lookup can recover either side of the original launch
  * mutation. Keep that transport success distinct from the launch outcome so
  * the ordinary CLI never exits zero for a durably retained Host failure.
  * @param {any} outcome
+ * @param {{projectId: string, controllerSessionId: string, parameters: any, idempotencyKey: string}} request
  */
-const requireSuccessfulControllerLaunch = (outcome) => {
+const requireSuccessfulControllerLaunch = (outcome, request) => {
   if (
     outcome?.type === "harness.run.launch.result"
     && /^harness-run-[a-f0-9]{24}$/.test(outcome.run?.harnessRunId ?? "")
   ) {
-    return outcome;
+    return requireCorrelatedControllerLaunchResult(outcome, request);
   }
   if (
     outcome?.type === "harness.run.launch.failure"
@@ -716,11 +744,17 @@ const openControllerCliServer = async ({
     ) {
       throw new Error("controller_cli_contract_invalid");
     }
+    const correlation = {
+      projectId: workContextId,
+      controllerSessionId: sessionId,
+      parameters: request.parameters,
+      idempotencyKey: request.idempotencyKey,
+    };
     try {
       return requireSuccessfulControllerLaunch(await control.request("harness-run.launch", {
         parameters: request.parameters,
         idempotencyKey: request.idempotencyKey,
-      }));
+      }), correlation);
     } catch (error) {
       if (!(error instanceof Error) || error.message !== "provider_operation_timeout") {
         throw error;
@@ -752,7 +786,7 @@ const openControllerCliServer = async ({
       ) {
         throw error;
       }
-      return requireSuccessfulControllerLaunch(lookup.launchOutcome);
+      return requireSuccessfulControllerLaunch(lookup.launchOutcome, correlation);
     }
   };
 
