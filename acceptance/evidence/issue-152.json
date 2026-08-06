@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "issue": 152,
+  "parentPrd": null,
+  "sourceIssue": {
+    "githubBodyUtf8Sha256": "5777030649523736625efbcdaa0674951bb57a67d97333401e70fcbbc70ed492"
+  },
+  "generatedFromCommit": "ba35f00719de42d390e6bccb3bf24b7572b50577",
+  "recordedAt": "2026-08-06T00:23:58.354Z",
+  "scenario": "harness-launch/uses-one-action-from-cockpit-and-controller",
+  "verificationCommands": [
+    [
+      "node",
+      "--test",
+      "test/protocol.test.mjs",
+      "test/browser-protocol.test.mjs",
+      "test/harness-run.test.mjs",
+      "test/harness-launch-host.test.mjs",
+      "test/controller-cli.test.mjs",
+      "test/controller-launch-session.test.mjs",
+      "test/controller-terminal-attachment.test.mjs",
+      "test/claude-provider-adapter.test.mjs",
+      "test/claude-controller-session.test.mjs",
+      "test/installed-claude-acceptance-audits.test.mjs",
+      "test/browser-launch.test.mjs",
+      "test/package-command.test.mjs",
+      "test/planning-spine.test.mjs",
+      "test/project-registration.test.mjs",
+      "test/security-boundary.test.mjs",
+      "test/host-negotiation.test.mjs",
+      "test/launch-runtime.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "--test-concurrency=1",
+      "test/harness-run.browser.test.mjs",
+      "test/reconnect-canonical.browser.test.mjs",
+      "test/truthful-failure.browser.test.mjs",
+      "test/project-preparation.browser.test.mjs",
+      "test/planning-spine.browser.test.mjs",
+      "test/claude-controller.browser.test.mjs",
+      "test/local-walking-skeleton.browser.test.mjs",
+      "test/workbench-terminal.browser.test.mjs",
+      "test/mobile-workbench-terminal.browser.test.mjs"
+    ]
+  ],
+  "assertions": {
+    "oneRevisionFreeHostLaunch": true,
+    "freshProjectLaunch": true,
+    "cockpitSinglePersistedConfirmation": true,
+    "ordinaryControllerCliLaunch": true,
+    "claudePluginAbsent": true,
+    "revisionDriftFailureAbsent": true,
+    "mainEraHarnessRunsReadable": true,
+    "mainEraControllerSessionsReadable": true,
+    "typedClaudeStopFailuresPreserved": true,
+    "bootstrapSessionAuditTerminalProjectHostCoveragePassed": true
+  },
+  "supersedesHistoricalFreshnessForIssues": [
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    146,
+    149
+  ],
+  "realProviderEvidence": {
+    "required": true,
+    "artifact": "acceptance/evidence/issue-152.real.json",
+    "fabricatedByDeterministicRun": false
+  }
+}
