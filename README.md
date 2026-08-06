@@ -111,7 +111,9 @@ pre-scripted command syntax. In a Controller session, using that help surface
 records a sanitized CLI-description operation, allowing real-provider evidence
 to prove executable discovery instead of inferring it from terminal prose or a
 human checkbox. The runtime never parses terminal prose as a command or
-authorization assertion. One PTY view may write while secondary
+authorization assertion. The real-provider gate also rejects retained plugin
+capabilities or any prepare, decision, or separate-start operation/audit in the
+same fresh lifecycle. One PTY view may write while secondary
 views attach read-only, and browser disconnection does not terminate the
 provider PTY.
 

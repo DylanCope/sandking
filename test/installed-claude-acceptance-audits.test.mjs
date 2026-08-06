@@ -13,6 +13,14 @@ const projectRegistration = {
 const session = {
   sessionId: `controller-session-${"1".repeat(24)}`,
   providerSessionId: "550e8400-e29b-41d4-a716-446655440000",
+  capabilities: [
+    "controller.session.start",
+    "controller.session.interactive",
+    "controller.session.terminate",
+    "controller.harness-run.launch",
+    "controller.session.stable-identity",
+    "controller.session.typed-exit",
+  ],
   workContextId: projectRegistration.projectId,
   workContextKind: "project",
   canonicalReference: `sandking:project:${projectRegistration.projectId}`,
@@ -192,4 +200,30 @@ test("the real Claude gate rejects a run launched by another Controller", () => 
     projectRegistration,
     run: { ...run, controllerSessionId: `controller-session-${"9".repeat(24)}` },
   }), /issue_152_real_acceptance_selected_project_not_focused/);
+});
+
+test("the real Claude gate rejects retained approval capabilities or ceremony audits", () => {
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: acceptedAuditChain,
+    session: {
+      ...session,
+      capabilities: [...session.capabilities, "controller.launch-request.prepare"],
+    },
+    projectRegistration,
+    run,
+  }), /issue_152_real_acceptance_retired_launch_lifecycle_observed/);
+
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: [
+      ...acceptedAuditChain,
+      audit("audit-approval", "launch.request.decision", "accepted", {
+        decision: "approved",
+      }),
+    ],
+    session,
+    projectRegistration,
+    run,
+  }), /issue_152_real_acceptance_retired_launch_lifecycle_observed/);
 });

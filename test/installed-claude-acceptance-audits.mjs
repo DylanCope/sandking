@@ -1,5 +1,23 @@
 /** @param {124 | 152} issue @param {string} suffix */
 const acceptanceError = (issue, suffix) => `issue_${issue}_real_acceptance_${suffix}`;
+const retiredControllerCapabilities = new Set([
+  "controller.work-context.inspect",
+  "controller.launch-request.prepare",
+  "controller.launch-request.decide",
+  "controller.harness-run.start",
+]);
+const retiredProviderOperations = new Set([
+  "work-context.inspect",
+  "launch-request.prepare",
+  "launch-request.decide",
+  "harness-run.start",
+]);
+const retiredLaunchAuditActions = new Set([
+  "launch.request.prepare",
+  "launch.request.decision",
+  "launch.request.expire",
+  "harness.run.start",
+]);
 
 /**
  * @param {{issue: 124 | 152, projectState: {projects?: any[]}, projectPath: string}} input
@@ -21,7 +39,7 @@ export const selectInstalledClaudeProjectRegistration = ({ issue, projectState, 
  * @param {{
  *   issue: 124 | 152,
  *   audits: any[],
- *   session: {sessionId: string, providerSessionId: string, workContextId: string, workContextKind: string, canonicalReference: string, terminal: {streamId: string}},
+ *   session: {sessionId: string, providerSessionId: string, capabilities?: string[], workContextId: string, workContextKind: string, canonicalReference: string, terminal: {streamId: string}},
  *   projectRegistration: {projectId: string},
  *   run: {harnessRunId: string, projectId: string, controllerSessionId: string | null, outcome: {outcomeId: string, status: string, code: string}},
  * }} input
@@ -35,6 +53,21 @@ export const selectInstalledClaudeAcceptanceAuditChain = ({
 }) => {
   const projectId = projectRegistration?.projectId;
   const canonicalReference = `sandking:project:${projectId}`;
+  if (
+    issue === 152
+    && (
+      !Array.isArray(session.capabilities)
+      || !session.capabilities.includes("controller.harness-run.launch")
+      || session.capabilities.some((capability) =>
+        retiredControllerCapabilities.has(capability))
+      || audits.some((entry) =>
+        retiredLaunchAuditActions.has(entry.action)
+        || (entry.action === "controller.provider.operation"
+          && retiredProviderOperations.has(entry.details?.operation)))
+    )
+  ) {
+    throw new Error(acceptanceError(issue, "retired_launch_lifecycle_observed"));
+  }
   if (
     !projectId
     || session.workContextId !== projectId

@@ -75,6 +75,8 @@ export const verifyRetainedEvidenceCurrentOrSuperseded = async ({
       || realEvidence.observations?.cliDiscoveryPrecededLaunch !== true
       || realEvidence.observations?.ordinaryCliLaunchObserved !== true
       || realEvidence.observations?.acceptedLaunchOperationCount !== 1
+      || realEvidence.observations?.retiredControllerCapabilitiesAbsent !== true
+      || realEvidence.observations?.retiredLaunchLifecycleAuditsAbsent !== true
       || realEvidence.observations?.browserControllerReattachmentObserved !== true
       || !(realEvidence.observations?.acceptedControllerTerminalAttachmentCount >= 2)
     ) {
