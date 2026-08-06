@@ -156,6 +156,7 @@ try {
       readFile(join(dataDir, "audit.jsonl"), "utf8"),
     ]);
   const projectRegistration = selectInstalledClaudeProjectRegistration({
+    issue,
     projectState,
     projectPath,
   });
@@ -181,6 +182,7 @@ try {
   }
   const audits = auditText.trim().split("\n").map((line) => JSON.parse(line));
   const requiredAudits = selectInstalledClaudeAcceptanceAuditChain({
+    issue,
     audits,
     session,
     projectRegistration,
