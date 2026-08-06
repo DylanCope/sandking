@@ -542,6 +542,28 @@ const canonicalDigest = (value) => createHash("sha256")
   .digest("hex");
 
 /**
+ * A successful lookup can recover either side of the original launch
+ * mutation. Keep that transport success distinct from the launch outcome so
+ * the ordinary CLI never exits zero for a durably retained Host failure.
+ * @param {any} outcome
+ */
+const requireSuccessfulControllerLaunch = (outcome) => {
+  if (
+    outcome?.type === "harness.run.launch.result"
+    && /^harness-run-[a-f0-9]{24}$/.test(outcome.run?.harnessRunId ?? "")
+  ) {
+    return outcome;
+  }
+  if (
+    outcome?.type === "harness.run.launch.failure"
+    && /^[a-z0-9_]{1,128}$/.test(outcome.code ?? "")
+  ) {
+    throw new Error(outcome.code);
+  }
+  throw new Error("controller_cli_protocol_invalid");
+};
+
+/**
  * Preserve Claude's typed API failures without loading a plugin. This
  * provider-owned, notification-only HTTP hook does not mediate tool calls or
  * Harness launches; it only forwards the documented StopFailure event.
@@ -679,10 +701,10 @@ const openControllerCliServer = async ({
       throw new Error("controller_cli_contract_invalid");
     }
     try {
-      return await control.request("harness-run.launch", {
+      return requireSuccessfulControllerLaunch(await control.request("harness-run.launch", {
         parameters: request.parameters,
         idempotencyKey: request.idempotencyKey,
-      });
+      }));
     } catch (error) {
       if (!(error instanceof Error) || error.message !== "provider_operation_timeout") {
         throw error;
@@ -697,7 +719,7 @@ const openControllerCliServer = async ({
       ) {
         throw error;
       }
-      return lookup.launchOutcome;
+      return requireSuccessfulControllerLaunch(lookup.launchOutcome);
     }
   };
 

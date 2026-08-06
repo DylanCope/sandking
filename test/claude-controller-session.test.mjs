@@ -125,7 +125,7 @@ else process.exitCode = 97;
   }
 });
 
-test("an installed Claude Controller recovers one ordinary CLI launch after an ambiguous response", async () => {
+test("an installed Claude Controller preserves typed outcomes after ambiguous CLI responses", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-session-"));
   const dataDir = join(fixtureDirectory, "state");
   const projectDir = join(fixtureDirectory, "project");
@@ -136,7 +136,7 @@ test("an installed Claude Controller recovers one ordinary CLI launch after an a
 exec ${JSON.stringify(process.execPath)} ${JSON.stringify(cliPath)} "$@"
 `, { mode: 0o700 });
   await writeFile(fakeClaudePath, `#!/usr/bin/env node
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--version") {
   process.stdout.write("2.1.141 (Claude Code)\\n");
@@ -171,13 +171,17 @@ if (args.length === 1 && args[0] === "--version") {
         process.stdout.write("DISCOVERED " + output.split("\\n")[0] + "\\r\\nclaude> ");
       } else if (line.startsWith("launch ")) {
         const issue = line.split(" ")[1];
-        const output = execFileSync("sandking", [
+        const result = spawnSync("sandking", [
           "launch", process.env.SANDKING_WORK_CONTEXT_ID,
           "--issue", issue,
           "--target-branch", "sandcastle/issue-" + issue,
           "--json",
         ], { encoding: "utf8", env: process.env });
-        process.stdout.write("LAUNCHED " + output.trim() + "\\r\\nclaude> ");
+        process.stdout.write("LAUNCH_RESULT " + JSON.stringify({
+          status: result.status,
+          stdout: result.stdout.trim(),
+          stderr: result.stderr.trim(),
+        }) + "\\r\\nclaude> ");
       } else if (line === "exit") {
         process.exit(0);
       }
@@ -190,6 +194,7 @@ if (args.length === 1 && args[0] === "--version") {
   const operations = [];
   const projectId = `project-${"1".repeat(24)}`;
   let durableLaunchOutcome = null;
+  let launchAttempts = 0;
   let manager;
   try {
     manager = await createControllerSessionManager({
@@ -221,13 +226,19 @@ if (args.length === 1 && args[0] === "--version") {
           };
         }
         if (request.operation === "harness-run.launch") {
-          durableLaunchOutcome = {
-            type: "harness.run.launch.result",
-            code: "harness_run_created",
-            run: { harnessRunId: `harness-run-${"5".repeat(24)}` },
-          };
-          // The Host accepted the launch, but its response arrives after the
-          // provider operation's ambiguity boundary.
+          launchAttempts += 1;
+          durableLaunchOutcome = launchAttempts === 1
+            ? {
+                type: "harness.run.launch.result",
+                code: "harness_run_created",
+                run: { harnessRunId: `harness-run-${"5".repeat(24)}` },
+              }
+            : {
+                type: "harness.run.launch.failure",
+                code: "harness_workspace_invalid",
+              };
+          // The Host retained the launch mutation outcome, but its response
+          // arrives after the provider operation's ambiguity boundary.
           await new Promise((resolve) => setTimeout(resolve, 5_250));
           return durableLaunchOutcome;
         }
@@ -292,20 +303,34 @@ if (args.length === 1 && args[0] === "--version") {
     await waitFor(() => output.join("").includes("DISCOVERED Usage:"));
     await enter("launch 152");
     await waitFor(
-      () => output.join("").includes(`LAUNCHED {"type":"harness.run.launch.result"`),
+      () => output.join("").includes(
+        `LAUNCH_RESULT {"status":0,"stdout":"{\\"type\\":\\"harness.run.launch.result\\"`,
+      ),
       12_000,
     )
       .catch(() => assert.fail(`ordinary CLI launch output missing:\n${output.join("")}`));
-    assert.equal(operations.length, 3);
+    await enter("launch 152");
+    await waitFor(
+      () => output.join("").includes(
+        `LAUNCH_RESULT {"status":1,"stdout":"","stderr":"harness_workspace_invalid"}`,
+      ),
+      12_000,
+    ).catch(() => assert.fail(`typed CLI failure output missing:\n${output.join("")}`));
+    assert.equal(launchAttempts, 2);
+    assert.equal(operations.length, 5);
     assert.equal(operations[0].operation, "controller-cli.describe");
     assert.equal(operations[1].operation, "harness-run.launch");
     assert.equal(operations[2].operation, "harness-run.lookup");
+    assert.equal(operations[3].operation, "harness-run.launch");
+    assert.equal(operations[4].operation, "harness-run.lookup");
     assert.deepEqual(operations[1].input.parameters, {
       issueNumber: 152,
       targetBranch: "sandcastle/issue-152",
     });
     assert.equal("expectedRevision" in operations[1].input, false);
     assert.equal(operations[2].input.idempotencyKey, operations[1].input.idempotencyKey);
+    assert.equal(operations[4].input.idempotencyKey, operations[3].input.idempotencyKey);
+    assert.notEqual(operations[3].input.idempotencyKey, operations[1].input.idempotencyKey);
     assert.doesNotMatch(output.join(""), /--plugin-dir|sandking-controller|approve|prepare/i);
     await enter("exit");
     await waitFor(() => manager.inspect(session.sessionId).terminal.status === "exited");
