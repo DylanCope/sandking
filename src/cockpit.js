@@ -693,14 +693,25 @@ const renderProjectPreparation = (
     const targetBranch = branchInput.value.trim();
     if (
       !currentProject
-      || !Number.isSafeInteger(issueNumber)
+      || currentProject.canPrepareLaunchRequest !== true
+      || !selectedProjectLaunchReady()
+      || hostConnectionStatus !== "connected"
+      || pendingHarnessLaunchRequestId !== null
+    ) {
+      harnessLaunchFeedback.textContent =
+        "Harness was not launched: the selected Project is not launch-ready.";
+      updateProjectActionAvailability();
+      return false;
+    }
+    if (
+      !Number.isSafeInteger(issueNumber)
       || issueNumber < 1
       || issueNumber > 999_999_999
       || targetBranch !== `sandcastle/issue-${issueNumber}`
     ) {
       harnessLaunchFeedback.textContent =
         "Harness was not launched: enter an issue number and its sandcastle branch.";
-      return;
+      return false;
     }
     pendingHarnessLaunchRequestId = `harness-launch-${harnessRequestSequence}`;
     harnessRequestSequence += 1;
@@ -716,6 +727,7 @@ const renderProjectPreparation = (
         idempotencyKey: mutationKey(),
       },
     }));
+    return true;
   };
   launchButton.addEventListener("click", () => {
     if (launchConfirmationSuppressed()) {
@@ -726,9 +738,8 @@ const renderProjectPreparation = (
     }
   });
   confirmYes.addEventListener("click", () => {
-    if (skipConfirmation.checked) suppressLaunchConfirmation();
     confirmation.close("yes");
-    launch();
+    if (launch() && skipConfirmation.checked) suppressLaunchConfirmation();
   });
   confirmNo.addEventListener("click", () => confirmation.close("no"));
   const claudeProvider = controllerProviders.find((provider) =>
@@ -762,6 +773,17 @@ const renderProjectPreparation = (
     "data-session-state": "closed",
     hidden: true,
   });
+  const updateProjectActionAvailability = () => {
+    const launchReady = currentProject?.canPrepareLaunchRequest === true
+      && selectedProjectLaunchReady();
+    launchButton.disabled = hostConnectionStatus !== "connected"
+      || !launchReady
+      || pendingHarnessLaunchRequestId !== null;
+    openController.disabled = hostConnectionStatus !== "connected" || !launchReady;
+    openClaudeController.disabled = hostConnectionStatus !== "connected"
+      || !launchReady
+      || !claudeAvailable;
+  };
 
   openButton.addEventListener("click", async () => {
     openButton.disabled = true;
@@ -806,6 +828,7 @@ const renderProjectPreparation = (
             outcome.code}. Its retained readiness is shown above.`
         : `Project was not changed: ${outcome.code}. ${
             outcome.resolution?.actions?.join(", ") ?? "Review the typed guidance."}`;
+      updateProjectActionAvailability();
       openButton.disabled = hostConnectionStatus !== "connected";
       return;
     }
@@ -816,13 +839,7 @@ const renderProjectPreparation = (
     currentNode = replacement;
     updateWorkbenchChrome({ currentProject: outcome.project });
     feedback.textContent = "Project and conformance Harness are ready to launch.";
-    launchButton.disabled = hostConnectionStatus !== "connected"
-      || !outcome.project.canPrepareLaunchRequest;
-    openController.disabled = hostConnectionStatus !== "connected"
-      || !outcome.project.canPrepareLaunchRequest;
-    openClaudeController.disabled = hostConnectionStatus !== "connected"
-      || !outcome.project.canPrepareLaunchRequest
-      || !claudeAvailable;
+    updateProjectActionAvailability();
     openButton.disabled = hostConnectionStatus !== "connected";
   });
 

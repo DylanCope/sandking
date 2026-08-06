@@ -78,6 +78,8 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
         timeout: 90_000,
       });
       const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");
+      const projectRevision = Number(await page.locator("#project-readiness")
+        .getAttribute("data-project-revision"));
       await page.locator("#harness-launch-issue").fill("152");
       assert.equal(await page.locator("#harness-launch-branch").inputValue(),
         "sandcastle/issue-152");
@@ -91,6 +93,52 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       await page.locator("#harness-launch-confirmation-no").click();
       await assert.rejects(access(join(dataDir, "harness-runs.json")));
 
+      await page.locator("#launch-harness").click();
+      await dialog.waitFor({ state: "visible" });
+
+      // Confirmation is optional ceremony, not authority to launch stale state.
+      // If the selected Project becomes non-launchable while the dialog is open,
+      // Yes must not bypass the Launch control's current readiness contract.
+      await page.route("**/projects/open", (route) => route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "harness_preparation_failed",
+          project: {
+            projectId,
+            revision: projectRevision,
+            displayName: "selected-project",
+            issueWorkflow: { readiness: "ready" },
+            checks: [],
+            harness: null,
+            readiness: {
+              issueWorkflow: "ready",
+              checks: "ready",
+              configuration: "blocked",
+              launchRequest: "blocked",
+              diagnostics: ["harness_missing"],
+            },
+            canPrepareLaunchRequest: false,
+          },
+        }),
+      }));
+      await page.evaluate(() => document.querySelector("#open-project")?.click());
+      await page.waitForSelector("#project-readiness[data-harness-launch-ready='false']");
+      assert.equal(await page.locator("#launch-harness").isDisabled(), true);
+      await page.locator("#harness-launch-confirmation-yes").click();
+      await page.waitForFunction(() => document.querySelector("#harness-launch-feedback")
+        ?.textContent?.includes("selected Project is not launch-ready"));
+      assert.equal(sentFrames.filter((frame) =>
+        frame.includes('"type":"browser.harness-run.launch"')).length, 0);
+      assert.equal(await page.evaluate(() =>
+        localStorage.getItem("sandking.skipLaunchConfirmation")), null);
+
+      await page.unroute("**/projects/open");
+      await page.waitForSelector("#open-project:not([disabled])");
+      await page.locator("#open-project").click();
+      await page.waitForSelector("#project-readiness[data-harness-launch-ready='true']", {
+        timeout: 90_000,
+      });
       await page.locator("#launch-harness").click();
       await dialog.waitFor({ state: "visible" });
       await page.locator("#harness-launch-confirmation-skip").check();
