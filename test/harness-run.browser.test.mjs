@@ -51,6 +51,7 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       "launch",
       "--data-dir", dataDir,
       "--startup-timeout-ms", "60000",
+      "--host-mode", "delayed-harness-run-launch-response",
       "--idempotency-key", "harness-run-browser-runtime-start",
       "--expected-revision", "0",
       "--json",
@@ -94,8 +95,39 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       await dialog.waitFor({ state: "visible" });
       await page.locator("#harness-launch-confirmation-skip").check();
       await page.locator("#harness-launch-confirmation-yes").click();
+
+      // A Project can become non-launchable while the Host is still resolving
+      // an already accepted launch. The eventual result must not override the
+      // selected Project's current readiness and re-enable Launch.
+      await page.route("**/projects/open", (route) => route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "harness_preparation_failed",
+          project: {
+            projectId,
+            revision: 1,
+            displayName: "selected-project",
+            issueWorkflow: { readiness: "ready" },
+            checks: [],
+            harness: null,
+            readiness: {
+              issueWorkflow: "ready",
+              checks: "ready",
+              configuration: "blocked",
+              launchRequest: "blocked",
+              diagnostics: ["harness_missing"],
+            },
+            canPrepareLaunchRequest: false,
+          },
+        }),
+      }));
+      await page.locator("#open-project").click();
+      await page.waitForSelector("#project-readiness[data-harness-launch-ready='false']");
       await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} launched\./
         .test(document.querySelector("#harness-launch-feedback")?.textContent ?? ""));
+      assert.equal(await page.locator("#launch-harness").isDisabled(), true);
+      await page.unroute("**/projects/open");
       const firstRuns = await waitForRetainedRuns(dataDir, 1);
       const firstRun = firstRuns[0];
       assert.equal(firstRun.projectId, projectId);

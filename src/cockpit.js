@@ -62,6 +62,9 @@ const suppressLaunchConfirmation = () => {
   }
 };
 
+const selectedProjectLaunchReady = () =>
+  document.getElementById("project-readiness")?.dataset.harnessLaunchReady === "true";
+
 const retainedHarnessRunCursor = () => {
   try {
     const cursor = JSON.parse(sessionStorage.getItem(harnessRunCursorStorageKey) ?? "null");
@@ -1811,7 +1814,10 @@ socket.addEventListener("message", (event) => {
     }
     pendingHarnessLaunchRequestId = null;
     const launchButton = document.getElementById("launch-harness");
-    if (launchButton) launchButton.disabled = hostConnectionStatus !== "connected";
+    if (launchButton) {
+      launchButton.disabled = hostConnectionStatus !== "connected"
+        || !selectedProjectLaunchReady();
+    }
     if (message.outcome.type === "harness.run.launch.result") {
       harnessLaunchFeedback.textContent =
         `Harness run ${message.outcome.run.harnessRunId} launched.`;
