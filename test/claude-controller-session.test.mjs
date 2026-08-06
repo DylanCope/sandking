@@ -163,7 +163,13 @@ if (args.length === 1 && args[0] === "--version") {
       const match = /\\r\\n|\\r|\\n/.exec(input);
       const line = input.slice(0, match.index).trim();
       input = input.slice(match.index + match[0].length);
-      if (line.startsWith("launch ")) {
+      if (line === "discover") {
+        const output = execFileSync("sandking", ["--help"], {
+          encoding: "utf8",
+          env: process.env,
+        });
+        process.stdout.write("DISCOVERED " + output.split("\\n")[0] + "\\r\\nclaude> ");
+      } else if (line.startsWith("launch ")) {
         const issue = line.split(" ")[1];
         const output = execFileSync("sandking", [
           "launch", process.env.SANDKING_WORK_CONTEXT_ID,
@@ -203,6 +209,16 @@ if (args.length === 1 && args[0] === "--version") {
       },
       handleProviderOperation: async (request) => {
         operations.push(request);
+        if (request.operation === "controller-cli.describe") {
+          return {
+            type: "controller.cli.description",
+            protocol: "1.0.0",
+            command: "sandking launch",
+            focusedProjectId: projectId,
+            projectArgumentOptional: true,
+            pluginRequired: false,
+          };
+        }
         if (request.operation === "harness-run.launch") {
           return {
             type: "harness.run.launch.result",
@@ -257,19 +273,25 @@ if (args.length === 1 && args[0] === "--version") {
       data: Buffer.from(`${line}\n`),
     });
     await waitFor(() => output.join("").includes("Fake installed Claude Controller ready"));
+    await enter("discover");
+    await waitFor(() => output.join("").includes("DISCOVERED Usage:"));
     await enter("launch 152");
     await waitFor(() => output.join("").includes(`LAUNCHED {"type":"harness.run.launch.result"`))
       .catch(() => assert.fail(`ordinary CLI launch output missing:\n${output.join("")}`));
-    assert.equal(operations.length, 1);
-    assert.equal(operations[0].operation, "harness-run.launch");
-    assert.deepEqual(operations[0].input.parameters, {
+    assert.equal(operations.length, 2);
+    assert.equal(operations[0].operation, "controller-cli.describe");
+    assert.equal(operations[1].operation, "harness-run.launch");
+    assert.deepEqual(operations[1].input.parameters, {
       issueNumber: 152,
       targetBranch: "sandcastle/issue-152",
     });
-    assert.equal("expectedRevision" in operations[0].input, false);
+    assert.equal("expectedRevision" in operations[1].input, false);
     assert.doesNotMatch(output.join(""), /--plugin-dir|sandking-controller|approve|prepare/i);
     await enter("exit");
     await waitFor(() => manager.inspect(session.sessionId).terminal.status === "exited");
+    assert.ok(audits.some((audit) =>
+      audit.action === "controller.provider.operation"
+      && audit.details.operation === "controller-cli.describe"));
     assert.ok(audits.some((audit) =>
       audit.action === "controller.provider.operation"
       && audit.details.operation === "harness-run.launch"));

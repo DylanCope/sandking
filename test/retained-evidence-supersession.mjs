@@ -71,6 +71,7 @@ export const verifyRetainedEvidenceCurrentOrSuperseded = async ({
       || realEvidence.scenario !== "harness-launch/uses-real-installed-claude-controller"
       || realEvidence.environment?.pluginInstalled !== false
       || realEvidence.observations?.ordinaryCliDiscoveredByController !== true
+      || !(realEvidence.observations?.acceptedCliDescriptionCount >= 1)
       || realEvidence.observations?.ordinaryCliLaunchObserved !== true
       || realEvidence.observations?.acceptedLaunchOperationCount !== 1
     ) {

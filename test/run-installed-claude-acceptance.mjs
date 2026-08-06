@@ -226,7 +226,12 @@ try {
       selectedProjectId: projectRegistration.projectId,
       selectedWorkContextId: session.workContextId,
       selectedWorkContextCanonicalReference: session.canonicalReference,
-      ordinaryCliDiscoveredByController: true,
+      ordinaryCliDiscoveredByController: requiredAudits.some((entry) =>
+        entry.action === "controller.provider.operation"
+        && entry.details?.operation === "controller-cli.describe"),
+      acceptedCliDescriptionCount: requiredAudits.filter((entry) =>
+        entry.action === "controller.provider.operation"
+        && entry.details?.operation === "controller-cli.describe").length,
       ordinaryCliLaunchObserved: true,
       acceptedLaunchOperationCount: requiredAudits.filter((entry) =>
         entry.action === "controller.provider.operation"

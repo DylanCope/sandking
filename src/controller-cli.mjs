@@ -6,16 +6,13 @@ const projectIdPattern = /^project-[a-f0-9]{24}$/;
 const controllerSessionPattern = /^controller-session-[a-f0-9]{24}$/;
 
 /**
- * Invoke the Controller runtime from the ordinary `sandking` executable made
- * available inside a Controller session.
- * @param {{projectId: string, parameters: unknown, idempotencyKey: string}} request
- * @param {NodeJS.ProcessEnv} [environment]
+ * @param {{operation: "describe" | "harness-run.launch", projectId: string, parameters?: unknown, idempotencyKey?: string}} request
+ * @param {NodeJS.ProcessEnv} environment
  */
-export const requestControllerLaunch = async (request, environment = process.env) => {
+const requestControllerOperation = async (request, environment) => {
   const endpoint = environment.SANDKING_CONTROLLER_ENDPOINT ?? "";
   const controllerSessionId = environment.SANDKING_CONTROLLER_SESSION_ID ?? "";
   const workContextId = environment.SANDKING_WORK_CONTEXT_ID ?? "";
-  const parameters = launchParametersSchema.safeParse(request.parameters);
   if (
     endpoint.length < 1
     || endpoint.length > 512
@@ -23,10 +20,6 @@ export const requestControllerLaunch = async (request, environment = process.env
     || !controllerSessionPattern.test(controllerSessionId)
     || !projectIdPattern.test(request.projectId)
     || request.projectId !== workContextId
-    || !parameters.success
-    || typeof request.idempotencyKey !== "string"
-    || request.idempotencyKey.length < 1
-    || request.idempotencyKey.length > 256
   ) {
     throw new Error("controller_cli_contract_invalid");
   }
@@ -50,11 +43,13 @@ export const requestControllerLaunch = async (request, environment = process.env
         type: "sandking.cli.request",
         protocol: "1.0.0",
         requestId,
-        operation: "harness-run.launch",
+        operation: request.operation,
         controllerSessionId,
         projectId: request.projectId,
-        parameters: parameters.data,
-        idempotencyKey: request.idempotencyKey,
+        ...(request.operation === "harness-run.launch" ? {
+          parameters: request.parameters,
+          idempotencyKey: request.idempotencyKey,
+        } : {}),
       })}\n`);
     });
     socket.setEncoding("utf8");
@@ -87,4 +82,39 @@ export const requestControllerLaunch = async (request, environment = process.env
       if (!settled) finish(new Error("controller_cli_unavailable"));
     });
   });
+};
+
+/**
+ * Record that the focused Controller used the packaged ordinary CLI's
+ * self-description before launching. Help remains available outside a
+ * Controller session without this private runtime correlation.
+ * @param {NodeJS.ProcessEnv} [environment]
+ */
+export const requestControllerDescription = async (environment = process.env) => {
+  const projectId = environment.SANDKING_WORK_CONTEXT_ID ?? "";
+  return requestControllerOperation({ operation: "describe", projectId }, environment);
+};
+
+/**
+ * Invoke the Controller runtime from the ordinary `sandking` executable made
+ * available inside a Controller session.
+ * @param {{projectId: string, parameters: unknown, idempotencyKey: string}} request
+ * @param {NodeJS.ProcessEnv} [environment]
+ */
+export const requestControllerLaunch = async (request, environment = process.env) => {
+  const parameters = launchParametersSchema.safeParse(request.parameters);
+  if (
+    !parameters.success
+    || typeof request.idempotencyKey !== "string"
+    || request.idempotencyKey.length < 1
+    || request.idempotencyKey.length > 256
+  ) {
+    throw new Error("controller_cli_contract_invalid");
+  }
+  return requestControllerOperation({
+    operation: "harness-run.launch",
+    projectId: request.projectId,
+    parameters: parameters.data,
+    idempotencyKey: request.idempotencyKey,
+  }, environment);
 };

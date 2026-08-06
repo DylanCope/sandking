@@ -20,7 +20,7 @@
     {
       "id": "harness-launch/uses-real-installed-claude-controller",
       "requirements": [
-        "an authenticated installed Claude Controller discovers the packaged sandking command",
+        "an authenticated installed Claude Controller records executable discovery of the packaged sandking command",
         "Claude invokes one ordinary launch command without plugin, approval, revision, or separate start behavior",
         "the launch produces one correlated durable Harness outcome and survives browser reconnect"
       ],

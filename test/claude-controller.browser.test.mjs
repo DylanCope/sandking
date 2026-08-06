@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { launchBrowser } from "./browser-launch.mjs";
@@ -35,6 +35,9 @@ else
   if [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then exit 88; fi
   case " $* " in *' --session-id '*) ;; *) exit 89 ;; esac
   case " $* " in *' --plugin-dir '*) exit 89 ;; esac
+  command -v sandking >/dev/null || exit 90
+  sandking --help >/dev/null || exit 91
+  printf 'Discovered ordinary sandking CLI help.\\r\\n'
   printf 'Fake installed Claude owns this runtime PTY.\\r\\n'
   printf 'Working context directory: %s\\r\\n' "$PWD"
   while IFS= read -r _line; do :; done
@@ -44,6 +47,7 @@ fi
   const productEnvironment = {
     ...process.env,
     HOME: userHome,
+    PATH: `${dirname(installed.command)}:${process.env.PATH ?? ""}`,
     SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
     ANTHROPIC_API_KEY: secret,
     CLAUDE_CODE_OAUTH_TOKEN: `${secret}-oauth`,
@@ -109,6 +113,8 @@ fi
     await page.waitForFunction((path) => document.querySelector(
       "#project-controller-terminal-output",
     )?.textContent?.includes(`Working context directory: ${path}`), projectPath);
+    assert.match(await page.locator("#project-controller-terminal-output").textContent(),
+      /Discovered ordinary sandking CLI help/);
     assert.deepEqual(sessionOpenRequests, [{
       projectId: await panel.getAttribute("data-work-context-id"),
       providerId: "claude-code",
@@ -126,9 +132,14 @@ fi
     assert.equal(retained.terminal.runtimeOwned, true);
     assert.equal(retained.terminal.status, "running");
     const auditText = await readFile(join(dataDir, "audit.jsonl"), "utf8");
+    const audits = auditText.trim().split("\n").map((line) => JSON.parse(line));
+    assert.ok(audits.some((audit) =>
+      audit.action === "controller.provider.operation"
+      && audit.outcome === "accepted"
+      && audit.details.sessionId === controllerSessionId
+      && audit.details.operation === "controller-cli.describe"));
     assert.doesNotMatch(auditText + JSON.stringify(sessions), new RegExp(secret));
     if (process.env.SANDKING_ACCEPTANCE_OBSERVATION_PATH) {
-      const audits = auditText.trim().split("\n").map((line) => JSON.parse(line));
       const controllerStart = audits.find((audit) =>
         audit.action === "controller.session.start"
         && audit.outcome === "accepted"

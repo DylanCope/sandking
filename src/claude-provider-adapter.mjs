@@ -619,10 +619,17 @@ const openControllerCliServer = async ({
       request?.type !== "sandking.cli.request"
       || request.protocol !== "1.0.0"
       || !/^sandking-cli-[a-f0-9]{16}$/.test(request.requestId ?? "")
-      || request.operation !== "harness-run.launch"
       || request.controllerSessionId !== sessionId
       || request.projectId !== workContextId
-      || !request.parameters
+      || !["describe", "harness-run.launch"].includes(request.operation)
+    ) {
+      throw new Error("controller_cli_contract_invalid");
+    }
+    if (request.operation === "describe") {
+      return control.request("controller-cli.describe", {});
+    }
+    if (
+      !request.parameters
       || typeof request.parameters !== "object"
       || !Number.isSafeInteger(request.parameters.issueNumber)
       || request.parameters.issueNumber < 1

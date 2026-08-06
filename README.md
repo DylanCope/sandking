@@ -107,8 +107,11 @@ A focused Controller can invoke the same action with the ordinary executable:
 sandcastle/issue-<issue>`. Inside that Controller session, the Project ID
 defaults to the focused Project. The packaged command advertises this surface
 through `sandking launch --help`, so the agent does not need a plugin or
-pre-scripted command syntax. The runtime never parses terminal prose as a
-command or authorization assertion. One PTY view may write while secondary
+pre-scripted command syntax. In a Controller session, using that help surface
+records a sanitized CLI-description operation, allowing real-provider evidence
+to prove executable discovery instead of inferring it from terminal prose or a
+human checkbox. The runtime never parses terminal prose as a command or
+authorization assertion. One PTY view may write while secondary
 views attach read-only, and browser disconnection does not terminate the
 provider PTY.
 

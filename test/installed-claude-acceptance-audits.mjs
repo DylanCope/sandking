@@ -52,6 +52,13 @@ export const selectInstalledClaudeAcceptanceAuditChain = ({
     && entry.details?.providerSessionId === session.providerSessionId
     && entry.details?.workContextId === projectId
     && entry.details?.canonicalReference === canonicalReference);
+  const cliDescriptionAudits = audits.filter((entry) =>
+    entry.action === "controller.provider.operation"
+    && entry.outcome === "accepted"
+    && entry.details?.sessionId === session.sessionId
+    && entry.details?.providerSessionId === session.providerSessionId
+    && entry.details?.workContextId === projectId
+    && entry.details?.operation === "controller-cli.describe");
   const providerLaunchAudits = audits.filter((entry) =>
     entry.action === "controller.provider.operation"
     && entry.outcome === "accepted"
@@ -75,6 +82,7 @@ export const selectInstalledClaudeAcceptanceAuditChain = ({
   const providerLaunchAudit = providerLaunchAudits[0];
   if (
     !sessionStartAudit
+    || cliDescriptionAudits.length < 1
     || providerLaunchAudits.length !== 1
     || !harnessLaunchAudit
     || !harnessOutcomeAudit
@@ -84,5 +92,11 @@ export const selectInstalledClaudeAcceptanceAuditChain = ({
   ) {
     throw new Error(acceptanceError(issue, "audit_chain_incomplete"));
   }
-  return [sessionStartAudit, providerLaunchAudit, harnessLaunchAudit, harnessOutcomeAudit];
+  return [
+    sessionStartAudit,
+    ...cliDescriptionAudits,
+    providerLaunchAudit,
+    harnessLaunchAudit,
+    harnessOutcomeAudit,
+  ];
 };

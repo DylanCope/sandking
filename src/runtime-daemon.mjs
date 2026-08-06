@@ -1706,6 +1706,16 @@ const handleProviderOperation = async (request) => {
   if (request.workContext.kind !== "project") {
     throw new ControllerSessionError("provider_operation_unsupported");
   }
+  if (request.operation === "controller-cli.describe") {
+    return {
+      type: "controller.cli.description",
+      protocol: "1.0.0",
+      command: "sandking launch",
+      focusedProjectId: request.workContext.workContextId,
+      projectArgumentOptional: true,
+      pluginRequired: false,
+    };
+  }
   if (request.operation === "harness-run.launch") {
     const message = {
       type: "harness.run.launch",

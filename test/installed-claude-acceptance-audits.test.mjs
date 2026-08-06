@@ -37,6 +37,12 @@ const acceptedAuditChain = [
     workContextId: projectRegistration.projectId,
     canonicalReference: session.canonicalReference,
   }),
+  audit("audit-cli-description", "controller.provider.operation", "accepted", {
+    sessionId: session.sessionId,
+    providerSessionId: session.providerSessionId,
+    workContextId: projectRegistration.projectId,
+    operation: "controller-cli.describe",
+  }),
   audit("audit-provider-launch", "controller.provider.operation", "accepted", {
     sessionId: session.sessionId,
     providerSessionId: session.providerSessionId,
@@ -95,6 +101,16 @@ test("the real Claude gate rejects a flow without the provider launch operation"
   }), /issue_152_real_acceptance_audit_chain_incomplete/);
 });
 
+test("the real Claude gate rejects a flow without executable CLI discovery", () => {
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: acceptedAuditChain.filter((entry) => entry.auditId !== "audit-cli-description"),
+    session,
+    projectRegistration,
+    run,
+  }), /issue_152_real_acceptance_audit_chain_incomplete/);
+});
+
 test("the real Claude gate rejects an uncorrelated provider launch operation", () => {
   const uncorrelated = acceptedAuditChain.map((entry) => entry.auditId === "audit-provider-launch"
     ? {
@@ -113,7 +129,7 @@ test("the real Claude gate rejects an uncorrelated provider launch operation", (
 
 test("the real Claude gate requires exactly one accepted provider launch operation", () => {
   const secondProviderLaunch = {
-    ...acceptedAuditChain[1],
+    ...acceptedAuditChain[2],
     auditId: "audit-provider-launch-duplicate",
   };
   assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({

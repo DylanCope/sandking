@@ -247,6 +247,7 @@ const providerOperationRequestSchema = z.object({
   providerSessionId: providerSessionIdSchema,
   operation: z.enum([
     "work-context.inspect",
+    "controller-cli.describe",
     "harness-run.launch",
     "harness-run.lookup",
   ]),

@@ -2,7 +2,10 @@
 
 import { randomUUID } from "node:crypto";
 import { openBrowser } from "./browser-launch.mjs";
-import { requestControllerLaunch } from "./controller-cli.mjs";
+import {
+  requestControllerDescription,
+  requestControllerLaunch,
+} from "./controller-cli.mjs";
 import { RuntimeStartupError, launchRuntime, stopRuntime } from "./runtime.mjs";
 
 const harnessLaunchHelp = `Usage:
@@ -86,6 +89,9 @@ const parseArgs = (argv) => {
 const main = async () => {
   const options = parseArgs(process.argv.slice(2));
   if (options.help || options.command === "help" || options.command === "--help") {
+    if (process.env.SANDKING_CONTROLLER_ENDPOINT) {
+      await requestControllerDescription().catch(() => undefined);
+    }
     process.stdout.write(harnessLaunchHelp);
     return;
   }
