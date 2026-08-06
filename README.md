@@ -148,8 +148,10 @@ typed unavailable, incompatible, or unauthenticated state and enables **Open
 installed Claude Code** only when the complete minimal surface is ready.
 Sand-King launches Claude in its runtime-owned PTY with a stable
 controller-assigned CLI session ID and makes the ordinary `sandking` executable
-available to the agent. No Sand-King Claude plugin, hook, skill, plugin inventory,
-or `--plugin-dir` loading path is involved. Credentials stay
+available to the agent. No Sand-King Claude plugin, skill, launch-mediating hook,
+plugin inventory, or `--plugin-dir` loading path is involved. A provider-owned,
+notification-only `StopFailure` HTTP hook preserves typed provider failures and
+never mediates a tool call or Harness launch. Credentials stay
 in the destination-local Claude store and are excluded from the adapter command
 environment, browser models, prompts supplied by Sand-King, logs, state, audit,
 and retained evidence. Conformance remains the deterministic Harness oracle;

@@ -28,7 +28,7 @@ test("local-walking-skeleton/operates-installed-claude-controller uses the share
 if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
   printf '%s\\n' '2.1.141 (Claude Code)'
 elif [ "$#" -eq 1 ] && [ "$1" = "--help" ]; then
-  printf '%s\\n' '--session-id <uuid>'
+  printf '%s\\n' '--session-id <uuid> --settings <json>'
 elif [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   printf '%s' '{"loggedIn":true}'
 else

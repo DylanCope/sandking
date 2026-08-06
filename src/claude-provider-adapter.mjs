@@ -29,6 +29,7 @@ const capabilities = Object.freeze([
   "controller.session.terminate",
   "controller.harness-run.launch",
   "controller.session.stable-identity",
+  "controller.session.typed-exit",
 ]);
 const baseSessionCapabilities = Object.freeze([
   "controller.session.start",
@@ -230,6 +231,9 @@ const detectClaudeCapabilities = async (executable) => {
   if (/(?:^|\s)--session-id(?:[=\s,]|$)/m.test(help)) {
     detected.add("controller.session.stable-identity");
     detected.add("controller.harness-run.launch");
+  }
+  if (/(?:^|\s)--settings(?:[=\s,]|$)/m.test(help)) {
+    detected.add("controller.session.typed-exit");
   }
   return capabilities.filter((capability) => detected.has(capability));
 };

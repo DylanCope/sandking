@@ -22,7 +22,7 @@ const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--version") {
   process.stdout.write("2.1.141 (Claude Code)\\n");
 } else if (args.length === 1 && args[0] === "--help") {
-  process.stdout.write("Usage: claude [options]\\n  --session-id <uuid>\\n  --plugin-dir <path>\\n");
+  process.stdout.write("Usage: claude [options]\\n  --session-id <uuid>\\n  --settings <json>\\n  --plugin-dir <path>\\n");
 } else if (args[0] === "plugin" && args[1] === "validate" && args.at(-1) === "--strict") {
   process.stdout.write("Validated plugin\\n");
 } else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
@@ -76,6 +76,7 @@ if (args.length === 1 && args[0] === "--version") {
         "controller.session.terminate",
         "controller.harness-run.launch",
         "controller.session.stable-identity",
+        "controller.session.typed-exit",
       ],
       terminal: {
         ptyRequired: true,
@@ -95,7 +96,7 @@ test("the Claude adapter accepts the native CLI without plugin support", async (
 if [ "$1" = "--version" ]; then
   printf '%s\\n' '2.1.220 (Claude Code)'
 elif [ "$1" = "--help" ]; then
-  printf '%s\\n' '--session-id <uuid> --plugin-dir <path>'
+  printf '%s\\n' '--session-id <uuid> --settings <json> --plugin-dir <path>'
 elif [ "$1" = "plugin" ] && [ "$2" = "validate" ] && [ "$4" = "--strict" ]; then
   grep -q '"author"' "$3/.claude-plugin/plugin.json"
 elif [ "$1" = "--plugin-dir" ] && [ "$3" = "plugin" ] && [ "$4" = "list" ] && [ "$5" = "--json" ]; then
@@ -158,6 +159,47 @@ if (args.length === 1 && args[0] === "--version") {
   }
 });
 
+test("the Claude adapter requires the notification-only typed-failure settings surface", async () => {
+  const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-no-settings-"));
+  const fakeClaudePath = join(fixtureDirectory, "claude");
+  await writeFile(fakeClaudePath, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.length === 1 && args[0] === "--version") {
+  process.stdout.write("2.1.141 (Claude Code)\\n");
+} else if (args.length === 1 && args[0] === "--help") {
+  process.stdout.write("--session-id <uuid>\\n");
+} else if (args.join(" ") === "auth status") {
+  process.stdout.write('{"loggedIn":true}');
+} else {
+  process.exitCode = 97;
+}
+`, { mode: 0o700 });
+
+  try {
+    const probe = JSON.parse((await execFileAsync(process.execPath, [adapterPath, "probe"], {
+      env: {
+        LANG: "C.UTF-8",
+        PATH: process.env.PATH,
+        SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
+      },
+    })).stdout);
+    assert.equal(probe.availability.status, "unavailable");
+    assert.deepEqual(probe.availability.failure, {
+      code: "provider_cli_incompatible",
+      retryable: false,
+    });
+    assert.deepEqual(probe.capabilities, [
+      "controller.session.start",
+      "controller.session.interactive",
+      "controller.session.terminate",
+      "controller.harness-run.launch",
+      "controller.session.stable-identity",
+    ]);
+  } finally {
+    await rm(fixtureDirectory, { recursive: true, force: true });
+  }
+});
+
 test("the Claude adapter ignores unrelated plugin inventory", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-inventory-"));
   const fakeClaudePath = join(fixtureDirectory, "claude");
@@ -166,7 +208,7 @@ const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--version") {
   process.stdout.write("2.1.141 (Claude Code)\\n");
 } else if (args.length === 1 && args[0] === "--help") {
-  process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+  process.stdout.write("--session-id <uuid> --settings <json> --plugin-dir <path>\\n");
 } else if (args[0] === "plugin" && args[1] === "validate" && args.at(-1) === "--strict") {
   process.stdout.write("Validated plugin\\n");
 } else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
@@ -198,6 +240,7 @@ if (args.length === 1 && args[0] === "--version") {
       "controller.session.terminate",
       "controller.harness-run.launch",
       "controller.session.stable-identity",
+      "controller.session.typed-exit",
     ]);
     assert.equal("integration" in probe, false);
   } finally {
@@ -213,7 +256,7 @@ const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--version") {
   process.stdout.write("2.1.141 (Claude Code)\\n");
 } else if (args.length === 1 && args[0] === "--help") {
-  process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+  process.stdout.write("--session-id <uuid> --settings <json> --plugin-dir <path>\\n");
 } else if (args[0] === "plugin" && args[1] === "validate") {
   process.stderr.write("plugin validation failed\\n");
   process.exitCode = 96;
@@ -242,6 +285,7 @@ if (args.length === 1 && args[0] === "--version") {
       "controller.session.terminate",
       "controller.harness-run.launch",
       "controller.session.stable-identity",
+      "controller.session.typed-exit",
     ]);
     assert.equal("integration" in probe, false);
   } finally {
@@ -256,7 +300,7 @@ test("the Claude adapter prepares a stable plugin-free session with a sanitized 
 const args = process.argv.slice(2);
 if (args[0] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");
 else if (args[0] === "--help") {
-  process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+  process.stdout.write("--session-id <uuid> --settings <json> --plugin-dir <path>\\n");
 } else if (args[0] === "plugin" && args[1] === "validate" && args.at(-1) === "--strict") {
   process.stdout.write("Validated plugin\\n");
 } else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list --json") {
@@ -358,7 +402,7 @@ test("the Claude adapter reports missing CLI and destination-local authenticatio
   await writeFile(unauthenticatedClaude, `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");
-else if (args[0] === "--help") process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+else if (args[0] === "--help") process.stdout.write("--session-id <uuid> --settings <json> --plugin-dir <path>\\n");
 else if (args[0] === "plugin" && args[1] === "validate" && args.at(-1) === "--strict") {
   process.stdout.write("Validated plugin\\n");
 }
@@ -405,7 +449,7 @@ else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list 
       authentication: { status: "missing", source: "destination-local" },
       failure: { code: "provider_authentication_missing", retryable: false },
     });
-    assert.equal(unauthenticated.capabilities.length, 5);
+    assert.equal(unauthenticated.capabilities.length, 6);
   } finally {
     await rm(fixtureDirectory, { recursive: true, force: true });
   }
@@ -418,7 +462,7 @@ test("the Claude adapter reports auth probe failures as adapter failures", async
 const args = process.argv.slice(2);
 const authProbeMode = ${JSON.stringify(mode)};
 if (args[0] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");
-else if (args[0] === "--help") process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+else if (args[0] === "--help") process.stdout.write("--session-id <uuid> --settings <json> --plugin-dir <path>\\n");
 else if (args[0] === "plugin" && args[1] === "validate" && args.at(-1) === "--strict") {
   process.stdout.write("Validated plugin\\n");
 }
@@ -451,7 +495,7 @@ else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list 
         authentication: { status: "unknown", source: "destination-local" },
         failure: { code: "provider_adapter_failed", retryable: true },
       }, mode);
-      assert.equal(probe.capabilities.length, 5, mode);
+      assert.equal(probe.capabilities.length, 6, mode);
     }
   } finally {
     await rm(fixtureDirectory, { recursive: true, force: true });
@@ -466,7 +510,7 @@ test("the Claude adapter entry point executes from a URL-encoded filesystem path
   await writeFile(fakeClaudePath, `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");
-else if (args[0] === "--help") process.stdout.write("--session-id <uuid> --plugin-dir <path>\\n");
+else if (args[0] === "--help") process.stdout.write("--session-id <uuid> --settings <json> --plugin-dir <path>\\n");
 else if (args[0] === "plugin" && args[1] === "validate" && args.at(-1) === "--strict") {
   process.stdout.write("Validated plugin\\n");
 }

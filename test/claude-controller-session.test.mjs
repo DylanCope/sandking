@@ -79,7 +79,7 @@ test("the public provider boundary preserves an authentication probe adapter fai
   await writeFile(fakeClaudePath, `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");
-else if (args[0] === "--help") process.stdout.write("--session-id <uuid>\\n");
+else if (args[0] === "--help") process.stdout.write("--session-id <uuid> --settings <json>\\n");
 else if (args.join(" ") === "auth status") process.stdout.write('{"loggedIn":');
 else process.exitCode = 97;
 `, { mode: 0o700 });
@@ -141,7 +141,7 @@ const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--version") {
   process.stdout.write("2.1.141 (Claude Code)\\n");
 } else if (args.length === 1 && args[0] === "--help") {
-  process.stdout.write("--session-id <uuid>\\n");
+  process.stdout.write("--session-id <uuid> --settings <json>\\n");
 } else if (args.join(" ") === "auth status") {
   process.stdout.write('{"loggedIn":true}');
 } else {
@@ -221,6 +221,7 @@ if (args.length === 1 && args[0] === "--version") {
       "controller.session.terminate",
       "controller.harness-run.launch",
       "controller.session.stable-identity",
+      "controller.session.typed-exit",
     ]);
     assert.equal("integration" in probe, false);
     const session = await manager.start({
