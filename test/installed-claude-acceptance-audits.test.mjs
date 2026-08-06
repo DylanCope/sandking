@@ -30,6 +30,10 @@ const run = {
   harnessRunId: `harness-run-${"3".repeat(24)}`,
   projectId: projectRegistration.projectId,
   controllerSessionId: session.sessionId,
+  parameters: {
+    issueNumber: 152,
+    targetBranch: "sandcastle/issue-152",
+  },
   outcome: {
     outcomeId: `harness-outcome-${"4".repeat(24)}`,
     status: "succeeded",
@@ -63,6 +67,7 @@ const acceptedAuditChain = [
     harnessRunId: run.harnessRunId,
     projectId: projectRegistration.projectId,
     source: "controller-cli",
+    parameters: run.parameters,
     idempotencyKeyHash: launchIdempotencyKeyHash,
   }),
   audit("audit-provider-launch", "controller.provider.operation", "accepted", {
@@ -200,6 +205,22 @@ test("the real Claude gate rejects a run launched by another Controller", () => 
     projectRegistration,
     run: { ...run, controllerSessionId: `controller-session-${"9".repeat(24)}` },
   }), /issue_152_real_acceptance_selected_project_not_focused/);
+});
+
+test("the real Claude gate requires the retained run to target issue 152", () => {
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: acceptedAuditChain,
+    session,
+    projectRegistration,
+    run: {
+      ...run,
+      parameters: {
+        issueNumber: 151,
+        targetBranch: "sandcastle/issue-151",
+      },
+    },
+  }), /issue_152_real_acceptance_launch_parameters_mismatch/);
 });
 
 test("the real Claude gate rejects retained approval capabilities or ceremony audits", () => {

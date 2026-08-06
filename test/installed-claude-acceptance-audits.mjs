@@ -41,7 +41,7 @@ export const selectInstalledClaudeProjectRegistration = ({ issue, projectState, 
  *   audits: any[],
  *   session: {sessionId: string, providerSessionId: string, capabilities?: string[], workContextId: string, workContextKind: string, canonicalReference: string, terminal: {streamId: string}},
  *   projectRegistration: {projectId: string},
- *   run: {harnessRunId: string, projectId: string, controllerSessionId: string | null, outcome: {outcomeId: string, status: string, code: string}},
+ *   run: {harnessRunId: string, projectId: string, controllerSessionId: string | null, parameters?: {issueNumber?: number, targetBranch?: string}, outcome: {outcomeId: string, status: string, code: string}},
  * }} input
  */
 export const selectInstalledClaudeAcceptanceAuditChain = ({
@@ -53,6 +53,8 @@ export const selectInstalledClaudeAcceptanceAuditChain = ({
 }) => {
   const projectId = projectRegistration?.projectId;
   const canonicalReference = `sandking:project:${projectId}`;
+  const targetsIssue = (parameters) => parameters?.issueNumber === issue
+    && parameters.targetBranch === `sandcastle/issue-${issue}`;
   if (
     issue === 152
     && (
@@ -67,6 +69,9 @@ export const selectInstalledClaudeAcceptanceAuditChain = ({
     )
   ) {
     throw new Error(acceptanceError(issue, "retired_launch_lifecycle_observed"));
+  }
+  if (issue === 152 && !targetsIssue(run.parameters)) {
+    throw new Error(acceptanceError(issue, "launch_parameters_mismatch"));
   }
   if (
     !projectId
@@ -104,7 +109,8 @@ export const selectInstalledClaudeAcceptanceAuditChain = ({
     && entry.details?.controllerSessionId === session.sessionId
     && entry.details?.harnessRunId === run.harnessRunId
     && entry.details?.projectId === projectId
-    && entry.details?.source === "controller-cli");
+    && entry.details?.source === "controller-cli"
+    && (issue !== 152 || targetsIssue(entry.details?.parameters)));
   const harnessOutcomeAudit = audits.find((entry) => entry.action === "harness.run.outcome"
     && entry.outcome === "observed"
     && entry.details?.harnessRunId === run.harnessRunId

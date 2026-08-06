@@ -241,6 +241,8 @@ try {
       acceptedLaunchOperationCount: requiredAudits.filter((entry) =>
         entry.action === "controller.provider.operation"
         && entry.details?.operation === "harness-run.launch").length,
+      selectedLaunchIssueNumber: run.parameters.issueNumber,
+      selectedTargetBranch: run.parameters.targetBranch,
       retiredControllerCapabilitiesAbsent: true,
       retiredLaunchLifecycleAuditsAbsent: true,
       launchRequestCreated: false,
