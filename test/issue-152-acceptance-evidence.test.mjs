@@ -68,8 +68,11 @@ test("retained issue 152 real evidence proves an installed Claude ordinary-CLI l
   assert.equal(realEvidence.environment.pluginInstalled, false);
   assert.equal(realEvidence.observations.ordinaryCliDiscoveredByController, true);
   assert.ok(realEvidence.observations.acceptedCliDescriptionCount >= 1);
+  assert.equal(realEvidence.observations.cliDiscoveryPrecededLaunch, true);
   assert.equal(realEvidence.observations.ordinaryCliLaunchObserved, true);
   assert.equal(realEvidence.observations.acceptedLaunchOperationCount, 1);
+  assert.equal(realEvidence.observations.browserControllerReattachmentObserved, true);
+  assert.ok(realEvidence.observations.acceptedControllerTerminalAttachmentCount >= 2);
   assert.equal(realEvidence.observations.launchRequestCreated, false);
   assert.equal(realEvidence.observations.approvalRecorded, false);
   assert.equal(realEvidence.observations.separateStartRequired, false);

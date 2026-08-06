@@ -21,7 +21,7 @@ export const selectInstalledClaudeProjectRegistration = ({ issue, projectState, 
  * @param {{
  *   issue: 124 | 152,
  *   audits: any[],
- *   session: {sessionId: string, providerSessionId: string, workContextId: string, workContextKind: string, canonicalReference: string},
+ *   session: {sessionId: string, providerSessionId: string, workContextId: string, workContextKind: string, canonicalReference: string, terminal: {streamId: string}},
  *   projectRegistration: {projectId: string},
  *   run: {harnessRunId: string, projectId: string, controllerSessionId: string | null, outcome: {outcomeId: string, status: string, code: string}},
  * }} input
@@ -78,25 +78,53 @@ export const selectInstalledClaudeAcceptanceAuditChain = ({
     && entry.details?.outcomeReference === run.outcome.outcomeId
     && entry.details?.status === run.outcome.status
     && entry.details?.code === run.outcome.code);
+  const terminalAttachmentAudits = audits.filter((entry) =>
+    entry.action === "controller.terminal.attach"
+    && entry.outcome === "accepted"
+    && entry.details?.sessionId === session.sessionId
+    && entry.details?.providerSessionId === session.providerSessionId
+    && entry.details?.streamId === session.terminal?.streamId);
   const launchIdempotencyKeyHash = harnessLaunchAudit?.details?.idempotencyKeyHash;
   const providerLaunchAudit = providerLaunchAudits[0];
+  const sessionStartIndex = audits.indexOf(sessionStartAudit);
+  const harnessLaunchIndex = audits.indexOf(harnessLaunchAudit);
+  const providerLaunchIndex = audits.indexOf(providerLaunchAudit);
+  const harnessOutcomeIndex = audits.indexOf(harnessOutcomeAudit);
+  const causalCliDescriptionAudits = cliDescriptionAudits.filter((entry) => {
+    const index = audits.indexOf(entry);
+    return index > sessionStartIndex && index < harnessLaunchIndex;
+  });
+  const initialTerminalAttachment = terminalAttachmentAudits.find((entry) => {
+    const index = audits.indexOf(entry);
+    return index > sessionStartIndex
+      && index < audits.indexOf(causalCliDescriptionAudits[0]);
+  });
+  const terminalReattachmentAudit = terminalAttachmentAudits.find((entry) =>
+    audits.indexOf(entry) > harnessOutcomeIndex);
   if (
     !sessionStartAudit
-    || cliDescriptionAudits.length < 1
+    || causalCliDescriptionAudits.length < 1
     || providerLaunchAudits.length !== 1
     || !harnessLaunchAudit
     || !harnessOutcomeAudit
+    || !initialTerminalAttachment
+    || !terminalReattachmentAudit
+    || harnessLaunchIndex >= providerLaunchIndex
+    || harnessOutcomeIndex <= harnessLaunchIndex
     || typeof launchIdempotencyKeyHash !== "string"
     || !/^sha256:[a-f0-9]{64}$/.test(launchIdempotencyKeyHash)
     || providerLaunchAudit.details?.idempotencyKeyHash !== launchIdempotencyKeyHash
   ) {
     throw new Error(acceptanceError(issue, "audit_chain_incomplete"));
   }
-  return [
-    sessionStartAudit,
-    ...cliDescriptionAudits,
-    providerLaunchAudit,
-    harnessLaunchAudit,
-    harnessOutcomeAudit,
-  ];
+  const selectedAuditIds = new Set([
+    sessionStartAudit.auditId,
+    initialTerminalAttachment.auditId,
+    ...causalCliDescriptionAudits.map((entry) => entry.auditId),
+    harnessLaunchAudit.auditId,
+    providerLaunchAudit.auditId,
+    harnessOutcomeAudit.auditId,
+    terminalReattachmentAudit.auditId,
+  ]);
+  return audits.filter((entry) => selectedAuditIds.has(entry.auditId));
 };

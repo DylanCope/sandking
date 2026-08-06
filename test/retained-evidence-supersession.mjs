@@ -72,8 +72,11 @@ export const verifyRetainedEvidenceCurrentOrSuperseded = async ({
       || realEvidence.environment?.pluginInstalled !== false
       || realEvidence.observations?.ordinaryCliDiscoveredByController !== true
       || !(realEvidence.observations?.acceptedCliDescriptionCount >= 1)
+      || realEvidence.observations?.cliDiscoveryPrecededLaunch !== true
       || realEvidence.observations?.ordinaryCliLaunchObserved !== true
       || realEvidence.observations?.acceptedLaunchOperationCount !== 1
+      || realEvidence.observations?.browserControllerReattachmentObserved !== true
+      || !(realEvidence.observations?.acceptedControllerTerminalAttachmentCount >= 2)
     ) {
       throw new Error("issue_152_real_evidence_invalid");
     }

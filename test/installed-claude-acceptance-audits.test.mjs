@@ -16,6 +16,7 @@ const session = {
   workContextId: projectRegistration.projectId,
   workContextKind: "project",
   canonicalReference: `sandking:project:${projectRegistration.projectId}`,
+  terminal: { streamId: `controller-terminal-${"2".repeat(24)}` },
 };
 const run = {
   harnessRunId: `harness-run-${"3".repeat(24)}`,
@@ -37,18 +38,17 @@ const acceptedAuditChain = [
     workContextId: projectRegistration.projectId,
     canonicalReference: session.canonicalReference,
   }),
+  audit("audit-terminal-attach", "controller.terminal.attach", "accepted", {
+    sessionId: session.sessionId,
+    providerSessionId: session.providerSessionId,
+    streamId: session.terminal.streamId,
+    mode: "read-write",
+  }),
   audit("audit-cli-description", "controller.provider.operation", "accepted", {
     sessionId: session.sessionId,
     providerSessionId: session.providerSessionId,
     workContextId: projectRegistration.projectId,
     operation: "controller-cli.describe",
-  }),
-  audit("audit-provider-launch", "controller.provider.operation", "accepted", {
-    sessionId: session.sessionId,
-    providerSessionId: session.providerSessionId,
-    workContextId: projectRegistration.projectId,
-    operation: "harness-run.launch",
-    idempotencyKeyHash: launchIdempotencyKeyHash,
   }),
   audit("audit-launch", "harness.run.launch", "accepted", {
     controllerSessionId: session.sessionId,
@@ -57,11 +57,24 @@ const acceptedAuditChain = [
     source: "controller-cli",
     idempotencyKeyHash: launchIdempotencyKeyHash,
   }),
+  audit("audit-provider-launch", "controller.provider.operation", "accepted", {
+    sessionId: session.sessionId,
+    providerSessionId: session.providerSessionId,
+    workContextId: projectRegistration.projectId,
+    operation: "harness-run.launch",
+    idempotencyKeyHash: launchIdempotencyKeyHash,
+  }),
   audit("audit-outcome", "harness.run.outcome", "observed", {
     harnessRunId: run.harnessRunId,
     outcomeReference: run.outcome.outcomeId,
     status: run.outcome.status,
     code: run.outcome.code,
+  }),
+  audit("audit-terminal-reattach", "controller.terminal.attach", "accepted", {
+    sessionId: session.sessionId,
+    providerSessionId: session.providerSessionId,
+    streamId: session.terminal.streamId,
+    mode: "read-write",
   }),
 ];
 
@@ -111,6 +124,33 @@ test("the real Claude gate rejects a flow without executable CLI discovery", () 
   }), /issue_152_real_acceptance_audit_chain_incomplete/);
 });
 
+test("the real Claude gate requires CLI discovery before the launch operation", () => {
+  const description = acceptedAuditChain.find((entry) =>
+    entry.auditId === "audit-cli-description");
+  assert.ok(description);
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: [
+      ...acceptedAuditChain.filter((entry) => entry !== description),
+      description,
+    ],
+    session,
+    projectRegistration,
+    run,
+  }), /issue_152_real_acceptance_audit_chain_incomplete/);
+});
+
+test("the real Claude gate requires executable Controller reattachment evidence", () => {
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: acceptedAuditChain.filter((entry) =>
+      entry.auditId !== "audit-terminal-reattach"),
+    session,
+    projectRegistration,
+    run,
+  }), /issue_152_real_acceptance_audit_chain_incomplete/);
+});
+
 test("the real Claude gate rejects an uncorrelated provider launch operation", () => {
   const uncorrelated = acceptedAuditChain.map((entry) => entry.auditId === "audit-provider-launch"
     ? {
@@ -128,8 +168,11 @@ test("the real Claude gate rejects an uncorrelated provider launch operation", (
 });
 
 test("the real Claude gate requires exactly one accepted provider launch operation", () => {
+  const providerLaunch = acceptedAuditChain.find((entry) =>
+    entry.auditId === "audit-provider-launch");
+  assert.ok(providerLaunch);
   const secondProviderLaunch = {
-    ...acceptedAuditChain[2],
+    ...providerLaunch,
     auditId: "audit-provider-launch-duplicate",
   };
   assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({

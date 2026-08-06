@@ -223,6 +223,10 @@ try {
       stableProviderSessionIdentity: session.sessionIdentity?.stable === true,
       ptyRuntimeOwned: session.terminal.runtimeOwned,
       browserDisconnectionSurvivalHumanConfirmed: true,
+      browserControllerReattachmentObserved: true,
+      acceptedControllerTerminalAttachmentCount: requiredAudits.filter((entry) =>
+        entry.action === "controller.terminal.attach"
+        && entry.outcome === "accepted").length,
       selectedProjectId: projectRegistration.projectId,
       selectedWorkContextId: session.workContextId,
       selectedWorkContextCanonicalReference: session.canonicalReference,
@@ -232,6 +236,7 @@ try {
       acceptedCliDescriptionCount: requiredAudits.filter((entry) =>
         entry.action === "controller.provider.operation"
         && entry.details?.operation === "controller-cli.describe").length,
+      cliDiscoveryPrecededLaunch: true,
       ordinaryCliLaunchObserved: true,
       acceptedLaunchOperationCount: requiredAudits.filter((entry) =>
         entry.action === "controller.provider.operation"
