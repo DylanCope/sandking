@@ -5,8 +5,8 @@
   "sourceIssue": {
     "githubBodyUtf8Sha256": "5777030649523736625efbcdaa0674951bb57a67d97333401e70fcbbc70ed492"
   },
-  "generatedFromCommit": "dc6196f87899bf5cdb173b2c792a39dd518c8f66",
-  "recordedAt": "2026-08-06T03:51:07.713Z",
+  "generatedFromCommit": "e787d5e4d8700965b478210c40bae15d88c423bf",
+  "recordedAt": "2026-08-06T04:13:43.608Z",
   "scenario": "harness-launch/uses-one-action-from-cockpit-and-controller",
   "verificationCommands": [
     [
@@ -49,6 +49,7 @@
     "oneRevisionFreeHostLaunch": true,
     "freshProjectLaunch": true,
     "cockpitSinglePersistedConfirmation": true,
+    "ordinaryControllerCliDiscoverable": true,
     "ordinaryControllerCliLaunch": true,
     "claudePluginAbsent": true,
     "revisionDriftFailureAbsent": true,
