@@ -455,6 +455,10 @@ export const createHarnessRunManager = async (options) => {
     statePath(options.dataDir),
     stateSchema.parse(state),
   );
+  // Complete the one-time upgrade before exposing read and mutation methods.
+  // Otherwise a first observation can migrate a stale v1 snapshot concurrently
+  // with a first launch and overwrite the newly retained run.
+  await readState();
   /** @param {z.infer<typeof stateSchema>} state @param {string | null} idempotencyKeyHash */
   const retainedMutationOutcome = (state, idempotencyKeyHash) => idempotencyKeyHash
     ? state.launchOutcomes.find((outcome) =>

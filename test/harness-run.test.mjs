@@ -352,6 +352,14 @@ test("main-era Harness-run history remains observable after the launch-schema up
         throw new Error("project_not_found");
       },
     });
+    const initialized = JSON.parse(await readFile(
+      join(dataDir, "harness-runs.json"),
+      "utf8",
+    ));
+    assert.equal(initialized.schemaVersion, 2);
+    assert.deepEqual(initialized.runs, [legacyRun]);
+    assert.deepEqual(initialized.launchOutcomes, []);
+    assert.deepEqual(initialized.legacyStartOutcomes, [legacyStartOutcome]);
     const observation = await manager.observe({
       requestId: "observe-legacy-run",
       harnessRunId,
