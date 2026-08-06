@@ -349,8 +349,8 @@ if (args.length === 1 && args[0] === "--version") {
       body: JSON.stringify({
         session_id: sessionId,
         hook_event_name: "StopFailure",
-        error: "network_error",
-        error_details: "DNS connection timed out",
+        error: "unknown",
+        last_assistant_message: "API Error: DNS connection timed out",
       }),
     });
     process.exit(1);

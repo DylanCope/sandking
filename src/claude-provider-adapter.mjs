@@ -92,9 +92,17 @@ export const classifyClaudeStopFailure = (input) => {
   if (failureType === "overloaded" || failureType === "server_error") {
     return { code: "provider_outage", retryable: true, source: "claude-stop-failure" };
   }
-  const details = "error_details" in input && typeof input.error_details === "string"
-    ? input.error_details.slice(0, 512)
-    : "";
+  const details = [
+    "error_details" in input && typeof input.error_details === "string"
+      ? input.error_details
+      : "",
+    "last_assistant_message" in input && typeof input.last_assistant_message === "string"
+      ? input.last_assistant_message
+      : "",
+  ]
+    .filter(Boolean)
+    .map((detail) => detail.slice(0, 512))
+    .join("\n");
   if (
     failureType === "network_error"
     || (failureType === "unknown"
