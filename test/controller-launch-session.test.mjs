@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -111,6 +111,69 @@ test("a project-focused conformance Controller launches in one revision-free act
     assert.doesNotMatch(output.join(""), /Launch request|approve|reject|--plugin-dir/i);
     assert.ok(audits.some((audit) => audit.action === "controller.provider.operation"
       && audit.details.operation === "harness-run.launch"));
+  } finally {
+    await manager?.shutdown();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("main-era Controller sessions retain reconnect history after capabilities are retired", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-controller-v1-upgrade-"));
+  const sessionId = `controller-session-${"7".repeat(24)}`;
+  const capabilities = [
+    "controller.session.start",
+    "controller.session.interactive",
+    "controller.session.terminate",
+    "controller.work-context.inspect",
+    "controller.launch-request.prepare",
+    "controller.launch-request.decide",
+    "controller.harness-run.start",
+    "controller.session.stable-identity",
+    "controller.session.typed-exit",
+  ];
+  await writeFile(join(dataDir, "controller-sessions.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    sessions: [{
+      sessionId,
+      providerSessionId: `conformance-provider-session-${"8".repeat(24)}`,
+      providerId: "conformance-controller-v1",
+      providerAdapterId: "conformance-controller-adapter-v1",
+      adapterProtocol: "1.0.0",
+      capabilities,
+      workContextId: "planning-stage-upgrade",
+      workContextKind: "planning-stage",
+      canonicalReference: "github:fixture:issue:119",
+      providerControl: {
+        protocol: "1.0.0",
+        readySignal: "provider.session.ready",
+        readyObservedAt: "2026-08-01T10:00:00.000Z",
+        providerObservedTty: true,
+      },
+      terminal: {
+        streamId: `controller-terminal-${"9".repeat(24)}`,
+        runtimeOwned: true,
+        kind: "pty",
+        status: "exited",
+        startedAt: "2026-08-01T10:00:00.000Z",
+        exitedAt: "2026-08-01T10:01:00.000Z",
+        exitCode: 0,
+        signal: null,
+        exitReason: {
+          code: "provider_session_completed",
+          retryable: false,
+          source: "conformance-provider",
+        },
+      },
+    }],
+  })}\n`);
+
+  let manager;
+  try {
+    manager = await createControllerSessionManager({
+      dataDir,
+      recordAudit: async () => `audit-${"0".repeat(24)}`,
+    });
+    assert.deepEqual(manager.inspect(sessionId)?.capabilities, capabilities);
   } finally {
     await manager?.shutdown();
     await rm(dataDir, { recursive: true, force: true });

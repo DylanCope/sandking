@@ -42,6 +42,9 @@
     "acceptance:issue-146:real": "node test/run-issue-146-real-claude.mjs acceptance/issue-146.manifest.json",
     "acceptance:issue-149": "node test/run-issue-149-acceptance.mjs acceptance/issue-149.manifest.json",
     "acceptance:issue-149:update-evidence": "node test/run-issue-149-acceptance.mjs acceptance/issue-149.manifest.json --update-evidence",
+    "acceptance:issue-152": "node test/run-issue-152-acceptance.mjs acceptance/issue-152.manifest.json",
+    "acceptance:issue-152:update-evidence": "node test/run-issue-152-acceptance.mjs acceptance/issue-152.manifest.json --update-evidence",
+    "acceptance:issue-152:real": "node test/run-installed-claude-acceptance.mjs acceptance/issue-152.manifest.json",
     "typecheck": "tsc --noEmit -p tsconfig.sandcastle.json && tsc --noEmit -p tsconfig.json",
     "test": "node --test .sandcastle/*.test.mjs test/*.test.mjs"
   },

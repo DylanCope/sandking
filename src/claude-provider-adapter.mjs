@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -516,6 +517,83 @@ const canonicalDigest = (value) => createHash("sha256")
   .digest("hex");
 
 /**
+ * Preserve Claude's typed API failures without loading a plugin. This
+ * provider-owned, notification-only HTTP hook does not mediate tool calls or
+ * Harness launches; it only forwards the documented StopFailure event.
+ * @param {{providerSessionId: string, recordProviderFailure: (failure: {code: string, retryable: boolean, source: string}) => void}} options
+ */
+const openClaudeFailureTelemetry = async ({ providerSessionId, recordProviderFailure }) => {
+  const path = `/stop-failure/${randomBytes(12).toString("hex")}`;
+  const server = createHttpServer((request, response) => {
+    if (
+      request.method !== "POST"
+      || request.url !== path
+      || request.headers["content-type"]?.split(";", 1)[0] !== "application/json"
+    ) {
+      response.writeHead(404).end();
+      return;
+    }
+    /** @type {Buffer[]} */
+    const chunks = [];
+    let size = 0;
+    request.on("data", (chunk) => {
+      size += chunk.byteLength;
+      if (size > 32_768) {
+        request.destroy();
+        response.writeHead(413).end();
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    });
+    request.once("end", () => {
+      if (size > 32_768) return;
+      let event;
+      try {
+        event = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        response.writeHead(400).end();
+        return;
+      }
+      if (
+        event?.hook_event_name !== "StopFailure"
+        || event.session_id !== providerSessionId
+      ) {
+        response.writeHead(400).end();
+        return;
+      }
+      recordProviderFailure(classifyClaudeStopFailure(event));
+      response.writeHead(204).end();
+    });
+  });
+  server.maxConnections = 4;
+  await new Promise((resolve, reject) => {
+    const onError = () => reject(new Error("claude_failure_telemetry_unavailable"));
+    server.once("error", onError);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", onError);
+      resolve(undefined);
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await new Promise((resolve) => server.close(() => resolve(undefined)));
+    throw new Error("claude_failure_telemetry_unavailable");
+  }
+  const url = `http://127.0.0.1:${address.port}${path}`;
+  return {
+    settings: {
+      allowedHttpHookUrls: [url],
+      hooks: {
+        StopFailure: [{
+          hooks: [{ type: "http", url, timeout: 3 }],
+        }],
+      },
+    },
+    close: () => new Promise((resolve) => server.close(() => resolve(undefined))),
+  };
+};
+
+/**
  * @param {{sessionId: string, workContextId: string, control: any}} options
  */
 const openControllerCliServer = async ({
@@ -660,8 +738,26 @@ const runClaude = async (argv) => {
     workContextId,
     control,
   });
+  let providerFailure = null;
+  const failureTelemetry = await openClaudeFailureTelemetry({
+    providerSessionId,
+    recordProviderFailure: (failure) => {
+      providerFailure = failure;
+      control.notify({
+        type: "provider.session.failure",
+        controlProtocol: adapterProtocol,
+        adapterId,
+        sessionId,
+        providerSessionId,
+        failure,
+      });
+    },
+  });
   const executable = process.env.SANDKING_CLAUDE_EXECUTABLE ?? "claude";
-  const providerArgs = ["--session-id", providerSessionId];
+  const providerArgs = [
+    "--session-id", providerSessionId,
+    "--settings", JSON.stringify(failureTelemetry.settings),
+  ];
   let runtimeTerminated = false;
   /** @type {import("node:child_process").ChildProcess} */
   let child;
@@ -696,6 +792,7 @@ const runClaude = async (argv) => {
       reason,
     });
     await controllerCli.close();
+    await failureTelemetry.close();
     await control.close();
     throw new Error(reason.code);
   }
@@ -715,7 +812,7 @@ const runClaude = async (argv) => {
     child.once("exit", (exitCode, signal) => resolve({ exitCode, signal }));
   });
   for (const [signal, handler] of signalHandlers) process.off(signal, handler);
-  const reason = runtimeTerminated || outcome.signal
+  const reason = providerFailure ?? (runtimeTerminated || outcome.signal
     ? { code: "runtime_terminated", retryable: false, source: "controller-runtime" }
     : outcome.exitCode === 0
       ? { code: "provider_session_completed", retryable: false, source: "claude-cli" }
@@ -723,7 +820,7 @@ const runClaude = async (argv) => {
           code: "provider_model_behavior_unconfirmed",
           retryable: true,
           source: "claude-cli",
-        };
+        });
   control.notify({
     type: "provider.session.exit",
     controlProtocol: adapterProtocol,
@@ -733,6 +830,7 @@ const runClaude = async (argv) => {
     reason,
   });
   await controllerCli.close();
+  await failureTelemetry.close();
   await control.close();
   process.exitCode = outcome.exitCode ?? (outcome.signal ? 1 : 0);
 };

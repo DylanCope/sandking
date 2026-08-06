@@ -969,12 +969,14 @@ const renderHarnessRun = (observation) => {
   section.dataset.projectId = run.projectId;
   section.dataset.harnessPin = run.harnessPinnedRevision;
   section.dataset.controllerSessionId = run.controllerSessionId ?? "";
-  section.dataset.launchAuditId = run.launchAuditId;
-  section.dataset.launchSource = run.source;
+  const launchAuditId = run.launchAuditId ?? run.startAuditId;
+  const launchSource = run.source ?? "legacy-approved-launch";
+  section.dataset.launchAuditId = launchAuditId;
+  section.dataset.launchSource = launchSource;
   section.append(
     element("h3", {}, `Harness run ${run.harnessRunId}`),
     element("p", { "data-run-status": run.status }, `Lifecycle status: ${run.status}`),
-    element("p", { "data-launch-source": run.source }, `Launched from: ${run.source}`),
+    element("p", { "data-launch-source": launchSource }, `Launched from: ${launchSource}`),
     element("p", {}, `Project: ${run.projectId}`),
     element("p", {}, `Harness: ${run.harnessId} @ ${run.harnessPinnedRevision}`),
   );

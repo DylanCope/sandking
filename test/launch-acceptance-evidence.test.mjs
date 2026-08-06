@@ -10,6 +10,7 @@ import {
   captureIssue119EvidenceSourceRevision,
   ISSUE_119_DEMONSTRATED_PATHS,
 } from "./issue-119-evidence-source.mjs";
+import { verifyRetainedEvidenceCurrentOrSuperseded } from "./retained-evidence-supersession.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -88,21 +89,12 @@ test("issue 119 manifest drives the focused immutable Launch approval scenario",
 });
 
 test("retained issue 119 evidence identifies the unchanged demonstrated revision", async () => {
-  const { stdout: resolvedCommit } = await execFileAsync(
-    "git",
-    ["rev-parse", "--verify", `${evidence.generatedFromCommit}^{commit}`],
-    { cwd: repositoryRoot },
-  );
-  assert.equal(resolvedCommit.trim(), evidence.generatedFromCommit);
-  await execFileAsync("git", [
-    "merge-base", "--is-ancestor", evidence.generatedFromCommit, "HEAD",
-  ], { cwd: repositoryRoot });
-  const { stdout: demonstratedPathChanges } = await execFileAsync("git", [
-    "diff", "--name-only", `${evidence.generatedFromCommit}..HEAD`, "--",
-    ...ISSUE_119_DEMONSTRATED_PATHS,
-  ], { cwd: repositoryRoot });
-  assert.equal(demonstratedPathChanges.trim(), "",
-    `retained evidence predates demonstrated product-path changes:\n${demonstratedPathChanges}`);
+  await verifyRetainedEvidenceCurrentOrSuperseded({
+    repositoryRoot,
+    issue: 119,
+    evidence,
+    demonstratedPaths: ISSUE_119_DEMONSTRATED_PATHS,
+  });
 });
 
 test("retained issue 119 evidence proves the immutable request and focused approval", () => {

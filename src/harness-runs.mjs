@@ -26,6 +26,7 @@ const auditIdSchema = z.string().regex(/^audit-[a-f0-9]{24}$/);
 const hostIdSchema = z.string().regex(/^host-[a-f0-9]{24}$/);
 const projectIdSchema = z.string().regex(/^project-[a-f0-9]{24}$/);
 const harnessIdSchema = z.string().regex(/^harness-[a-f0-9]{24}$/);
+const legacyLaunchRequestIdSchema = z.string().regex(/^launch-request-[a-f0-9]{24}$/);
 const harnessRunIdSchema = z.string().regex(/^harness-run-[a-f0-9]{24}$/);
 const outcomeIdSchema = z.string().regex(/^harness-outcome-[a-f0-9]{24}$/);
 const eventIdSchema = z.string().regex(/^harness-event-[a-f0-9]{24}$/);
@@ -118,7 +119,7 @@ const logStreamSchema = z.object({
   insertedIntoControllerConversation: z.literal(false),
 }).strict();
 
-export const harnessRunSchema = z.object({
+const currentHarnessRunSchema = z.object({
   harnessRunId: harnessRunIdSchema,
   revision: z.number().int().positive(),
   status: runStatusSchema,
@@ -139,12 +140,44 @@ export const harnessRunSchema = z.object({
   launchAuditId: auditIdSchema,
 }).strict();
 
-const storedRunSchema = harnessRunSchema.extend({
+// Schema v1 runs are durable execution history. Keep their exact public shape
+// readable after the launch-request command path is retired instead of
+// inventing parameters or an invocation source that v1 did not retain.
+const legacyHarnessRunSchema = z.object({
+  harnessRunId: harnessRunIdSchema,
+  revision: z.number().int().positive(),
+  status: runStatusSchema,
+  launchRequestId: legacyLaunchRequestIdSchema,
+  launchRequestRevision: z.number().int().positive(),
+  hostId: hostIdSchema,
+  projectId: projectIdSchema,
+  harnessId: harnessIdSchema,
+  harnessPinnedRevision: commitSchema,
+  adapterId: z.literal("conformance-harness-adapter-v1"),
+  adapterProtocol: z.literal("1.0.0"),
+  adapterEntryPoint: harnessAdapterEntryPointSchema,
+  controllerId: controllerIdSchema,
+  controllerSessionId: controllerSessionIdSchema,
+  createdAt: z.string().datetime(),
+  adapterReadyAt: z.string().datetime().nullable(),
+  completedAt: z.string().datetime().nullable(),
+  startAuditId: auditIdSchema,
+}).strict();
+
+export const harnessRunSchema = z.union([
+  currentHarnessRunSchema,
+  legacyHarnessRunSchema,
+]);
+
+const storedRunFields = {
   events: z.array(harnessRunEventSchema).max(MAX_RETAINED_RUN_EVENTS),
   outcome: harnessRunOutcomeSchema.nullable(),
   terminalEnvelopeValidation: terminalEnvelopeValidationSchema,
   logStreams: z.tuple([logStreamSchema, logStreamSchema]),
-}).strict();
+};
+const currentStoredRunSchema = currentHarnessRunSchema.extend(storedRunFields).strict();
+const legacyStoredRunSchema = legacyHarnessRunSchema.extend(storedRunFields).strict();
+const storedRunSchema = z.union([currentStoredRunSchema, legacyStoredRunSchema]);
 const retainedOutcomeSchema = z.object({
   idempotencyKeyHash: digestSchema,
   requestFingerprint: digestSchema,
@@ -157,9 +190,20 @@ const stateSchema = z.object({
   // later explicit workflow; the records themselves remain schema-bounded.
   runs: z.array(storedRunSchema),
   launchOutcomes: z.array(retainedOutcomeSchema),
+  legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
+}).strict();
+const legacyStateSchema = z.object({
+  schemaVersion: z.literal(1),
+  runs: z.array(legacyStoredRunSchema),
+  startOutcomes: z.array(retainedOutcomeSchema),
 }).strict();
 
-const initialState = () => ({ schemaVersion: 2, runs: [], launchOutcomes: [] });
+const initialState = () => ({
+  schemaVersion: 2,
+  runs: [],
+  launchOutcomes: [],
+  legacyStartOutcomes: [],
+});
 /** @param {string} dataDir */
 const statePath = (dataDir) => join(dataDir, "harness-runs.json");
 /** @param {string} dataDir @param {string} harnessRunId @param {"stdout" | "stderr"} producer */
@@ -171,26 +215,36 @@ const digest = (value) => `sha256:${createHash("sha256").update(value).digest("h
 const fingerprint = (value) => digest(JSON.stringify(value));
 
 /** @param {z.infer<typeof storedRunSchema>} run */
-const publicRun = (run) => harnessRunSchema.parse({
-  harnessRunId: run.harnessRunId,
-  revision: run.revision,
-  status: run.status,
-  hostId: run.hostId,
-  projectId: run.projectId,
-  harnessId: run.harnessId,
-  harnessPinnedRevision: run.harnessPinnedRevision,
-  adapterId: run.adapterId,
-  adapterProtocol: run.adapterProtocol,
-  adapterEntryPoint: run.adapterEntryPoint,
-  parameters: structuredClone(run.parameters),
-  source: run.source,
-  controllerId: run.controllerId,
-  controllerSessionId: run.controllerSessionId,
-  createdAt: run.createdAt,
-  adapterReadyAt: run.adapterReadyAt,
-  completedAt: run.completedAt,
-  launchAuditId: run.launchAuditId,
-});
+const publicRun = (run) => {
+  const common = {
+    harnessRunId: run.harnessRunId,
+    revision: run.revision,
+    status: run.status,
+    hostId: run.hostId,
+    projectId: run.projectId,
+    harnessId: run.harnessId,
+    harnessPinnedRevision: run.harnessPinnedRevision,
+    adapterId: run.adapterId,
+    adapterProtocol: run.adapterProtocol,
+    adapterEntryPoint: run.adapterEntryPoint,
+    controllerId: run.controllerId,
+    controllerSessionId: run.controllerSessionId,
+    createdAt: run.createdAt,
+    adapterReadyAt: run.adapterReadyAt,
+    completedAt: run.completedAt,
+  };
+  return harnessRunSchema.parse("launchRequestId" in run ? {
+    ...common,
+    launchRequestId: run.launchRequestId,
+    launchRequestRevision: run.launchRequestRevision,
+    startAuditId: run.startAuditId,
+  } : {
+    ...common,
+    parameters: structuredClone(run.parameters),
+    source: run.source,
+    launchAuditId: run.launchAuditId,
+  });
+};
 
 /**
  * @param {z.infer<typeof storedRunSchema>} run
@@ -376,9 +430,26 @@ export const createHarnessRunManager = async (options) => {
     mutationQueue = current.then(() => undefined, () => undefined);
     return current;
   };
-  const readState = async () => stateSchema.parse(
-    await readJson(statePath(options.dataDir), initialState()),
-  );
+  const readState = async () => {
+    const raw = await readJson(statePath(options.dataDir), initialState());
+    if (
+      raw
+      && typeof raw === "object"
+      && "schemaVersion" in raw
+      && raw.schemaVersion === 1
+    ) {
+      const legacy = legacyStateSchema.parse(raw);
+      const migrated = stateSchema.parse({
+        schemaVersion: 2,
+        runs: legacy.runs,
+        launchOutcomes: [],
+        legacyStartOutcomes: legacy.startOutcomes,
+      });
+      await writePrivateJson(statePath(options.dataDir), migrated);
+      return migrated;
+    }
+    return stateSchema.parse(raw);
+  };
   /** @param {z.infer<typeof stateSchema>} state */
   const persist = (state) => writePrivateJson(
     statePath(options.dataDir),

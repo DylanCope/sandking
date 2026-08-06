@@ -10,6 +10,7 @@ import {
   captureIssue121EvidenceSourceRevision,
   ISSUE_121_DEMONSTRATED_PATHS,
 } from "./issue-121-evidence-source.mjs";
+import { verifyRetainedEvidenceCurrentOrSuperseded } from "./retained-evidence-supersession.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -97,20 +98,12 @@ test("issue 121 manifest traces the complete canonical reconnect slice", () => {
 });
 
 test("retained issue 121 evidence identifies the unchanged demonstrated revision", async () => {
-  const { stdout: resolvedCommit } = await execFileAsync(
-    "git",
-    ["rev-parse", "--verify", `${evidence.generatedFromCommit}^{commit}`],
-    { cwd: repositoryRoot },
-  );
-  assert.equal(resolvedCommit.trim(), evidence.generatedFromCommit);
-  await execFileAsync("git", [
-    "merge-base", "--is-ancestor", evidence.generatedFromCommit, "HEAD",
-  ], { cwd: repositoryRoot });
-  const { stdout: changes } = await execFileAsync("git", [
-    "diff", "--name-only", `${evidence.generatedFromCommit}..HEAD`, "--",
-    ...ISSUE_121_DEMONSTRATED_PATHS,
-  ], { cwd: repositoryRoot });
-  assert.equal(changes.trim(), "", `retained evidence predates demonstrated changes:\n${changes}`);
+  await verifyRetainedEvidenceCurrentOrSuperseded({
+    repositoryRoot,
+    issue: 121,
+    evidence,
+    demonstratedPaths: ISSUE_121_DEMONSTRATED_PATHS,
+  });
 });
 
 test("retained issue 121 evidence proves one reattached canonical completed run", () => {

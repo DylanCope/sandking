@@ -268,3 +268,114 @@ test("distinct launch outcomes remain durable and lookup-safe past 256 keys", as
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("main-era Harness-run history remains observable after the launch-schema upgrade", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-harness-v1-upgrade-"));
+  const harnessRunId = `harness-run-${"5".repeat(24)}`;
+  const legacyRun = {
+    harnessRunId,
+    revision: 3,
+    status: "succeeded",
+    launchRequestId: `launch-request-${"6".repeat(24)}`,
+    launchRequestRevision: 2,
+    hostId,
+    projectId: `project-${"7".repeat(24)}`,
+    harnessId: `harness-${"8".repeat(24)}`,
+    harnessPinnedRevision: "9".repeat(40),
+    adapterId: "conformance-harness-adapter-v1",
+    adapterProtocol: "1.0.0",
+    adapterEntryPoint: "adapters/conformance.mjs",
+    controllerId,
+    controllerSessionId,
+    createdAt: "2026-08-01T10:00:00.000Z",
+    adapterReadyAt: "2026-08-01T10:00:01.000Z",
+    completedAt: "2026-08-01T10:00:02.000Z",
+    startAuditId: `audit-${"1".repeat(24)}`,
+    events: [],
+    outcome: null,
+    terminalEnvelopeValidation: {
+      adapterReadyObserved: true,
+      validTerminalEnvelopeCount: 1,
+      exactlyOne: true,
+      adapterChannelClosedObserved: true,
+      processExitObserved: true,
+    },
+    logStreams: [
+      {
+        streamId: `harness-log-${"2".repeat(24)}`,
+        producer: "stdout",
+        availableStart: 0,
+        availableEnd: 0,
+        explicitRetrievalRequired: true,
+        insertedIntoControllerConversation: false,
+      },
+      {
+        streamId: `harness-log-${"3".repeat(24)}`,
+        producer: "stderr",
+        availableStart: 0,
+        availableEnd: 0,
+        explicitRetrievalRequired: true,
+        insertedIntoControllerConversation: false,
+      },
+    ],
+  };
+  const legacyStartOutcome = {
+    idempotencyKeyHash: `sha256:${"a".repeat(64)}`,
+    requestFingerprint: `sha256:${"b".repeat(64)}`,
+    response: {
+      type: "harness.run.start.result",
+      requestId: "legacy-start-request",
+      code: "harness_run_created",
+      run: legacyRun,
+    },
+  };
+  await writeFile(join(dataDir, "harness-runs.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    runs: [legacyRun],
+    startOutcomes: [legacyStartOutcome],
+  })}\n`);
+
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir,
+      hostId,
+      recordAudit: async () => `audit-${"4".repeat(24)}`,
+      loadLaunchContext: async () => {
+        throw new Error("project_not_found");
+      },
+    });
+    const observation = await manager.observe({
+      requestId: "observe-legacy-run",
+      harnessRunId,
+      afterSequence: 0,
+    });
+    assert.equal(observation.code, "harness_run_observed");
+    assert.deepEqual(observation.run, {
+      harnessRunId: legacyRun.harnessRunId,
+      revision: legacyRun.revision,
+      status: legacyRun.status,
+      launchRequestId: legacyRun.launchRequestId,
+      launchRequestRevision: legacyRun.launchRequestRevision,
+      hostId: legacyRun.hostId,
+      projectId: legacyRun.projectId,
+      harnessId: legacyRun.harnessId,
+      harnessPinnedRevision: legacyRun.harnessPinnedRevision,
+      adapterId: legacyRun.adapterId,
+      adapterProtocol: legacyRun.adapterProtocol,
+      adapterEntryPoint: legacyRun.adapterEntryPoint,
+      controllerId: legacyRun.controllerId,
+      controllerSessionId: legacyRun.controllerSessionId,
+      createdAt: legacyRun.createdAt,
+      adapterReadyAt: legacyRun.adapterReadyAt,
+      completedAt: legacyRun.completedAt,
+      startAuditId: legacyRun.startAuditId,
+    });
+    const migrated = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
+    assert.equal(migrated.schemaVersion, 2);
+    assert.deepEqual(migrated.runs, [legacyRun]);
+    assert.deepEqual(migrated.launchOutcomes, []);
+    assert.deepEqual(migrated.legacyStartOutcomes, [legacyStartOutcome]);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

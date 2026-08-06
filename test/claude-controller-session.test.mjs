@@ -279,3 +279,95 @@ if (args.length === 1 && args[0] === "--version") {
     await rm(fixtureDirectory, { recursive: true, force: true });
   }
 });
+
+test("the production Claude session channel preserves typed StopFailure outcomes", async () => {
+  const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-stop-failure-"));
+  const dataDir = join(fixtureDirectory, "state");
+  const projectDir = join(fixtureDirectory, "project");
+  const fakeClaudePath = join(fixtureDirectory, "claude");
+  await Promise.all([mkdir(dataDir), mkdir(projectDir)]);
+  await writeFile(fakeClaudePath, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.length === 1 && args[0] === "--version") {
+  process.stdout.write("2.1.222 (Claude Code)\\n");
+} else if (args.length === 1 && args[0] === "--help") {
+  process.stdout.write("--session-id <uuid>\\n--settings <json>\\n");
+} else if (args.join(" ") === "auth status") {
+  process.stdout.write('{"loggedIn":true}');
+} else {
+  const sessionId = args[args.indexOf("--session-id") + 1];
+  const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
+  const failureUrl = settings.hooks.StopFailure[0].hooks[0].url;
+  process.stdout.write("Fake Claude failure session ready.\\r\\n");
+  process.stdin.once("data", async () => {
+    await fetch(failureUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
+        hook_event_name: "StopFailure",
+        error: "network_error",
+        error_details: "DNS connection timed out",
+      }),
+    });
+    process.exit(1);
+  });
+}
+`, { mode: 0o700 });
+
+  const audits = [];
+  let manager;
+  try {
+    manager = await createControllerSessionManager({
+      dataDir,
+      providerEnvironment: {
+        HOME: fixtureDirectory,
+        PATH: process.env.PATH,
+        LANG: "C.UTF-8",
+        SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
+      },
+      recordAudit: async (action, outcome, details = {}) => {
+        audits.push({ action, outcome, details });
+        return `audit-${String(audits.length).padStart(24, "0")}`;
+      },
+    });
+    const projectId = `project-${"4".repeat(24)}`;
+    const session = await manager.start({
+      workContextId: projectId,
+      kind: "project",
+      canonicalReference: `sandking:project:${projectId}`,
+    }, {
+      providerId: "claude-code",
+      workingDirectory: projectDir,
+    });
+    const writer = { readyState: 1 };
+    const attached = await manager.attach({
+      socket: writer,
+      sessionId: session.sessionId,
+      streamId: session.terminal.streamId,
+      attachmentId: session.terminal.writableAttachment.attachmentId,
+      mode: "read-write",
+      outputCursor: 0,
+      onOutput: () => undefined,
+    });
+    assert.equal(attached.activate(), true);
+    await manager.write({
+      socket: writer,
+      streamId: session.terminal.streamId,
+      sequence: 0,
+      eof: false,
+      data: Buffer.from("trigger failure\n"),
+    });
+    await waitFor(() => manager.inspect(session.sessionId)?.terminal.status === "exited");
+    assert.deepEqual(manager.inspect(session.sessionId)?.terminal.exitReason, {
+      code: "provider_network_unavailable",
+      retryable: true,
+      source: "claude-stop-failure",
+    });
+    assert.ok(audits.some((entry) => entry.action === "controller.session.failure"
+      && entry.details.code === "provider_network_unavailable"));
+  } finally {
+    await manager?.shutdown();
+    await rm(fixtureDirectory, { recursive: true, force: true });
+  }
+});

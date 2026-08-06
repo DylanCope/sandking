@@ -19,38 +19,49 @@ import {
   selectInstalledClaudeAcceptanceAuditChain,
   selectInstalledClaudeProjectRegistration,
 } from "./installed-claude-acceptance-audits.mjs";
+import { installCurrentPackage } from "./installed-package.mjs";
+import { captureCleanIssue152EvidenceRevision } from "./issue-152-evidence-source.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const manifestPath = resolve(
   process.argv.find((argument) => argument.endsWith(".json"))
-    ?? "acceptance/issue-124.manifest.json",
+    ?? "acceptance/issue-152.manifest.json",
 );
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+const issue = manifest.issue;
+const scenarioIndex = issue === 152 ? 1 : 0;
+const acceptanceError = (suffix) => `issue_${issue}_real_acceptance_${suffix}`;
 
 if (
-  manifest.issue !== 124
-  || manifest.parentPrd !== 125
+  !(
+    (issue === 152
+      && manifest.schemaVersion === 1
+      && manifest.parentPrd === null
+      && manifest.scenarios?.[scenarioIndex]?.id
+        === "harness-launch/uses-real-installed-claude-controller")
+    || (issue === 124 && manifest.schemaVersion === 2 && manifest.parentPrd === 125)
+  )
   || manifest.environmentGate?.name !== "SANDKING_REAL_CLAUDE_ACCEPTANCE"
 ) {
-  throw new Error("issue_124_real_acceptance_manifest_invalid");
+  throw new Error(acceptanceError("manifest_invalid"));
 }
 if (process.env.SANDKING_REAL_CLAUDE_ACCEPTANCE !== "1") {
   throw new Error(
-    "issue_124_real_acceptance_gate_closed: set SANDKING_REAL_CLAUDE_ACCEPTANCE=1 explicitly",
+    `${acceptanceError("gate_closed")}: set SANDKING_REAL_CLAUDE_ACCEPTANCE=1 explicitly`,
   );
 }
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
-  throw new Error("issue_124_real_acceptance_requires_human_tty");
+  throw new Error(acceptanceError("requires_human_tty"));
 }
 
 const configuredProject = process.env.SANDKING_REAL_CLAUDE_PROJECT;
 if (!configuredProject || !isAbsolute(configuredProject)) {
-  throw new Error("issue_124_real_acceptance_project_must_be_absolute");
+  throw new Error(acceptanceError("project_must_be_absolute"));
 }
 const projectPath = await realpath(configuredProject);
 if (!(await stat(projectPath)).isDirectory()) {
-  throw new Error("issue_124_real_acceptance_project_not_directory");
+  throw new Error(acceptanceError("project_not_directory"));
 }
 await execFileAsync("git", ["-C", projectPath, "rev-parse", "--show-toplevel"], {
   env: { PATH: process.env.PATH, LANG: "C.UTF-8" },
@@ -62,33 +73,54 @@ const projectStatusBefore = (await execFileAsync("git", [
 const probe = await probeClaude();
 if (probe.availability.status !== "available") {
   throw new Error(
-    `issue_124_real_acceptance_provider_unavailable:${probe.availability.failure?.code
+    `${acceptanceError("provider_unavailable")}:${probe.availability.failure?.code
       ?? probe.availability.status}`,
   );
 }
 
-const dataDir = await mkdtemp(join(tmpdir(), "sandking-real-claude-acceptance-"));
-const cliPath = join(repositoryRoot, "src", "cli.mjs");
-const lifecycleKey = `issue-124-real-${randomBytes(12).toString("hex")}`;
+const evidenceSourceRevision = await captureCleanIssue152EvidenceRevision({ repositoryRoot });
+const acceptanceRoot = await mkdtemp(join(tmpdir(), "sandking-real-claude-acceptance-"));
+const dataDir = join(acceptanceRoot, "state");
+const outsideCheckout = join(acceptanceRoot, "work");
+let cliPath;
+let packagedEnvironment;
+let tarballSha256;
+try {
+  await Promise.all([
+    mkdir(dataDir, { recursive: true }),
+    mkdir(outsideCheckout, { recursive: true }),
+  ]);
+  const installed = await installCurrentPackage(acceptanceRoot);
+  cliPath = installed.command;
+  await stat(cliPath);
+  packagedEnvironment = {
+    ...process.env,
+    PATH: `${dirname(cliPath)}:${process.env.PATH ?? ""}`,
+  };
+  tarballSha256 = installed.observation.tarballSha256;
+} catch (error) {
+  await rm(acceptanceRoot, { recursive: true, force: true });
+  throw error;
+}
+const lifecycleKey = `issue-${issue}-real-${randomBytes(12).toString("hex")}`;
 let runtimeStarted = false;
 let evidenceWritten = false;
 
 try {
-  const { stdout } = await execFileAsync(process.execPath, [
-    cliPath,
+  const { stdout } = await execFileAsync(cliPath, [
     "launch",
     "--data-dir", dataDir,
     "--idempotency-key", lifecycleKey,
     "--expected-revision", "0",
     "--json",
   ], {
-    cwd: repositoryRoot,
-    env: process.env,
+    cwd: outsideCheckout,
+    env: packagedEnvironment,
     maxBuffer: 1024 * 1024,
   });
   const launch = JSON.parse(stdout);
   if (!launch.bootstrapUrl || !launch.runtime?.runtimeId) {
-    throw new Error("issue_124_real_acceptance_runtime_start_invalid");
+    throw new Error(acceptanceError("runtime_start_invalid"));
   }
   runtimeStarted = true;
 
@@ -110,7 +142,7 @@ try {
       "Type COMPLETE only after every checklist item has been observed: ",
     );
     if (confirmation !== "COMPLETE") {
-      throw new Error("issue_124_real_acceptance_not_confirmed");
+      throw new Error(acceptanceError("not_confirmed"));
     }
   } finally {
     readline.close();
@@ -130,11 +162,11 @@ try {
   const claudeSessions = controllerState.sessions.filter((session) =>
     session.providerId === "claude-code");
   if (claudeSessions.length !== 1) {
-    throw new Error("issue_124_real_acceptance_requires_one_claude_session");
+    throw new Error(acceptanceError("requires_one_claude_session"));
   }
   const session = claudeSessions[0];
   if (session.terminal.runtimeOwned !== true || session.terminal.status !== "running") {
-    throw new Error("issue_124_real_acceptance_runtime_owned_session_not_retained");
+    throw new Error(acceptanceError("runtime_owned_session_not_retained"));
   }
   const runs = harnessState.runs.filter((run) =>
     run.controllerSessionId === session.sessionId
@@ -145,7 +177,7 @@ try {
     || !runs[0].outcome
     || runs[0].terminalEnvelopeValidation?.exactlyOne !== true
   ) {
-    throw new Error("issue_124_real_acceptance_requires_one_structured_harness_outcome");
+    throw new Error(acceptanceError("requires_one_structured_harness_outcome"));
   }
   const audits = auditText.trim().split("\n").map((line) => JSON.parse(line));
   const requiredAudits = selectInstalledClaudeAcceptanceAuditChain({
@@ -158,15 +190,16 @@ try {
     "-C", projectPath, "status", "--porcelain=v1", "--untracked-files=all",
   ], { env: { PATH: process.env.PATH, LANG: "C.UTF-8" } })).stdout;
   if (projectStatusAfter !== projectStatusBefore) {
-    throw new Error("issue_124_real_acceptance_project_state_changed");
+    throw new Error(acceptanceError("project_state_changed"));
   }
 
   const run = runs[0];
   const evidence = {
     schemaVersion: 1,
-    issue: 124,
-    parentPrd: 125,
-    scenario: manifest.scenarios[0].id,
+    issue,
+    parentPrd: manifest.parentPrd,
+    scenario: manifest.scenarios[scenarioIndex].id,
+    generatedFromCommit: evidenceSourceRevision,
     recordedAt: new Date().toISOString(),
     execution: "final-human-environment-acceptance-child",
     environment: {
@@ -178,6 +211,8 @@ try {
       modelInteractionPerformedByHuman: true,
       controllerCommand: "ordinary-sandking-cli",
       pluginInstalled: false,
+      packageInstalledOutsideCheckout: true,
+      packagedTarballSha256: tarballSha256,
     },
     observations: {
       projectFocusedControllerSessionOpened: true,
@@ -212,7 +247,7 @@ try {
     securityAssertions: {
       projectPathRetained: false,
       credentialValueRetained: false,
-      browserLaunchUsed: false,
+      browserApprovalAssertion: false,
       projectSandKingStateWrite: false,
     },
   };
@@ -222,11 +257,11 @@ try {
     || /ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|bootstrap\?token=|sandking_session=/i
       .test(evidenceText)
   ) {
-    throw new Error("issue_124_real_acceptance_evidence_not_sanitized");
+    throw new Error(acceptanceError("evidence_not_sanitized"));
   }
   const evidencePath = resolve(
     process.env.SANDKING_REAL_CLAUDE_EVIDENCE_PATH
-      ?? join(repositoryRoot, "acceptance", "evidence", "issue-124.real.json"),
+      ?? join(repositoryRoot, "acceptance", "evidence", `issue-${issue}.real.json`),
   );
   await mkdir(dirname(evidencePath), { recursive: true, mode: 0o700 });
   await writeFile(evidencePath, evidenceText, { mode: 0o600 });
@@ -234,14 +269,13 @@ try {
   process.stdout.write(`Retained sanitized real-environment evidence: ${evidencePath}\n`);
 } finally {
   if (runtimeStarted) {
-    await execFileAsync(process.execPath, [
-      cliPath,
+    await execFileAsync(cliPath, [
       "stop",
       "--data-dir", dataDir,
       "--json",
-    ], { cwd: repositoryRoot, env: process.env }).catch(() => undefined);
+    ], { cwd: outsideCheckout, env: packagedEnvironment }).catch(() => undefined);
   }
-  await rm(dataDir, { recursive: true, force: true });
+  await rm(acceptanceRoot, { recursive: true, force: true });
   if (!evidenceWritten) {
     process.stderr.write("No real-environment acceptance evidence was retained.\n");
   }
