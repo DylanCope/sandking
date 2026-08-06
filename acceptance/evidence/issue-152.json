@@ -5,8 +5,8 @@
   "sourceIssue": {
     "githubBodyUtf8Sha256": "5777030649523736625efbcdaa0674951bb57a67d97333401e70fcbbc70ed492"
   },
-  "generatedFromCommit": "ba35f00719de42d390e6bccb3bf24b7572b50577",
-  "recordedAt": "2026-08-06T00:23:58.354Z",
+  "generatedFromCommit": "64bb5eba810cfb73b2b56969d4ae2492062f513c",
+  "recordedAt": "2026-08-06T00:45:49.511Z",
   "scenario": "harness-launch/uses-one-action-from-cockpit-and-controller",
   "verificationCommands": [
     [
