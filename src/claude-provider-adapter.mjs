@@ -633,6 +633,13 @@ const openControllerCliServer = async ({
     ? join(directory, "operations.sock")
     : `\\\\.\\pipe\\sandking-controller-cli-${canonicalDigest({ sessionId }).slice(0, 24)}`;
   let closed = false;
+  let providerReady = false;
+  /** @type {() => void} */
+  let releaseProviderReady = () => undefined;
+  /** @type {Promise<void>} */
+  const waitForProviderReady = new Promise((resolve) => {
+    releaseProviderReady = () => resolve();
+  });
 
   /** @param {any} request */
   const handle = async (request) => {
@@ -645,6 +652,14 @@ const openControllerCliServer = async ({
       || !["describe", "harness-run.launch"].includes(request.operation)
     ) {
       throw new Error("controller_cli_contract_invalid");
+    }
+    // A freshly spawned provider can discover and invoke `sandking` before
+    // this adapter's spawn event is delivered. Keep that operation queued so
+    // provider.session.ready is always the first frame on the shared control
+    // socket; otherwise the runtime can reject a valid session nondeterministically.
+    await waitForProviderReady;
+    if (!providerReady) {
+      throw new Error("controller_cli_unavailable");
     }
     if (request.operation === "describe") {
       return control.request("controller-cli.describe", {});
@@ -736,9 +751,16 @@ const openControllerCliServer = async ({
   });
   return {
     endpoint,
+    announceProviderReady: () => {
+      if (closed || providerReady) return false;
+      providerReady = true;
+      releaseProviderReady();
+      return true;
+    },
     close: async () => {
       if (closed) return;
       closed = true;
+      releaseProviderReady();
       await new Promise((resolve) => server.close(() => resolve(undefined)));
       if (directory) await rm(directory, { recursive: true, force: true });
     },
@@ -826,6 +848,9 @@ const runClaude = async (argv) => {
       child.once("error", reject);
     });
     control.ready();
+    if (!controllerCli.announceProviderReady()) {
+      throw new Error("controller_cli_unavailable");
+    }
   } catch {
     const reason = {
       code: "provider_cli_unavailable",
