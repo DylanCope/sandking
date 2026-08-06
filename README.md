@@ -103,10 +103,14 @@ the Controller runtime and framed Host protocol. The Cockpit exposes a Launch
 button with one Yes/No confirmation dialog and a persisted **Don’t show again**
 preference; it adds no proposal, approval, revision, or separate start gate.
 A focused Controller can invoke the same action with the ordinary executable:
-`sandking launch <project-id> --issue <issue> --target-branch
-sandcastle/issue-<issue>`. The runtime never parses terminal prose as a command
-or authorization assertion. One PTY view may write while secondary views attach
-read-only, and browser disconnection does not terminate the provider PTY.
+`sandking launch [<project-id>] --issue <issue> --target-branch
+sandcastle/issue-<issue>`. Inside that Controller session, the Project ID
+defaults to the focused Project. The packaged command advertises this surface
+through `sandking launch --help`, so the agent does not need a plugin or
+pre-scripted command syntax. The runtime never parses terminal prose as a
+command or authorization assertion. One PTY view may write while secondary
+views attach read-only, and browser disconnection does not terminate the
+provider PTY.
 
 The Host validates the current Project and pinned Harness at launch time,
 durably creates or finds one canonical run, and returns while supervision

@@ -77,6 +77,7 @@ if (updateEvidence) {
       oneRevisionFreeHostLaunch: true,
       freshProjectLaunch: true,
       cockpitSinglePersistedConfirmation: true,
+      ordinaryControllerCliDiscoverable: true,
       ordinaryControllerCliLaunch: true,
       claudePluginAbsent: true,
       revisionDriftFailureAbsent: true,

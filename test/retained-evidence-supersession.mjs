@@ -70,7 +70,9 @@ export const verifyRetainedEvidenceCurrentOrSuperseded = async ({
       realEvidence.issue !== 152
       || realEvidence.scenario !== "harness-launch/uses-real-installed-claude-controller"
       || realEvidence.environment?.pluginInstalled !== false
+      || realEvidence.observations?.ordinaryCliDiscoveredByController !== true
       || realEvidence.observations?.ordinaryCliLaunchObserved !== true
+      || realEvidence.observations?.acceptedLaunchOperationCount !== 1
     ) {
       throw new Error("issue_152_real_evidence_invalid");
     }

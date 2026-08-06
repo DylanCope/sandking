@@ -11,7 +11,7 @@
       "requirements": [
         "one revision-free action launches a Harness run from a fresh Project",
         "Cockpit uses exactly one persistable Yes/No confirmation",
-        "Controller sessions invoke the packaged ordinary sandking CLI without a plugin",
+        "Controller sessions discover and invoke the packaged ordinary sandking CLI without a plugin",
         "main-era Harness-run and Controller-session state remains readable",
         "auth, audit, terminal, reconnect, Project, and Host behavior remains covered"
       ],

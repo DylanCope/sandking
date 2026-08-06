@@ -5,15 +5,24 @@ import { openBrowser } from "./browser-launch.mjs";
 import { requestControllerLaunch } from "./controller-cli.mjs";
 import { RuntimeStartupError, launchRuntime, stopRuntime } from "./runtime.mjs";
 
+const harnessLaunchHelp = `Usage:
+  sandking launch [<project-id>] --issue <number> [--target-branch sandcastle/issue-<number>] [--idempotency-key <key>] [--json]
+
+Launches one Harness run immediately. Inside a Controller session, <project-id>
+defaults to the focused Controller Project.
+`;
+
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
   const [command = "launch", ...rest] = argv;
-  /** @type {{command: string, noOpen: boolean, json: boolean, projectId?: string, issueNumber?: number, targetBranch?: string, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
-  const options = { command, noOpen: false, json: false };
+  /** @type {{command: string, help: boolean, noOpen: boolean, json: boolean, projectId?: string, issueNumber?: number, targetBranch?: string, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
+  const options = { command, help: false, noOpen: false, json: false };
 
   for (let index = 0; index < rest.length; index += 1) {
     const current = rest[index];
-    if (current === "--data-dir") {
+    if (current === "--help" || current === "-h") {
+      options.help = true;
+    } else if (current === "--data-dir") {
       options.dataDir = rest[index + 1];
       index += 1;
     } else if (current === "--no-open") {
@@ -76,14 +85,29 @@ const parseArgs = (argv) => {
 
 const main = async () => {
   const options = parseArgs(process.argv.slice(2));
+  if (options.help || options.command === "help" || options.command === "--help") {
+    process.stdout.write(harnessLaunchHelp);
+    return;
+  }
   let output;
 
-  if (options.command === "launch" && options.projectId) {
+  const controllerLaunchRequested = options.command === "launch"
+    && (options.projectId !== undefined
+      || options.issueNumber !== undefined
+      || options.targetBranch !== undefined);
+  if (controllerLaunchRequested) {
     if (!options.issueNumber) {
       throw new Error("Harness launch requires --issue.");
     }
+    if (options.expectedRevision !== undefined) {
+      throw new Error("Harness launch does not accept --expected-revision.");
+    }
+    const projectId = options.projectId ?? process.env.SANDKING_WORK_CONTEXT_ID;
+    if (!projectId) {
+      throw new Error("Harness launch requires a Project ID or focused Controller Project.");
+    }
     output = await requestControllerLaunch({
-      projectId: options.projectId,
+      projectId,
       parameters: {
         issueNumber: options.issueNumber,
         targetBranch: options.targetBranch ?? `sandcastle/issue-${options.issueNumber}`,

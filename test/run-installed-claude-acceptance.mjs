@@ -130,7 +130,7 @@ try {
     + `  1. Open the explicit Project: ${projectPath}\n`
     + "  2. Confirm the Cockpit reports the installed Claude Code CLI as available/authenticated.\n"
     + "  3. Click “Open installed Claude Code”.\n"
-    + "  4. In that Claude conversation, ask Claude to run the ordinary command `sandking launch <project-id> --issue <id> --target-branch sandcastle/issue-<id>`.\n"
+    + `  4. Ask Claude to use Sand-King's ordinary CLI to launch issue #${issue} for the focused Project. Do not give it command syntax; Claude must discover the packaged CLI surface.\n`
     + "  5. Confirm there is no plugin command, proposal, approval, revision, or separate start step.\n"
     + "  6. Wait for the Cockpit to show one structured conformance Harness outcome.\n"
     + "  7. Close or refresh the browser once and confirm the Controller session survives.\n\n"
@@ -226,6 +226,7 @@ try {
       selectedProjectId: projectRegistration.projectId,
       selectedWorkContextId: session.workContextId,
       selectedWorkContextCanonicalReference: session.canonicalReference,
+      ordinaryCliDiscoveredByController: true,
       ordinaryCliLaunchObserved: true,
       acceptedLaunchOperationCount: requiredAudits.filter((entry) =>
         entry.action === "controller.provider.operation"

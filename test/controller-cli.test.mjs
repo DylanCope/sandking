@@ -41,10 +41,20 @@ test("sandking launch invokes one ordinary Controller CLI operation", async () =
   });
   try {
     const projectId = `project-${"1".repeat(24)}`;
+    const { stdout: help } = await execFileAsync(process.execPath, [
+      cliPath,
+      "launch",
+      "--help",
+    ], {
+      env: { LANG: "C.UTF-8", PATH: process.env.PATH },
+    });
+    assert.match(help, /sandking launch \[<project-id>\] --issue <number>/);
+    assert.match(help, /defaults to the focused Controller Project/);
+    assert.doesNotMatch(help, /approve|prepare|plugin|skill|expected-revision/i);
+
     const { stdout } = await execFileAsync(process.execPath, [
       cliPath,
       "launch",
-      projectId,
       "--issue", "152",
       "--target-branch", "sandcastle/issue-152",
       "--json",
