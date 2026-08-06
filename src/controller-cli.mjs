@@ -4,6 +4,9 @@ import { launchParametersSchema } from "./harness-launch.mjs";
 
 const projectIdPattern = /^project-[a-f0-9]{24}$/;
 const controllerSessionPattern = /^controller-session-[a-f0-9]{24}$/;
+// A launch may consume one provider-operation window and then use a second
+// window for exact ambiguous-outcome lookup.
+const CONTROLLER_CLI_TIMEOUT_MS = 12_000;
 
 /**
  * @param {{operation: "describe" | "harness-run.launch", projectId: string, parameters?: unknown, idempotencyKey?: string}} request
@@ -37,7 +40,10 @@ const requestControllerOperation = async (request, environment) => {
       if (error) reject(error);
       else resolve(value);
     };
-    const timeout = setTimeout(() => finish(new Error("controller_cli_timeout")), 10_000);
+    const timeout = setTimeout(
+      () => finish(new Error("controller_cli_timeout")),
+      CONTROLLER_CLI_TIMEOUT_MS,
+    );
     socket.once("connect", () => {
       socket.write(`${JSON.stringify({
         type: "sandking.cli.request",

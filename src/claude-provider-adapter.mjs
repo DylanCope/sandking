@@ -416,6 +416,7 @@ const prepareClaude = async (argv) => {
 const openRuntimeControl = async (endpoint, readyMessage) => new Promise((resolve, reject) => {
   const socket = createConnection(endpoint);
   const pending = new Map();
+  const timedOutOperationIds = new Set();
   let input = "";
   let operationSequence = 0;
   let settled = false;
@@ -440,6 +441,7 @@ const openRuntimeControl = async (endpoint, readyMessage) => new Promise((resolv
         operationSequence += 1;
         const operationTimeout = setTimeout(() => {
           pending.delete(operationId);
+          timedOutOperationIds.add(operationId);
           rejectOperation(new Error("provider_operation_timeout"));
         }, 5_000);
         pending.set(operationId, {
@@ -496,7 +498,17 @@ const openRuntimeControl = async (endpoint, readyMessage) => new Promise((resolv
         return;
       }
       const operation = pending.get(response?.operationId);
-      if (!operation || response?.type !== "provider.operation.result") {
+      if (!operation) {
+        if (
+          response?.type === "provider.operation.result"
+          && timedOutOperationIds.delete(response.operationId)
+        ) {
+          continue;
+        }
+        socket.destroy(new Error("provider_control_protocol_invalid"));
+        return;
+      }
+      if (response?.type !== "provider.operation.result") {
         socket.destroy(new Error("provider_control_protocol_invalid"));
         return;
       }
@@ -511,6 +523,7 @@ const openRuntimeControl = async (endpoint, readyMessage) => new Promise((resolv
       operation.reject(new Error("provider_control_unavailable"));
     }
     pending.clear();
+    timedOutOperationIds.clear();
     if (!settled) finish(new Error("provider_control_unavailable"));
   });
 });
@@ -642,10 +655,27 @@ const openControllerCliServer = async ({
     ) {
       throw new Error("controller_cli_contract_invalid");
     }
-    return control.request("harness-run.launch", {
-      parameters: request.parameters,
-      idempotencyKey: request.idempotencyKey,
-    });
+    try {
+      return await control.request("harness-run.launch", {
+        parameters: request.parameters,
+        idempotencyKey: request.idempotencyKey,
+      });
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "provider_operation_timeout") {
+        throw error;
+      }
+      const lookup = await control.request("harness-run.lookup", {
+        idempotencyKey: request.idempotencyKey,
+      });
+      if (
+        lookup?.type !== "harness.run.lookup.result"
+        || lookup.found !== true
+        || !lookup.launchOutcome
+      ) {
+        throw error;
+      }
+      return lookup.launchOutcome;
+    }
   };
 
   const server = createNetServer((socket) => {
