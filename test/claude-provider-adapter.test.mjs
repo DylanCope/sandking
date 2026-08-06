@@ -200,6 +200,47 @@ if (args.length === 1 && args[0] === "--version") {
   }
 });
 
+test("the Claude adapter requires a CLI version that implements StopFailure hooks", async () => {
+  const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-no-stop-failure-"));
+  const fakeClaudePath = join(fixtureDirectory, "claude");
+  await writeFile(fakeClaudePath, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.length === 1 && args[0] === "--version") {
+  process.stdout.write("2.1.77 (Claude Code)\\n");
+} else if (args.length === 1 && args[0] === "--help") {
+  process.stdout.write("--session-id <uuid> --settings <json>\\n");
+} else if (args.join(" ") === "auth status") {
+  process.stdout.write('{"loggedIn":true}');
+} else {
+  process.exitCode = 97;
+}
+`, { mode: 0o700 });
+
+  try {
+    const probe = JSON.parse((await execFileAsync(process.execPath, [adapterPath, "probe"], {
+      env: {
+        LANG: "C.UTF-8",
+        PATH: process.env.PATH,
+        SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
+      },
+    })).stdout);
+    assert.equal(probe.availability.status, "unavailable");
+    assert.deepEqual(probe.availability.failure, {
+      code: "provider_cli_incompatible",
+      retryable: false,
+    });
+    assert.deepEqual(probe.capabilities, [
+      "controller.session.start",
+      "controller.session.interactive",
+      "controller.session.terminate",
+      "controller.harness-run.launch",
+      "controller.session.stable-identity",
+    ]);
+  } finally {
+    await rm(fixtureDirectory, { recursive: true, force: true });
+  }
+});
+
 test("the Claude adapter ignores unrelated plugin inventory", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-inventory-"));
   const fakeClaudePath = join(fixtureDirectory, "claude");

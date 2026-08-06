@@ -54,6 +54,19 @@ const claudeStopFailureTypes = new Set([
   "max_output_tokens",
   "unknown",
 ]);
+// `--settings` predates the notification-only StopFailure event. Treat the
+// documented 2.1.78 introduction as part of the typed-exit capability seam.
+const claudeStopFailureMinimumVersion = Object.freeze([2, 1, 78]);
+
+/** @param {string} version @param {readonly number[]} minimum */
+const versionAtLeast = (version, minimum) => {
+  const parts = version.split(".").map(Number);
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (parts[index] > minimum[index]) return true;
+    if (parts[index] < minimum[index]) return false;
+  }
+  return true;
+};
 
 /** @param {unknown} input */
 export const classifyClaudeStopFailure = (input) => {
@@ -226,8 +239,8 @@ const baseProbe = (detectedCapabilities) => ({
   },
 });
 
-/** @param {string} executable */
-const detectClaudeCapabilities = async (executable) => {
+/** @param {string} executable @param {string} version */
+const detectClaudeCapabilities = async (executable, version) => {
   const detected = new Set();
   let help;
   try {
@@ -240,7 +253,10 @@ const detectClaudeCapabilities = async (executable) => {
     detected.add("controller.session.stable-identity");
     detected.add("controller.harness-run.launch");
   }
-  if (/(?:^|\s)--settings(?:[=\s,]|$)/m.test(help)) {
+  if (
+    /(?:^|\s)--settings(?:[=\s,]|$)/m.test(help)
+    && versionAtLeast(version, claudeStopFailureMinimumVersion)
+  ) {
     detected.add("controller.session.typed-exit");
   }
   return capabilities.filter((capability) => detected.has(capability));
@@ -273,7 +289,7 @@ export const probeClaude = async () => {
     };
   }
 
-  const detectedCapabilities = await detectClaudeCapabilities(executable);
+  const detectedCapabilities = await detectClaudeCapabilities(executable, version);
   if (detectedCapabilities.length !== capabilities.length) {
     return {
       ...baseProbe(detectedCapabilities),
