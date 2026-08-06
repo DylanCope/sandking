@@ -67,22 +67,27 @@ const operationalCapabilitiesSchema = reportedCapabilitiesSchema.refine((capabil
   capabilities.includes("controller.session.start")
   && capabilities.includes("controller.session.interactive")
   && capabilities.includes("controller.session.terminate"));
-const retainedCapabilitiesSchema = z.array(z.enum([
+const legacyOperationalCapabilitiesSchema = z.array(z.enum([
   "controller.session.start",
   "controller.session.interactive",
   "controller.session.terminate",
   "controller.work-context.inspect",
-  "controller.harness-run.launch",
   "controller.session.stable-identity",
   "controller.launch-request.prepare",
   "controller.launch-request.decide",
   "controller.harness-run.start",
   "controller.session.typed-exit",
-])).max(10).refine((capabilities) =>
+])).max(9).refine((capabilities) =>
   new Set(capabilities).size === capabilities.length
   && capabilities.includes("controller.session.start")
   && capabilities.includes("controller.session.interactive")
   && capabilities.includes("controller.session.terminate"));
+// Retained main-era sessions remain readable for reconnect and history, but
+// retired launch capabilities cannot be mixed into a current session record.
+const retainedCapabilitiesSchema = z.union([
+  operationalCapabilitiesSchema,
+  legacyOperationalCapabilitiesSchema,
+]);
 const availabilitySchema = z.object({
   status: z.enum(["available", "unavailable", "unauthenticated"]),
   command: z.literal("claude"),

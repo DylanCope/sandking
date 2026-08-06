@@ -117,7 +117,7 @@ test("a project-focused conformance Controller launches in one revision-free act
   }
 });
 
-test("main-era Controller sessions retain reconnect history after capabilities are retired", async () => {
+test("retained Controller sessions distinguish main-era capabilities from invalid hybrids", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-controller-v1-upgrade-"));
   const sessionId = `controller-session-${"7".repeat(24)}`;
   const capabilities = [
@@ -131,41 +131,54 @@ test("main-era Controller sessions retain reconnect history after capabilities a
     "controller.session.stable-identity",
     "controller.session.typed-exit",
   ];
-  await writeFile(join(dataDir, "controller-sessions.json"), `${JSON.stringify({
-    schemaVersion: 1,
-    sessions: [{
-      sessionId,
-      providerSessionId: `conformance-provider-session-${"8".repeat(24)}`,
-      providerId: "conformance-controller-v1",
-      providerAdapterId: "conformance-controller-adapter-v1",
-      adapterProtocol: "1.0.0",
-      capabilities,
-      workContextId: "planning-stage-upgrade",
-      workContextKind: "planning-stage",
-      canonicalReference: "github:fixture:issue:119",
-      providerControl: {
-        protocol: "1.0.0",
-        readySignal: "provider.session.ready",
-        readyObservedAt: "2026-08-01T10:00:00.000Z",
-        providerObservedTty: true,
+  const retainedSession = {
+    sessionId,
+    providerSessionId: "550e8400-e29b-41d4-a716-446655440000",
+    providerId: "claude-code",
+    providerAdapterId: "claude-code-controller-adapter-v1",
+    adapterProtocol: "1.0.0",
+    capabilities,
+    providerAvailability: {
+      status: "available",
+      command: "claude",
+      version: "2.1.141",
+      authentication: { status: "authenticated", source: "destination-local" },
+      failure: null,
+    },
+    sessionIdentity: {
+      stable: true,
+      source: "controller-assigned-supported-cli-flag",
+    },
+    workContextId: "planning-stage-upgrade",
+    workContextKind: "planning-stage",
+    canonicalReference: "github:fixture:issue:119",
+    providerControl: {
+      protocol: "1.0.0",
+      readySignal: "provider.session.ready",
+      readyObservedAt: "2026-08-01T10:00:00.000Z",
+      providerObservedTty: true,
+    },
+    terminal: {
+      streamId: `controller-terminal-${"9".repeat(24)}`,
+      runtimeOwned: true,
+      kind: "pty",
+      status: "exited",
+      startedAt: "2026-08-01T10:00:00.000Z",
+      exitedAt: "2026-08-01T10:01:00.000Z",
+      exitCode: 0,
+      signal: null,
+      exitReason: {
+        code: "provider_session_completed",
+        retryable: false,
+        source: "claude-cli",
       },
-      terminal: {
-        streamId: `controller-terminal-${"9".repeat(24)}`,
-        runtimeOwned: true,
-        kind: "pty",
-        status: "exited",
-        startedAt: "2026-08-01T10:00:00.000Z",
-        exitedAt: "2026-08-01T10:01:00.000Z",
-        exitCode: 0,
-        signal: null,
-        exitReason: {
-          code: "provider_session_completed",
-          retryable: false,
-          source: "conformance-provider",
-        },
-      },
-    }],
-  })}\n`);
+    },
+  };
+  const writeRetainedSession = (session) => writeFile(
+    join(dataDir, "controller-sessions.json"),
+    `${JSON.stringify({ schemaVersion: 1, sessions: [session] })}\n`,
+  );
+  await writeRetainedSession(retainedSession);
 
   let manager;
   try {
@@ -174,6 +187,29 @@ test("main-era Controller sessions retain reconnect history after capabilities a
       recordAudit: async () => `audit-${"0".repeat(24)}`,
     });
     assert.deepEqual(manager.inspect(sessionId)?.capabilities, capabilities);
+    await manager.shutdown();
+    manager = null;
+
+    await writeRetainedSession({
+      ...retainedSession,
+      capabilities: [
+        "controller.session.start",
+        "controller.session.interactive",
+        "controller.session.terminate",
+        "controller.harness-run.launch",
+        "controller.launch-request.prepare",
+      ],
+    });
+    await assert.rejects(
+      createControllerSessionManager({
+        dataDir,
+        recordAudit: async () => `audit-${"0".repeat(24)}`,
+      }).then(async (invalidManager) => {
+        await invalidManager.shutdown();
+        return invalidManager;
+      }),
+      (error) => error?.name === "ZodError",
+    );
   } finally {
     await manager?.shutdown();
     await rm(dataDir, { recursive: true, force: true });
