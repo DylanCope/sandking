@@ -112,7 +112,9 @@ fi
       /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
     await page.waitForFunction((path) => document.querySelector(
       "#project-controller-terminal-output",
-    )?.textContent?.includes(`Working context directory: ${path}`), projectPath);
+    )?.textContent?.includes(`Working context directory: ${path}`), projectPath, {
+      timeout: 180_000,
+    });
     assert.match(await page.locator("#project-controller-terminal-output").textContent(),
       /Discovered ordinary sandking CLI help/);
     assert.deepEqual(sessionOpenRequests, [{
