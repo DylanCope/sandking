@@ -96,7 +96,13 @@ export const selectInstalledClaudeAcceptanceAuditChain = ({
     && entry.details?.sessionId === session.sessionId
     && entry.details?.providerSessionId === session.providerSessionId
     && entry.details?.workContextId === projectId
-    && entry.details?.operation === "controller-cli.describe");
+    && entry.details?.operation === "controller-cli.describe"
+    && (issue !== 152 || (
+      entry.details?.cliProtocol === "1.0.0"
+      && entry.details?.cliCommand === "sandking launch"
+      && entry.details?.projectArgumentOptional === true
+      && entry.details?.pluginRequired === false
+    )));
   const providerLaunchAudits = audits.filter((entry) =>
     entry.action === "controller.provider.operation"
     && entry.outcome === "accepted"

@@ -102,7 +102,7 @@ const main = async () => {
   const options = parseArgs(process.argv.slice(2));
   if (options.help || options.command === "help" || options.command === "--help") {
     if (process.env.SANDKING_CONTROLLER_ENDPOINT) {
-      await requestControllerDescription().catch(() => undefined);
+      await requestControllerDescription();
     }
     process.stdout.write(harnessLaunchHelp);
     return;

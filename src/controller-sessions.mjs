@@ -258,6 +258,14 @@ const providerOperationRequestSchema = z.object({
   ]),
   input: z.unknown(),
 }).strict();
+const controllerCliDescriptionSchema = z.object({
+  type: z.literal("controller.cli.description"),
+  protocol: z.literal("1.0.0"),
+  command: z.literal("sandking launch"),
+  focusedProjectId: z.string().regex(/^project-[a-f0-9]{24}$/),
+  projectArgumentOptional: z.literal(true),
+  pluginRequired: z.literal(false),
+}).strict();
 const retainedSessionSchema = z.object({
   sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
   providerSessionId: providerSessionIdSchema,
@@ -582,6 +590,16 @@ const openProviderControl = async (context) => {
               operation: operationRequest.operation,
               input: operationRequest.input,
             });
+            const cliDescription = operationRequest.operation === "controller-cli.describe"
+              ? controllerCliDescriptionSchema.safeParse(outcome)
+              : null;
+            if (
+              cliDescription
+              && (!cliDescription.success
+                || cliDescription.data.focusedProjectId !== context.workContext.workContextId)
+            ) {
+              throw new ControllerSessionError("controller_cli_protocol_invalid");
+            }
             await context.recordAudit("controller.provider.operation", "accepted", {
               sessionId: context.sessionId,
               providerSessionId: context.providerSessionId,
@@ -589,6 +607,12 @@ const openProviderControl = async (context) => {
               operation: operationRequest.operation,
               operationId: operationRequest.operationId,
               idempotencyKeyHash,
+              ...(cliDescription?.success ? {
+                cliProtocol: cliDescription.data.protocol,
+                cliCommand: cliDescription.data.command,
+                projectArgumentOptional: cliDescription.data.projectArgumentOptional,
+                pluginRequired: cliDescription.data.pluginRequired,
+              } : {}),
               inputRetained: false,
             });
             socket.write(`${JSON.stringify({

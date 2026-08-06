@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { createControllerSessionManager } from "../src/controller-sessions.mjs";
+import { installCurrentPackage } from "./installed-package.mjs";
 
 const execFileAsync = promisify(execFile);
-const cliPath = join(process.cwd(), "src", "cli.mjs");
 
 const waitFor = async (predicate, timeoutMs = 5_000) => {
   const deadline = Date.now() + timeoutMs;
@@ -130,11 +130,8 @@ test("an installed Claude Controller preserves typed outcomes after ambiguous CL
   const dataDir = join(fixtureDirectory, "state");
   const projectDir = join(fixtureDirectory, "project");
   const fakeClaudePath = join(fixtureDirectory, "claude");
-  const sandkingPath = join(fixtureDirectory, "sandking");
   await Promise.all([mkdir(dataDir), mkdir(projectDir)]);
-  await writeFile(sandkingPath, `#!/bin/sh
-exec ${JSON.stringify(process.execPath)} ${JSON.stringify(cliPath)} "$@"
-`, { mode: 0o700 });
+  const installed = await installCurrentPackage(fixtureDirectory);
   await writeFile(fakeClaudePath, `#!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
 const args = process.argv.slice(2);
@@ -201,7 +198,7 @@ if (args.length === 1 && args[0] === "--version") {
       dataDir,
       providerEnvironment: {
         HOME: fixtureDirectory,
-        PATH: `${fixtureDirectory}:${process.env.PATH}`,
+        PATH: `${dirname(installed.command)}:${process.env.PATH}`,
         LANG: "C.UTF-8",
         SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
         ANTHROPIC_API_KEY: "manager-secret-must-not-cross",
@@ -341,9 +338,21 @@ if (args.length === 1 && args[0] === "--version") {
     assert.doesNotMatch(output.join(""), /--plugin-dir|sandking-controller|approve|prepare/i);
     await enter("exit");
     await waitFor(() => manager.inspect(session.sessionId).terminal.status === "exited");
-    assert.ok(audits.some((audit) =>
+    const descriptionAudit = audits.find((audit) =>
       audit.action === "controller.provider.operation"
-      && audit.details.operation === "controller-cli.describe"));
+      && audit.details.operation === "controller-cli.describe");
+    assert.ok(descriptionAudit);
+    assert.deepEqual({
+      cliProtocol: descriptionAudit.details.cliProtocol,
+      cliCommand: descriptionAudit.details.cliCommand,
+      projectArgumentOptional: descriptionAudit.details.projectArgumentOptional,
+      pluginRequired: descriptionAudit.details.pluginRequired,
+    }, {
+      cliProtocol: "1.0.0",
+      cliCommand: "sandking launch",
+      projectArgumentOptional: true,
+      pluginRequired: false,
+    });
     assert.ok(audits.some((audit) =>
       audit.action === "controller.provider.operation"
       && audit.details.operation === "harness-run.launch"));

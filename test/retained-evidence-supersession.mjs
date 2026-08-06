@@ -72,6 +72,10 @@ export const verifyRetainedEvidenceCurrentOrSuperseded = async ({
       || realEvidence.environment?.pluginInstalled !== false
       || realEvidence.observations?.ordinaryCliDiscoveredByController !== true
       || !(realEvidence.observations?.acceptedCliDescriptionCount >= 1)
+      || realEvidence.observations?.ordinaryCliProtocol !== "1.0.0"
+      || realEvidence.observations?.ordinaryCliCommand !== "sandking launch"
+      || realEvidence.observations?.projectArgumentOptional !== true
+      || realEvidence.observations?.pluginRequired !== false
       || realEvidence.observations?.cliDiscoveryPrecededLaunch !== true
       || realEvidence.observations?.ordinaryCliLaunchObserved !== true
       || realEvidence.observations?.acceptedLaunchOperationCount !== 1

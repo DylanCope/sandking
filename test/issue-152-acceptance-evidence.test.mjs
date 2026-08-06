@@ -68,6 +68,10 @@ test("retained issue 152 real evidence proves an installed Claude ordinary-CLI l
   assert.equal(realEvidence.environment.pluginInstalled, false);
   assert.equal(realEvidence.observations.ordinaryCliDiscoveredByController, true);
   assert.ok(realEvidence.observations.acceptedCliDescriptionCount >= 1);
+  assert.equal(realEvidence.observations.ordinaryCliProtocol, "1.0.0");
+  assert.equal(realEvidence.observations.ordinaryCliCommand, "sandking launch");
+  assert.equal(realEvidence.observations.projectArgumentOptional, true);
+  assert.equal(realEvidence.observations.pluginRequired, false);
   assert.equal(realEvidence.observations.cliDiscoveryPrecededLaunch, true);
   assert.equal(realEvidence.observations.ordinaryCliLaunchObserved, true);
   assert.equal(realEvidence.observations.acceptedLaunchOperationCount, 1);

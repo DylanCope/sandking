@@ -61,6 +61,10 @@ const acceptedAuditChain = [
     providerSessionId: session.providerSessionId,
     workContextId: projectRegistration.projectId,
     operation: "controller-cli.describe",
+    cliProtocol: "1.0.0",
+    cliCommand: "sandking launch",
+    projectArgumentOptional: true,
+    pluginRequired: false,
   }),
   audit("audit-launch", "harness.run.launch", "accepted", {
     controllerSessionId: session.sessionId,
@@ -131,6 +135,20 @@ test("the real Claude gate rejects a flow without executable CLI discovery", () 
   assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
     issue: 152,
     audits: acceptedAuditChain.filter((entry) => entry.auditId !== "audit-cli-description"),
+    session,
+    projectRegistration,
+    run,
+  }), /issue_152_real_acceptance_audit_chain_incomplete/);
+});
+
+test("the real Claude gate rejects a plugin-gated CLI description", () => {
+  const pluginGated = acceptedAuditChain.map((entry) =>
+    entry.auditId === "audit-cli-description"
+      ? { ...entry, details: { ...entry.details, pluginRequired: true } }
+      : entry);
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: pluginGated,
     session,
     projectRegistration,
     run,

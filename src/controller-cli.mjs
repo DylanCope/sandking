@@ -1,9 +1,18 @@
 import { randomBytes } from "node:crypto";
 import { createConnection } from "node:net";
+import { z } from "zod";
 import { launchParametersSchema } from "./harness-launch.mjs";
 
 const projectIdPattern = /^project-[a-f0-9]{24}$/;
 const controllerSessionPattern = /^controller-session-[a-f0-9]{24}$/;
+const controllerCliDescriptionSchema = z.object({
+  type: z.literal("controller.cli.description"),
+  protocol: z.literal("1.0.0"),
+  command: z.literal("sandking launch"),
+  focusedProjectId: z.string().regex(projectIdPattern),
+  projectArgumentOptional: z.literal(true),
+  pluginRequired: z.literal(false),
+}).strict();
 // A launch may consume one provider-operation window, while the first exact
 // lookup can spend a second window queued behind it. Leave one final lookup
 // window plus bounded transport overhead without ever retrying the mutation.
@@ -99,7 +108,13 @@ const requestControllerOperation = async (request, environment) => {
  */
 export const requestControllerDescription = async (environment = process.env) => {
   const projectId = environment.SANDKING_WORK_CONTEXT_ID ?? "";
-  return requestControllerOperation({ operation: "describe", projectId }, environment);
+  const description = controllerCliDescriptionSchema.safeParse(
+    await requestControllerOperation({ operation: "describe", projectId }, environment),
+  );
+  if (!description.success || description.data.focusedProjectId !== projectId) {
+    throw new Error("controller_cli_protocol_invalid");
+  }
+  return description.data;
 };
 
 /**

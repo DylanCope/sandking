@@ -196,6 +196,9 @@ try {
   }
 
   const run = runs[0];
+  const cliDescriptionAudit = requiredAudits.find((entry) =>
+    entry.action === "controller.provider.operation"
+    && entry.details?.operation === "controller-cli.describe");
   const evidence = {
     schemaVersion: 1,
     issue,
@@ -236,6 +239,10 @@ try {
       acceptedCliDescriptionCount: requiredAudits.filter((entry) =>
         entry.action === "controller.provider.operation"
         && entry.details?.operation === "controller-cli.describe").length,
+      ordinaryCliProtocol: cliDescriptionAudit?.details?.cliProtocol,
+      ordinaryCliCommand: cliDescriptionAudit?.details?.cliCommand,
+      projectArgumentOptional: cliDescriptionAudit?.details?.projectArgumentOptional,
+      pluginRequired: cliDescriptionAudit?.details?.pluginRequired,
       cliDiscoveryPrecededLaunch: true,
       ordinaryCliLaunchObserved: true,
       acceptedLaunchOperationCount: requiredAudits.filter((entry) =>

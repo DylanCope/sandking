@@ -27,7 +27,14 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
         protocol: "1.0.0",
         requestId: request.requestId,
         ok: true,
-        outcome: {
+        outcome: request.operation === "describe" ? {
+          type: "controller.cli.description",
+          protocol: "1.0.0",
+          command: "sandking launch",
+          focusedProjectId: request.projectId,
+          projectArgumentOptional: true,
+          pluginRequired: false,
+        } : {
           type: "harness.run.launch.result",
           code: "harness_run_created",
           run: { harnessRunId: `harness-run-${"5".repeat(24)}` },
@@ -99,6 +106,56 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
     });
     assert.equal("expectedRevision" in requests[3], false);
     assert.doesNotMatch(JSON.stringify(requests), /approve|prepare|plugin|skill/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("sandking self-description rejects a plugin-gated runtime contract", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-controller-cli-describe-"));
+  const endpoint = join(directory, "controller.sock");
+  const server = createServer((socket) => {
+    let input = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      input += chunk;
+      if (!input.includes("\n")) return;
+      const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+      socket.end(`${JSON.stringify({
+        type: "sandking.cli.result",
+        protocol: "1.0.0",
+        requestId: request.requestId,
+        ok: true,
+        outcome: {
+          type: "controller.cli.description",
+          protocol: "1.0.0",
+          command: "sandking launch",
+          focusedProjectId: request.projectId,
+          projectArgumentOptional: true,
+          pluginRequired: true,
+        },
+      })}\n`);
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(endpoint, resolve);
+  });
+  try {
+    const projectId = `project-${"3".repeat(24)}`;
+    await assert.rejects(execFileAsync(process.execPath, [cliPath, "--help"], {
+      env: {
+        LANG: "C.UTF-8",
+        PATH: process.env.PATH,
+        SANDKING_CONTROLLER_ENDPOINT: endpoint,
+        SANDKING_CONTROLLER_SESSION_ID: `controller-session-${"4".repeat(24)}`,
+        SANDKING_WORK_CONTEXT_ID: projectId,
+      },
+    }), (error) => {
+      assert.match(error.stderr, /controller_cli_protocol_invalid/);
+      return true;
+    });
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(directory, { recursive: true, force: true });
