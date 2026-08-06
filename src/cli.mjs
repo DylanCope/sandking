@@ -21,6 +21,18 @@ const parseArgs = (argv) => {
   /** @type {{command: string, help: boolean, noOpen: boolean, json: boolean, projectId?: string, issueNumber?: number, targetBranch?: string, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
   const options = { command, help: false, noOpen: false, json: false };
 
+  if ((command === "--help" || command === "-h") && rest.length === 0) {
+    options.help = true;
+    return options;
+  }
+  if (command === "help") {
+    if (rest.length > 1 || (rest.length === 1 && rest[0] !== "launch")) {
+      throw new Error(`Unsupported help topic: ${rest.join(" ")}`);
+    }
+    options.help = true;
+    return options;
+  }
+
   for (let index = 0; index < rest.length; index += 1) {
     const current = rest[index];
     if (current === "--help" || current === "-h") {

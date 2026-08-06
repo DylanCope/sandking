@@ -59,11 +59,18 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
     assert.match(help, /defaults to the focused Controller Project/);
     assert.doesNotMatch(help, /approve|prepare|plugin|skill|expected-revision/i);
 
-    const { stdout: controllerHelp } = await execFileAsync(process.execPath, [
-      cliPath,
-      "--help",
-    ], { env: controllerEnvironment });
-    assert.equal(controllerHelp, help);
+    const controllerHelpInvocations = [
+      ["--help"],
+      ["-h"],
+      ["help", "launch"],
+    ];
+    for (const invocation of controllerHelpInvocations) {
+      const { stdout: controllerHelp } = await execFileAsync(process.execPath, [
+        cliPath,
+        ...invocation,
+      ], { env: controllerEnvironment });
+      assert.equal(controllerHelp, help);
+    }
 
     const { stdout } = await execFileAsync(process.execPath, [
       cliPath,
@@ -77,18 +84,20 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
     const outcome = JSON.parse(stdout);
     assert.equal(outcome.type, "harness.run.launch.result");
     assert.equal(outcome.run.harnessRunId, `harness-run-${"5".repeat(24)}`);
-    assert.equal(requests.length, 2);
-    assert.equal(requests[0].operation, "describe");
-    assert.equal(requests[0].projectId, projectId);
-    assert.equal("parameters" in requests[0], false);
-    assert.equal("idempotencyKey" in requests[0], false);
-    assert.equal(requests[1].operation, "harness-run.launch");
-    assert.equal(requests[1].projectId, projectId);
-    assert.deepEqual(requests[1].parameters, {
+    assert.equal(requests.length, 4);
+    for (const request of requests.slice(0, 3)) {
+      assert.equal(request.operation, "describe");
+      assert.equal(request.projectId, projectId);
+      assert.equal("parameters" in request, false);
+      assert.equal("idempotencyKey" in request, false);
+    }
+    assert.equal(requests[3].operation, "harness-run.launch");
+    assert.equal(requests[3].projectId, projectId);
+    assert.deepEqual(requests[3].parameters, {
       issueNumber: 152,
       targetBranch: "sandcastle/issue-152",
     });
-    assert.equal("expectedRevision" in requests[1], false);
+    assert.equal("expectedRevision" in requests[3], false);
     assert.doesNotMatch(JSON.stringify(requests), /approve|prepare|plugin|skill/i);
   } finally {
     await new Promise((resolve) => server.close(resolve));
