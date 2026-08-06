@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -324,8 +325,10 @@ test("main-era Harness-run history remains observable after the launch-schema up
       },
     ],
   };
+  const legacyIdempotencyKey = "main-era-ambiguous-start";
   const legacyStartOutcome = {
-    idempotencyKeyHash: `sha256:${"a".repeat(64)}`,
+    idempotencyKeyHash: `sha256:${createHash("sha256")
+      .update(legacyIdempotencyKey).digest("hex")}`,
     requestFingerprint: `sha256:${"b".repeat(64)}`,
     response: {
       type: "harness.run.start.result",
@@ -375,6 +378,28 @@ test("main-era Harness-run history remains observable after the launch-schema up
       completedAt: legacyRun.completedAt,
       startAuditId: legacyRun.startAuditId,
     });
+    const lookup = await manager.lookup({
+      requestId: "lookup-legacy-start",
+      idempotencyKey: legacyIdempotencyKey,
+    });
+    assert.equal(lookup.code, "harness_run_launch_outcome_found");
+    assert.equal(lookup.found, true);
+    assert.deepEqual(lookup.launchOutcome, legacyStartOutcome.response);
+    const conflictingLaunch = await manager.launch({
+      requestId: "launch-with-legacy-key",
+      projectId: legacyRun.projectId,
+      parameters: {
+        issueNumber: 152,
+        targetBranch: "sandcastle/issue-152",
+      },
+      controllerId,
+      controllerSessionId,
+      source: "controller-cli",
+      authorizationClass: "harness_run_launch",
+      idempotencyKey: legacyIdempotencyKey,
+    });
+    assert.equal(conflictingLaunch.code, "idempotency_key_conflict");
+    assert.equal(conflictingLaunch.prohibitedSideEffects.harnessRunCreated, false);
     const migrated = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
     assert.equal(migrated.schemaVersion, 2);
     assert.deepEqual(migrated.runs, [legacyRun]);

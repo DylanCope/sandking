@@ -387,6 +387,58 @@ export const harnessRunLaunchOutcomeSchema = z.union([
   harnessRunLaunchResultSchema,
   harnessRunLaunchFailureSchema,
 ]);
+// Retained v1 mutation outcomes remain lookup-readable after the command that
+// created them is retired. These schemas are nested historical data only;
+// `harness.run.start` is not restored as an accepted top-level operation.
+const legacyHarnessRunStartAuthorizationClassSchema = z.literal(
+  "approved_launch_request_execution",
+);
+const legacyHarnessRunStartResultSchema = z.object({
+  type: z.literal("harness.run.start.result"),
+  requestId: identifierSchema,
+  code: z.enum(["harness_run_created", "harness_run_found"]),
+  authorizationClass: legacyHarnessRunStartAuthorizationClassSchema,
+  idempotencyKeyHash: digestSchema,
+  expectedRevision: z.number().int().positive(),
+  launchRequestRevision: z.number().int().positive(),
+  revision: z.number().int().positive(),
+  idempotentReplay: z.boolean(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  run: harnessRunSchema,
+}).strip();
+const legacyHarnessRunStartFailureSchema = z.object({
+  type: z.literal("harness.run.start.failure"),
+  requestId: identifierSchema,
+  code: z.enum([
+    "mutation_contract_invalid",
+    "idempotency_key_conflict",
+    "mutation_revision_conflict",
+    "authorization_failed",
+    "launch_request_not_found",
+    "launch_request_unapproved",
+    "launch_request_terminal",
+    "launch_request_expired",
+    "launch_request_stale",
+    "launch_request_already_started",
+  ]),
+  retryable: z.boolean(),
+  authorizationClass: legacyHarnessRunStartAuthorizationClassSchema,
+  idempotencyKeyHash: digestSchema.nullable(),
+  expectedRevision: z.number().int().nonnegative().nullable(),
+  actualRevision: z.number().int().nonnegative(),
+  idempotentReplay: z.boolean(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  current: z.object({}).passthrough().nullable(),
+  prohibitedSideEffects: z.object({
+    harnessRunStarted: z.literal(false),
+    projectWrite: z.literal(false),
+  }).strict(),
+}).strip();
+const retainedHarnessRunMutationOutcomeSchema = z.union([
+  harnessRunLaunchOutcomeSchema,
+  legacyHarnessRunStartResultSchema,
+  legacyHarnessRunStartFailureSchema,
+]);
 const harnessRunLookupSchema = z.object({
   type: z.literal("harness.run.lookup"),
   requestId: identifierSchema,
@@ -401,7 +453,7 @@ const harnessRunLookupResultSchema = z.object({
   ]),
   idempotencyKeyHash: digestSchema.nullable(),
   found: z.boolean(),
-  launchOutcome: harnessRunLaunchOutcomeSchema.nullable(),
+  launchOutcome: retainedHarnessRunMutationOutcomeSchema.nullable(),
 }).strip();
 const harnessRunObserveSchema = z.object({
   type: z.literal("harness.run.observe"),

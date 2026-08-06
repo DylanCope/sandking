@@ -455,6 +455,13 @@ export const createHarnessRunManager = async (options) => {
     statePath(options.dataDir),
     stateSchema.parse(state),
   );
+  /** @param {z.infer<typeof stateSchema>} state @param {string | null} idempotencyKeyHash */
+  const retainedMutationOutcome = (state, idempotencyKeyHash) => idempotencyKeyHash
+    ? state.launchOutcomes.find((outcome) =>
+        outcome.idempotencyKeyHash === idempotencyKeyHash)
+      ?? state.legacyStartOutcomes.find((outcome) =>
+        outcome.idempotencyKeyHash === idempotencyKeyHash)
+    : null;
 
   /** @param {string} harnessRunId @param {(run: z.infer<typeof storedRunSchema>, state: z.infer<typeof stateSchema>) => Promise<void> | void} update */
   const updateRun = (harnessRunId, update) => withMutationLock(async () => {
@@ -639,10 +646,7 @@ export const createHarnessRunManager = async (options) => {
       authorizationClass: request.authorizationClass,
     });
     const retained = await readState();
-    const existing = idempotencyKeyHash
-      ? retained.launchOutcomes.find((outcome) =>
-          outcome.idempotencyKeyHash === idempotencyKeyHash)
-      : null;
+    const existing = retainedMutationOutcome(retained, idempotencyKeyHash);
     if (existing) {
       if (existing.requestFingerprint !== requestFingerprint) {
         const auditId = await options.recordAudit("harness.run.launch", "rejected", {
@@ -974,10 +978,7 @@ export const createHarnessRunManager = async (options) => {
       && request.idempotencyKey.length <= 256
       ? digest(request.idempotencyKey)
       : null;
-    const existing = idempotencyKeyHash
-      ? retained.launchOutcomes.find((outcome) =>
-          outcome.idempotencyKeyHash === idempotencyKeyHash)
-      : null;
+    const existing = retainedMutationOutcome(retained, idempotencyKeyHash);
     return {
       type: "harness.run.lookup.result",
       requestId: request.requestId,
