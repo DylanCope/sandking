@@ -709,9 +709,26 @@ const openControllerCliServer = async ({
       if (!(error instanceof Error) || error.message !== "provider_operation_timeout") {
         throw error;
       }
-      const lookup = await control.request("harness-run.lookup", {
-        idempotencyKey: request.idempotencyKey,
-      });
+      let lookup;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          lookup = await control.request("harness-run.lookup", {
+            idempotencyKey: request.idempotencyKey,
+          });
+          break;
+        } catch (lookupError) {
+          if (
+            !(lookupError instanceof Error)
+            || lookupError.message !== "provider_operation_timeout"
+            || attempt === 1
+          ) {
+            throw lookupError;
+          }
+          // The runtime serializes provider operations, so the first lookup
+          // can spend its whole window queued behind the accepted launch.
+          // Retry only the exact same-key read; never issue a second launch.
+        }
+      }
       if (
         lookup?.type !== "harness.run.lookup.result"
         || lookup.found !== true

@@ -238,8 +238,13 @@ if (args.length === 1 && args[0] === "--version") {
                 code: "harness_workspace_invalid",
               };
           // The Host retained the launch mutation outcome, but its response
-          // arrives after the provider operation's ambiguity boundary.
-          await new Promise((resolve) => setTimeout(resolve, 5_250));
+          // arrives after the provider operation's ambiguity boundary. The
+          // second launch also outlives the first queued lookup window, so the
+          // ordinary CLI must retry only the exact same-key lookup.
+          await new Promise((resolve) => setTimeout(
+            resolve,
+            launchAttempts === 1 ? 5_250 : 12_250,
+          ));
           return durableLaunchOutcome;
         }
         if (request.operation === "harness-run.lookup") {
@@ -306,7 +311,7 @@ if (args.length === 1 && args[0] === "--version") {
       () => output.join("").includes(
         `LAUNCH_RESULT {"status":0,"stdout":"{\\"type\\":\\"harness.run.launch.result\\"`,
       ),
-      12_000,
+      18_000,
     )
       .catch(() => assert.fail(`ordinary CLI launch output missing:\n${output.join("")}`));
     await enter("launch 152");
@@ -314,15 +319,16 @@ if (args.length === 1 && args[0] === "--version") {
       () => output.join("").includes(
         `LAUNCH_RESULT {"status":1,"stdout":"","stderr":"harness_workspace_invalid"}`,
       ),
-      12_000,
+      18_000,
     ).catch(() => assert.fail(`typed CLI failure output missing:\n${output.join("")}`));
     assert.equal(launchAttempts, 2);
-    assert.equal(operations.length, 5);
+    assert.equal(operations.length, 6);
     assert.equal(operations[0].operation, "controller-cli.describe");
     assert.equal(operations[1].operation, "harness-run.launch");
     assert.equal(operations[2].operation, "harness-run.lookup");
     assert.equal(operations[3].operation, "harness-run.launch");
     assert.equal(operations[4].operation, "harness-run.lookup");
+    assert.equal(operations[5].operation, "harness-run.lookup");
     assert.deepEqual(operations[1].input.parameters, {
       issueNumber: 152,
       targetBranch: "sandcastle/issue-152",
@@ -330,6 +336,7 @@ if (args.length === 1 && args[0] === "--version") {
     assert.equal("expectedRevision" in operations[1].input, false);
     assert.equal(operations[2].input.idempotencyKey, operations[1].input.idempotencyKey);
     assert.equal(operations[4].input.idempotencyKey, operations[3].input.idempotencyKey);
+    assert.equal(operations[5].input.idempotencyKey, operations[3].input.idempotencyKey);
     assert.notEqual(operations[3].input.idempotencyKey, operations[1].input.idempotencyKey);
     assert.doesNotMatch(output.join(""), /--plugin-dir|sandking-controller|approve|prepare/i);
     await enter("exit");
