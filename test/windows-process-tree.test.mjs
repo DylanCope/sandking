@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createWindowsProcessTreeTracker } from "../src/windows-process-tree.mjs";
+import {
+  captureWindowsProcessTreeSnapshot,
+  createWindowsProcessTreeTracker,
+} from "../src/windows-process-tree.mjs";
 
 test("Windows cancellation retains descendants after the adapter exits and confirms the whole tree", async () => {
   let processes = [
@@ -10,7 +13,10 @@ test("Windows cancellation retains descendants after the adapter exits and confi
   ];
   const terminated = [];
   const tracker = createWindowsProcessTreeTracker({
-    rootPid: 100,
+    rootIdentity: {
+      processId: 100,
+      creationTime: "2026-08-07T10:00:00.000Z",
+    },
     listProcesses: async () => processes,
     terminateProcessTree: async (processIdentity) => {
       terminated.push(processIdentity.processId);
@@ -34,7 +40,10 @@ test("Windows cancellation retains descendants after the adapter exits and confi
 test("Windows cancellation never confirms termination after descendant tracking is uncertain", async () => {
   let terminationAttempts = 0;
   const tracker = createWindowsProcessTreeTracker({
-    rootPid: 400,
+    rootIdentity: {
+      processId: 400,
+      creationTime: "2026-08-07T10:00:00.000Z",
+    },
     listProcesses: async () => {
       throw new Error("windows_process_inventory_unavailable");
     },
@@ -53,7 +62,10 @@ test("Windows cancellation never confirms termination after descendant tracking 
 test("Windows cancellation preserves uncertainty when its first inventory follows root exit", async () => {
   const terminated = [];
   const tracker = createWindowsProcessTreeTracker({
-    rootPid: 500,
+    rootIdentity: {
+      processId: 500,
+      creationTime: "2026-08-07T10:00:00.000Z",
+    },
     listProcesses: async () => [
       {
         processId: 600,
@@ -80,7 +92,10 @@ test("Windows cancellation never targets a tracked PID after that PID is reused"
   ];
   const terminated = [];
   const tracker = createWindowsProcessTreeTracker({
-    rootPid: 700,
+    rootIdentity: {
+      processId: 700,
+      creationTime: "2026-08-07T10:00:00.000Z",
+    },
     listProcesses: async () => processes,
     terminateProcessTree: async (processIdentity) => {
       terminated.push(processIdentity);
@@ -98,6 +113,98 @@ test("Windows cancellation never targets a tracked PID after that PID is reused"
   assert.equal(await tracker.processTreeAlive(), false);
 });
 
+test("Windows cancellation pins the adapter identity before a late cancellation observes PID reuse", async () => {
+  let processes = [
+    { processId: 700, parentProcessId: 10, creationTime: "2026-08-07T10:00:00.000Z" },
+  ];
+  const snapshot = await captureWindowsProcessTreeSnapshot(700, {
+    expectedCommandLineFragment: "harness-run-original",
+    readProcessIdentity: async () => ({
+      processId: 700,
+      creationTime: "2026-08-07T10:00:00.000Z",
+      commandLine: "node adapter.mjs harness-run-original",
+    }),
+    listProcesses: async () => processes,
+  });
+  assert.ok(snapshot);
+  processes = [
+    { processId: 700, parentProcessId: 10, creationTime: "2026-08-07T11:00:00.000Z" },
+    { processId: 800, parentProcessId: 700, creationTime: "2026-08-07T11:00:01.000Z" },
+  ];
+  const terminated = [];
+  const tracker = createWindowsProcessTreeTracker({
+    ...snapshot,
+    listProcesses: async () => processes,
+    terminateProcessTree: async (processIdentity) => {
+      terminated.push(processIdentity);
+      return true;
+    },
+  });
+
+  assert.equal(await tracker.prepareCancellation(), true);
+  assert.equal(await tracker.forceTerminate(), false);
+  assert.deepEqual(terminated, []);
+  assert.equal(await tracker.processTreeAlive(), false);
+});
+
+test("Windows cancellation does not capture a reused adapter PID as its launch identity", async () => {
+  const replacement = {
+    processId: 700,
+    parentProcessId: 10,
+    creationTime: "2026-08-07T11:00:00.000Z",
+  };
+  const snapshot = await captureWindowsProcessTreeSnapshot(700, {
+    expectedCommandLineFragment: "harness-run-original",
+    readProcessIdentity: async () => ({
+      ...replacement,
+      commandLine: "node unrelated-work.mjs",
+    }),
+    listProcesses: async () => [replacement],
+  });
+
+  assert.equal(snapshot, null);
+  const terminated = [];
+  const tracker = createWindowsProcessTreeTracker({
+    rootIdentity: null,
+    listProcesses: async () => [replacement],
+    terminateProcessTree: async (processIdentity) => {
+      terminated.push(processIdentity);
+      return true;
+    },
+  });
+  assert.equal(await tracker.prepareCancellation(), false);
+  assert.equal(await tracker.forceTerminate(), false);
+  assert.deepEqual(terminated, []);
+  assert.equal(await tracker.processTreeAlive(), true);
+});
+
+test("Windows cancellation never confirms a child first observed after its tracked parent exits", async () => {
+  let processes = [
+    { processId: 100, parentProcessId: 10, creationTime: "2026-08-07T10:00:00.000Z" },
+  ];
+  const terminated = [];
+  const tracker = createWindowsProcessTreeTracker({
+    rootIdentity: {
+      processId: 100,
+      creationTime: "2026-08-07T10:00:00.000Z",
+    },
+    listProcesses: async () => processes,
+    terminateProcessTree: async (processIdentity) => {
+      terminated.push(processIdentity);
+      return true;
+    },
+  });
+
+  assert.equal(await tracker.prepareCancellation(), true);
+  processes = [
+    { processId: 200, parentProcessId: 100, creationTime: "2026-08-07T10:00:01.000Z" },
+  ];
+  assert.equal(await tracker.processTreeAlive(), true);
+  assert.equal(await tracker.forceTerminate(), false);
+  assert.deepEqual(terminated, []);
+  assert.equal(await tracker.processTreeAlive(), true);
+});
+
 test("Windows cancellation rejects a stale parent PID whose replacement is newer than the child", async () => {
   let processes = [
     { processId: 900, parentProcessId: 10, creationTime: "2026-08-07T10:00:02.000Z" },
@@ -105,7 +212,10 @@ test("Windows cancellation rejects a stale parent PID whose replacement is newer
   ];
   const terminated = [];
   const tracker = createWindowsProcessTreeTracker({
-    rootPid: 900,
+    rootIdentity: {
+      processId: 900,
+      creationTime: "2026-08-07T10:00:02.000Z",
+    },
     listProcesses: async () => processes,
     terminateProcessTree: async (processIdentity) => {
       terminated.push(processIdentity.processId);

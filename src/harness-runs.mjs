@@ -21,7 +21,10 @@ import {
   readJson,
   writePrivateJson,
 } from "./private-state.mjs";
-import { createWindowsProcessTreeTracker } from "./windows-process-tree.mjs";
+import {
+  captureWindowsProcessTreeSnapshot,
+  createWindowsProcessTreeTracker,
+} from "./windows-process-tree.mjs";
 
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const auditIdSchema = z.string().regex(/^audit-[a-f0-9]{24}$/);
@@ -514,9 +517,15 @@ const superviseConformanceHarness = async (run, context, observer) => {
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe", "pipe", "ipc"],
   });
-  const windowsProcessTree = process.platform === "win32"
+  const windowsProcessTreePromise = process.platform === "win32"
     && typeof child.pid === "number"
-    ? createWindowsProcessTreeTracker({ rootPid: child.pid })
+    ? captureWindowsProcessTreeSnapshot(child.pid, {
+        // The encoded invocation contains this run's unique identity. It lets
+        // the launch-time native query reject a different process that reused
+        // the adapter PID before its creation time could be captured.
+        expectedCommandLineFragment: encodedExecution,
+      }).then((snapshot) =>
+        createWindowsProcessTreeTracker(snapshot ?? { rootIdentity: null }))
     : null;
   const adapterChannel = child.stdio[3];
   if (!adapterChannel || !child.stdout || !child.stderr || !("readable" in adapterChannel)) {
@@ -631,6 +640,9 @@ const superviseConformanceHarness = async (run, context, observer) => {
     if (typeof child.pid !== "number") return false;
     if (process.platform === "win32") {
       // Missing or uncertain descendant tracking cannot prove tree termination.
+      const windowsProcessTree = windowsProcessTreePromise
+        ? await windowsProcessTreePromise
+        : null;
       return windowsProcessTree ? windowsProcessTree.processTreeAlive() : true;
     }
     if (process.platform === "linux") {
@@ -688,7 +700,8 @@ const superviseConformanceHarness = async (run, context, observer) => {
   const requestCancellation = (cooperativeDeadlineAt) => {
     if (cancellationOperation) return cancellationOperation;
     retainedCooperativeDeadlineAt = cooperativeDeadlineAt;
-    const signalAndScheduleEscalation = () => {
+    /** @param {ReturnType<typeof createWindowsProcessTreeTracker> | null} windowsProcessTree */
+    const signalAndScheduleEscalation = (windowsProcessTree) => {
       const cooperativeRequestSent = windowsProcessTree
         ? sendHarnessCancellationRequest(child, {
             type: "harness.run.cancel",
@@ -715,13 +728,16 @@ const superviseConformanceHarness = async (run, context, observer) => {
       }, Math.max(0, Date.parse(cooperativeDeadlineAt) - Date.now()));
     };
     cancellationOperation = (async () => {
+      const windowsProcessTree = windowsProcessTreePromise
+        ? await windowsProcessTreePromise
+        : null;
       if (windowsProcessTree) {
         // Capture native-Windows descendants before signalling can let their
         // adapter parent exit and become unavailable to identity tracking.
         await windowsProcessTree.prepareCancellation();
-        signalAndScheduleEscalation();
+        signalAndScheduleEscalation(windowsProcessTree);
       } else {
-        signalAndScheduleEscalation();
+        signalAndScheduleEscalation(null);
       }
       await completion;
       let terminationConfirmedAt = null;
