@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, readdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -21,6 +21,7 @@ import {
   readJson,
   writePrivateJson,
 } from "./private-state.mjs";
+import { spawnPosixProcessTree } from "./posix-process-tree.mjs";
 import {
   captureWindowsProcessTreeSnapshot,
   createWindowsProcessTreeTracker,
@@ -505,17 +506,31 @@ export const scheduleCancellationEscalation = (
   let finishOperation = () => {};
   /** @type {(reason?: unknown) => void} */
   let failOperation = () => {};
+  let operationSettled = false;
+  let escalationStarted = false;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let activeTimer;
   const operation = new Promise((resolve, reject) => {
-    finishOperation = resolve;
-    failOperation = reject;
+    finishOperation = (value) => {
+      if (operationSettled) return;
+      operationSettled = true;
+      resolve(value);
+    };
+    failOperation = (reason) => {
+      if (operationSettled) return;
+      operationSettled = true;
+      reject(reason);
+    };
   });
   const deadline = Date.parse(cooperativeDeadlineAt);
   const escalateWhenDue = () => {
+    if (operationSettled) return;
     const remaining = deadline - currentTime();
     if (remaining > 0) {
-      setTimer(escalateWhenDue, remaining);
+      activeTimer = setTimer(escalateWhenDue, remaining);
       return;
     }
+    escalationStarted = true;
     let escalation;
     try {
       escalation = escalate();
@@ -527,14 +542,21 @@ export const scheduleCancellationEscalation = (
     reportDeadlineReached();
     escalation.then(finishOperation, failOperation);
   };
-  const timer = setTimer(escalateWhenDue, Math.max(0, deadline - currentTime()));
-  return { timer, deadlineReached, operation };
+  activeTimer = setTimer(escalateWhenDue, Math.max(0, deadline - currentTime()));
+  const timer = activeTimer;
+  const cancel = () => {
+    if (escalationStarted || operationSettled) return false;
+    clearTimeout(activeTimer);
+    finishOperation();
+    return true;
+  };
+  return { timer, deadlineReached, operation, cancel };
 };
 
 /**
  * @param {z.infer<typeof storedRunSchema>} run
  * @param {any} context
- * @param {{onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, onSupervisorAvailable: (supervisor: {requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>}) => void}} observer
+ * @param {{onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, onSupervisorAvailable: (supervisor: {requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>}) => void}} observer
  */
 const superviseConformanceHarness = async (run, context, observer) => {
   const pinnedAdapter = await loadPinnedHarnessAdapter({
@@ -555,16 +577,22 @@ const superviseConformanceHarness = async (run, context, observer) => {
   // Execute the exact bytes read from the immutable Git object. The worktree
   // comparison detects drift, while the inline source removes the check/use
   // window in which different adapter bytes could otherwise be launched.
-  const child = spawn(process.execPath, [
+  const adapterArgs = [
     "--input-type=module",
     "--eval", pinnedAdapter.pinnedEntryPointSource,
     pinnedAdapter.compatibility.entryPoint,
     "run",
     encodedExecution,
-  ], {
+  ];
+  const posixProcessTree = process.platform === "win32"
+    ? null
+    : spawnPosixProcessTree(process.execPath, adapterArgs, {
+        cwd: context.harnessWorkspacePath,
+        env: { LANG: "C.UTF-8" },
+      });
+  const child = posixProcessTree?.child ?? spawn(process.execPath, adapterArgs, {
     cwd: context.harnessWorkspacePath,
     env: { LANG: "C.UTF-8" },
-    detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe", "pipe", "ipc"],
   });
   const windowsProcessTreePromise = process.platform === "win32"
@@ -577,9 +605,13 @@ const superviseConformanceHarness = async (run, context, observer) => {
       }).then((snapshot) =>
         createWindowsProcessTreeTracker(snapshot ?? { rootIdentity: null }))
     : null;
-  const adapterChannel = child.stdio[3];
+  const adapterChannel = posixProcessTree?.adapterChannel ?? child.stdio[3];
   if (!adapterChannel || !child.stdout || !child.stderr || !("readable" in adapterChannel)) {
-    child.kill("SIGKILL");
+    if (posixProcessTree) {
+      void posixProcessTree.signal("SIGKILL");
+    } else {
+      child.kill("SIGKILL");
+    }
     throw new Error("harness_adapter_start_failed");
   }
   let diagnosticQueue = Promise.resolve();
@@ -598,7 +630,9 @@ const superviseConformanceHarness = async (run, context, observer) => {
   });
   const terminateProtocolInvalidAdapter = () => {
     protocolInvalid = true;
-    if (child.exitCode === null && child.signalCode === null) {
+    if (posixProcessTree) {
+      void posixProcessTree.signal("SIGKILL");
+    } else if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGKILL");
     }
     adapterChannel.destroy();
@@ -672,7 +706,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
       terminateProtocolInvalidAdapter();
     }
   };
-  const exit = new Promise((resolve) => {
+  const exit = posixProcessTree?.adapterExit ?? new Promise((resolve) => {
     child.once("error", () => resolve({ code: null, signal: null, startFailed: true }));
     child.once("exit", (code, signal) => resolve({ code, signal, startFailed: false }));
   });
@@ -688,6 +722,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
   let cancellationOperation = null;
   const processTreeAlive = async () => {
     if (typeof child.pid !== "number") return false;
+    if (posixProcessTree) return posixProcessTree.processTreeAlive();
     if (process.platform === "win32") {
       // Missing or uncertain descendant tracking cannot prove tree termination.
       const windowsProcessTree = windowsProcessTreePromise
@@ -695,55 +730,20 @@ const superviseConformanceHarness = async (run, context, observer) => {
         : null;
       return windowsProcessTree ? windowsProcessTree.processTreeAlive() : true;
     }
-    if (process.platform === "linux") {
-      try {
-        const entries = await readdir("/proc", { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.isDirectory() || !/^[0-9]+$/.test(entry.name)) continue;
-          try {
-            const stat = await readFile(`/proc/${entry.name}/stat`, "utf8");
-            const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-            const [state, , processGroup] = fields;
-            if (Number(processGroup) === child.pid && !["X", "Z"].includes(state)) {
-              return true;
-            }
-          } catch {
-            // A process can disappear between the directory and stat reads.
-          }
-        }
-        return false;
-      } catch {
-        // Fall back to the portable group-existence probe below.
-      }
-    }
-    try {
-      process.kill(-child.pid, 0);
-      return true;
-    } catch (error) {
-      return !(error && typeof error === "object" && "code" in error
-        && error.code === "ESRCH");
-    }
+    return true;
   };
   /** @param {NodeJS.Signals} signal */
-  const signalProcessTree = (signal) => {
+  const signalProcessTree = async (signal) => {
     if (typeof child.pid !== "number") {
-      return false;
+      return { sent: false, sentAt: null };
     }
-    try {
-      if (process.platform === "win32") {
-        // Windows ChildProcess.kill maps every supported signal to abrupt
-        // termination. Cooperative cancellation uses the adapter IPC request.
-        return false;
-      }
-      process.kill(-child.pid, signal);
-      return true;
-    } catch {
-      try {
-        return child.kill(signal);
-      } catch {
-        return false;
-      }
+    if (posixProcessTree && ["SIGTERM", "SIGKILL"].includes(signal)) {
+      return posixProcessTree.signal(/** @type {"SIGTERM" | "SIGKILL"} */ (signal));
     }
+    // Windows ChildProcess.kill maps every supported signal to abrupt
+    // termination. Cooperative cancellation uses the adapter IPC request and
+    // forced cancellation is bound to retained native process handles.
+    return { sent: false, sentAt: null };
   };
   const completion = Promise.all([exit, consumeFrames()]);
   /** @param {string} cooperativeDeadlineAt */
@@ -762,13 +762,28 @@ const superviseConformanceHarness = async (run, context, observer) => {
     const scheduledEscalation = scheduleCancellationEscalation(
       cooperativeDeadlineAt,
       async () => {
+        // A cooperative exit disarms escalation before any signal is sent.
+        // The POSIX group guard remains alive through the terminal commit but
+        // is not itself part of the supervised Harness process tree.
+        if (
+          posixProcessTree?.adapterExited()
+          && !(await processTreeAlive())
+        ) {
+          return;
+        }
         const windowsProcessTree = windowsProcessTreePromise
           ? await windowsProcessTreePromise
           : null;
-        const sent = windowsProcessTree
-          ? await windowsProcessTree.forceTerminate()
-          : signalProcessTree("SIGKILL");
-        if (sent) forcedTerminationSentAt = new Date().toISOString();
+        if (windowsProcessTree) {
+          if (await windowsProcessTree.forceTerminate()) {
+            forcedTerminationSentAt = new Date().toISOString();
+          }
+          return;
+        }
+        const forcedTermination = await signalProcessTree("SIGKILL");
+        if (forcedTermination.sent) {
+          forcedTerminationSentAt = forcedTermination.sentAt;
+        }
       },
     );
     forcedTerminationTimer = scheduledEscalation.timer;
@@ -777,17 +792,25 @@ const superviseConformanceHarness = async (run, context, observer) => {
       const windowsProcessTree = windowsProcessTreePreparation
         ? await windowsProcessTreePreparation
         : null;
-      const cooperativeRequestSent = windowsProcessTree
-        ? sendHarnessCancellationRequest(child, {
-            type: "harness.run.cancel",
-            adapterProtocol: run.adapterProtocol,
-            adapterId: run.adapterId,
-            harnessRunId: run.harnessRunId,
-            cooperativeDeadlineAt,
-          })
-        : signalProcessTree("SIGTERM");
-      if (cooperativeRequestSent) {
-        cooperativeSignalSentAt = new Date().toISOString();
+      const posixTreeRequiresCooperativeSignal = posixProcessTree
+        ? !posixProcessTree.adapterExited() || await processTreeAlive()
+        : false;
+      if (windowsProcessTree) {
+        const cooperativeRequestSent = sendHarnessCancellationRequest(child, {
+          type: "harness.run.cancel",
+          adapterProtocol: run.adapterProtocol,
+          adapterId: run.adapterId,
+          harnessRunId: run.harnessRunId,
+          cooperativeDeadlineAt,
+        });
+        if (cooperativeRequestSent) {
+          cooperativeSignalSentAt = new Date().toISOString();
+        }
+      } else if (posixTreeRequiresCooperativeSignal) {
+        const cooperativeSignal = await signalProcessTree("SIGTERM");
+        if (cooperativeSignal.sent) {
+          cooperativeSignalSentAt = cooperativeSignal.sentAt;
+        }
       }
       await completion;
       let terminationConfirmedAt = null;
@@ -800,11 +823,21 @@ const superviseConformanceHarness = async (run, context, observer) => {
         Date.now(),
         Date.parse(retainedCooperativeDeadlineAt ?? ""),
       ) + 1_000;
-      while (await processTreeAlive() && Date.now() < confirmationDeadline) {
+      while (
+        forcedTerminationSentAt === null
+        && await processTreeAlive()
+        && Date.now() < confirmationDeadline
+      ) {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
+      if (!(await processTreeAlive())) scheduledEscalation.cancel();
       await forcedTerminationOperation;
-      if (!(await processTreeAlive())) terminationConfirmedAt = new Date().toISOString();
+      if (
+        forcedTerminationSentAt !== null
+        || !(await processTreeAlive())
+      ) {
+        terminationConfirmedAt = new Date().toISOString();
+      }
       clearTimeout(forcedTerminationTimer);
       return {
         cooperativeSignalSentAt,
@@ -816,6 +849,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
   };
   observer.onSupervisorAvailable({
     requestCancellation,
+    releaseProcessTree: posixProcessTree?.release ?? (async () => undefined),
   });
   const [exitResult] = await completion;
   const cancellation = cancellationOperation ? await cancellationOperation : null;
@@ -850,7 +884,7 @@ export const createHarnessRunManager = async (options) => {
     throw new Error("harness_run_cancellation_deadline_invalid");
   }
   let mutationQueue = Promise.resolve();
-  /** @type {Map<string, {requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>}>} */
+  /** @type {Map<string, {requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>}>} */
   const activeSupervisions = new Map();
   /** @type {Map<string, string>} */
   const acceptedCancellations = new Map();
@@ -1030,8 +1064,10 @@ export const createHarnessRunManager = async (options) => {
   /** @param {z.infer<typeof storedRunSchema>} initialRun @param {any} context */
   const supervise = async (initialRun, context) => {
     let supervision;
-    /** @type {{requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>} | null} */
+    /** @type {{requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>} | null} */
     let cancellationSupervisor = null;
+    /** @type {() => Promise<void>} */
+    let releaseSupervisedProcessTree = async () => undefined;
     /** @type {Array<z.infer<typeof progressRecordSchema>>} */
     const pendingProgressRecords = [];
     let progressRecordCount = 0;
@@ -1052,6 +1088,7 @@ export const createHarnessRunManager = async (options) => {
       supervision = await superviseConformanceHarness(initialRun, context, {
         onSupervisorAvailable: (supervisor) => {
           cancellationSupervisor = supervisor;
+          releaseSupervisedProcessTree = supervisor.releaseProcessTree;
           activeSupervisions.set(initialRun.harnessRunId, supervisor);
           const cooperativeDeadlineAt = acceptedCancellations.get(
             initialRun.harnessRunId,
@@ -1096,129 +1133,133 @@ export const createHarnessRunManager = async (options) => {
     } finally {
       activeSupervisions.delete(initialRun.harnessRunId);
     }
-    await persistProgressRecords();
-    const terminal = supervision.terminalEnvelopes.length === 1
-      ? supervision.terminalEnvelopes[0]
-      : null;
-    const validTerminal = terminal && !supervision.protocolInvalid;
-    let terminalOutcomeCommitted = false;
-    let status = validTerminal ? terminal.status : "failed";
-    let code = supervision.exit.startFailed
-      ? "harness_adapter_start_failed"
-      : supervision.protocolInvalid
-        ? "harness_adapter_protocol_invalid"
-        : validTerminal
-          ? terminal.status === "succeeded"
-            ? "conformance_run_succeeded"
-            : terminal.status === "failed"
-              ? "conformance_run_failed"
-              : "conformance_run_cancelled"
-          : "harness_result_incomplete";
-    let incompleteResult = !validTerminal;
-    let acceptedTerminal = validTerminal ? terminal : null;
-    const outcomeId = `harness-outcome-${randomBytes(12).toString("hex")}`;
-    let completedAt = now().toISOString();
-    await options.faultInjector?.("harness_run_outcome.before_commit");
-    const finalized = await updateRun(initialRun.harnessRunId, async (run) => {
-      if (run.outcome) return;
-      if (run.cancellation) {
-        const cancellationTermination = supervision.cancellation
-          ?? (cancellationSupervisor
-            ? await cancellationSupervisor.requestCancellation(
-                run.cancellation.cooperativeDeadlineAt,
-              )
-            : {
-                cooperativeSignalSentAt: null,
-                forcedTerminationSentAt: null,
-                // No supervisor means adapter setup failed before a process
-                // tree became available. That start-failure boundary is the
-                // only late-cancellation case that can confirm no tree without
-                // consulting a live supervisor.
-                terminationConfirmedAt: supervision.exit.startFailed
-                  ? completedAt
-                  : null,
-              });
-        if (cancellationTermination.terminationConfirmedAt) {
-          await options.faultInjector?.(
-            "harness_run_cancellation.before_termination_confirmation_commit",
-          );
+    try {
+      await persistProgressRecords();
+      const terminal = supervision.terminalEnvelopes.length === 1
+        ? supervision.terminalEnvelopes[0]
+        : null;
+      const validTerminal = terminal && !supervision.protocolInvalid;
+      let terminalOutcomeCommitted = false;
+      let status = validTerminal ? terminal.status : "failed";
+      let code = supervision.exit.startFailed
+        ? "harness_adapter_start_failed"
+        : supervision.protocolInvalid
+          ? "harness_adapter_protocol_invalid"
+          : validTerminal
+            ? terminal.status === "succeeded"
+              ? "conformance_run_succeeded"
+              : terminal.status === "failed"
+                ? "conformance_run_failed"
+                : "conformance_run_cancelled"
+            : "harness_result_incomplete";
+      let incompleteResult = !validTerminal;
+      let acceptedTerminal = validTerminal ? terminal : null;
+      const outcomeId = `harness-outcome-${randomBytes(12).toString("hex")}`;
+      let completedAt = now().toISOString();
+      await options.faultInjector?.("harness_run_outcome.before_commit");
+      const finalized = await updateRun(initialRun.harnessRunId, async (run) => {
+        if (run.outcome) return;
+        if (run.cancellation) {
+          const cancellationTermination = supervision.cancellation
+            ?? (cancellationSupervisor
+              ? await cancellationSupervisor.requestCancellation(
+                  run.cancellation.cooperativeDeadlineAt,
+                )
+              : {
+                  cooperativeSignalSentAt: null,
+                  forcedTerminationSentAt: null,
+                  // No supervisor means adapter setup failed before a process
+                  // tree became available. That start-failure boundary is the
+                  // only late-cancellation case that can confirm no tree without
+                  // consulting a live supervisor.
+                  terminationConfirmedAt: supervision.exit.startFailed
+                    ? completedAt
+                    : null,
+                });
+          if (cancellationTermination.terminationConfirmedAt) {
+            await options.faultInjector?.(
+              "harness_run_cancellation.before_termination_confirmation_commit",
+            );
+          }
+          run.cancellation.cooperativeSignalSentAt =
+            cancellationTermination.cooperativeSignalSentAt;
+          run.cancellation.forcedTerminationSentAt =
+            cancellationTermination.forcedTerminationSentAt;
+          run.cancellation.terminationConfirmedAt =
+            cancellationTermination.terminationConfirmedAt;
+          if (!cancellationTermination.terminationConfirmedAt) return;
+          completedAt = now().toISOString();
+          const validCancellationTerminal = validTerminal && terminal.status === "cancelled";
+          status = "cancelled";
+          code = "conformance_run_cancelled";
+          incompleteResult = !validCancellationTerminal
+            || cancellationTermination.forcedTerminationSentAt !== null;
+          acceptedTerminal = validCancellationTerminal ? terminal : null;
         }
-        run.cancellation.cooperativeSignalSentAt =
-          cancellationTermination.cooperativeSignalSentAt;
-        run.cancellation.forcedTerminationSentAt =
-          cancellationTermination.forcedTerminationSentAt;
-        run.cancellation.terminationConfirmedAt =
-          cancellationTermination.terminationConfirmedAt;
-        if (!cancellationTermination.terminationConfirmedAt) return;
-        completedAt = now().toISOString();
-        const validCancellationTerminal = validTerminal && terminal.status === "cancelled";
-        status = "cancelled";
-        code = "conformance_run_cancelled";
-        incompleteResult = !validCancellationTerminal
-          || cancellationTermination.forcedTerminationSentAt !== null;
-        acceptedTerminal = validCancellationTerminal ? terminal : null;
-      }
-      run.status = status;
-      run.completedAt = completedAt;
-      run.revision += 1;
-      run.terminalEnvelopeValidation = {
-        adapterReadyObserved: supervision.adapterReadyObserved,
-        validTerminalEnvelopeCount: supervision.terminalEnvelopes.length,
-        exactlyOne: Boolean(validTerminal),
-        adapterChannelClosedObserved: supervision.adapterChannelClosedObserved,
-        processExitObserved: !supervision.exit.startFailed,
-      };
-      run.outcome = harnessRunOutcomeSchema.parse({
-        outcomeId,
+        run.status = status;
+        run.completedAt = completedAt;
+        run.revision += 1;
+        run.terminalEnvelopeValidation = {
+          adapterReadyObserved: supervision.adapterReadyObserved,
+          validTerminalEnvelopeCount: supervision.terminalEnvelopes.length,
+          exactlyOne: Boolean(validTerminal),
+          adapterChannelClosedObserved: supervision.adapterChannelClosedObserved,
+          processExitObserved: !supervision.exit.startFailed,
+        };
+        run.outcome = harnessRunOutcomeSchema.parse({
+          outcomeId,
+          status,
+          code,
+          completedAt,
+          incompleteResult,
+          result: acceptedTerminal ? acceptedTerminal.result : null,
+          diagnosticReferences: run.logStreams.map((stream) => ({
+            streamId: stream.streamId,
+            producer: stream.producer,
+            range: {
+              start: stream.availableStart,
+              end: stream.availableEnd,
+            },
+            explicitRetrievalRequired: stream.explicitRetrievalRequired,
+            insertedIntoControllerConversation: stream.insertedIntoControllerConversation,
+          })),
+          terminalEnvelope: acceptedTerminal ? {
+            terminalId: acceptedTerminal.terminalId,
+            status: acceptedTerminal.status,
+            adapterId: acceptedTerminal.adapterId,
+            adapterProtocol: acceptedTerminal.adapterProtocol,
+          } : null,
+        });
+        appendEvent(
+          run,
+          status === "succeeded"
+            ? "harness_run_succeeded"
+            : status === "cancelled"
+              ? "harness_run_cancelled"
+              : "harness_run_failed",
+          { outcomeReference: outcomeId },
+        );
+        terminalOutcomeCommitted = true;
+      });
+      if (!terminalOutcomeCommitted) return;
+      acceptedCancellations.delete(initialRun.harnessRunId);
+      await options.recordAudit("harness.run.outcome", "observed", {
+        harnessRunId: finalized.harnessRunId,
+        projectId: finalized.projectId,
+        outcomeReference: outcomeId,
         status,
         code,
-        completedAt,
         incompleteResult,
-        result: acceptedTerminal ? acceptedTerminal.result : null,
-        diagnosticReferences: run.logStreams.map((stream) => ({
-          streamId: stream.streamId,
-          producer: stream.producer,
-          range: {
-            start: stream.availableStart,
-            end: stream.availableEnd,
-          },
-          explicitRetrievalRequired: stream.explicitRetrievalRequired,
-          insertedIntoControllerConversation: stream.insertedIntoControllerConversation,
-        })),
-        terminalEnvelope: acceptedTerminal ? {
-          terminalId: acceptedTerminal.terminalId,
-          status: acceptedTerminal.status,
-          adapterId: acceptedTerminal.adapterId,
-          adapterProtocol: acceptedTerminal.adapterProtocol,
-        } : null,
+        adapterReadyObserved: supervision.adapterReadyObserved,
+        validTerminalEnvelopeCount: supervision.terminalEnvelopes.length,
+        adapterChannelClosedObserved: supervision.adapterChannelClosedObserved,
+        processExitObserved: !supervision.exit.startFailed,
+        stdoutRange: finalized.logStreams[0].availableEnd,
+        stderrRange: finalized.logStreams[1].availableEnd,
       });
-      appendEvent(
-        run,
-        status === "succeeded"
-          ? "harness_run_succeeded"
-          : status === "cancelled"
-            ? "harness_run_cancelled"
-            : "harness_run_failed",
-        { outcomeReference: outcomeId },
-      );
-      terminalOutcomeCommitted = true;
-    });
-    if (!terminalOutcomeCommitted) return;
-    acceptedCancellations.delete(initialRun.harnessRunId);
-    await options.recordAudit("harness.run.outcome", "observed", {
-      harnessRunId: finalized.harnessRunId,
-      projectId: finalized.projectId,
-      outcomeReference: outcomeId,
-      status,
-      code,
-      incompleteResult,
-      adapterReadyObserved: supervision.adapterReadyObserved,
-      validTerminalEnvelopeCount: supervision.terminalEnvelopes.length,
-      adapterChannelClosedObserved: supervision.adapterChannelClosedObserved,
-      processExitObserved: !supervision.exit.startFailed,
-      stdoutRange: finalized.logStreams[0].availableEnd,
-      stderrRange: finalized.logStreams[1].availableEnd,
-    });
+    } finally {
+      await releaseSupervisedProcessTree();
+    }
   };
 
   /** @param {any} request */

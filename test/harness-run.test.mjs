@@ -574,6 +574,8 @@ test("cancellation accepted before terminal commit wins the serialized race", as
   const outcomeCommitRelease = new Promise((resolve) => {
     releaseOutcomeCommit = resolve;
   });
+  const originalProcessKill = process.kill;
+  const staleGroupSignals = [];
   try {
     const manager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
@@ -593,6 +595,10 @@ test("cancellation accepted before terminal commit wins the serialized race", as
       161,
     ));
     await outcomeCommitReached;
+    process.kill = (pid, signal) => {
+      if (pid < 0 && signal !== 0) staleGroupSignals.push({ pid, signal });
+      return originalProcessKill(pid, signal);
+    };
     const accepted = await manager.cancel(cancellationRequest(
       launched.run.harnessRunId,
       { idempotencyKey: "cancel-before-terminal-commit" },
@@ -613,7 +619,9 @@ test("cancellation accepted before terminal commit wins the serialized race", as
     assert.equal(terminal.events.filter((event) =>
       ["harness_run_succeeded", "harness_run_failed", "harness_run_cancelled"]
         .includes(event.type)).length, 1);
+    assert.deepEqual(staleGroupSignals, []);
   } finally {
+    process.kill = originalProcessKill;
     releaseOutcomeCommit?.();
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -634,6 +642,8 @@ test("late cancellation confirms the complete process tree before recording canc
   const outcomeCommitRelease = new Promise((resolve) => {
     releaseOutcomeCommit = resolve;
   });
+  const originalProcessKill = process.kill;
+  const unboundGroupSignals = [];
   try {
     const manager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
@@ -654,6 +664,12 @@ test("late cancellation confirms the complete process tree before recording canc
       999_999_992,
     ));
     await outcomeCommitReached;
+    process.kill = (pid, signal) => {
+      if (pid < 0 && signal !== 0) {
+        unboundGroupSignals.push({ pid, signal });
+      }
+      return originalProcessKill(pid, signal);
+    };
     const accepted = await manager.cancel(cancellationRequest(
       launched.run.harnessRunId,
       { idempotencyKey: "cancel-after-adapter-exit-with-live-descendant" },
@@ -673,7 +689,9 @@ test("late cancellation confirms the complete process tree before recording canc
       >= Date.parse(accepted.cooperativeDeadlineAt));
     assert.ok(Date.parse(terminal.run.completedAt)
       >= Date.parse(terminal.run.cancellation.terminationConfirmedAt));
+    assert.deepEqual(unboundGroupSignals, []);
   } finally {
+    process.kill = originalProcessKill;
     releaseOutcomeCommit?.();
     await rm(fixture.root, { recursive: true, force: true });
   }
