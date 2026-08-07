@@ -47,6 +47,22 @@ const waitForRunStatus = async (manager, harnessRunId, expectedStatus) => {
   throw new Error(`harness_run_${expectedStatus}_timeout`);
 };
 
+const waitForDiagnosticCommits = async (manager, harnessRunId) => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const observation = await manager.observe({
+      requestId: "observe-diagnostic-commits",
+      harnessRunId,
+      afterSequence: 0,
+    });
+    if (observation.logStreams.every((stream) => stream.availableEnd > 0)) {
+      return observation;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("harness_run_diagnostic_commit_timeout");
+};
+
 const createFixture = async (prefix) => {
   const root = await mkdtemp(join(tmpdir(), prefix));
   const dataDir = join(root, "host-state");
@@ -560,6 +576,66 @@ test("cancellation accepted before terminal commit wins the serialized race", as
   }
 });
 
+test("late cancellation confirms the complete process tree before recording cancelled", {
+  skip: process.platform === "win32"
+    ? "native Windows process-tree races are covered by the tracker contract"
+    : false,
+}, async () => {
+  const fixture = await createFixture("sandking-harness-run-late-tree-cancellation-");
+  let releaseOutcomeCommit;
+  let reportOutcomeCommit;
+  let pauseOutcome = true;
+  const outcomeCommitReached = new Promise((resolve) => {
+    reportOutcomeCommit = resolve;
+  });
+  const outcomeCommitRelease = new Promise((resolve) => {
+    releaseOutcomeCommit = resolve;
+  });
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      cancellationGraceMs: 50,
+      faultInjector: async (point) => {
+        if (point === "harness_run_outcome.before_commit" && pauseOutcome) {
+          pauseOutcome = false;
+          reportOutcomeCommit();
+          await outcomeCommitRelease;
+        }
+      },
+    });
+    const launched = await manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      999_999_992,
+    ));
+    await outcomeCommitReached;
+    const accepted = await manager.cancel(cancellationRequest(
+      launched.run.harnessRunId,
+      { idempotencyKey: "cancel-after-adapter-exit-with-live-descendant" },
+    ));
+    releaseOutcomeCommit();
+
+    const terminal = await waitForTerminal(manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "cancelled");
+    assert.equal(terminal.outcome.status, "cancelled");
+    assert.equal(terminal.outcome.incompleteResult, true);
+    assert.equal(terminal.outcome.terminalEnvelope, null);
+    assert.match(terminal.run.cancellation.forcedTerminationSentAt,
+      /^2026-|^20[0-9]{2}-/);
+    assert.match(terminal.run.cancellation.terminationConfirmedAt,
+      /^2026-|^20[0-9]{2}-/);
+    assert.ok(Date.parse(terminal.run.cancellation.forcedTerminationSentAt)
+      >= Date.parse(accepted.cooperativeDeadlineAt));
+    assert.ok(Date.parse(terminal.run.completedAt)
+      >= Date.parse(terminal.run.cancellation.terminationConfirmedAt));
+  } finally {
+    releaseOutcomeCommit?.();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("cancellation acceptance commits before the cooperative signal is dispatched", async () => {
   const fixture = await createFixture("sandking-harness-run-cancel-commit-order-");
   let releaseStateCommit;
@@ -627,6 +703,10 @@ test("cancellation acceptance remains in canonical history at progress capacity"
       999_999_993,
     ));
     await waitForRunStatus(fixture.manager, launched.run.harnessRunId, "running");
+    // The fixture publishes diagnostics on separate streams before readiness,
+    // but their Host-private writes can commit just after the ready event. Wait
+    // for both so this direct capacity fixture cannot race a queued log update.
+    await waitForDiagnosticCommits(fixture.manager, launched.run.harnessRunId);
     const statePath = join(fixture.dataDir, "harness-runs.json");
     const retained = JSON.parse(await readFile(statePath, "utf8"));
     const run = retained.runs[0];

@@ -44,3 +44,22 @@ test("Windows cancellation never confirms termination after descendant tracking 
   assert.equal(await tracker.forceTerminate(), true);
   assert.equal(await tracker.processTreeAlive(), true);
 });
+
+test("Windows cancellation preserves uncertainty when its first inventory follows root exit", async () => {
+  const terminated = [];
+  const tracker = createWindowsProcessTreeTracker({
+    rootPid: 500,
+    listProcesses: async () => [
+      { processId: 600, parentProcessId: 10 },
+    ],
+    terminateProcessTree: async (processId) => {
+      terminated.push(processId);
+      return true;
+    },
+  });
+
+  assert.equal(await tracker.prepareCancellation(), false);
+  assert.equal(await tracker.forceTerminate(), false);
+  assert.deepEqual(terminated, []);
+  assert.equal(await tracker.processTreeAlive(), true);
+});

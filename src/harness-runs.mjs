@@ -480,7 +480,7 @@ const appendEvent = (run, type, details = {}) => {
 /**
  * @param {z.infer<typeof storedRunSchema>} run
  * @param {any} context
- * @param {{onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, onSupervisorAvailable: (supervisor: {requestCancellation: (cooperativeDeadlineAt: string) => void}) => void}} observer
+ * @param {{onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, onSupervisorAvailable: (supervisor: {requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>}) => void}} observer
  */
 const superviseConformanceHarness = async (run, context, observer) => {
   const pinnedAdapter = await loadPinnedHarnessAdapter({
@@ -616,14 +616,16 @@ const superviseConformanceHarness = async (run, context, observer) => {
     child.once("error", () => resolve({ code: null, signal: null, startFailed: true }));
     child.once("exit", (code, signal) => resolve({ code, signal, startFailed: false }));
   });
-  let cancellationRequested = false;
+  /** @type {string | null} */
   let cooperativeSignalSentAt = null;
+  /** @type {string | null} */
   let forcedTerminationSentAt = null;
   let retainedCooperativeDeadlineAt = null;
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let forcedTerminationTimer;
-  let cancellationPreparation = Promise.resolve();
   let forcedTerminationOperation = Promise.resolve();
+  /** @type {Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}> | null} */
+  let cancellationOperation = null;
   const processTreeAlive = async () => {
     if (typeof child.pid !== "number") return false;
     if (process.platform === "win32") {
@@ -679,54 +681,63 @@ const superviseConformanceHarness = async (run, context, observer) => {
       }
     }
   };
-  observer.onSupervisorAvailable({
-    requestCancellation: (cooperativeDeadlineAt) => {
-      if (cancellationRequested) return;
-      cancellationRequested = true;
-      retainedCooperativeDeadlineAt = cooperativeDeadlineAt;
-      const signalAndScheduleEscalation = () => {
-        if (signalProcessTree("SIGTERM")) {
-          cooperativeSignalSentAt = new Date().toISOString();
-        }
-        forcedTerminationTimer = setTimeout(() => {
-          forcedTerminationOperation = (async () => {
-            const sent = windowsProcessTree
-              ? await windowsProcessTree.forceTerminate()
-              : signalProcessTree("SIGKILL");
-            if (sent) forcedTerminationSentAt = new Date().toISOString();
-          })();
-        }, Math.max(0, Date.parse(cooperativeDeadlineAt) - Date.now()));
-      };
-      if (windowsProcessTree) {
-        cancellationPreparation = (async () => {
-          // Capture native-Windows descendants before signalling can let their
-          // adapter parent exit and become unavailable to taskkill /T.
-          await windowsProcessTree.prepareCancellation();
-          signalAndScheduleEscalation();
+  const completion = Promise.all([exit, consumeFrames()]);
+  /** @param {string} cooperativeDeadlineAt */
+  const requestCancellation = (cooperativeDeadlineAt) => {
+    if (cancellationOperation) return cancellationOperation;
+    retainedCooperativeDeadlineAt = cooperativeDeadlineAt;
+    const signalAndScheduleEscalation = () => {
+      if (signalProcessTree("SIGTERM")) {
+        cooperativeSignalSentAt = new Date().toISOString();
+      }
+      forcedTerminationTimer = setTimeout(() => {
+        forcedTerminationOperation = (async () => {
+          const sent = windowsProcessTree
+            ? await windowsProcessTree.forceTerminate()
+            : signalProcessTree("SIGKILL");
+          if (sent) forcedTerminationSentAt = new Date().toISOString();
         })();
+      }, Math.max(0, Date.parse(cooperativeDeadlineAt) - Date.now()));
+    };
+    cancellationOperation = (async () => {
+      if (windowsProcessTree) {
+        // Capture native-Windows descendants before signalling can let their
+        // adapter parent exit and become unavailable to taskkill /T.
+        await windowsProcessTree.prepareCancellation();
+        signalAndScheduleEscalation();
       } else {
         signalAndScheduleEscalation();
       }
-    },
+      await completion;
+      let terminationConfirmedAt = null;
+      // The adapter may exit cooperatively while an inherited descendant
+      // remains in its supervised process group. Keep the forced deadline
+      // active until the entire group is gone, then confirm termination from
+      // that boundary. This also handles cancellation accepted after the
+      // adapter root exits but before its terminal outcome commits.
+      const confirmationDeadline = Math.max(
+        Date.now(),
+        Date.parse(retainedCooperativeDeadlineAt ?? ""),
+      ) + 1_000;
+      while (await processTreeAlive() && Date.now() < confirmationDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await forcedTerminationOperation;
+      if (!(await processTreeAlive())) terminationConfirmedAt = new Date().toISOString();
+      clearTimeout(forcedTerminationTimer);
+      return {
+        cooperativeSignalSentAt,
+        forcedTerminationSentAt,
+        terminationConfirmedAt,
+      };
+    })();
+    return cancellationOperation;
+  };
+  observer.onSupervisorAvailable({
+    requestCancellation,
   });
-  const [exitResult] = await Promise.all([exit, consumeFrames()]);
-  await cancellationPreparation;
-  let terminationConfirmedAt = null;
-  if (cancellationRequested) {
-    // The adapter may exit cooperatively while an inherited descendant remains
-    // in its supervised process group. Keep the forced deadline active until
-    // the entire group is gone, then confirm termination from that boundary.
-    const confirmationDeadline = Math.max(
-      Date.now(),
-      Date.parse(retainedCooperativeDeadlineAt ?? ""),
-    ) + 1_000;
-    while (await processTreeAlive() && Date.now() < confirmationDeadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    await forcedTerminationOperation;
-    if (!(await processTreeAlive())) terminationConfirmedAt = new Date().toISOString();
-  }
-  clearTimeout(forcedTerminationTimer);
+  const [exitResult] = await completion;
+  const cancellation = cancellationOperation ? await cancellationOperation : null;
   await diagnosticQueue;
   return {
     adapterReadyObserved,
@@ -734,11 +745,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
     terminalEnvelopes,
     adapterChannelClosedObserved,
     exit: exitResult,
-    cancellation: cancellationRequested ? {
-      cooperativeSignalSentAt,
-      forcedTerminationSentAt,
-      terminationConfirmedAt,
-    } : null,
+    cancellation,
   };
 };
 
@@ -762,7 +769,7 @@ export const createHarnessRunManager = async (options) => {
     throw new Error("harness_run_cancellation_deadline_invalid");
   }
   let mutationQueue = Promise.resolve();
-  /** @type {Map<string, {requestCancellation: (cooperativeDeadlineAt: string) => void}>} */
+  /** @type {Map<string, {requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>}>} */
   const activeSupervisions = new Map();
   /** @type {Map<string, string>} */
   const acceptedCancellations = new Map();
@@ -942,6 +949,8 @@ export const createHarnessRunManager = async (options) => {
   /** @param {z.infer<typeof storedRunSchema>} initialRun @param {any} context */
   const supervise = async (initialRun, context) => {
     let supervision;
+    /** @type {{requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>} | null} */
+    let cancellationSupervisor = null;
     /** @type {Array<z.infer<typeof progressRecordSchema>>} */
     const pendingProgressRecords = [];
     let progressRecordCount = 0;
@@ -961,6 +970,7 @@ export const createHarnessRunManager = async (options) => {
     try {
       supervision = await superviseConformanceHarness(initialRun, context, {
         onSupervisorAvailable: (supervisor) => {
+          cancellationSupervisor = supervisor;
           activeSupervisions.set(initialRun.harnessRunId, supervisor);
           const cooperativeDeadlineAt = acceptedCancellations.get(
             initialRun.harnessRunId,
@@ -1026,19 +1036,27 @@ export const createHarnessRunManager = async (options) => {
     let incompleteResult = !validTerminal;
     let acceptedTerminal = validTerminal ? terminal : null;
     const outcomeId = `harness-outcome-${randomBytes(12).toString("hex")}`;
-    const completedAt = now().toISOString();
+    let completedAt = now().toISOString();
     await options.faultInjector?.("harness_run_outcome.before_commit");
     const finalized = await updateRun(initialRun.harnessRunId, async (run) => {
       if (run.outcome) return;
       if (run.cancellation) {
-        const cancellationTermination = supervision.cancellation ?? {
-          cooperativeSignalSentAt: null,
-          forcedTerminationSentAt: null,
-          // Cancellation committed after supervision ended but before the
-          // terminal outcome did. The completed supervisor boundary confirms
-          // there is no remaining process tree even though no signal was due.
-          terminationConfirmedAt: completedAt,
-        };
+        const cancellationTermination = supervision.cancellation
+          ?? (cancellationSupervisor
+            ? await cancellationSupervisor.requestCancellation(
+                run.cancellation.cooperativeDeadlineAt,
+              )
+            : {
+                cooperativeSignalSentAt: null,
+                forcedTerminationSentAt: null,
+                // No supervisor means adapter setup failed before a process
+                // tree became available. That start-failure boundary is the
+                // only late-cancellation case that can confirm no tree without
+                // consulting a live supervisor.
+                terminationConfirmedAt: supervision.exit.startFailed
+                  ? completedAt
+                  : null,
+              });
         if (cancellationTermination.terminationConfirmedAt) {
           await options.faultInjector?.(
             "harness_run_cancellation.before_termination_confirmation_commit",
@@ -1051,6 +1069,7 @@ export const createHarnessRunManager = async (options) => {
         run.cancellation.terminationConfirmedAt =
           cancellationTermination.terminationConfirmedAt;
         if (!cancellationTermination.terminationConfirmedAt) return;
+        completedAt = now().toISOString();
         const validCancellationTerminal = validTerminal && terminal.status === "cancelled";
         status = "cancelled";
         code = "conformance_run_cancelled";

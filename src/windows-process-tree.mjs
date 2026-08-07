@@ -61,14 +61,28 @@ export const createWindowsProcessTreeTracker = (options) => {
   const trackedProcessIds = new Set([options.rootPid]);
   let aliveProcessIds = new Set([options.rootPid]);
   let trackingReliable = true;
+  let rootObserved = false;
+  let terminationTargetsReliable = true;
 
   const refresh = async () => {
+    if (!terminationTargetsReliable) return false;
     /** @type {Array<{processId: number, parentProcessId: number}>} */
     let processes;
     try {
       processes = await listProcesses();
     } catch {
       trackingReliable = false;
+      return false;
+    }
+    if (processes.some((process) => process.processId === options.rootPid)) {
+      rootObserved = true;
+    } else if (!rootObserved) {
+      // A first inventory after the adapter root exited cannot discover
+      // descendants that Windows has already reparented. Preserve uncertainty
+      // instead of treating an empty tracked PID set as termination proof.
+      trackingReliable = false;
+      terminationTargetsReliable = false;
+      aliveProcessIds = new Set();
       return false;
     }
     let discovered = true;
@@ -98,6 +112,7 @@ export const createWindowsProcessTreeTracker = (options) => {
     },
     forceTerminate: async () => {
       await refresh();
+      if (!terminationTargetsReliable) return false;
       let signalSent = false;
       for (const processId of [...aliveProcessIds].sort((left, right) => left - right)) {
         signalSent = await terminateProcessTree(processId) || signalSent;
