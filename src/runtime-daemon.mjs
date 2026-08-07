@@ -100,6 +100,9 @@ const parseArgs = (argv) => {
 const args = parseArgs(process.argv.slice(2));
 const localHostPath = fileURLToPath(new URL("./local-host.mjs", import.meta.url));
 const cockpitScriptPath = fileURLToPath(new URL("./cockpit.js", import.meta.url));
+const cockpitLaunchParametersPath = fileURLToPath(
+  new URL("./cockpit-launch-parameters.mjs", import.meta.url),
+);
 const cockpitStylePath = fileURLToPath(new URL("./cockpit.css", import.meta.url));
 const xtermScriptPath = fileURLToPath(import.meta.resolve("@xterm/xterm/lib/xterm.mjs"));
 const xtermFitScriptPath = fileURLToPath(import.meta.resolve(
@@ -1599,7 +1602,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
         throw new Error("host_protocol_error");
       }
       project = pin.project;
-      currentProjectPreparation = projectPreparationProjection(project);
+      currentProjectPreparation = projectPreparationProjection(project, harness);
     }
   } catch (error) {
     if (
@@ -1634,7 +1637,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     throw error;
   }
 
-  currentProjectPreparation = projectPreparationProjection(project);
+  currentProjectPreparation = projectPreparationProjection(project, harness);
   currentProjectPath = project.canonicalPath;
   const preparationAuditId = await recordAudit("project.prepare", "observed", {
     authorizationClass: "host_local_project_preparation",
@@ -1707,6 +1710,10 @@ const handleProviderOperation = async (request) => {
     throw new ControllerSessionError("provider_operation_unsupported");
   }
   if (request.operation === "controller-cli.describe") {
+    const project = currentProjectPreparation.current;
+    if (!project?.harness || project.projectId !== request.workContext.workContextId) {
+      throw new ControllerSessionError("project_work_context_unavailable");
+    }
     return {
       type: "controller.cli.description",
       protocol: "1.0.0",
@@ -1714,6 +1721,7 @@ const handleProviderOperation = async (request) => {
       focusedProjectId: request.workContext.workContextId,
       projectArgumentOptional: true,
       pluginRequired: false,
+      launchParameters: project.harness.launchParameters,
     };
   }
   if (request.operation === "harness-run.launch") {
@@ -1721,7 +1729,7 @@ const handleProviderOperation = async (request) => {
       type: "harness.run.launch",
       requestId: `harness-run-launch-${randomBytes(8).toString("hex")}`,
       projectId: request.workContext.workContextId,
-      parameters: "parameters" in input ? input.parameters : null,
+      ...("parameters" in input ? { parameters: input.parameters } : {}),
       controllerId: state.runtimeId,
       controllerSessionId: request.sessionId,
       source: "controller-cli",
@@ -2589,6 +2597,7 @@ const main = async () => {
   await ensurePrivateDirectory(tokenDirectory);
   const [
     cockpitScript,
+    cockpitLaunchParametersScript,
     cockpitStyle,
     xtermScript,
     xtermFitScript,
@@ -2598,6 +2607,7 @@ const main = async () => {
   ] =
     await Promise.all([
       readFile(cockpitScriptPath, "utf8"),
+      readFile(cockpitLaunchParametersPath, "utf8"),
       readFile(cockpitStylePath, "utf8"),
       readFile(xtermScriptPath, "utf8"),
       readFile(xtermFitScriptPath, "utf8"),
@@ -2909,6 +2919,10 @@ const main = async () => {
         }
 
         const localAsset = request.method === "GET" ? new Map([
+          ["/cockpit-launch-parameters.mjs", {
+            contentType: "text/javascript; charset=utf-8",
+            body: cockpitLaunchParametersScript,
+          }],
           ["/cockpit.css", { contentType: "text/css; charset=utf-8", body: cockpitStyle }],
           ["/terminal/xterm.mjs", {
             contentType: "text/javascript; charset=utf-8",

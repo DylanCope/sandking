@@ -35,7 +35,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-canonical-run-reconnection")
+  .update("sandking-host-control-schema-v1-with-harness-declared-launch-parameters")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -337,7 +337,7 @@ const harnessRunLaunchSchema = z.object({
   type: z.literal("harness.run.launch"),
   requestId: identifierSchema,
   projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
-  parameters: z.unknown(),
+  parameters: z.unknown().optional(),
   controllerId: runtimeIdSchema,
   controllerSessionId: z.string()
     .regex(/^controller-session-[a-f0-9]{24}$/)

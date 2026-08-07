@@ -47,7 +47,7 @@ export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-single-harness-launch")
+  .update("sandking-browser-runtime-schema-v1-with-harness-declared-launch-parameters")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -192,7 +192,7 @@ const browserHarnessRunLaunchSchema = z.object({
   type: z.literal("browser.harness-run.launch"),
   requestId: identifierSchema,
   projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
-  parameters: launchParametersSchema,
+  parameters: launchParametersSchema.optional(),
   idempotencyKey: z.string().min(1).max(256),
 }).strict();
 

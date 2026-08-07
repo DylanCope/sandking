@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 import { createHarnessRunManager } from "../src/harness-runs.mjs";
@@ -83,7 +84,17 @@ const createFixture = async (prefix) => {
     recordAudit,
     loadLaunchContext: registry.loadLaunchContext,
   });
-  return { root, dataDir, projectPath, audits, registry, registered, manager, recordAudit };
+  return {
+    root,
+    dataDir,
+    projectPath,
+    audits,
+    registry,
+    registered,
+    harness,
+    manager,
+    recordAudit,
+  };
 };
 
 const launchRequest = (projectId, issueNumber, overrides = {}) => ({
@@ -166,6 +177,175 @@ test("one revision-free action launches a fresh Project's Harness run", async ()
     await waitForTerminal(fixture.manager, cockpitLaunch.run.harnessRunId);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("a pinned Harness declaration permits a launch with no parameters", async () => {
+  const fixture = await createFixture("sandking-parameterless-harness-run-");
+  try {
+    assert.deepEqual(
+      fixture.harness.harness.launchParameters.fields.map((field) => ({
+        name: field.name,
+        required: field.required,
+      })),
+      [
+        { name: "issueNumber", required: false },
+        { name: "targetBranch", required: false },
+      ],
+    );
+    const launched = await fixture.manager.launch({
+      requestId: "launch-without-parameters",
+      projectId: fixture.registered.project.projectId,
+      controllerId,
+      controllerSessionId,
+      source: "controller-cli",
+      authorizationClass: "harness_run_launch",
+      idempotencyKey: "launch-without-parameters",
+    });
+
+    assert.equal(launched.type, "harness.run.launch.result");
+    assert.deepEqual(launched.run.parameters, {});
+    const replay = await fixture.manager.launch({
+      requestId: "launch-with-empty-parameters",
+      projectId: fixture.registered.project.projectId,
+      parameters: {},
+      controllerId,
+      controllerSessionId,
+      source: "controller-cli",
+      authorizationClass: "harness_run_launch",
+      idempotencyKey: "launch-without-parameters",
+    });
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.run.harnessRunId, launched.run.harnessRunId);
+    const observation = await waitForTerminal(fixture.manager, launched.run.harnessRunId);
+    assert.equal(observation.run.status, "succeeded");
+    assert.equal(observation.outcome.code, "conformance_run_succeeded");
+    assert.match(
+      observation.outcome.result.placeholderIdentifier,
+      /^conformance-placeholder-[a-f0-9]{24}$/,
+    );
+    const rejected = await fixture.manager.launch({
+      requestId: "launch-with-undeclared-parameter",
+      projectId: fixture.registered.project.projectId,
+      parameters: { genericSurfaceGuess: true },
+      controllerId,
+      controllerSessionId,
+      source: "controller-cli",
+      authorizationClass: "harness_run_launch",
+      idempotencyKey: "launch-with-undeclared-parameter",
+    });
+    assert.equal(rejected.type, "harness.run.launch.failure");
+    assert.equal(rejected.code, "bounded_configuration_invalid");
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("a retained pre-declaration Harness still launches with explicit parameters", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-retained-harness-run-"));
+  const legacyCheckout = join(root, "pre-issue-155");
+  const dataDir = join(root, "host-state");
+  const projectPath = join(root, "selected-project");
+  const audits = [];
+  const recordAudit = async (action, outcome, details = {}) => {
+    const auditId = `audit-${String(audits.length + 1).padStart(24, "0")}`;
+    audits.push({ auditId, action, outcome, details });
+    return auditId;
+  };
+  try {
+    await execFileAsync("git", ["clone", "--quiet", "--no-checkout", process.cwd(), legacyCheckout]);
+    await execFileAsync("git", [
+      "-C", legacyCheckout,
+      "checkout", "--quiet", "--detach", "ca06fb7906dca384c8a1ff49114d701df9e925b6",
+    ]);
+    await symlink(join(process.cwd(), "node_modules"), join(legacyCheckout, "node_modules"), "dir");
+    await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
+    await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
+
+    const legacyModule = await import(pathToFileURL(
+      join(legacyCheckout, "src", "project-registration.mjs"),
+    ).href);
+    const legacyRegistry = await legacyModule.createProjectRegistry({ dataDir, recordAudit });
+    const registered = await legacyRegistry.registerProject({
+      requestId: "register-retained-project",
+      path: projectPath,
+      configuration: {
+        issueWorkflow: { provider: "github", kind: "issues" },
+        checks: [{ checkId: "test", command: "npm test" }],
+      },
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "register-retained-project",
+      expectedRevision: 0,
+    });
+    const harness = await legacyRegistry.registerConformanceHarness({
+      requestId: "register-retained-harness",
+      name: "Sand-King Conformance Harness",
+      authorizationClass: "host_local_harness_registration",
+      idempotencyKey: "register-retained-harness",
+      expectedRevision: 0,
+    });
+    await legacyRegistry.pinConformanceHarness({
+      requestId: "pin-retained-harness",
+      projectId: registered.project.projectId,
+      harnessId: harness.harness.harnessId,
+      immutableRevision: harness.harness.immutableRevision,
+      boundedConfiguration: {
+        adapterProtocol: "1.0.0",
+        launchProfile: "delegated-work",
+      },
+      authorizationClass: "host_local_project_configuration",
+      idempotencyKey: "pin-retained-harness",
+      expectedRevision: 1,
+    });
+    const retainedHarnessState = JSON.parse(
+      await readFile(join(dataDir, "harness-registry.json"), "utf8"),
+    );
+    assert.equal("launchParameters" in retainedHarnessState.harnesses[0], false);
+
+    const registry = await createProjectRegistry({ dataDir, recordAudit });
+    const retainedContext = await registry.loadLaunchContext(registered.project.projectId);
+    assert.deepEqual(
+      retainedContext.harness.launchParameters.fields.map(({ name, required }) => ({
+        name,
+        required,
+      })),
+      [
+        { name: "issueNumber", required: true },
+        { name: "targetBranch", required: true },
+      ],
+    );
+    const manager = await createHarnessRunManager({
+      dataDir,
+      hostId,
+      recordAudit,
+      loadLaunchContext: registry.loadLaunchContext,
+    });
+    const parameters = {
+      issueNumber: 155,
+      targetBranch: "sandcastle/issue-155",
+    };
+    const launched = await manager.launch({
+      requestId: "launch-retained-harness",
+      projectId: registered.project.projectId,
+      parameters,
+      controllerId,
+      controllerSessionId,
+      source: "controller-cli",
+      authorizationClass: "harness_run_launch",
+      idempotencyKey: "launch-retained-harness",
+    });
+
+    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
+    assert.deepEqual(launched.run.parameters, parameters);
+    const observation = await waitForTerminal(manager, launched.run.harnessRunId);
+    assert.equal(observation.run.status, "succeeded");
+    assert.deepEqual(observation.outcome.result, {
+      kind: "conformance-result",
+      issueNumber: 155,
+      targetBranch: "sandcastle/issue-155",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

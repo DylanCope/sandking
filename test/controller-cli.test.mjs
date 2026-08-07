@@ -10,6 +10,29 @@ import test from "node:test";
 
 const execFileAsync = promisify(execFile);
 const cliPath = join(process.cwd(), "src", "cli.mjs");
+const launchParameters = {
+  kind: "fields",
+  fields: [
+    {
+      name: "issueNumber",
+      label: "Issue number",
+      cliFlag: "--issue",
+      valueType: "integer",
+      required: false,
+      minimum: 1,
+      maximum: 999_999_999,
+    },
+    {
+      name: "targetBranch",
+      label: "Target branch",
+      cliFlag: "--target-branch",
+      valueType: "string",
+      required: false,
+      minLength: 1,
+      maxLength: 128,
+    },
+  ],
+};
 
 test("sandking self-description and launch use the ordinary Controller CLI channel", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sandking-controller-cli-"));
@@ -35,6 +58,7 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
           focusedProjectId: request.projectId,
           projectArgumentOptional: true,
           pluginRequired: false,
+          launchParameters,
         } : {
           type: "harness.run.launch.result",
           code: "harness_run_created",
@@ -72,7 +96,7 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
     ], {
       env: { LANG: "C.UTF-8", PATH: process.env.PATH },
     });
-    assert.match(help, /sandking launch \[<project-id>\] --issue <number>/);
+    assert.match(help, /sandking launch \[<project-id>\] \[--parameters <json-object>\]/);
     assert.match(help, /defaults to the focused Controller Project/);
     assert.doesNotMatch(help, /approve|prepare|plugin|skill|expected-revision/i);
 
@@ -89,6 +113,26 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
       assert.equal(controllerHelp, help);
     }
 
+    const { stdout: parameterlessStdout } = await execFileAsync(process.execPath, [
+      cliPath,
+      "launch",
+      "--json",
+    ], {
+      env: controllerEnvironment,
+    });
+    const parameterlessOutcome = JSON.parse(parameterlessStdout);
+    assert.equal(parameterlessOutcome.type, "harness.run.launch.result");
+
+    const { stdout: directParameterlessStdout } = await execFileAsync(process.execPath, [
+      cliPath,
+      "launch",
+      projectId,
+      "--json",
+    ], {
+      env: controllerEnvironment,
+    });
+    assert.equal(JSON.parse(directParameterlessStdout).type, "harness.run.launch.result");
+
     const { stdout } = await execFileAsync(process.execPath, [
       cliPath,
       "launch",
@@ -101,7 +145,7 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
     const outcome = JSON.parse(stdout);
     assert.equal(outcome.type, "harness.run.launch.result");
     assert.equal(outcome.run.harnessRunId, `harness-run-${"5".repeat(24)}`);
-    assert.equal(requests.length, 4);
+    assert.equal(requests.length, 7);
     for (const request of requests.slice(0, 3)) {
       assert.equal(request.operation, "describe");
       assert.equal(request.projectId, projectId);
@@ -110,11 +154,19 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
     }
     assert.equal(requests[3].operation, "harness-run.launch");
     assert.equal(requests[3].projectId, projectId);
-    assert.deepEqual(requests[3].parameters, {
+    assert.equal("parameters" in requests[3], false);
+    assert.equal(requests[4].operation, "harness-run.launch");
+    assert.equal(requests[4].projectId, projectId);
+    assert.equal("parameters" in requests[4], false);
+    assert.equal(requests[5].operation, "describe");
+    assert.equal(requests[5].projectId, projectId);
+    assert.equal(requests[6].operation, "harness-run.launch");
+    assert.equal(requests[6].projectId, projectId);
+    assert.deepEqual(requests[6].parameters, {
       issueNumber: 152,
       targetBranch: "sandcastle/issue-152",
     });
-    assert.equal("expectedRevision" in requests[3], false);
+    assert.equal("expectedRevision" in requests[6], false);
     assert.doesNotMatch(JSON.stringify(requests), /approve|prepare|plugin|skill/i);
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -144,6 +196,7 @@ test("sandking self-description rejects a plugin-gated runtime contract", async 
           focusedProjectId: request.projectId,
           projectArgumentOptional: true,
           pluginRequired: true,
+          launchParameters,
         },
       })}\n`);
     });
@@ -191,7 +244,15 @@ test("sandking launch rejects uncorrelated success responses", async () => {
         protocol: "1.0.0",
         requestId: request.requestId,
         ok: true,
-        outcome: {
+        outcome: request.operation === "describe" ? {
+          type: "controller.cli.description",
+          protocol: "1.0.0",
+          command: "sandking launch",
+          focusedProjectId: request.projectId,
+          projectArgumentOptional: true,
+          pluginRequired: false,
+          launchParameters,
+        } : {
           type: "harness.run.launch.result",
           code: "harness_run_created",
           authorizationClass: "harness_run_launch",

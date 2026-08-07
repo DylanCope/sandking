@@ -1,5 +1,9 @@
 import { FitAddon } from "/terminal/addon-fit.mjs";
 import { Terminal } from "/terminal/xterm.mjs";
+import {
+  readHarnessLaunchParameters,
+  renderHarnessLaunchParameterFields,
+} from "/cockpit-launch-parameters.mjs";
 
 const browserProtocol = Object.freeze({
   protocol: { major: 1, minor: 0, patch: 0, version: "1.0.0" },
@@ -20,7 +24,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:4fc920ad2991913b2b4eb3d0efb2ce179faa817222546377901f17e461132e6e",
+  schemaDigest: "sha256:cd065e4cb5bcdee1d6f413a1e6f49549addbe4df75816e42685d15ff3cea66b2",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -614,26 +618,22 @@ const renderProjectPreparation = (
     disabled: hostConnectionStatus !== "connected"
       || !preparation.current?.canPrepareLaunchRequest,
   }, "Open focused Controller for Launch");
-  const issueLabel = element("label", { for: "harness-launch-issue" }, "Issue number");
-  const issueInput = element("input", {
-    id: "harness-launch-issue",
-    type: "number",
-    min: "1",
-    max: "999999999",
-    step: "1",
-    inputmode: "numeric",
-  });
-  const branchLabel = element(
-    "label",
-    { for: "harness-launch-branch" },
-    "Target branch",
+  let launchParameterDeclaration = preparation.current?.harness?.launchParameters
+    ?? { kind: "none" };
+  let launchParameterFields = renderHarnessLaunchParameterFields(
+    document,
+    launchParameterDeclaration,
   );
-  const branchInput = element("input", {
-    id: "harness-launch-branch",
-    type: "text",
-    autocomplete: "off",
-    placeholder: "sandcastle/issue-152",
-  });
+  const updateLaunchParameterFields = () => {
+    launchParameterDeclaration = currentProject?.harness?.launchParameters
+      ?? { kind: "none" };
+    const replacement = renderHarnessLaunchParameterFields(
+      document,
+      launchParameterDeclaration,
+    );
+    launchParameterFields.replaceWith(replacement);
+    launchParameterFields = replacement;
+  };
   const launchButton = element("button", {
     id: "launch-harness",
     type: "button",
@@ -682,15 +682,7 @@ const renderProjectPreparation = (
   );
   confirmation.lastElementChild.append(confirmYes, confirmNo);
 
-  issueInput.addEventListener("input", () => {
-    const issueNumber = Number(issueInput.value);
-    if (Number.isSafeInteger(issueNumber) && issueNumber > 0) {
-      branchInput.value = `sandcastle/issue-${issueNumber}`;
-    }
-  });
   const launch = () => {
-    const issueNumber = Number(issueInput.value);
-    const targetBranch = branchInput.value.trim();
     if (
       !currentProject
       || currentProject.canPrepareLaunchRequest !== true
@@ -703,14 +695,13 @@ const renderProjectPreparation = (
       updateProjectActionAvailability();
       return false;
     }
-    if (
-      !Number.isSafeInteger(issueNumber)
-      || issueNumber < 1
-      || issueNumber > 999_999_999
-      || targetBranch !== `sandcastle/issue-${issueNumber}`
-    ) {
+    const parsedParameters = readHarnessLaunchParameters(
+      launchParameterFields,
+      launchParameterDeclaration,
+    );
+    if (!parsedParameters.ok) {
       harnessLaunchFeedback.textContent =
-        "Harness was not launched: enter an issue number and its sandcastle branch.";
+        `Harness was not launched: ${parsedParameters.error}.`;
       return false;
     }
     pendingHarnessLaunchRequestId = `harness-launch-${harnessRequestSequence}`;
@@ -723,7 +714,9 @@ const renderProjectPreparation = (
         type: "browser.harness-run.launch",
         requestId: pendingHarnessLaunchRequestId,
         projectId: currentProject.projectId,
-        parameters: { issueNumber, targetBranch },
+        ...(Object.keys(parsedParameters.parameters).length === 0
+          ? {}
+          : { parameters: parsedParameters.parameters }),
         idempotencyKey: mutationKey(),
       },
     }));
@@ -812,6 +805,7 @@ const renderProjectPreparation = (
       if (outcome.project) {
         expectedRevision = outcome.project.revision;
         currentProject = outcome.project;
+        updateLaunchParameterFields();
         const replacement = renderPreparedProject(outcome.project);
         currentNode.replaceWith(replacement);
         currentNode = replacement;
@@ -834,6 +828,7 @@ const renderProjectPreparation = (
     }
     expectedRevision = outcome.project.revision;
     currentProject = outcome.project;
+    updateLaunchParameterFields();
     const replacement = renderPreparedProject(outcome.project);
     currentNode.replaceWith(replacement);
     currentNode = replacement;
@@ -925,10 +920,7 @@ const renderProjectPreparation = (
     feedback,
     currentNode,
     element("h3", {}, "Launch Harness"),
-    issueLabel,
-    issueInput,
-    branchLabel,
-    branchInput,
+    launchParameterFields,
     launchButton,
     harnessLaunchFeedback,
     confirmation,

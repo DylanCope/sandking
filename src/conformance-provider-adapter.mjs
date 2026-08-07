@@ -304,22 +304,24 @@ const run = async (argv) => {
     }
     const launchMatch = /^launch ([1-9][0-9]{0,4095}) (sandcastle\/issue-[1-9][0-9]{0,4095})$/
       .exec(line);
-    if (launchMatch) {
-      const issueDigits = launchMatch[1];
-      const parsedIssueNumber = Number(issueDigits);
-      const issueNumber = Number.isSafeInteger(parsedIssueNumber)
-        ? parsedIssueNumber
-        : issueDigits;
-      const targetBranch = launchMatch[2];
+    if (line === "launch" || launchMatch) {
+      const issueDigits = launchMatch?.[1];
+      const parsedIssueNumber = issueDigits === undefined ? undefined : Number(issueDigits);
+      const parameters = launchMatch ? {
+        issueNumber: Number.isSafeInteger(parsedIssueNumber)
+          ? parsedIssueNumber
+          : issueDigits,
+        targetBranch: launchMatch[2],
+      } : {};
       const inputDigest = createHash("sha256")
-        .update(`${issueDigits}\0${targetBranch}`)
+        .update(JSON.stringify(parameters))
         .digest("hex");
       const idempotencyKey = `provider:${sessionId}:launch:${inputDigest}`;
       let outcome;
       let recoveredFromAmbiguousResponse = false;
       try {
         outcome = await control.request("harness-run.launch", {
-          parameters: { issueNumber, targetBranch },
+          ...(Object.keys(parameters).length === 0 ? {} : { parameters }),
           idempotencyKey,
         });
       } catch (error) {

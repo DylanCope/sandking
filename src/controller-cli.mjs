@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createConnection } from "node:net";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
+import { harnessLaunchParametersDeclarationSchema } from "./harness-adapter-protocol.mjs";
 import { launchParametersSchema } from "./harness-launch.mjs";
 
 const projectIdPattern = /^project-[a-f0-9]{24}$/;
@@ -12,6 +14,7 @@ const controllerCliDescriptionSchema = z.object({
   focusedProjectId: z.string().regex(projectIdPattern),
   projectArgumentOptional: z.literal(true),
   pluginRequired: z.literal(false),
+  launchParameters: harnessLaunchParametersDeclarationSchema,
 }).strict();
 const controllerLaunchResultSchema = z.object({
   type: z.literal("harness.run.launch.result"),
@@ -146,8 +149,7 @@ export const requireCorrelatedControllerLaunchResult = (outcome, request) => {
     || parsed.data.idempotencyKeyHash !== expectedIdempotencyKeyHash
     || parsed.data.run.projectId !== request.projectId
     || parsed.data.run.controllerSessionId !== request.controllerSessionId
-    || parsed.data.run.parameters.issueNumber !== request.parameters.issueNumber
-    || parsed.data.run.parameters.targetBranch !== request.parameters.targetBranch
+    || !isDeepStrictEqual(parsed.data.run.parameters, request.parameters)
   ) {
     throw new Error("controller_cli_protocol_invalid");
   }
@@ -157,7 +159,7 @@ export const requireCorrelatedControllerLaunchResult = (outcome, request) => {
 /**
  * Invoke the Controller runtime from the ordinary `sandking` executable made
  * available inside a Controller session.
- * @param {{projectId: string, parameters: unknown, idempotencyKey: string}} request
+ * @param {{projectId: string, parameters?: unknown, idempotencyKey: string}} request
  * @param {NodeJS.ProcessEnv} [environment]
  */
 export const requestControllerLaunch = async (request, environment = process.env) => {
@@ -173,7 +175,7 @@ export const requestControllerLaunch = async (request, environment = process.env
   const outcome = await requestControllerOperation({
     operation: "harness-run.launch",
     projectId: request.projectId,
-    parameters: parameters.data,
+    ...(Object.keys(parameters.data).length === 0 ? {} : { parameters: parameters.data }),
     idempotencyKey: request.idempotencyKey,
   }, environment);
   return requireCorrelatedControllerLaunchResult(outcome, {

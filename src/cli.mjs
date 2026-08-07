@@ -6,10 +6,11 @@ import {
   requestControllerDescription,
   requestControllerLaunch,
 } from "./controller-cli.mjs";
+import { validateDeclaredLaunchParameters } from "./harness-launch.mjs";
 import { RuntimeStartupError, launchRuntime, stopRuntime } from "./runtime.mjs";
 
 const harnessLaunchHelp = `Usage:
-  sandking launch [<project-id>] --issue <number> [--target-branch sandcastle/issue-<number>] [--idempotency-key <key>] [--json]
+  sandking launch [<project-id>] [--parameters <json-object>] [<harness-declared-flags>] [--idempotency-key <key>] [--json]
 
 Launches one Harness run immediately. Inside a Controller session, <project-id>
 defaults to the focused Controller Project.
@@ -18,8 +19,8 @@ defaults to the focused Controller Project.
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
   const [command = "launch", ...rest] = argv;
-  /** @type {{command: string, help: boolean, noOpen: boolean, json: boolean, projectId?: string, issueNumber?: number, targetBranch?: string, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
-  const options = { command, help: false, noOpen: false, json: false };
+  /** @type {{command: string, help: boolean, noOpen: boolean, json: boolean, projectId?: string, parameters?: Record<string, unknown>, launchArguments: Array<{flag: string, value: string}>, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
+  const options = { command, help: false, noOpen: false, json: false, launchArguments: [] };
 
   if ((command === "--help" || command === "-h") && rest.length === 0) {
     options.help = true;
@@ -76,20 +77,26 @@ const parseArgs = (argv) => {
     } else if (current === "--idempotency-key") {
       options.idempotencyKey = rest[index + 1];
       index += 1;
-    } else if (current === "--issue") {
-      options.issueNumber = Number(rest[index + 1]);
+    } else if (current === "--parameters") {
+      const source = rest[index + 1];
       index += 1;
-      if (!Number.isSafeInteger(options.issueNumber) || options.issueNumber < 1) {
-        throw new Error("Invalid --issue value.");
+      try {
+        const value = JSON.parse(source ?? "");
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          throw new Error("invalid");
+        }
+        options.parameters = value;
+      } catch {
+        throw new Error("Invalid --parameters value: expected a JSON object.");
       }
-    } else if (current === "--target-branch") {
-      options.targetBranch = rest[index + 1];
-      index += 1;
     } else if (current === "--expected-revision") {
       options.expectedRevision = Number(rest[index + 1]);
       index += 1;
     } else if (command === "launch" && !current.startsWith("-") && !options.projectId) {
       options.projectId = current;
+    } else if (command === "launch" && current.startsWith("--") && rest[index + 1]) {
+      options.launchArguments.push({ flag: current, value: rest[index + 1] });
+      index += 1;
     } else {
       throw new Error(`Unsupported option: ${current}`);
     }
@@ -110,13 +117,11 @@ const main = async () => {
   let output;
 
   const controllerLaunchRequested = options.command === "launch"
-    && (options.projectId !== undefined
-      || options.issueNumber !== undefined
-      || options.targetBranch !== undefined);
+    && (Boolean(process.env.SANDKING_CONTROLLER_ENDPOINT)
+      || options.projectId !== undefined
+      || options.parameters !== undefined
+      || options.launchArguments.length > 0);
   if (controllerLaunchRequested) {
-    if (!options.issueNumber) {
-      throw new Error("Harness launch requires --issue.");
-    }
     if (options.expectedRevision !== undefined) {
       throw new Error("Harness launch does not accept --expected-revision.");
     }
@@ -124,12 +129,36 @@ const main = async () => {
     if (!projectId) {
       throw new Error("Harness launch requires a Project ID or focused Controller Project.");
     }
+    const parameters = { ...(options.parameters ?? {}) };
+    if (options.launchArguments.length > 0) {
+      const description = await requestControllerDescription();
+      const fields = description.launchParameters.kind === "fields"
+        ? description.launchParameters.fields
+        : [];
+      const byFlag = new Map(fields
+        .filter((field) => field.cliFlag)
+        .map((field) => [field.cliFlag, field]));
+      for (const argument of options.launchArguments) {
+        const field = byFlag.get(argument.flag);
+        if (!field || Object.hasOwn(parameters, field.name)) {
+          throw new Error(`Unsupported Harness launch parameter: ${argument.flag}`);
+        }
+        if (field.valueType === "integer") {
+          parameters[field.name] = Number(argument.value);
+        } else if (field.valueType === "boolean") {
+          if (!["true", "false"].includes(argument.value)) {
+            throw new Error(`Invalid ${argument.flag} value.`);
+          }
+          parameters[field.name] = argument.value === "true";
+        } else {
+          parameters[field.name] = argument.value;
+        }
+      }
+      validateDeclaredLaunchParameters(description.launchParameters, parameters);
+    }
     output = await requestControllerLaunch({
       projectId,
-      parameters: {
-        issueNumber: options.issueNumber,
-        targetBranch: options.targetBranch ?? `sandcastle/issue-${options.issueNumber}`,
-      },
+      ...(Object.keys(parameters).length === 0 ? {} : { parameters }),
       idempotencyKey: options.idempotencyKey ?? randomUUID(),
     });
   } else if (options.command === "launch") {

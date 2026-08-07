@@ -93,7 +93,7 @@ test("a project-focused conformance Controller launches in one revision-free act
     await waitFor(() => output.join("").includes("did not recognize"));
     assert.equal(operations.length, 0);
 
-    await enter("launch 152 sandcastle/issue-152");
+    await enter("launch");
     await waitFor(() => output.join("").includes(
       `Harness run ${harnessRunId} created`,
     ));
@@ -102,10 +102,7 @@ test("a project-focused conformance Controller launches in one revision-free act
       "harness-run.launch",
       "harness-run.lookup",
     ]);
-    assert.deepEqual(operations[0].input.parameters, {
-      issueNumber: 152,
-      targetBranch: "sandcastle/issue-152",
-    });
+    assert.equal("parameters" in operations[0].input, false);
     assert.equal("expectedRevision" in operations[0].input, false);
     assert.equal(operations[0].input.idempotencyKey, operations[1].input.idempotencyKey);
     assert.doesNotMatch(output.join(""), /Launch request|approve|reject|--plugin-dir/i);

@@ -124,6 +124,18 @@ test("the framed Host launches a fresh Project with one revision-free message", 
     assert.equal(replay.code, "harness_run_created");
     assert.equal(replay.idempotentReplay, true);
     assert.equal(replay.run.harnessRunId, created.run.harnessRunId);
+
+    const { parameters: omittedParameters, ...launchWithoutParameters } = launch;
+    void omittedParameters;
+    const parameterlessLaunch = {
+      ...launchWithoutParameters,
+      requestId: "launch-framed-harness-without-parameters",
+      idempotencyKey: "launch-framed-harness-without-parameters",
+    };
+    writeFrame(child.stdin, parameterlessLaunch);
+    const parameterlessCreated = await readFrame(child.stdout);
+    assert.equal(parameterlessCreated.type, "harness.run.launch.result");
+    assert.deepEqual(parameterlessCreated.run.parameters, {});
     await assert.rejects(access(join(dataDir, "launch-requests.json")));
     const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
       .trim().split("\n").map((line) => JSON.parse(line));

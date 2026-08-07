@@ -4,6 +4,14 @@ import { access, mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
+import {
+  conformanceHarnessLaunchParametersDeclaration as conformanceLaunchParameters,
+  harnessAdapterProbeSchema,
+  harnessLaunchParametersDeclarationSchema,
+  invokePinnedHarnessAdapter,
+  legacyConformanceHarnessLaunchParametersDeclaration as legacyConformanceLaunchParameters,
+  loadPinnedHarnessAdapter,
+} from "./harness-adapter-protocol.mjs";
 import { readJson, writePrivateJson } from "./private-state.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -82,6 +90,11 @@ export const harnessRegistrationSchema = z.object({
   adapterId: z.literal("conformance-harness-adapter-v1"),
   kind: z.literal("conformance"),
   immutableRevision: commitSchema,
+  // Schema-v1 conformance registrations predate adapter-declared parameters.
+  // Their immutable adapter bytes still require this known historical shape;
+  // fresh registrations retain the explicit value observed from the pinned probe.
+  launchParameters: harnessLaunchParametersDeclarationSchema
+    .default(legacyConformanceLaunchParameters),
   workspace: z.object({
     kind: z.literal("harness-workspace"),
     versionControl: z.literal("git"),
@@ -126,6 +139,7 @@ export const projectPreparationProjectionSchema = z.object({
     name: z.literal("Sand-King Conformance Harness"),
     adapterId: z.literal("conformance-harness-adapter-v1"),
     permittedTestDouble: z.literal(true),
+    launchParameters: harnessLaunchParametersDeclarationSchema,
   }).strict(),
   current: z.object({
     projectId: projectIdSchema,
@@ -145,6 +159,7 @@ export const projectPreparationProjectionSchema = z.object({
       name: z.string().min(1).max(120),
       adapterId: z.literal("conformance-harness-adapter-v1"),
       pinnedRevision: commitSchema,
+      launchParameters: harnessLaunchParametersDeclarationSchema,
     }).strict().nullable(),
     readiness: projectReadinessSchema,
     canPrepareLaunchRequest: z.boolean(),
@@ -449,17 +464,53 @@ const initializeConformanceWorkspace = async (workspacePath) => {
     await mkdir(join(workspacePath, "adapters"), { mode: 0o700 });
     await writeFile(
       join(workspacePath, conformanceAdapterEntryPoint),
-      `import { writeSync } from "node:fs";
+      `import { randomBytes } from "node:crypto";
+import { writeSync } from "node:fs";
 
 const adapterProtocol = "1.0.0";
 const adapterId = "conformance-harness-adapter-v1";
 const capabilities = ["harness.launch.prepare.v1", "harness.run.v1"];
+const launchParameters = ${JSON.stringify(conformanceLaunchParameters)};
 const writeFrame = (message) => {
   const body = Buffer.from(JSON.stringify(message), "utf8");
   const header = Buffer.alloc(4);
   header.writeUInt32BE(body.byteLength, 0);
   writeSync(3, header);
   writeSync(3, body);
+};
+const normalizeParameters = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("bounded_configuration_invalid");
+  }
+  const keys = Object.keys(value);
+  if (keys.some((key) => key !== "issueNumber" && key !== "targetBranch")) {
+    throw new Error("bounded_configuration_invalid");
+  }
+  if (keys.length === 0) {
+    return {
+      issueNumber: null,
+      targetBranch: null,
+      placeholderIdentifier: \`conformance-placeholder-\${randomBytes(12).toString("hex")}\`,
+    };
+  }
+  let issueNumber = value.issueNumber;
+  let targetBranch = value.targetBranch;
+  if (issueNumber === undefined && typeof targetBranch === "string") {
+    const matchedIssue = /^sandcastle\\/issue-([1-9][0-9]*)$/.exec(targetBranch);
+    issueNumber = matchedIssue ? Number(matchedIssue[1]) : null;
+  }
+  if (
+    !Number.isSafeInteger(issueNumber)
+    || issueNumber < 1
+    || issueNumber > 999999999
+  ) {
+    throw new Error("bounded_configuration_invalid");
+  }
+  targetBranch ??= \`sandcastle/issue-\${issueNumber}\`;
+  if (targetBranch !== \`sandcastle/issue-\${issueNumber}\`) {
+    throw new Error("bounded_configuration_invalid");
+  }
+  return { issueNumber, targetBranch, placeholderIdentifier: null };
 };
 const [command, encodedParameters] = process.argv.slice(2);
 if (command === "probe") {
@@ -468,6 +519,7 @@ if (command === "probe") {
     adapterProtocol,
     adapterId,
     capabilities,
+    launchParameters,
   });
 } else if (command === "prepare") {
   let parameters;
@@ -476,14 +528,7 @@ if (command === "probe") {
   } catch {
     throw new Error("bounded_configuration_invalid");
   }
-  if (
-    !Number.isSafeInteger(parameters?.issueNumber)
-    || parameters.issueNumber < 1
-    || parameters.issueNumber > 999999999
-    || parameters.targetBranch !== \`sandcastle/issue-\${parameters.issueNumber}\`
-  ) {
-    throw new Error("bounded_configuration_invalid");
-  }
+  const normalized = normalizeParameters(parameters);
   writeFrame({
     type: "harness.launch.prepared",
     adapterProtocol,
@@ -491,7 +536,9 @@ if (command === "probe") {
     negotiatedCapabilities: ["harness.launch.prepare.v1"],
     suppliedCapabilities: ["github.issues.read", "project.git.read"],
     sanitizedPreview: {
-      summary: \`Delegate GitHub issue #\${parameters.issueNumber} on \${parameters.targetBranch} using the pinned conformance Harness.\`,
+      summary: normalized.placeholderIdentifier
+        ? \`Delegate generated conformance work \${normalized.placeholderIdentifier} using the pinned Harness.\`
+        : \`Delegate GitHub issue #\${normalized.issueNumber} on \${normalized.targetBranch} using the pinned conformance Harness.\`,
       secretFree: true,
     },
     sideEffects: {
@@ -507,22 +554,20 @@ if (command === "probe") {
   } catch {
     throw new Error("bounded_configuration_invalid");
   }
-  if (
-    !/^harness-run-[a-f0-9]{24}$/.test(execution?.harnessRunId ?? "")
-    || !Number.isSafeInteger(execution?.parameters?.issueNumber)
-    || execution.parameters.issueNumber < 1
-    || execution.parameters.issueNumber > 999999999
-    || execution.parameters.targetBranch
-      !== \`sandcastle/issue-\${execution.parameters.issueNumber}\`
-  ) {
+  if (!/^harness-run-[a-f0-9]{24}$/.test(execution?.harnessRunId ?? "")) {
     throw new Error("bounded_configuration_invalid");
   }
+  const normalized = normalizeParameters(execution.parameters);
   const now = () => new Date().toISOString();
   process.stdout.write(
-    \`Conformance diagnostic stdout for issue #\${execution.parameters.issueNumber}.\\n\`,
+    normalized.placeholderIdentifier
+      ? \`Conformance diagnostic stdout for \${normalized.placeholderIdentifier}.\\n\`
+      : \`Conformance diagnostic stdout for issue #\${normalized.issueNumber}.\\n\`,
   );
   process.stderr.write(
-    \`Conformance diagnostic stderr for \${execution.parameters.targetBranch}.\\n\`,
+    normalized.placeholderIdentifier
+      ? "Conformance diagnostic stderr for generated work.\\n"
+      : \`Conformance diagnostic stderr for \${normalized.targetBranch}.\\n\`,
   );
   writeFrame({
     type: "harness.run.ready",
@@ -532,10 +577,10 @@ if (command === "probe") {
     capabilities: ["harness.run.v1"],
     readyAt: now(),
   });
-  if (execution.parameters.issueNumber === 999999999) {
+  if (normalized.issueNumber === 999999999) {
     process.stdout.write("SUCCESS: process exited cleanly without a terminal envelope.\\n");
   } else {
-    const progressRecordCount = execution.parameters.issueNumber === 999999997 ? 1023 : 1;
+    const progressRecordCount = normalized.issueNumber === 999999997 ? 1023 : 1;
     if (progressRecordCount === 1) {
       await new Promise((resolve) => setTimeout(resolve, 40));
     }
@@ -546,19 +591,21 @@ if (command === "probe") {
         adapterId,
         harnessRunId: execution.harnessRunId,
         record: {
-          recordId: execution.parameters.issueNumber === 999999997
+          recordId: normalized.issueNumber === 999999997
             ? \`progress-\${index.toString(16).padStart(24, "0")}\`
             : \`progress-\${"1".repeat(24)}\`,
           schemaVersion: "1.0.0",
           type: "conformance.step",
-          parentRecordId: execution.parameters.issueNumber === 999999998
+          parentRecordId: normalized.issueNumber === 999999998
             ? \`progress-\${"9".repeat(24)}\`
             : null,
           label: "Exercise approved conformance Launch",
           summary: "The deterministic conformance workflow crossed its pinned adapter boundary.",
           status: "complete",
           timestamp: now(),
-          payload: { issueNumber: execution.parameters.issueNumber, index },
+          payload: normalized.placeholderIdentifier
+            ? { placeholderIdentifier: normalized.placeholderIdentifier, index }
+            : { issueNumber: normalized.issueNumber, index },
         },
       });
     }
@@ -573,17 +620,20 @@ if (command === "probe") {
       terminalId: \`harness-terminal-\${"2".repeat(24)}\`,
       status: "succeeded",
       completedAt: now(),
-      result: {
+      result: normalized.placeholderIdentifier ? {
         kind: "conformance-result",
-        issueNumber: execution.parameters.issueNumber,
-        targetBranch: execution.parameters.targetBranch,
+        placeholderIdentifier: normalized.placeholderIdentifier,
+      } : {
+        kind: "conformance-result",
+        issueNumber: normalized.issueNumber,
+        targetBranch: normalized.targetBranch,
       },
     };
-    if (execution.parameters.issueNumber === 999999995) {
+    if (normalized.issueNumber === 999999995) {
       writeFrame({ ...terminal, terminalId: "invalid-terminal-id" });
     } else {
       writeFrame(terminal);
-      if (execution.parameters.issueNumber === 999999996) {
+      if (normalized.issueNumber === 999999996) {
         writeFrame({
           ...terminal,
           terminalId: \`harness-terminal-\${"3".repeat(24)}\`,
@@ -625,8 +675,9 @@ if (command === "probe") {
 
 /**
  * @param {z.infer<typeof projectRegistrationSchema> | null} project
+ * @param {z.infer<typeof harnessRegistrationSchema> | null} harness
  */
-export const projectPreparationProjection = (project = null) =>
+export const projectPreparationProjection = (project = null, harness = null) =>
   projectPreparationProjectionSchema.parse({
     kind: "cockpit.project-preparation",
     selection: { mode: "explicit-host-path", directoryScanning: false },
@@ -634,6 +685,7 @@ export const projectPreparationProjection = (project = null) =>
       name: "Sand-King Conformance Harness",
       adapterId: "conformance-harness-adapter-v1",
       permittedTestDouble: true,
+      launchParameters: conformanceLaunchParameters,
     },
     current: project ? {
       projectId: project.projectId,
@@ -652,6 +704,9 @@ export const projectPreparationProjection = (project = null) =>
         name: project.harness.name,
         adapterId: project.harness.adapterId,
         pinnedRevision: project.harness.pinnedRevision,
+        launchParameters: harness?.harnessId === project.harness.harnessId
+          ? harness.launchParameters
+          : conformanceLaunchParameters,
       } : null,
       readiness: project.readiness,
       canPrepareLaunchRequest: project.readiness.launchRequest === "ready",
@@ -1097,6 +1152,19 @@ export const createProjectRegistry = async (options) => {
         harnessId,
       );
       const immutableRevision = await initializeConformanceWorkspace(workspacePath);
+      const pinnedAdapter = await loadPinnedHarnessAdapter({
+        workspacePath,
+        pinnedRevision: immutableRevision,
+      });
+      const probed = await invokePinnedHarnessAdapter(pinnedAdapter, ["probe"]);
+      const probe = harnessAdapterProbeSchema.safeParse(probed.message);
+      if (
+        !probe.success
+        || probe.data.adapterId !== pinnedAdapter.compatibility.adapterId
+        || probe.data.adapterProtocol !== pinnedAdapter.compatibility.adapterProtocol
+      ) {
+        throw new Error("harness_adapter_protocol_invalid");
+      }
       harness = storedHarnessSchema.parse({
         harnessId,
         revision: 1,
@@ -1104,6 +1172,7 @@ export const createProjectRegistry = async (options) => {
         adapterId: "conformance-harness-adapter-v1",
         kind: "conformance",
         immutableRevision,
+        launchParameters: probe.data.launchParameters,
         workspace: {
           kind: "harness-workspace",
           versionControl: "git",

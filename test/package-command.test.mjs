@@ -55,7 +55,7 @@ test("an installed production package launches outside the source checkout", asy
       cwd: root,
       env: process.env,
     });
-    assert.match(help, /sandking launch \[<project-id>\] --issue <number>/);
+    assert.match(help, /sandking launch \[<project-id>\] \[--parameters <json-object>\]/);
     assert.match(help, /defaults to the focused Controller Project/);
     for (const invocation of [["-h"], ["help", "launch"]]) {
       const { stdout: discoveredHelp } = await execFileAsync(command, invocation, {

@@ -167,14 +167,20 @@ if (args.length === 1 && args[0] === "--version") {
           env: process.env,
         });
         process.stdout.write("DISCOVERED " + output.split("\\n")[0] + "\\r\\nclaude> ");
-      } else if (line.startsWith("launch ")) {
+      } else if (line === "launch" || line.startsWith("launch ")) {
         const issue = line.split(" ")[1];
-        const result = spawnSync("sandking", [
-          "launch", process.env.SANDKING_WORK_CONTEXT_ID,
-          "--issue", issue,
-          "--target-branch", "sandcastle/issue-" + issue,
-          "--json",
-        ], { encoding: "utf8", env: process.env });
+        const launchArguments = ["launch", process.env.SANDKING_WORK_CONTEXT_ID];
+        if (issue) {
+          launchArguments.push(
+            "--issue", issue,
+            "--target-branch", "sandcastle/issue-" + issue,
+          );
+        }
+        launchArguments.push("--json");
+        const result = spawnSync("sandking", launchArguments, {
+          encoding: "utf8",
+          env: process.env,
+        });
         process.stdout.write("LAUNCH_RESULT " + JSON.stringify({
           status: result.status,
           stdout: result.stdout.trim(),
@@ -221,6 +227,29 @@ if (args.length === 1 && args[0] === "--version") {
             focusedProjectId: projectId,
             projectArgumentOptional: true,
             pluginRequired: false,
+            launchParameters: {
+              kind: "fields",
+              fields: [
+                {
+                  name: "issueNumber",
+                  label: "Issue number",
+                  cliFlag: "--issue",
+                  valueType: "integer",
+                  required: false,
+                  minimum: 1,
+                  maximum: 999_999_999,
+                },
+                {
+                  name: "targetBranch",
+                  label: "Target branch",
+                  cliFlag: "--target-branch",
+                  valueType: "string",
+                  required: false,
+                  minLength: 1,
+                  maxLength: 128,
+                },
+              ],
+            },
           };
         }
         if (request.operation === "harness-run.launch") {
@@ -328,7 +357,7 @@ if (args.length === 1 && args[0] === "--version") {
     await waitFor(() => output.join("").includes("Fake installed Claude Controller ready"));
     await enter("discover");
     await waitFor(() => output.join("").includes("DISCOVERED Usage:"));
-    await enter("launch 152");
+    await enter("launch");
     await waitFor(
       () => output.join("").includes(
         `LAUNCH_RESULT {"status":0,"stdout":"{\\"type\\":\\"harness.run.launch.result\\"`,
@@ -351,24 +380,23 @@ if (args.length === 1 && args[0] === "--version") {
       5_000,
     ).catch(() => assert.fail(`correlation failure output missing:\n${output.join("")}`));
     assert.equal(launchAttempts, 3);
-    assert.equal(operations.length, 7);
+    assert.equal(operations.length, 9);
     assert.equal(operations[0].operation, "controller-cli.describe");
     assert.equal(operations[1].operation, "harness-run.launch");
     assert.equal(operations[2].operation, "harness-run.lookup");
-    assert.equal(operations[3].operation, "harness-run.launch");
-    assert.equal(operations[4].operation, "harness-run.lookup");
+    assert.equal(operations[3].operation, "controller-cli.describe");
+    assert.equal(operations[4].operation, "harness-run.launch");
     assert.equal(operations[5].operation, "harness-run.lookup");
-    assert.equal(operations[6].operation, "harness-run.launch");
-    assert.deepEqual(operations[1].input.parameters, {
-      issueNumber: 152,
-      targetBranch: "sandcastle/issue-152",
-    });
+    assert.equal(operations[6].operation, "harness-run.lookup");
+    assert.equal(operations[7].operation, "controller-cli.describe");
+    assert.equal(operations[8].operation, "harness-run.launch");
+    assert.equal("parameters" in operations[1].input, false);
     assert.equal("expectedRevision" in operations[1].input, false);
     assert.equal(operations[2].input.idempotencyKey, operations[1].input.idempotencyKey);
-    assert.equal(operations[4].input.idempotencyKey, operations[3].input.idempotencyKey);
-    assert.equal(operations[5].input.idempotencyKey, operations[3].input.idempotencyKey);
-    assert.notEqual(operations[3].input.idempotencyKey, operations[1].input.idempotencyKey);
-    assert.notEqual(operations[6].input.idempotencyKey, operations[3].input.idempotencyKey);
+    assert.equal(operations[5].input.idempotencyKey, operations[4].input.idempotencyKey);
+    assert.equal(operations[6].input.idempotencyKey, operations[4].input.idempotencyKey);
+    assert.notEqual(operations[4].input.idempotencyKey, operations[1].input.idempotencyKey);
+    assert.notEqual(operations[8].input.idempotencyKey, operations[4].input.idempotencyKey);
     assert.doesNotMatch(output.join(""), /--plugin-dir|sandking-controller|approve|prepare/i);
     await enter("exit");
     await waitFor(() => manager.inspect(session.sessionId).terminal.status === "exited");

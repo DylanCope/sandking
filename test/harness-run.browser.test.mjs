@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { createProjectRegistry } from "../src/project-registration.mjs";
 import { launchBrowser } from "./browser-launch.mjs";
 import { installCurrentPackage } from "./installed-package.mjs";
 
@@ -80,9 +81,29 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");
       const projectRevision = Number(await page.locator("#project-readiness")
         .getAttribute("data-project-revision"));
-      await page.locator("#harness-launch-issue").fill("152");
-      assert.equal(await page.locator("#harness-launch-branch").inputValue(),
-        "sandcastle/issue-152");
+      assert.equal(await page.locator("#harness-launch-parameters")
+        .getAttribute("data-parameter-count"), "2");
+      assert.deepEqual(
+        await page.locator("#harness-launch-parameters > label").allTextContents(),
+        ["Issue number", "Target branch"],
+      );
+      assert.deepEqual(await page.evaluate(async () => {
+        const { renderHarnessLaunchParameterFields } = await import(
+          "/cockpit-launch-parameters.mjs"
+        );
+        const empty = renderHarnessLaunchParameterFields(document, { kind: "none" });
+        document.body.append(empty);
+        const result = {
+          kind: empty.dataset.parameterKind,
+          count: empty.dataset.parameterCount,
+          inputs: empty.querySelectorAll("input, select").length,
+        };
+        empty.remove();
+        return result;
+      }), { kind: "none", count: "0", inputs: 0 });
+      await page.locator("#harness-launch-parameter-issueNumber").fill("152");
+      await page.locator("#harness-launch-parameter-targetBranch")
+        .fill("sandcastle/issue-152");
 
       await page.locator("#launch-harness").click();
       const dialog = page.locator("#harness-launch-confirmation");
@@ -181,6 +202,7 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       assert.equal(firstRun.projectId, projectId);
       assert.equal(firstRun.source, "cockpit");
       assert.equal(firstRun.controllerSessionId, null);
+      assert.deepEqual(firstRun.parameters, {});
       assert.equal("launchRequestId" in firstRun, false);
 
       await page.waitForSelector(
@@ -199,16 +221,24 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       observeFrames(page);
       await page.goto(new URL(runtime.bootstrapUrl).origin, { waitUntil: "domcontentloaded" });
       await page.waitForSelector("#launch-harness:not([disabled])", { timeout: 90_000 });
-      await page.locator("#harness-launch-issue").fill("152");
+      await page.locator("#harness-launch-parameter-issueNumber").fill("152");
+      await page.locator("#harness-launch-parameter-targetBranch")
+        .fill("sandcastle/issue-152");
       await page.locator("#launch-harness").click();
       assert.equal(await page.locator("#harness-launch-confirmation").isVisible(), false);
       await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} launched\./
         .test(document.querySelector("#harness-launch-feedback")?.textContent ?? ""));
-      await waitForRetainedRuns(dataDir, 2);
+      const retainedRuns = await waitForRetainedRuns(dataDir, 2);
+      assert.deepEqual(retainedRuns[1].parameters, {
+        issueNumber: 152,
+        targetBranch: "sandcastle/issue-152",
+      });
 
       const launchFrames = sentFrames.filter((frame) =>
         frame.includes('"type":"browser.harness-run.launch"'));
       assert.equal(launchFrames.length, 2);
+      assert.equal(launchFrames.some((frame) => frame.includes('"parameters"')), true);
+      assert.equal(launchFrames.some((frame) => !frame.includes('"parameters"')), true);
       for (const frame of launchFrames) {
         assert.doesNotMatch(frame, /expectedRevision|approve|prepare|launchRequest/);
       }
@@ -228,6 +258,123 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       await browser.close();
     }
   } finally {
+    await execFileAsync(installed.command, [
+      "stop", "--data-dir", dataDir, "--json",
+    ], { cwd: executionDirectory, env: productEnvironment }).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Cockpit Launch renders no fields for a focused Harness that declares none", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-empty-harness-form-browser-"));
+  const dataDir = join(root, "host-state");
+  const executionDirectory = join(root, "outside-checkout");
+  const userHome = join(root, "user-home");
+  const projectPath = join(root, "selected-project");
+  await Promise.all([
+    mkdir(dataDir, { recursive: true }),
+    mkdir(executionDirectory, { recursive: true }),
+    mkdir(userHome, { recursive: true }),
+    execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]),
+  ]);
+  await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
+  let auditSequence = 0;
+  const registry = await createProjectRegistry({
+    dataDir,
+    recordAudit: async () => {
+      auditSequence += 1;
+      return `audit-${String(auditSequence).padStart(24, "0")}`;
+    },
+  });
+  const harness = await registry.registerConformanceHarness({
+    requestId: "register-empty-form-harness",
+    name: "Sand-King Conformance Harness",
+    authorizationClass: "host_local_harness_registration",
+    idempotencyKey: "register-empty-form-harness",
+    expectedRevision: 0,
+  });
+
+  const harnessStatePath = join(dataDir, "harness-registry.json");
+  const harnessState = JSON.parse(await readFile(harnessStatePath, "utf8"));
+  const workspacePath = harnessState.harnesses[0].workspacePath;
+  const adapterPath = join(workspacePath, "adapters", "conformance.mjs");
+  const adapterSource = await readFile(adapterPath, "utf8");
+  const noParameterSource = adapterSource.replace(
+    /^const launchParameters = .*;$/m,
+    'const launchParameters = {"kind":"none"};',
+  );
+  assert.notEqual(noParameterSource, adapterSource);
+  await writeFile(adapterPath, noParameterSource, { mode: 0o700 });
+  await execFileAsync("git", ["-C", workspacePath, "add", "--", "adapters/conformance.mjs"]);
+  await execFileAsync("git", [
+    "-C", workspacePath,
+    "-c", "user.name=Sand-King Conformance",
+    "-c", "user.email=conformance@sandking.invalid",
+    "-c", "commit.gpgSign=false",
+    "commit", "--quiet", "-m", "Declare no launch parameters",
+  ]);
+  const { stdout: noneRevisionOutput } = await execFileAsync(
+    "git",
+    ["-C", workspacePath, "rev-parse", "HEAD"],
+  );
+  const noneRevision = noneRevisionOutput.trim();
+  harnessState.harnesses[0].immutableRevision = noneRevision;
+  harnessState.harnesses[0].launchParameters = { kind: "none" };
+  harnessState.harnesses[0].workspace.headRevision = noneRevision;
+  await writeFile(harnessStatePath, `${JSON.stringify(harnessState, null, 2)}\n`);
+
+  const installed = await installCurrentPackage(root);
+  const productEnvironment = {
+    ...process.env,
+    HOME: userHome,
+    SANDKING_CONTROLLER_SECRET: "empty-harness-form-browser-secret",
+  };
+  let browser;
+  try {
+    const { stdout } = await execFileAsync(installed.command, [
+      "launch",
+      "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
+      "--idempotency-key", "empty-harness-form-runtime-start",
+      "--expected-revision", "0",
+      "--json",
+      "--no-open",
+    ], { cwd: executionDirectory, env: productEnvironment });
+    const runtime = JSON.parse(stdout);
+    browser = await launchBrowser({ niceAdjustment: 10 });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(runtime.bootstrapUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
+      timeout: 90_000,
+    });
+    await page.locator("#project-path").fill(projectPath);
+    await page.locator("#open-project").click();
+    await page.waitForSelector(
+      "#project-readiness[data-harness-launch-ready='true']",
+      { timeout: 90_000 },
+    );
+    const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");
+    assert.match(projectId, /^project-[a-f0-9]{24}$/);
+    const parameters = page.locator("#harness-launch-parameters");
+    assert.equal(await parameters.getAttribute("data-parameter-kind"), "none");
+    assert.equal(await parameters.getAttribute("data-parameter-count"), "0");
+    assert.equal(await parameters.locator("input, select, label").count(), 0);
+
+    await page.locator("#launch-harness").click();
+    await page.locator("#harness-launch-confirmation").waitFor({ state: "visible" });
+    await page.locator("#harness-launch-confirmation-yes").click();
+    await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} launched\./
+      .test(document.querySelector("#harness-launch-feedback")?.textContent ?? ""));
+    const [run] = await waitForRetainedRuns(dataDir, 1);
+    assert.equal(run.projectId, projectId);
+    assert.equal(run.harnessPinnedRevision, noneRevision);
+    assert.equal(run.status, "succeeded");
+    assert.equal(run.source, "cockpit");
+    assert.deepEqual(run.parameters, {});
+    await context.close();
+  } finally {
+    await browser?.close().catch(() => undefined);
     await execFileAsync(installed.command, [
       "stop", "--data-dir", dataDir, "--json",
     ], { cwd: executionDirectory, env: productEnvironment }).catch(() => undefined);
