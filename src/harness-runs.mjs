@@ -365,9 +365,10 @@ const migrateStoredRun = (run) => storedRunSchema.parse({
 });
 
 /**
- * Retained mutation outcomes are replayed through today's public protocol.
- * Enrich their copied run projection from the same migrated canonical run
- * without changing the accepted code, identity, audit, or request fingerprint.
+ * Retained mutation outcomes are immutable accepted responses. Add only the
+ * execution snapshot field introduced by schema v3; lifecycle changes in the
+ * canonical run must never rewrite the launch-time projection that a retry
+ * replays.
  * @param {z.infer<typeof retainedOutcomeSchema>} outcome
  * @param {Array<z.infer<typeof storedRunSchema>>} runs
  */
@@ -377,8 +378,9 @@ const migrateRetainedOutcome = (outcome, runs) => {
   const run = typeof harnessRunId === "string"
     ? runs.find((candidate) => candidate.harnessRunId === harnessRunId)
     : null;
-  if (run) {
-    migrated.response.run = publicRun(run);
+  const responseRun = /** @type {any} */ (migrated.response)?.run;
+  if (run && responseRun && typeof responseRun === "object") {
+    responseRun.executionSnapshot = structuredClone(run.executionSnapshot);
   }
   return retainedOutcomeSchema.parse(migrated);
 };
@@ -570,7 +572,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
  * @param {{
  *   dataDir: string,
  *   hostId: string,
- *   recordAudit: (action: string, outcome: "accepted" | "rejected" | "observed", details?: Record<string, unknown>) => Promise<string>,
+ *   recordAudit: (action: string, outcome: "accepted" | "rejected" | "observed", details?: Record<string, unknown>, auditId?: string) => Promise<string>,
  *   loadLaunchContext: (projectId: string) => Promise<any>,
  *   now?: () => Date,
  *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_commit") => Promise<void> | void,
@@ -586,6 +588,45 @@ export const createHarnessRunManager = async (options) => {
     mutationQueue = current.then(() => undefined, () => undefined);
     return current;
   };
+  /** @param {z.infer<typeof stateSchema>} state */
+  const ensureAcceptedLaunchAudits = async (state) => {
+    for (const outcome of state.launchOutcomes) {
+      const response = /** @type {any} */ (outcome.response);
+      const harnessRunId = response?.run?.harnessRunId;
+      if (response?.type !== "harness.run.launch.result" || typeof harnessRunId !== "string") {
+        continue;
+      }
+      const run = state.runs.find((candidate) =>
+        candidate.harnessRunId === harnessRunId);
+      if (!run || !("launchAuditId" in run)
+        || response.auditId !== run.launchAuditId
+        || run.executionSnapshot.launchAuditId !== run.launchAuditId) {
+        throw new Error("harness_run_launch_audit_reference_invalid");
+      }
+      const snapshot = run.executionSnapshot;
+      const auditId = await options.recordAudit("harness.run.launch", "accepted", {
+        authorizationClass: "harness_run_launch",
+        idempotencyKeyHash: outcome.idempotencyKeyHash,
+        harnessRunId: run.harnessRunId,
+        hostId: snapshot.hostId,
+        projectId: snapshot.projectRegistration.projectId,
+        harnessId: snapshot.harness.harnessId,
+        harnessPinnedRevision: snapshot.harness.pinnedRevision,
+        controllerId: snapshot.attribution.controllerId,
+        controllerSessionId: snapshot.attribution.controllerSessionId,
+        source: snapshot.source,
+        parameters: structuredClone(snapshot.parameters),
+        adapterId: snapshot.adapter.adapterId,
+        adapterProtocol: snapshot.adapter.protocol,
+        adapterEntryPoint: snapshot.adapter.entryPoint,
+        returnedBeforeTerminal: true,
+        projectWrite: false,
+      }, run.launchAuditId);
+      if (auditId !== run.launchAuditId) {
+        throw new Error("harness_run_launch_audit_commit_invalid");
+      }
+    }
+  };
   const readState = async () => {
     const raw = await readJson(statePath(options.dataDir), initialState());
     if (
@@ -597,6 +638,7 @@ export const createHarnessRunManager = async (options) => {
       const legacy = legacyStateSchema.parse(raw);
       const migrated = migrateState(legacy);
       await writePrivateJson(statePath(options.dataDir), migrated);
+      await ensureAcceptedLaunchAudits(migrated);
       return migrated;
     }
     if (
@@ -608,9 +650,12 @@ export const createHarnessRunManager = async (options) => {
       const previous = previousStateSchema.parse(raw);
       const migrated = migrateState(previous);
       await writePrivateJson(statePath(options.dataDir), migrated);
+      await ensureAcceptedLaunchAudits(migrated);
       return migrated;
     }
-    return stateSchema.parse(raw);
+    const retained = stateSchema.parse(raw);
+    await ensureAcceptedLaunchAudits(retained);
+    return retained;
   };
   /** @param {z.infer<typeof stateSchema>} state */
   const persist = (state) => writePrivateJson(
@@ -924,27 +969,9 @@ export const createHarnessRunManager = async (options) => {
       return response;
     }
 
-    await options.faultInjector?.("harness_run_launch.before_commit");
     const harnessRunId = `harness-run-${randomBytes(12).toString("hex")}`;
     const createdAt = now().toISOString();
-    const auditId = await options.recordAudit("harness.run.launch", "accepted", {
-      authorizationClass,
-      idempotencyKeyHash,
-      harnessRunId,
-      hostId: parsedHostId,
-      projectId: context.project.projectId,
-      harnessId: context.harness.harnessId,
-      harnessPinnedRevision: context.harness.immutableRevision,
-      controllerId: request.controllerId,
-      controllerSessionId: request.controllerSessionId,
-      source: request.source,
-      parameters: structuredClone(parameters.data),
-      adapterId: prepared.adapterId,
-      adapterProtocol: prepared.adapterProtocol,
-      adapterEntryPoint: prepared.adapterEntryPoint,
-      returnedBeforeTerminal: true,
-      projectWrite: false,
-    });
+    const auditId = `audit-${randomBytes(12).toString("hex")}`;
     const run = storedRunSchema.parse({
       harnessRunId,
       revision: 1,
@@ -1046,8 +1073,13 @@ export const createHarnessRunManager = async (options) => {
       run: publicRun(run),
     };
     retained.launchOutcomes.push({ idempotencyKeyHash, requestFingerprint, response });
+    // Everything needed to replay the accepted result and repair its audit is
+    // now present in one atomic Host-private snapshot. No accepted audit is
+    // published before this canonical commit.
+    await options.faultInjector?.("harness_run_launch.before_commit");
     await persist(retained);
     await options.faultInjector?.("harness_run_launch.after_commit");
+    await ensureAcceptedLaunchAudits(retained);
     setImmediate(() => {
       supervise(structuredClone(run), {
         ...context,

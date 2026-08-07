@@ -36,8 +36,12 @@ const createFixture = async (prefix) => {
   const dataDir = join(root, "host-state");
   const projectPath = join(root, "selected-project");
   const audits = [];
-  const recordAudit = async (action, outcome, details = {}) => {
-    const auditId = `audit-${String(audits.length + 1).padStart(24, "0")}`;
+  const recordAudit = async (action, outcome, details = {}, requestedAuditId) => {
+    if (requestedAuditId && audits.some((audit) => audit.auditId === requestedAuditId)) {
+      return requestedAuditId;
+    }
+    const auditId = requestedAuditId
+      ?? `audit-${String(audits.length + 1).padStart(24, "0")}`;
     audits.push({ auditId, action, outcome, details });
     return auditId;
   };
@@ -221,6 +225,7 @@ test("one revision-free action launches a fresh Project's Harness run", async ()
 test("launch commit interruptions leave pre-commit work unclaimed and replay post-commit work", async () => {
   const preCommit = await createFixture("sandking-harness-launch-pre-commit-");
   const postCommit = await createFixture("sandking-harness-launch-post-commit-");
+  const auditCommit = await createFixture("sandking-harness-launch-audit-commit-");
   const rawRetryKey = "recognizable-raw-launch-retry-key";
   const pointBeforeCommit = "harness_run_launch.before_commit";
   const pointAfterCommit = "harness_run_launch.after_commit";
@@ -286,6 +291,8 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
     assert.deepEqual(committed.runs[0].events.map((event) => event.type), [
       "harness_run_created",
     ]);
+    assert.equal(postCommit.audits.some((audit) =>
+      audit.action === "harness.run.launch" && audit.outcome === "accepted"), false);
     assert.doesNotMatch(JSON.stringify({ committed, audits: postCommit.audits }),
       new RegExp(rawRetryKey));
 
@@ -302,6 +309,12 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
       idempotencyKeyHash: postRequest.idempotencyKeyHash,
     });
     assert.equal(lookup.found, true);
+    const repairedLaunchAudits = postCommit.audits.filter((audit) =>
+      audit.action === "harness.run.launch" && audit.outcome === "accepted");
+    assert.equal(repairedLaunchAudits.length, 1);
+    assert.equal(repairedLaunchAudits[0].auditId, committed.runs[0].launchAuditId);
+    assert.equal(repairedLaunchAudits[0].details.harnessRunId,
+      committed.runs[0].harnessRunId);
     const replay = await restarted.launch({
       ...postRequest,
       requestId: "replay-post-commit-launch",
@@ -330,10 +343,53 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
     assert.equal(afterReplay.launchOutcomes.length, 1);
     assert.equal(afterReplay.runs[0].events.length, 1);
     assert.deepEqual((await readdir(postCommit.projectPath)).sort(), projectFilesBefore);
+
+    let interruptAcceptedAudit = true;
+    const auditManager = await createHarnessRunManager({
+      dataDir: auditCommit.dataDir,
+      hostId,
+      recordAudit: async (...args) => {
+        const auditId = await auditCommit.recordAudit(...args);
+        if (args[0] === "harness.run.launch" && args[1] === "accepted"
+          && interruptAcceptedAudit) {
+          interruptAcceptedAudit = false;
+          throw new Error("injected_accepted_audit_interrupt");
+        }
+        return auditId;
+      },
+      loadLaunchContext: auditCommit.registry.loadLaunchContext,
+    });
+    const auditRequest = hashedLaunchRequest(launchRequest(
+      auditCommit.registered.project.projectId,
+      159,
+      { idempotencyKey: "audit-commit-retry-key" },
+    ));
+    await assert.rejects(auditManager.launch(auditRequest),
+      /injected_accepted_audit_interrupt/);
+    const acceptedAudit = auditCommit.audits.find((audit) =>
+      audit.action === "harness.run.launch" && audit.outcome === "accepted");
+    assert.ok(acceptedAudit);
+    const auditLookup = await auditManager.lookup({
+      requestId: "lookup-audit-commit-launch",
+      idempotencyKeyHash: auditRequest.idempotencyKeyHash,
+    });
+    assert.equal(auditLookup.found, true);
+    assert.equal(auditLookup.launchOutcome.run.harnessRunId,
+      acceptedAudit.details.harnessRunId);
+    const auditReplay = await auditManager.launch({
+      ...auditRequest,
+      requestId: "replay-audit-commit-launch",
+    });
+    assert.equal(auditReplay.idempotentReplay, true);
+    assert.equal(auditReplay.run.harnessRunId, acceptedAudit.details.harnessRunId);
+    assert.equal(JSON.parse(
+      await readFile(join(auditCommit.dataDir, "harness-runs.json"), "utf8"),
+    ).runs.length, 1);
   } finally {
     await Promise.all([
       rm(preCommit.root, { recursive: true, force: true }),
       rm(postCommit.root, { recursive: true, force: true }),
+      rm(auditCommit.root, { recursive: true, force: true }),
     ]);
   }
 });
@@ -459,8 +515,12 @@ test("a retained pre-declaration Harness still launches with explicit parameters
   const dataDir = join(root, "host-state");
   const projectPath = join(root, "selected-project");
   const audits = [];
-  const recordAudit = async (action, outcome, details = {}) => {
-    const auditId = `audit-${String(audits.length + 1).padStart(24, "0")}`;
+  const recordAudit = async (action, outcome, details = {}, requestedAuditId) => {
+    if (requestedAuditId && audits.some((audit) => audit.auditId === requestedAuditId)) {
+      return requestedAuditId;
+    }
+    const auditId = requestedAuditId
+      ?? `audit-${String(audits.length + 1).padStart(24, "0")}`;
     audits.push({ auditId, action, outcome, details });
     return auditId;
   };
@@ -682,6 +742,11 @@ test("schema-v2 execution history migrates deterministically without losing acce
     for (const outcome of [...v2.launchOutcomes, ...v2.legacyStartOutcomes]) {
       if (outcome.response?.run) delete outcome.response.run.executionSnapshot;
     }
+    const acceptedLaunchOutcome = structuredClone(v2.launchOutcomes[0].response);
+    assert.equal(acceptedLaunchOutcome.run.revision, 1);
+    assert.equal(acceptedLaunchOutcome.run.status, "starting");
+    assert.ok(v2.runs[0].revision > acceptedLaunchOutcome.run.revision);
+    assert.equal(v2.runs[0].status, "succeeded");
     await writeFile(join(fixture.dataDir, "harness-runs.json"), `${JSON.stringify(v2)}\n`);
 
     let mutableContextResolved = false;
@@ -736,6 +801,15 @@ test("schema-v2 execution history migrates deterministically without losing acce
     assert.deepEqual(migrated.runs[0].events, v3.runs[0].events);
     assert.deepEqual(migrated.runs[0].outcome, v3.runs[0].outcome);
     assert.deepEqual(migrated.runs[0].logStreams, v3.runs[0].logStreams);
+    const migratedLaunchOutcome = migrated.launchOutcomes[0].response;
+    const { executionSnapshot: retainedOutcomeSnapshot, ...retainedOutcomeRun } =
+      migratedLaunchOutcome.run;
+    assert.deepEqual(retainedOutcomeRun, acceptedLaunchOutcome.run);
+    assert.deepEqual({
+      ...migratedLaunchOutcome,
+      run: acceptedLaunchOutcome.run,
+    }, acceptedLaunchOutcome);
+    assert.deepEqual(retainedOutcomeSnapshot, migratedSnapshot);
 
     const lookup = await migratedManager.lookup({
       requestId: "lookup-migrated-v2-launch",
@@ -743,6 +817,8 @@ test("schema-v2 execution history migrates deterministically without losing acce
     });
     assert.equal(lookup.found, true);
     assert.equal(lookup.launchOutcome.run.harnessRunId, launched.run.harnessRunId);
+    assert.equal(lookup.launchOutcome.run.revision, 1);
+    assert.equal(lookup.launchOutcome.run.status, "starting");
     assert.deepEqual(lookup.launchOutcome.run.executionSnapshot, migratedSnapshot);
 
     await createHarnessRunManager({

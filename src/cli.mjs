@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { randomUUID } from "node:crypto";
 import { openBrowser } from "./browser-launch.mjs";
 import {
   requestControllerDescription,
@@ -159,7 +158,9 @@ const main = async () => {
     output = await requestControllerLaunch({
       projectId,
       ...(Object.keys(parameters).length === 0 ? {} : { parameters }),
-      idempotencyKey: options.idempotencyKey ?? randomUUID(),
+      ...(options.idempotencyKey === undefined
+        ? {}
+        : { idempotencyKey: options.idempotencyKey }),
     });
   } else if (options.command === "launch") {
     output = await launchRuntime({

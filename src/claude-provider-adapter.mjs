@@ -699,12 +699,10 @@ const openControllerCliServer = async ({
   workContextId,
   control,
 }) => {
-  const directory = process.platform === "win32"
-    ? null
-    : await mkdtemp(join(tmpdir(), "sandking-controller-cli-"));
-  const endpoint = directory
-    ? join(directory, "operations.sock")
-    : `\\\\.\\pipe\\sandking-controller-cli-${canonicalDigest({ sessionId }).slice(0, 24)}`;
+  const directory = await mkdtemp(join(tmpdir(), "sandking-controller-cli-"));
+  const endpoint = process.platform === "win32"
+    ? `\\\\.\\pipe\\sandking-controller-cli-${canonicalDigest({ sessionId }).slice(0, 24)}`
+    : join(directory, "operations.sock");
   let closed = false;
   let providerReady = false;
   /** @type {() => void} */
@@ -850,6 +848,7 @@ const openControllerCliServer = async ({
   });
   return {
     endpoint,
+    retryDirectory: directory,
     announceProviderReady: () => {
       if (closed || providerReady) return false;
       providerReady = true;
@@ -861,7 +860,7 @@ const openControllerCliServer = async ({
       closed = true;
       releaseProviderReady();
       await new Promise((resolve) => server.close(() => resolve(undefined)));
-      if (directory) await rm(directory, { recursive: true, force: true });
+      await rm(directory, { recursive: true, force: true });
     },
   };
 };
@@ -938,6 +937,7 @@ const runClaude = async (argv) => {
       env: {
         ...createClaudeDestinationEnvironment(),
         SANDKING_CONTROLLER_ENDPOINT: controllerCli.endpoint,
+        SANDKING_CONTROLLER_RETRY_DIRECTORY: controllerCli.retryDirectory,
         SANDKING_CONTROLLER_SESSION_ID: sessionId,
         SANDKING_WORK_CONTEXT_ID: workContextId,
       },
