@@ -2,9 +2,88 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   captureWindowsProcessTreeSnapshot,
+  createNativeWindowsProcessInventory,
   createNativeWindowsProcessTerminator,
   createWindowsProcessTreeTracker,
 } from "../src/windows-process-tree.mjs";
+
+test("Windows force termination preserves native creation ticks across process inventory", async () => {
+  const cimCreationTime = "2026-08-07T10:00:00.0001000Z";
+  const creationTime = "2026-08-07T10:00:00.0001001Z";
+  const expectedCreationFileTime = BigInt(Date.parse("2026-08-07T10:00:00.000Z"))
+    * 10_000n + 116_444_736_000_000_000n + 1_001n;
+  const commands = [];
+  let processAlive = true;
+  let terminationAttempts = 0;
+  const execute = (file, args, options, callback) => {
+    const command = args.at(-1);
+    commands.push(command);
+    if (command.includes("::TerminateExact")) {
+      terminationAttempts += 1;
+      if (command.includes(`[int64]${expectedCreationFileTime}`)) {
+        processAlive = false;
+        callback(null, "", "");
+      } else {
+        callback(new Error("windows_process_creation_time_mismatch"), "", "");
+      }
+      return;
+    }
+    if (command.includes("ProcessId,CommandLine")) {
+      callback(null, JSON.stringify({
+        ProcessId: 42,
+        CommandLine: "node adapter.mjs harness-run-original",
+        CimCreationTime: cimCreationTime,
+        CreationTime: creationTime,
+      }), "");
+      return;
+    }
+    callback(null, JSON.stringify(processAlive ? [{
+      ProcessId: 42,
+      ParentProcessId: 1,
+      CimCreationTime: cimCreationTime,
+      CreationTime: creationTime,
+    }] : []), "");
+  };
+  const inventory = createNativeWindowsProcessInventory(execute);
+  const snapshot = await captureWindowsProcessTreeSnapshot(42, {
+    expectedCommandLineFragment: "harness-run-original",
+    ...inventory,
+  });
+  assert.ok(snapshot);
+  const tracker = createWindowsProcessTreeTracker({
+    ...snapshot,
+    listProcesses: inventory.listProcesses,
+    terminateProcessTree: createNativeWindowsProcessTerminator(execute),
+  });
+
+  assert.equal(await tracker.prepareCancellation(), true);
+  assert.equal(await tracker.forceTerminate(), true);
+  assert.equal(terminationAttempts, 1);
+  assert.equal(await tracker.processTreeAlive(), false);
+  assert.ok(commands.filter((command) => command.includes("Get-CimInstance"))
+    .every((command) => command.includes("GetProcessTimes")
+      && command.includes("CimCreationTime")));
+
+  const mismatchedInventory = createNativeWindowsProcessInventory(
+    (file, args, options, callback) => {
+      const command = args.at(-1);
+      const identity = {
+        ProcessId: 42,
+        CommandLine: "node adapter.mjs harness-run-original",
+        CimCreationTime: cimCreationTime,
+        CreationTime: "2026-08-07T11:00:00.0001001Z",
+      };
+      callback(null, JSON.stringify(command.includes("ProcessId,CommandLine")
+        ? identity
+        : [{ ...identity, ParentProcessId: 1 }]), "");
+    },
+  );
+  await assert.rejects(
+    mismatchedInventory.readProcessIdentity(42),
+    /windows_process_creation_time_invalid/,
+  );
+  assert.deepEqual(await mismatchedInventory.listProcesses(), []);
+});
 
 test("native Windows force termination checks and kills through one retained process handle", async () => {
   const invocations = [];

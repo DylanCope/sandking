@@ -39,13 +39,35 @@ const creationTimeIsNoLaterThan = (left, right) => {
     && leftFileTime <= rightFileTime;
 };
 
-const listNativeWindowsProcesses = () => new Promise((resolve, reject) => {
-  execFile("powershell.exe", [
+/**
+ * CIM_DATETIME can retain only microseconds, so it is safe as a consistency
+ * guard only after both values are compared at that documented precision.
+ * The native FILETIME remains the process identity carried by the tracker.
+ *
+ * @param {string} nativeCreationTime
+ * @param {string} cimCreationTime
+ */
+const creationTimeMatchesCimPrecision = (nativeCreationTime, cimCreationTime) => {
+  const nativeFileTime = normalizeWindowsCreationTime(nativeCreationTime)?.fileTime;
+  const cimFileTime = normalizeWindowsCreationTime(cimCreationTime)?.fileTime;
+  return nativeFileTime !== undefined
+    && cimFileTime !== undefined
+    && nativeFileTime / 10n === cimFileTime / 10n;
+};
+
+/** @param {typeof execFile} execute */
+const listNativeWindowsProcesses = (execute = execFile) => new Promise((resolve, reject) => {
+  const command = `$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @'
+${exactWindowsProcessSource}
+'@
+@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,@{Name='CimCreationTime';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}},@{Name='CreationTime';Expression={[SandKingExactProcess]::ReadCreationTime([uint32]$_.ProcessId)}}) | ConvertTo-Json -Compress`;
+  execute("powershell.exe", [
     "-NoLogo",
     "-NoProfile",
     "-NonInteractive",
     "-Command",
-    "$ErrorActionPreference='Stop'; @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,@{Name='CreationTime';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}}) | ConvertTo-Json -Compress",
+    command,
   ], {
     windowsHide: true,
     timeout: 5_000,
@@ -60,10 +82,17 @@ const listNativeWindowsProcesses = () => new Promise((resolve, reject) => {
       const rows = Array.isArray(parsed) ? parsed : [parsed];
       resolve(rows.map((row) => {
         const normalizedCreationTime = normalizeWindowsCreationTime(row.CreationTime);
+        const cimCreationTime = normalizeWindowsCreationTime(row.CimCreationTime);
         return {
           processId: Number(row.ProcessId),
           parentProcessId: Number(row.ParentProcessId),
-          creationTime: normalizedCreationTime?.creationTime ?? null,
+          creationTime: normalizedCreationTime && cimCreationTime
+            && creationTimeMatchesCimPrecision(
+              normalizedCreationTime.creationTime,
+              cimCreationTime.creationTime,
+            )
+            ? normalizedCreationTime.creationTime
+            : null,
         };
       }).filter((row) => Number.isSafeInteger(row.processId)
         && row.processId > 0
@@ -76,46 +105,64 @@ const listNativeWindowsProcesses = () => new Promise((resolve, reject) => {
   });
 });
 
-/** @param {number} processId */
-const readNativeWindowsProcessIdentity = (processId) => new Promise((resolve, reject) => {
-  execFile("powershell.exe", [
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    `$ErrorActionPreference='Stop'; $candidate = Get-CimInstance Win32_Process -Filter 'ProcessId = ${processId}'; if ($null -eq $candidate) { exit 3 }; $candidate | Select-Object ProcessId,CommandLine,@{Name='CreationTime';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}} | ConvertTo-Json -Compress`,
-  ], {
-    windowsHide: true,
-    timeout: 5_000,
-    maxBuffer: 65_536,
-  }, (error, stdout) => {
-    if (error) {
-      reject(error);
-      return;
-    }
-    try {
-      const row = JSON.parse(stdout);
-      const normalizedCreationTime = normalizeWindowsCreationTime(row.CreationTime);
-      if (!normalizedCreationTime) {
-        reject(new Error("windows_process_creation_time_invalid"));
+/** @param {number} processId @param {typeof execFile} execute */
+const readNativeWindowsProcessIdentity = (processId, execute = execFile) => new Promise(
+  (resolve, reject) => {
+    const command = `$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @'
+${exactWindowsProcessSource}
+'@
+$candidate = Get-CimInstance Win32_Process -Filter 'ProcessId = ${processId}'
+if ($null -eq $candidate) { exit 3 }
+$candidate | Select-Object ProcessId,CommandLine,@{Name='CimCreationTime';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}},@{Name='CreationTime';Expression={[SandKingExactProcess]::ReadCreationTime([uint32]$_.ProcessId)}} | ConvertTo-Json -Compress`;
+    execute("powershell.exe", [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      command,
+    ], {
+      windowsHide: true,
+      timeout: 5_000,
+      maxBuffer: 65_536,
+    }, (error, stdout) => {
+      if (error) {
+        reject(error);
         return;
       }
-      resolve({
-        processId: Number(row.ProcessId),
-        creationTime: normalizedCreationTime.creationTime,
-        commandLine: typeof row.CommandLine === "string" ? row.CommandLine : null,
-      });
-    } catch (parseError) {
-      reject(parseError);
-    }
-  });
-});
+      try {
+        const row = JSON.parse(stdout);
+        const normalizedCreationTime = normalizeWindowsCreationTime(row.CreationTime);
+        const cimCreationTime = normalizeWindowsCreationTime(row.CimCreationTime);
+        if (
+          !normalizedCreationTime
+          || !cimCreationTime
+          || !creationTimeMatchesCimPrecision(
+            normalizedCreationTime.creationTime,
+            cimCreationTime.creationTime,
+          )
+        ) {
+          reject(new Error("windows_process_creation_time_invalid"));
+          return;
+        }
+        resolve({
+          processId: Number(row.ProcessId),
+          creationTime: normalizedCreationTime.creationTime,
+          commandLine: typeof row.CommandLine === "string" ? row.CommandLine : null,
+        });
+      } catch (parseError) {
+        reject(parseError);
+      }
+    });
+  },
+);
 
-const exactWindowsProcessTerminatorSource = String.raw`
+const exactWindowsProcessSource = String.raw`
 using System;
+using System.Globalization;
 using System.Runtime.InteropServices;
 
-public static class SandKingExactProcessTerminator
+public static class SandKingExactProcess
 {
     private const uint ProcessTerminate = 0x0001;
     private const uint ProcessQueryLimitedInformation = 0x1000;
@@ -152,6 +199,43 @@ public static class SandKingExactProcessTerminator
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr processHandle);
+
+    public static string ReadCreationTime(uint processId)
+    {
+        IntPtr processHandle = OpenProcess(
+            ProcessQueryLimitedInformation,
+            false,
+            processId
+        );
+        if (processHandle == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            FileTime creationTime;
+            FileTime exitTime;
+            FileTime kernelTime;
+            FileTime userTime;
+            if (!GetProcessTimes(
+                processHandle,
+                out creationTime,
+                out exitTime,
+                out kernelTime,
+                out userTime
+            ))
+            {
+                return null;
+            }
+            return DateTime.FromFileTimeUtc(creationTime.ToInt64())
+                .ToString("o", CultureInfo.InvariantCulture);
+        }
+        finally
+        {
+            CloseHandle(processHandle);
+        }
+    }
 
     public static int TerminateExact(uint processId, long expectedCreationFileTime)
     {
@@ -196,6 +280,20 @@ public static class SandKingExactProcessTerminator
 `;
 
 /**
+ * Build an injectable native inventory boundary. WMI supplies parent and
+ * command-line metadata, while creation identity comes from GetProcessTimes so
+ * it has the same 100-nanosecond precision used by force termination.
+ *
+ * @param {typeof execFile} [execute]
+ */
+export const createNativeWindowsProcessInventory = (execute = execFile) => ({
+  listProcesses: () => listNativeWindowsProcesses(execute),
+  /** @param {number} processId */
+  readProcessIdentity: (processId) =>
+    readNativeWindowsProcessIdentity(processId, execute),
+});
+
+/**
  * Build the native Windows force-termination boundary. Creation identity and
  * termination are both checked through one retained kernel handle: if the PID
  * was reused before OpenProcess, GetProcessTimes rejects the replacement; if
@@ -220,9 +318,9 @@ export const createNativeWindowsProcessTerminator = (execute = execFile) =>
     }
     const command = `$ErrorActionPreference='Stop'
 Add-Type -TypeDefinition @'
-${exactWindowsProcessTerminatorSource}
+${exactWindowsProcessSource}
 '@
-exit [SandKingExactProcessTerminator]::TerminateExact([uint32]${processIdentity.processId}, [int64]${expectedCreationFileTime})`;
+exit [SandKingExactProcess]::TerminateExact([uint32]${processIdentity.processId}, [int64]${expectedCreationFileTime})`;
     execute("powershell.exe", [
       "-NoLogo",
       "-NoProfile",
