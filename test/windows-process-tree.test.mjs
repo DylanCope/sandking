@@ -89,6 +89,60 @@ test("Windows force termination preserves native creation ticks across process i
   }]);
 });
 
+test("native Windows launch identity tolerates ordinary unreadable system inventory rows", async () => {
+  const rootCreationTime = "2026-08-07T10:00:00.0001000Z";
+  const inventory = createNativeWindowsProcessInventory(
+    (file, args, options, callback) => {
+      const command = args.at(-1);
+      if (command.includes("ProcessId,CommandLine")) {
+        callback(null, JSON.stringify({
+          ProcessId: 100,
+          CommandLine: "node adapter.mjs harness-run-original",
+          CimCreationTime: rootCreationTime,
+          CreationTime: rootCreationTime,
+        }), "");
+        return;
+      }
+      callback(null, JSON.stringify([
+        {
+          ProcessId: 0,
+          ParentProcessId: 0,
+          CimCreationTime: null,
+          CreationTime: null,
+        },
+        {
+          ProcessId: 4,
+          ParentProcessId: 0,
+          CimCreationTime: "2026-08-07T09:00:00.0000000Z",
+          CreationTime: null,
+        },
+        {
+          ProcessId: 100,
+          ParentProcessId: 10,
+          CimCreationTime: rootCreationTime,
+          CreationTime: rootCreationTime,
+        },
+      ]), "");
+    },
+  );
+
+  assert.deepEqual(await inventory.listProcesses(), [
+    { processId: 4, parentProcessId: 0, creationTime: null },
+    { processId: 100, parentProcessId: 10, creationTime: rootCreationTime },
+  ]);
+  const snapshot = await captureWindowsProcessTreeSnapshot(100, {
+    expectedCommandLineFragment: "harness-run-original",
+    ...inventory,
+  });
+  assert.ok(snapshot);
+  const tracker = createWindowsProcessTreeTracker({
+    ...snapshot,
+    listProcesses: inventory.listProcesses,
+    terminateProcessTree: async () => true,
+  });
+  assert.equal(await tracker.prepareCancellation(), true);
+});
+
 test("native Windows inventory cannot confirm an unreadable tracked descendant exited", async () => {
   const rootCreationTime = "2026-08-07T10:00:00.0001000Z";
   const childCreationTime = "2026-08-07T10:00:01.0001000Z";
@@ -204,6 +258,38 @@ test("Windows cancellation retains descendants after the adapter exits and confi
   assert.equal(await tracker.forceTerminate(), true);
   assert.deepEqual(terminated, [300, 200]);
   assert.equal(await tracker.processTreeAlive(), false);
+});
+
+test("Windows force termination reports failure when any retained descendant survives", async () => {
+  let processes = [
+    { processId: 100, parentProcessId: 10, creationTime: "2026-08-07T10:00:00.000Z" },
+    { processId: 200, parentProcessId: 100, creationTime: "2026-08-07T10:00:01.000Z" },
+    { processId: 300, parentProcessId: 100, creationTime: "2026-08-07T10:00:02.000Z" },
+  ];
+  const terminated = [];
+  const tracker = createWindowsProcessTreeTracker({
+    rootIdentity: {
+      processId: 100,
+      creationTime: "2026-08-07T10:00:00.000Z",
+    },
+    initialProcesses: processes,
+    listProcesses: async () => processes,
+    terminateProcessTree: async (processIdentity) => {
+      terminated.push(processIdentity.processId);
+      if (processIdentity.processId === 200) return false;
+      processes = processes.filter((process) =>
+        process.processId !== processIdentity.processId);
+      return true;
+    },
+  });
+  assert.equal(await tracker.prepareCancellation(), true);
+  processes = processes.filter((process) => process.processId !== 100)
+    .map((process) => ({ ...process, parentProcessId: 10 }));
+
+  assert.equal(await tracker.forceTerminate(), false);
+  assert.deepEqual(terminated, [300, 200]);
+  assert.deepEqual(processes.map((process) => process.processId), [200]);
+  assert.equal(await tracker.processTreeAlive(), true);
 });
 
 test("Windows deadline escalation joins cancellation inventory already in flight", async () => {

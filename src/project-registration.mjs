@@ -562,6 +562,7 @@ if (command === "probe") {
   const now = () => new Date().toISOString();
   if (normalized.issueNumber === 999999992) {
     const descendant = spawn(process.execPath, ["--eval", "process.on('SIGTERM', () => undefined); process.send?.('ready'); setInterval(() => {}, 1000);"], {
+      detached: true,
       stdio: ["ignore", "ignore", "ignore", "ipc"],
     });
     await new Promise((resolve, reject) => {

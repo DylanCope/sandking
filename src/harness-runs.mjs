@@ -556,7 +556,7 @@ export const scheduleCancellationEscalation = (
 /**
  * @param {z.infer<typeof storedRunSchema>} run
  * @param {any} context
- * @param {{onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, onSupervisorAvailable: (supervisor: {requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>}) => void}} observer
+ * @param {{onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, onSupervisorAvailable: (supervisor: {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>}) => void}} observer
  */
 const superviseConformanceHarness = async (run, context, observer) => {
   const pinnedAdapter = await loadPinnedHarnessAdapter({
@@ -678,6 +678,10 @@ const superviseConformanceHarness = async (run, context, observer) => {
         }
         adapterReadyObserved = true;
         await observer.onReady(message.readyAt);
+        // Readiness is the first public point at which the adapter may already
+        // have launched Workers. Retain their ancestry after publishing ready
+        // so inventory cannot delay the selected run's cancellation action.
+        if (posixProcessTree) void posixProcessTree.captureDescendants();
         continue;
       }
       if (message.type === "harness.run.progress") {
@@ -720,6 +724,8 @@ const superviseConformanceHarness = async (run, context, observer) => {
   let forcedTerminationOperation = Promise.resolve();
   /** @type {Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}> | null} */
   let cancellationOperation = null;
+  /** @type {Promise<boolean> | null} */
+  let processTreePreparation = null;
   const processTreeAlive = async () => {
     if (typeof child.pid !== "number") return false;
     if (posixProcessTree) return posixProcessTree.processTreeAlive();
@@ -745,20 +751,28 @@ const superviseConformanceHarness = async (run, context, observer) => {
     // forced cancellation is bound to retained native process handles.
     return { sent: false, sentAt: null };
   };
+  const prepareCancellation = () => {
+    if (processTreePreparation) return processTreePreparation;
+    processTreePreparation = (async () => {
+      if (posixProcessTree) return posixProcessTree.prepareCancellation();
+      const windowsProcessTree = windowsProcessTreePromise
+        ? await windowsProcessTreePromise
+        : null;
+      return windowsProcessTree
+        ? windowsProcessTree.prepareCancellation()
+        : false;
+    })();
+    return processTreePreparation;
+  };
   const completion = Promise.all([exit, consumeFrames()]);
   /** @param {string} cooperativeDeadlineAt */
   const requestCancellation = (cooperativeDeadlineAt) => {
     if (cancellationOperation) return cancellationOperation;
     retainedCooperativeDeadlineAt = cooperativeDeadlineAt;
-    const windowsProcessTreePreparation = windowsProcessTreePromise
-      ? (async () => {
-          const windowsProcessTree = await windowsProcessTreePromise;
-          // Capture native-Windows descendants before signalling can let their
-          // adapter parent exit and become unavailable to identity tracking.
-          await windowsProcessTree.prepareCancellation();
-          return windowsProcessTree;
-        })()
-      : null;
+    // This may already be in flight from the read-only preparation started by
+    // the mutation path before its durable commit. Reuse it so no second tree
+    // inventory delays the post-commit cooperative signal.
+    const cancellationPreparation = prepareCancellation();
     const scheduledEscalation = scheduleCancellationEscalation(
       cooperativeDeadlineAt,
       async () => {
@@ -789,8 +803,9 @@ const superviseConformanceHarness = async (run, context, observer) => {
     forcedTerminationTimer = scheduledEscalation.timer;
     forcedTerminationOperation = scheduledEscalation.operation;
     cancellationOperation = (async () => {
-      const windowsProcessTree = windowsProcessTreePreparation
-        ? await windowsProcessTreePreparation
+      await cancellationPreparation;
+      const windowsProcessTree = windowsProcessTreePromise
+        ? await windowsProcessTreePromise
         : null;
       const posixTreeRequiresCooperativeSignal = posixProcessTree
         ? !posixProcessTree.adapterExited() || await processTreeAlive()
@@ -832,10 +847,10 @@ const superviseConformanceHarness = async (run, context, observer) => {
       }
       if (!(await processTreeAlive())) scheduledEscalation.cancel();
       await forcedTerminationOperation;
-      if (
-        forcedTerminationSentAt !== null
-        || !(await processTreeAlive())
-      ) {
+      // A dispatched force signal is evidence of an attempt, not evidence that
+      // every retained descendant terminated. Confirm the tree again before
+      // allowing the cancellation terminal transition.
+      if (!(await processTreeAlive())) {
         terminationConfirmedAt = new Date().toISOString();
       }
       clearTimeout(forcedTerminationTimer);
@@ -848,6 +863,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
     return cancellationOperation;
   };
   observer.onSupervisorAvailable({
+    prepareCancellation,
     requestCancellation,
     releaseProcessTree: posixProcessTree?.release ?? (async () => undefined),
   });
@@ -884,7 +900,7 @@ export const createHarnessRunManager = async (options) => {
     throw new Error("harness_run_cancellation_deadline_invalid");
   }
   let mutationQueue = Promise.resolve();
-  /** @type {Map<string, {requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>}>} */
+  /** @type {Map<string, {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>}>} */
   const activeSupervisions = new Map();
   /** @type {Map<string, string>} */
   const acceptedCancellations = new Map();
@@ -1064,7 +1080,7 @@ export const createHarnessRunManager = async (options) => {
   /** @param {z.infer<typeof storedRunSchema>} initialRun @param {any} context */
   const supervise = async (initialRun, context) => {
     let supervision;
-    /** @type {{requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>} | null} */
+    /** @type {{prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>} | null} */
     let cancellationSupervisor = null;
     /** @type {() => Promise<void>} */
     let releaseSupervisedProcessTree = async () => undefined;
@@ -1077,6 +1093,10 @@ export const createHarnessRunManager = async (options) => {
       }
       const records = pendingProgressRecords.slice();
       await updateRun(initialRun.harnessRunId, (run) => {
+        // Cancellation acceptance is the canonical boundary after which no
+        // Harness-defined work can enter history. A frame emitted earlier but
+        // queued behind that durable mutation cannot overtake it.
+        if (run.cancellation || run.outcome) return;
         for (const record of records) {
           run.revision += 1;
           appendEvent(run, "harness_progress_published", { progressRecord: record });
@@ -1653,6 +1673,10 @@ export const createHarnessRunManager = async (options) => {
       return response;
     }
 
+    // Tree inventory is read-only and may safely overlap the durable mutation.
+    // Starting it here captures descendants while the adapter is live without
+    // moving any signal or accepted lifecycle effect before the commit.
+    void activeSupervisions.get(run.harnessRunId)?.prepareCancellation();
     const acceptedDate = now();
     const acceptedAt = acceptedDate.toISOString();
     const cooperativeDeadlineAt = new Date(
@@ -1691,11 +1715,11 @@ export const createHarnessRunManager = async (options) => {
     await options.faultInjector?.("harness_run_cancellation.before_commit");
     await persist(retained);
     await options.faultInjector?.("harness_run_cancellation.after_state_commit");
+    acceptedCancellations.set(run.harnessRunId, cooperativeDeadlineAt);
+    void activeSupervisions.get(run.harnessRunId)
+      ?.requestCancellation(cooperativeDeadlineAt);
     await ensureAcceptedCancellationAudits(retained);
     await options.faultInjector?.("harness_run_cancellation.after_commit");
-    acceptedCancellations.set(run.harnessRunId, cooperativeDeadlineAt);
-    setImmediate(() => activeSupervisions.get(run.harnessRunId)
-      ?.requestCancellation(cooperativeDeadlineAt));
     return response;
   });
 

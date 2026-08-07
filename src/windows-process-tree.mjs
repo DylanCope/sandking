@@ -61,7 +61,7 @@ const listNativeWindowsProcesses = (execute = execFile) => new Promise((resolve,
 Add-Type -TypeDefinition @'
 ${exactWindowsProcessSource}
 '@
-@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,@{Name='CimCreationTime';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}},@{Name='CreationTime';Expression={[SandKingExactProcess]::ReadCreationTime([uint32]$_.ProcessId)}}) | ConvertTo-Json -Compress`;
+@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,@{Name='CimCreationTime';Expression={if ($null -eq $_.CreationDate) { $null } else { $_.CreationDate.ToUniversalTime().ToString('o') }}},@{Name='CreationTime';Expression={[SandKingExactProcess]::ReadCreationTime([uint32]$_.ProcessId)}}) | ConvertTo-Json -Compress`;
   execute("powershell.exe", [
     "-NoLogo",
     "-NoProfile",
@@ -96,16 +96,19 @@ ${exactWindowsProcessSource}
         };
       });
       if (inventory.some((row) => !Number.isSafeInteger(row.processId)
-        || row.processId <= 0
+        || row.processId < 0
         || !Number.isSafeInteger(row.parentProcessId)
         || row.parentProcessId < 0)) {
         reject(new Error("windows_process_inventory_invalid"));
         return;
       }
+      const queryableInventory = inventory.filter((row) => row.processId !== 0);
       // A CIM row proves that a PID is still present even when OpenProcess or
       // GetProcessTimes cannot establish its exact creation identity. Preserve
       // that row so the tracker cannot mistake unreadability for termination.
-      resolve(inventory);
+      // PID 0 is the documented System Idle Process pseudo-entry and cannot be
+      // opened or participate in a supervised adapter ancestry, so omit it.
+      resolve(queryableInventory);
     } catch (parseError) {
       reject(parseError);
     }
@@ -425,21 +428,21 @@ export const captureWindowsProcessTreeSnapshot = async (rootPid, options = {}) =
   ) {
     return null;
   }
-  /** @type {Array<{processId: number, parentProcessId: number, creationTime: string}>} */
+  /** @type {Array<{processId: number, parentProcessId: number, creationTime: string | null}>} */
   let listedProcesses;
   try {
     listedProcesses = await (options.listProcesses ?? listNativeWindowsProcesses)();
   } catch {
     return null;
   }
-  const processes = listedProcesses.map(normalizeProcess);
+  const processes = listedProcesses.map(normalizeProcessInventoryEntry);
   if (
     processes.some((process) => process === null)
     || new Set(processes.map((process) => process?.processId)).size !== processes.length
   ) {
     return null;
   }
-  const initialProcesses = /** @type {Array<NonNullable<ReturnType<typeof normalizeProcess>>>} */ (
+  const initialProcesses = /** @type {Array<NonNullable<ReturnType<typeof normalizeProcessInventoryEntry>>>} */ (
     processes
   );
   return {
@@ -458,7 +461,7 @@ export const captureWindowsProcessTreeSnapshot = async (rootPid, options = {}) =
  *
  * @param {{
  *   rootIdentity: {processId: number, creationTime: string} | null,
- *   initialProcesses?: Array<{processId: number, parentProcessId: number, creationTime: string}>,
+ *   initialProcesses?: Array<{processId: number, parentProcessId: number, creationTime: string | null}>,
  *   listProcesses?: () => Promise<Array<{processId: number, parentProcessId: number, creationTime: string}>>,
  *   terminateProcessTree?: (processIdentity: {processId: number, creationTime: string}) => Promise<boolean>,
  * }} options
@@ -630,23 +633,23 @@ export const createWindowsProcessTreeTracker = (options) => {
           .sort((left, right) => right.processId - left.processId)[0];
         if (!identity) {
           trackingReliable = false;
-          return signalSent;
+          return false;
         }
         const sent = await terminateProcessTree({
           processId: identity.processId,
           creationTime: identity.creationTime,
         });
         signalSent = sent || signalSent;
-        if (!(await refresh())) return signalSent;
+        if (!(await refresh())) return false;
         if (!sent && aliveIdentities.has(identityKey(identity))) {
           trackingReliable = false;
-          return signalSent;
+          return false;
         }
       }
       if (aliveIdentities.size > 0) {
         trackingReliable = false;
       }
-      return signalSent;
+      return trackingReliable && aliveIdentities.size === 0 && signalSent;
     },
   };
 };

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, writeSync } from "node:fs";
+import { closeSync, readFileSync, writeSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -134,35 +134,68 @@ const runSupervisor = () => {
 };
 
 /**
- * @param {number} processGroupId
- * @returns {Promise<Array<{pid: number, state: string}> | null>}
+ * @typedef {{pid: number, parentPid: number, processGroupId: number, state: string, startedAt: string}} PosixProcess
  */
-const readProcessGroupMembers = async (processGroupId) => {
+
+/** @param {number} pid @param {string} stat */
+const parseLinuxProcessStat = (pid, stat) => {
+  const commandEnd = stat.lastIndexOf(")");
+  if (commandEnd < 0) return null;
+  const fields = stat.slice(commandEnd + 2).split(" ");
+  const state = fields[0];
+  const parentPid = Number(fields[1]);
+  const processGroupId = Number(fields[2]);
+  const startTime = fields[19];
+  if (
+    !Number.isSafeInteger(pid)
+    || pid <= 0
+    || !Number.isSafeInteger(parentPid)
+    || parentPid < 0
+    || !Number.isSafeInteger(processGroupId)
+    || processGroupId <= 0
+    || typeof state !== "string"
+    || state.length === 0
+    || !/^[0-9]+$/.test(startTime ?? "")
+  ) {
+    return null;
+  }
+  return {
+    pid,
+    parentPid,
+    processGroupId,
+    state,
+    startedAt: `linux:${startTime}`,
+  };
+};
+
+/** @returns {Promise<PosixProcess[] | null>} */
+const readPosixProcesses = async () => {
   if (process.platform === "linux") {
     try {
       const entries = await readdir("/proc", { withFileTypes: true });
-      const members = [];
-      for (const entry of entries) {
-        if (!entry.isDirectory() || !/^[0-9]+$/.test(entry.name)) continue;
+      const processEntries = entries.filter((entry) =>
+        entry.isDirectory() && /^[0-9]+$/.test(entry.name));
+      const processes = await Promise.all(processEntries.map(async (entry) => {
         try {
           const stat = await readFile(`/proc/${entry.name}/stat`, "utf8");
-          const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-          const [state, , processGroup] = fields;
-          if (Number(processGroup) === processGroupId) {
-            members.push({ pid: Number(entry.name), state });
-          }
+          const processEntry = parseLinuxProcessStat(Number(entry.name), stat);
+          return processEntry ?? false;
         } catch {
           // A process can disappear between the directory and stat reads.
+          return undefined;
         }
-      }
-      return members;
+      }));
+      if (processes.includes(false)) return null;
+      return /** @type {PosixProcess[]} */ (
+        processes.filter((processEntry) => processEntry !== undefined)
+      );
     } catch {
       return null;
     }
   }
 
   return new Promise((resolve) => {
-    const child = spawn("ps", ["-axo", "pid=,pgid=,stat="], {
+    const child = spawn("ps", ["-axo", "pid=,ppid=,pgid=,stat=,lstart="], {
       stdio: ["ignore", "pipe", "ignore"],
     });
     let output = "";
@@ -176,20 +209,80 @@ const readProcessGroupMembers = async (processGroupId) => {
         resolve(null);
         return;
       }
-      resolve(output.split("\n").flatMap((line) => {
-        const match = /^\s*([0-9]+)\s+([0-9]+)\s+(\S+)/.exec(line);
-        if (!match || Number(match[2]) !== processGroupId) return [];
-        return [{ pid: Number(match[1]), state: match[3] }];
-      }));
+      const processes = [];
+      for (const line of output.split("\n")) {
+        if (line.trim() === "") continue;
+        const match = /^\s*([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
+        const startedAt = match ? Date.parse(match[5]) : Number.NaN;
+        if (!match || !Number.isFinite(startedAt)) {
+          resolve(null);
+          return;
+        }
+        processes.push({
+          pid: Number(match[1]),
+          parentPid: Number(match[2]),
+          processGroupId: Number(match[3]),
+          state: match[4],
+          startedAt: `posix:${startedAt}`,
+        });
+      }
+      resolve(processes);
     });
   });
+};
+
+/** @param {number} rootPid @returns {PosixProcess[] | null} */
+const readLinuxProcessTree = (rootPid) => {
+  /** @type {number[]} */
+  const pending = [rootPid];
+  const seen = new Set();
+  /** @type {PosixProcess[]} */
+  const processes = [];
+  while (pending.length > 0) {
+    const processId = pending.shift();
+    if (!processId || seen.has(processId)) continue;
+    seen.add(processId);
+    try {
+      const stat = readFileSync(`/proc/${processId}/stat`, "utf8");
+      const children = readFileSync(
+        `/proc/${processId}/task/${processId}/children`,
+        "utf8",
+      );
+      const processEntry = parseLinuxProcessStat(processId, stat);
+      if (!processEntry) return null;
+      processes.push(processEntry);
+      pending.push(...children.trim().split(/\s+/).flatMap((value) =>
+        /^[0-9]+$/.test(value) ? [Number(value)] : []));
+    } catch {
+      // A listed descendant can exit and reparent its own children before it
+      // is read. That race loses provable ancestry, so retain uncertainty.
+      return null;
+    }
+  }
+  return processes;
+};
+
+/** @param {{pid: number, startedAt: string}} identity */
+const identityKey = (identity) => `${identity.pid}@${identity.startedAt}`;
+
+/** @param {string} left @param {string} right */
+const startedNoLaterThan = (left, right) => {
+  const [leftKind, leftValue] = left.split(":");
+  const [rightKind, rightValue] = right.split(":");
+  if (leftKind !== rightKind || !/^[0-9]+$/.test(leftValue ?? "")
+    || !/^[0-9]+$/.test(rightValue ?? "")) {
+    return false;
+  }
+  return BigInt(leftValue) <= BigInt(rightValue);
 };
 
 /**
  * Spawn a Host-owned POSIX process-group leader which launches the adapter and
  * remains alive until the Host releases it after terminal-state publication.
- * Signals are requested over the leader's private IPC channel; the Host never
- * signals a retained numeric pid or process-group id.
+ * Group signals are requested over the leader's private IPC channel, so the
+ * Host never targets a retained numeric process-group id. Descendants which
+ * leave that group are retained by creation identity and revalidated against
+ * the live process inventory immediately before an individual signal.
  *
  * @param {string} executable
  * @param {string[]} args
@@ -220,6 +313,8 @@ export const spawnPosixProcessTree = (executable, args, options) => {
   }
 
   let adapterSpawned = false;
+  /** @type {number | null} */
+  let adapterPid = null;
   /** @type {AdapterExitResult | null} */
   let adapterExitResult = null;
   /** @type {(result: AdapterExitResult) => void} */
@@ -240,6 +335,14 @@ export const spawnPosixProcessTree = (executable, args, options) => {
   /** @type {Map<number, PendingSignal>} */
   const pendingSignals = new Map();
   let statusBuffer = "";
+  /** @type {Map<string, {pid: number, startedAt: string, processGroupId: number, parentIdentityKey: string | null}>} */
+  const trackedIdentities = new Map();
+  /** @type {Map<string, {pid: number, startedAt: string, processGroupId: number, parentIdentityKey: string | null}>} */
+  let aliveIdentities = new Map();
+  let trackingReliable = true;
+  let treeInventoryEstablished = false;
+  /** @type {Promise<boolean> | null} */
+  let refreshOperation = null;
 
   /** @param {AdapterExitResult} result */
   const settleAdapterExit = (result) => {
@@ -254,11 +357,159 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     pendingSignals.delete(requestId);
     pending.resolve({ sent, sentAt });
   };
+
+  /** @param {PosixProcess[]} processes */
+  const applyInventory = (processes) => {
+    if (
+      new Set(processes.map((processEntry) => processEntry.pid)).size
+        !== processes.length
+    ) {
+      trackingReliable = false;
+      return false;
+    }
+    const currentByPid = new Map(processes.map((processEntry) => [
+      processEntry.pid,
+      processEntry,
+    ]));
+    if (adapterPid !== null) {
+      const adapter = currentByPid.get(adapterPid);
+      const alreadyTrackedAdapter = [...trackedIdentities.values()].find(
+        (identity) => identity.pid === adapterPid && identity.parentIdentityKey === null,
+      );
+      if (adapter && !alreadyTrackedAdapter) {
+        const adapterKey = identityKey(adapter);
+        trackedIdentities.set(adapterKey, {
+          pid: adapter.pid,
+          startedAt: adapter.startedAt,
+          processGroupId: adapter.processGroupId,
+          parentIdentityKey: null,
+        });
+        treeInventoryEstablished = true;
+      }
+    }
+
+    // The live wrapper owns this group identity. Members can therefore be
+    // retained safely even if their adapter ancestor exited before an
+    // inventory read; an unrelated process cannot reuse the group while the
+    // wrapper remains its leader.
+    for (const processEntry of processes) {
+      if (
+        processEntry.pid === child.pid
+        || processEntry.processGroupId !== child.pid
+        || ["X", "Z"].includes(processEntry.state[0])
+      ) {
+        continue;
+      }
+      const processKey = identityKey(processEntry);
+      if (!trackedIdentities.has(processKey)) {
+        trackedIdentities.set(processKey, {
+          pid: processEntry.pid,
+          startedAt: processEntry.startedAt,
+          processGroupId: processEntry.processGroupId,
+          parentIdentityKey: null,
+        });
+      }
+      treeInventoryEstablished = true;
+    }
+
+    let discovered = true;
+    while (discovered) {
+      discovered = false;
+      for (const processEntry of processes) {
+        if (["X", "Z"].includes(processEntry.state[0])) continue;
+        const processKey = identityKey(processEntry);
+        if (trackedIdentities.has(processKey)) continue;
+        const currentParent = currentByPid.get(processEntry.parentPid);
+        const parent = currentParent
+          ? trackedIdentities.get(identityKey(currentParent))
+          : null;
+        if (
+          parent
+          && startedNoLaterThan(parent.startedAt, processEntry.startedAt)
+        ) {
+          trackedIdentities.set(processKey, {
+            pid: processEntry.pid,
+            startedAt: processEntry.startedAt,
+            processGroupId: processEntry.processGroupId,
+            parentIdentityKey: identityKey(parent),
+          });
+          discovered = true;
+        }
+      }
+    }
+
+    for (const processEntry of processes) {
+      if (trackedIdentities.has(identityKey(processEntry))) continue;
+      const possibleTrackedParent = [...trackedIdentities.values()].find(
+        (identity) => identity.pid === processEntry.parentPid
+          && startedNoLaterThan(identity.startedAt, processEntry.startedAt),
+      );
+      if (!possibleTrackedParent) continue;
+      const currentParent = currentByPid.get(processEntry.parentPid);
+      if (
+        currentParent
+        && identityKey(currentParent) !== identityKey(possibleTrackedParent)
+        && startedNoLaterThan(currentParent.startedAt, processEntry.startedAt)
+      ) {
+        // The candidate belongs to a replacement parent, not the retained
+        // supervised identity whose numeric PID was reused.
+        continue;
+      }
+      // Once a parent identity disappears, ancestry of a newly observed child
+      // can no longer be proven. Preserve uncertainty instead of targeting it
+      // or claiming the supervised tree is gone.
+      trackingReliable = false;
+    }
+
+    aliveIdentities = new Map([...trackedIdentities].filter(([, identity]) => {
+      const current = currentByPid.get(identity.pid);
+      return current?.startedAt === identity.startedAt
+        && !["X", "Z"].includes(current.state[0]);
+    }));
+    return true;
+  };
+
+  const refresh = () => {
+    if (refreshOperation) return refreshOperation;
+    refreshOperation = (async () => {
+      const processes = await readPosixProcesses();
+      if (!processes) {
+        trackingReliable = false;
+        return false;
+      }
+      return applyInventory(processes) && trackingReliable
+        && treeInventoryEstablished;
+    })();
+    void refreshOperation.then(() => {
+      refreshOperation = null;
+    }, () => {
+      trackingReliable = false;
+      refreshOperation = null;
+    });
+    return refreshOperation;
+  };
+
+  const captureDescendants = async () => {
+    if (adapterPid === null) return false;
+    if (process.platform !== "linux") return refresh();
+    const processes = readLinuxProcessTree(adapterPid);
+    if (!processes) {
+      trackingReliable = false;
+      return false;
+    }
+    return applyInventory(processes) && trackingReliable
+      && treeInventoryEstablished;
+  };
+
   /** @param {any} message */
   const consumeStatus = (message) => {
     if (!message || typeof message !== "object") return;
     if (message.type === "posix-process-tree.adapter-spawned") {
       adapterSpawned = true;
+      adapterPid = Number.isSafeInteger(message.pid) && message.pid > 0
+        ? message.pid
+        : null;
+      if (adapterPid === null) trackingReliable = false;
       return;
     }
     if (message.type === "posix-process-tree.adapter-error") {
@@ -304,6 +555,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
         consumeStatus(JSON.parse(line));
       } catch {
         // Invalid private status is treated as supervision uncertainty.
+        trackingReliable = false;
       }
     }
   });
@@ -332,7 +584,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
   });
 
   /** @param {"SIGTERM" | "SIGKILL"} signal */
-  const signal = (signal) => {
+  const signalProcessGroup = (signal) => {
     if (wrapperExitResult || child.connected !== true) {
       return Promise.resolve({ sent: false, sentAt: null });
     }
@@ -356,12 +608,91 @@ export const spawnPosixProcessTree = (executable, args, options) => {
   };
 
   const processTreeAlive = async () => {
-    if (wrapperExitResult || typeof child.pid !== "number") return true;
+    if (typeof child.pid !== "number") return true;
     if (!adapterSpawned && !adapterExitResult) return true;
-    const members = await readProcessGroupMembers(child.pid);
-    if (!members) return true;
-    return members.some((member) => member.pid !== child.pid
-      && !["X", "Z"].includes(member.state[0]));
+    const refreshed = await refresh();
+    return !refreshed || !trackingReliable || aliveIdentities.size > 0;
+  };
+
+  /** @param {{pid: number, startedAt: string}} identity @param {"SIGTERM" | "SIGKILL"} signal */
+  const signalExactIdentity = async (identity, signal) => {
+    if (!(await refresh()) || !trackingReliable) return null;
+    if (!aliveIdentities.has(identityKey(identity))) return false;
+    try {
+      process.kill(identity.pid, signal);
+      return true;
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error
+        && error.code === "ESRCH") {
+        await refresh();
+        return false;
+      }
+      trackingReliable = false;
+      return null;
+    }
+  };
+
+  /** @param {"SIGTERM" | "SIGKILL"} signal */
+  const signal = async (signal) => {
+    // Cooperative group dispatch uses the retained live wrapper immediately.
+    // The read-only cancellation preparation has already retained detached
+    // identities; refresh and signal those while the group request is in
+    // flight. Forced termination still kills detached leaves before the group.
+    const groupSignalOperation = signal === "SIGTERM"
+      ? signalProcessGroup(signal)
+      : null;
+    if (signal === "SIGTERM" || adapterExitResult) {
+      await refresh();
+    } else {
+      // The cancellation preparation already retained the system-wide tree.
+      // Refresh only the still-live adapter ancestry at the forced deadline so
+      // a redundant global scan cannot delay the actual escalation dispatch.
+      await captureDescendants();
+    }
+    let sent = false;
+    /** @type {string | null} */
+    let sentAt = null;
+    const candidates = () => [...aliveIdentities.values()]
+      .filter((identity) => identity.processGroupId !== child.pid)
+      .sort((left, right) => right.pid - left.pid);
+    if (signal === "SIGTERM") {
+      for (const identity of candidates()) {
+        const identitySignalled = await signalExactIdentity(identity, signal);
+        if (identitySignalled) {
+          sent = true;
+          sentAt ??= new Date().toISOString();
+        }
+      }
+    } else {
+      for (let attempt = 0; candidates().length > 0 && attempt < 4_096; attempt += 1) {
+        const detached = candidates();
+        const identity = detached.find((candidate) => !detached.some(
+          (possibleChild) => possibleChild.parentIdentityKey === identityKey(candidate),
+        ));
+        if (!identity) {
+          trackingReliable = false;
+          break;
+        }
+        const identitySignalled = await signalExactIdentity(identity, signal);
+        if (identitySignalled === null) break;
+        if (identitySignalled) {
+          sent = true;
+          sentAt ??= new Date().toISOString();
+        }
+        await refresh();
+        if (!identitySignalled && aliveIdentities.has(identityKey(identity))) {
+          trackingReliable = false;
+          break;
+        }
+      }
+    }
+    const groupSignal = await (groupSignalOperation ?? signalProcessGroup(signal));
+    if (groupSignal.sent) {
+      sent = true;
+      sentAt ??= groupSignal.sentAt;
+    }
+    if (signal === "SIGKILL") await refresh();
+    return { sent, sentAt };
   };
 
   const release = async () => {
@@ -380,6 +711,8 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     adapterChannel,
     adapterExit,
     adapterExited: () => adapterExitResult !== null,
+    captureDescendants,
+    prepareCancellation: refresh,
     processTreeAlive,
     signal,
     release,
