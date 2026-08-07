@@ -303,6 +303,17 @@ test("a retained pre-declaration Harness still launches with explicit parameters
     assert.equal("launchParameters" in retainedHarnessState.harnesses[0], false);
 
     const registry = await createProjectRegistry({ dataDir, recordAudit });
+    const retainedContext = await registry.loadLaunchContext(registered.project.projectId);
+    assert.deepEqual(
+      retainedContext.harness.launchParameters.fields.map(({ name, required }) => ({
+        name,
+        required,
+      })),
+      [
+        { name: "issueNumber", required: true },
+        { name: "targetBranch", required: true },
+      ],
+    );
     const manager = await createHarnessRunManager({
       dataDir,
       hostId,

@@ -9,6 +9,7 @@ import {
   harnessAdapterProbeSchema,
   harnessLaunchParametersDeclarationSchema,
   invokePinnedHarnessAdapter,
+  legacyConformanceHarnessLaunchParametersDeclaration as legacyConformanceLaunchParameters,
   loadPinnedHarnessAdapter,
 } from "./harness-adapter-protocol.mjs";
 import { readJson, writePrivateJson } from "./private-state.mjs";
@@ -90,9 +91,10 @@ export const harnessRegistrationSchema = z.object({
   kind: z.literal("conformance"),
   immutableRevision: commitSchema,
   // Schema-v1 conformance registrations predate adapter-declared parameters.
-  // Their immutable adapter identity has this one known widening declaration;
-  // fresh registrations always retain the value observed from the pinned probe.
-  launchParameters: harnessLaunchParametersDeclarationSchema.default(conformanceLaunchParameters),
+  // Their immutable adapter bytes still require this known historical shape;
+  // fresh registrations retain the explicit value observed from the pinned probe.
+  launchParameters: harnessLaunchParametersDeclarationSchema
+    .default(legacyConformanceLaunchParameters),
   workspace: z.object({
     kind: z.literal("harness-workspace"),
     versionControl: z.literal("git"),

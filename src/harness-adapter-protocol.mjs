@@ -86,10 +86,9 @@ export const harnessLaunchParametersDeclarationSchema = z.discriminatedUnion("ki
   }),
 ]);
 
-// Adapter protocol 1.0.0 originally shipped with this conformance-only shape
-// implicit in the Host. Immutable probes pinned before adapter declarations
-// omit the field, so reading those exact bytes must widen them to their
-// historical shape. Current probes always emit the declaration explicitly.
+// Current conformance probes explicitly widen both historical parameters to
+// optional. This declaration is adapter-owned and is not used as the fallback
+// for immutable probes created before declarations existed.
 export const conformanceHarnessLaunchParametersDeclaration =
   harnessLaunchParametersDeclarationSchema.parse({
     kind: "fields",
@@ -116,6 +115,26 @@ export const conformanceHarnessLaunchParametersDeclaration =
       },
     ],
   });
+if (conformanceHarnessLaunchParametersDeclaration.kind !== "fields") {
+  throw new Error("conformance_launch_parameters_invalid");
+}
+
+// Adapter protocol 1.0.0 originally required this conformance-only shape in
+// the adapter implementation even though its probe did not declare it. Keep
+// that exact contract when interpreting immutable legacy bytes: presenting the
+// new optional declaration would allow a launch that the pinned adapter must
+// reject. Fresh probes above explicitly advertise the widened contract.
+export const legacyConformanceHarnessLaunchParametersDeclaration =
+  harnessLaunchParametersDeclarationSchema.parse({
+    kind: "fields",
+    fields: conformanceHarnessLaunchParametersDeclaration.fields.map((field) => ({
+      ...field,
+      description: field.name === "issueNumber"
+        ? "GitHub issue identifier required by this retained conformance Harness."
+        : "Sandcastle branch required by this retained conformance Harness.",
+      required: true,
+    })),
+  });
 
 export const harnessAdapterProbeSchema = z.object({
   type: z.literal("harness.adapter.probe"),
@@ -123,7 +142,7 @@ export const harnessAdapterProbeSchema = z.object({
   adapterId: adapterIdSchema,
   capabilities: z.array(capabilitySchema).min(2).max(2),
   launchParameters: harnessLaunchParametersDeclarationSchema
-    .default(conformanceHarnessLaunchParametersDeclaration),
+    .default(legacyConformanceHarnessLaunchParametersDeclaration),
 }).strict().refine((probe) =>
   probe.capabilities.includes("harness.launch.prepare.v1")
   && probe.capabilities.includes("harness.run.v1"));
