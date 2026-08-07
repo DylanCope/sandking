@@ -10,6 +10,18 @@ import { installCurrentPackage } from "./installed-package.mjs";
 
 const execFileAsync = promisify(execFile);
 
+const waitForRetainedHarnessRun = async (dataDir, harnessRunId) => {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const state = await readFile(join(dataDir, "harness-runs.json"), "utf8")
+      .then(JSON.parse, () => null);
+    const run = state?.runs?.find((candidate) => candidate.harnessRunId === harnessRunId);
+    if (run && ["succeeded", "failed", "cancelled"].includes(run.status)) return run;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("retained_harness_run_timeout");
+};
+
 test("local-walking-skeleton/operates-installed-claude-controller uses the shared Cockpit seam", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-claude-browser-"));
   const dataDir = join(root, "state");
@@ -37,10 +49,16 @@ else
   case " $* " in *' --plugin-dir '*) exit 89 ;; esac
   command -v sandking >/dev/null || exit 90
   sandking --help >/dev/null || exit 91
-  printf 'Discovered ordinary sandking CLI help.\\r\\n'
-  printf 'Fake installed Claude owns this runtime PTY.\\r\\n'
-  printf 'Working context directory: %s\\r\\n' "$PWD"
-  while IFS= read -r _line; do :; done
+  while IFS= read -r line; do
+    if [ "$line" = "begin-public-cli-test" ]; then
+      printf 'Discovered ordinary sandking CLI help.\\r\\n'
+      printf 'Fake installed Claude owns this runtime PTY.\\r\\n'
+      printf 'Working context directory: %s\\r\\n' "$PWD"
+    elif [ "$line" = "launch-with-public-cli" ]; then
+      launch_result="$(sandking launch "$SANDKING_WORK_CONTEXT_ID")" || exit 92
+      printf 'Parameterless public CLI launch succeeded: %s\\r\\n' "$launch_result"
+    fi
+  done
 fi
 `, { mode: 0o700 });
   const installed = await installCurrentPackage(root);
@@ -110,6 +128,9 @@ fi
     assert.equal(await panel.getAttribute("data-pty-runtime-owned"), "true");
     assert.match(await panel.getAttribute("data-provider-session-id"),
       /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+    await page.locator("#project-controller-terminal-output .xterm-helper-textarea").focus();
+    await page.keyboard.type("begin-public-cli-test");
+    await page.keyboard.press("Enter");
     await page.waitForFunction((path) => document.querySelector(
       "#project-controller-terminal-output",
     )?.textContent?.includes(`Working context directory: ${path}`), projectPath, {
@@ -121,6 +142,17 @@ fi
     ));
     assert.match(await page.locator("#project-controller-terminal-output").textContent(),
       /Discovered ordinary sandking CLI help/);
+    await page.keyboard.type("launch-with-public-cli");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => /Parameterless public CLI launch succeeded: harness-run-[a-f0-9]{24}/
+      .test(document.querySelector("#project-controller-terminal-output")?.textContent ?? ""),
+    undefined, { timeout: 30_000 });
+    const controllerOutput = await page.locator("#project-controller-terminal-output").textContent();
+    const publicCliHarnessRunId =
+      /Parameterless public CLI launch succeeded: (harness-run-[a-f0-9]{24})/
+        .exec(controllerOutput)?.[1];
+    assert.match(publicCliHarnessRunId, /^harness-run-[a-f0-9]{24}$/);
+    const publicCliRun = await waitForRetainedHarnessRun(dataDir, publicCliHarnessRunId);
     assert.deepEqual(sessionOpenRequests, [{
       projectId: await panel.getAttribute("data-work-context-id"),
       providerId: "claude-code",
@@ -137,6 +169,10 @@ fi
     assert.equal(retained.providerId, "claude-code");
     assert.equal(retained.terminal.runtimeOwned, true);
     assert.equal(retained.terminal.status, "running");
+    assert.equal(publicCliRun.status, "succeeded");
+    assert.equal(publicCliRun.source, "controller-cli");
+    assert.equal(publicCliRun.controllerSessionId, controllerSessionId);
+    assert.deepEqual(publicCliRun.parameters, {});
     const auditText = await readFile(join(dataDir, "audit.jsonl"), "utf8");
     const audits = auditText.trim().split("\n").map((line) => JSON.parse(line));
     assert.ok(audits.some((audit) =>
@@ -144,6 +180,10 @@ fi
       && audit.outcome === "accepted"
       && audit.details.sessionId === controllerSessionId
       && audit.details.operation === "controller-cli.describe"));
+    assert.ok(audits.some((audit) =>
+      audit.action === "harness.run.launch"
+      && audit.outcome === "accepted"
+      && audit.details.harnessRunId === publicCliHarnessRunId));
     assert.doesNotMatch(auditText + JSON.stringify(sessions), new RegExp(secret));
     if (process.env.SANDKING_ACCEPTANCE_OBSERVATION_PATH) {
       const controllerStart = audits.find((audit) =>

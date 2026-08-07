@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { promisify } from "node:util";
 import { z } from "zod";
 import {
+  conformanceHarnessLaunchParametersDeclaration as conformanceLaunchParameters,
   harnessAdapterProbeSchema,
   harnessLaunchParametersDeclarationSchema,
   invokePinnedHarnessAdapter,
@@ -23,31 +24,6 @@ const commandSchema = z.string().min(1).max(256)
   .refine((value) => !/[\r\n\0]/.test(value));
 const checkIdSchema = z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9._-]*$/);
 const conformanceAdapterEntryPoint = "adapters/conformance.mjs";
-const conformanceLaunchParameters = harnessLaunchParametersDeclarationSchema.parse({
-  kind: "fields",
-  fields: [
-    {
-      name: "issueNumber",
-      label: "Issue number",
-      description: "Optional GitHub issue identifier for the conformance run.",
-      cliFlag: "--issue",
-      valueType: "integer",
-      required: false,
-      minimum: 1,
-      maximum: 999_999_999,
-    },
-    {
-      name: "targetBranch",
-      label: "Target branch",
-      description: "Optional sandcastle branch associated with the issue.",
-      cliFlag: "--target-branch",
-      valueType: "string",
-      required: false,
-      minLength: 1,
-      maxLength: 128,
-    },
-  ],
-});
 
 export const projectConfigurationSchema = z.object({
   issueWorkflow: z.object({

@@ -86,12 +86,44 @@ export const harnessLaunchParametersDeclarationSchema = z.discriminatedUnion("ki
   }),
 ]);
 
+// Adapter protocol 1.0.0 originally shipped with this conformance-only shape
+// implicit in the Host. Immutable probes pinned before adapter declarations
+// omit the field, so reading those exact bytes must widen them to their
+// historical shape. Current probes always emit the declaration explicitly.
+export const conformanceHarnessLaunchParametersDeclaration =
+  harnessLaunchParametersDeclarationSchema.parse({
+    kind: "fields",
+    fields: [
+      {
+        name: "issueNumber",
+        label: "Issue number",
+        description: "Optional GitHub issue identifier for the conformance run.",
+        cliFlag: "--issue",
+        valueType: "integer",
+        required: false,
+        minimum: 1,
+        maximum: 999_999_999,
+      },
+      {
+        name: "targetBranch",
+        label: "Target branch",
+        description: "Optional sandcastle branch associated with the issue.",
+        cliFlag: "--target-branch",
+        valueType: "string",
+        required: false,
+        minLength: 1,
+        maxLength: 128,
+      },
+    ],
+  });
+
 export const harnessAdapterProbeSchema = z.object({
   type: z.literal("harness.adapter.probe"),
   adapterProtocol: adapterProtocolSchema,
   adapterId: adapterIdSchema,
   capabilities: z.array(capabilitySchema).min(2).max(2),
-  launchParameters: harnessLaunchParametersDeclarationSchema,
+  launchParameters: harnessLaunchParametersDeclarationSchema
+    .default(conformanceHarnessLaunchParametersDeclaration),
 }).strict().refine((probe) =>
   probe.capabilities.includes("harness.launch.prepare.v1")
   && probe.capabilities.includes("harness.run.v1"));

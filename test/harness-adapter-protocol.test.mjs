@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  conformanceHarnessLaunchParametersDeclaration,
   harnessAdapterProbeSchema,
   harnessLaunchParametersDeclarationSchema,
 } from "../src/harness-adapter-protocol.mjs";
@@ -57,4 +58,25 @@ test("the adapter handshake declares no parameters or its exact optional fields"
     kind: "fields",
     fields: [fieldsDeclaration.fields[0], fieldsDeclaration.fields[0]],
   }).success, false);
+});
+
+test("a legacy conformance probe resolves to its historical parameter declaration", () => {
+  const probe = harnessAdapterProbeSchema.parse({
+    type: "harness.adapter.probe",
+    adapterProtocol: "1.0.0",
+    adapterId: "conformance-harness-adapter-v1",
+    capabilities: ["harness.launch.prepare.v1", "harness.run.v1"],
+  });
+
+  assert.deepEqual(
+    probe.launchParameters,
+    conformanceHarnessLaunchParametersDeclaration,
+  );
+  assert.deepEqual(
+    probe.launchParameters.fields.map(({ name, required }) => ({ name, required })),
+    [
+      { name: "issueNumber", required: false },
+      { name: "targetBranch", required: false },
+    ],
+  );
 });
