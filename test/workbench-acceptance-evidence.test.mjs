@@ -20,8 +20,14 @@ const manifest = JSON.parse(await readFile(
 ));
 const evidenceUrl = new URL("../acceptance/evidence/issue-146.json", import.meta.url);
 const realEvidenceUrl = new URL("../acceptance/evidence/issue-146.real.json", import.meta.url);
+const replacementRealEvidenceUrl = new URL(
+  "../acceptance/evidence/issue-152.real.json",
+  import.meta.url,
+);
 const evidenceExists = await access(evidenceUrl).then(() => true, () => false);
 const realEvidenceExists = await access(realEvidenceUrl).then(() => true, () => false);
+const replacementRealEvidenceExists = await access(replacementRealEvidenceUrl)
+  .then(() => true, () => false);
 const evidence = evidenceExists
   ? JSON.parse(await readFile(evidenceUrl, "utf8"))
   : null;
@@ -50,6 +56,68 @@ test("issue 146 evidence source rejects dirty demonstrated paths", async () => {
       repositoryRoot: fixture,
       demonstratedPaths: ["src/cockpit.js"],
     }), /issue_146_evidence_source_dirty/);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("real-provider supersession fails closed when replacement evidence is absent", async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "sandking-real-evidence-supersession-"));
+  try {
+    await execFileAsync("git", ["init", "--quiet"], { cwd: fixture });
+    const demonstratedPath = join(fixture, "historical-public-seam.txt");
+    await writeFile(demonstratedPath, "historical\n");
+    await execFileAsync("git", ["add", "historical-public-seam.txt"], { cwd: fixture });
+    await execFileAsync("git", [
+      "-c", "user.name=Sand-King Test",
+      "-c", "user.email=sandking-test@example.invalid",
+      "commit", "--quiet", "-m", "historical evidence",
+    ], { cwd: fixture });
+    const historicalRevision = (await execFileAsync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: fixture },
+    )).stdout.trim();
+
+    await writeFile(demonstratedPath, "current\n");
+    await execFileAsync("git", ["add", "historical-public-seam.txt"], { cwd: fixture });
+    await execFileAsync("git", [
+      "-c", "user.name=Sand-King Test",
+      "-c", "user.email=sandking-test@example.invalid",
+      "commit", "--quiet", "-m", "change public seam",
+    ], { cwd: fixture });
+    const replacementRevision = (await execFileAsync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: fixture },
+    )).stdout.trim();
+
+    await mkdir(join(fixture, "acceptance", "evidence"), { recursive: true });
+    await writeFile(
+      join(fixture, "acceptance", "evidence", "issue-152.json"),
+      `${JSON.stringify({
+        issue: 152,
+        generatedFromCommit: replacementRevision,
+        supersedesHistoricalFreshnessForIssues: [146],
+        realProviderEvidence: {
+          required: true,
+          artifact: "acceptance/evidence/issue-152.real.json",
+          fabricatedByDeterministicRun: false,
+        },
+      })}\n`,
+    );
+
+    await assert.rejects(verifyRetainedEvidenceCurrentOrSuperseded({
+      repositoryRoot: fixture,
+      issue: 146,
+      evidence: { generatedFromCommit: historicalRevision },
+      demonstratedPaths: ["historical-public-seam.txt"],
+      requireRealProvider: true,
+    }), (error) => {
+      assert.equal(error.code, "ENOENT");
+      assert.match(error.path, /issue-152\.real\.json$/);
+      return true;
+    });
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -145,7 +213,11 @@ test("retained issue 146 evidence proves the unchanged packaged public seam", {
 });
 
 test("retained issue 146 real-Claude evidence is structural and prohibits Launch effects", {
-  skip: realEvidenceExists ? false : "real installed-Claude environment evidence unavailable",
+  skip: !realEvidenceExists
+    ? "real installed-Claude environment evidence unavailable"
+    : !replacementRealEvidenceExists
+      ? "current real installed-Claude supersession is pending in issue 154"
+      : false,
 }, async () => {
   assert.equal(realEvidence.issue, 146);
   assert.equal(realEvidence.schemaVersion, 2);

@@ -25,9 +25,7 @@ const verifyCommitAndChanges = async ({ repositoryRoot, revision, demonstratedPa
 /**
  * Closed slice evidence remains historical when #152 intentionally retires
  * its launch ceremony. Current claims come from #152's complete replacement
- * matrix; old artifacts are never relabelled as newly executed evidence. A
- * missing real-provider replacement remains an explicit external gate rather
- * than being fabricated by the deterministic supersession path.
+ * matrix; old artifacts are never relabelled as newly executed evidence.
  */
 export const verifyRetainedEvidenceCurrentOrSuperseded = async ({
   repositoryRoot,
@@ -64,30 +62,10 @@ export const verifyRetainedEvidenceCurrentOrSuperseded = async ({
   }
 
   if (requireRealProvider) {
-    const realEvidencePath = join(
-      repositoryRoot,
-      "acceptance",
-      "evidence",
-      "issue-152.real.json",
-    );
-    const realEvidenceSource = await readFile(realEvidencePath, "utf8").catch((error) => {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-        return null;
-      }
-      throw error;
-    });
-    if (realEvidenceSource === null) {
-      if (
-        issue152Evidence.realProviderEvidence?.required !== true
-        || issue152Evidence.realProviderEvidence?.artifact
-          !== "acceptance/evidence/issue-152.real.json"
-        || issue152Evidence.realProviderEvidence?.fabricatedByDeterministicRun !== false
-      ) {
-        throw new Error("issue_152_real_evidence_gate_invalid");
-      }
-      return { superseded: true, historicalChanges, realProviderPending: true };
-    }
-    const realEvidence = JSON.parse(realEvidenceSource);
+    const realEvidence = JSON.parse(await readFile(
+      join(repositoryRoot, "acceptance", "evidence", "issue-152.real.json"),
+      "utf8",
+    ));
     if (
       realEvidence.issue !== 152
       || realEvidence.scenario !== "harness-launch/uses-real-installed-claude-controller"
