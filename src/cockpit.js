@@ -15,12 +15,12 @@ const browserProtocol = Object.freeze({
       "cockpit.controller-terminal.v1",
       "cockpit.controller-terminal-resize.v1",
       "cockpit.project-preparation.v1",
-      "cockpit.launch-request.v1",
+      "cockpit.harness-run-launch.v1",
       "cockpit.harness-run-observation.v1",
     ],
     optional: [],
   },
-  schemaDigest: "sha256:3cf091a6f394b496f918e6fde1a62e0cf935aa76f240410788ff144cd17059ce",
+  schemaDigest: "sha256:4fc920ad2991913b2b4eb3d0efb2ce179faa817222546377901f17e461132e6e",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -39,9 +39,31 @@ let harnessRunSection;
 let harnessObservationTimer;
 let harnessRequestSequence = 0;
 let currentHarnessRunObservation = null;
+let harnessLaunchFeedback;
+let pendingHarnessLaunchRequestId = null;
 let hostConnectionStatus = "connecting";
 let hostFreshness = "stale";
 const harnessRunCursorStorageKey = "sandking.harnessRunCursor";
+const launchConfirmationStorageKey = "sandking.skipLaunchConfirmation";
+
+const launchConfirmationSuppressed = () => {
+  try {
+    return localStorage.getItem(launchConfirmationStorageKey) === "true";
+  } catch {
+    return false;
+  }
+};
+
+const suppressLaunchConfirmation = () => {
+  try {
+    localStorage.setItem(launchConfirmationStorageKey, "true");
+  } catch {
+    // Storage can be unavailable in privacy-restricted contexts. Launch still proceeds.
+  }
+};
+
+const selectedProjectLaunchReady = () =>
+  document.getElementById("project-readiness")?.dataset.harnessLaunchReady === "true";
 
 const retainedHarnessRunCursor = () => {
   try {
@@ -507,7 +529,7 @@ const renderPreparedProject = (current) => {
     "data-harness-pin": current.harness?.pinnedRevision ?? "",
     "data-checks-readiness": current.readiness.checks,
     "data-configuration-readiness": current.readiness.configuration,
-    "data-launch-request-ready": String(current.canPrepareLaunchRequest),
+    "data-harness-launch-ready": String(current.canPrepareLaunchRequest),
   });
   card.append(
     element("h3", {}, current.displayName),
@@ -524,8 +546,8 @@ const renderPreparedProject = (current) => {
       : "Pinned immutable revision: missing"),
     element("p", { "data-launch-guidance": current.readiness.launchRequest },
       current.canPrepareLaunchRequest
-        ? "A Launch request can be prepared."
-        : `Launch request preparation is blocked: ${current.readiness.diagnostics.join(", ")}`),
+        ? "The pinned Harness is ready to launch."
+        : `Harness launch is unavailable: ${current.readiness.diagnostics.join(", ")}`),
   );
   return card;
 };
@@ -592,6 +614,134 @@ const renderProjectPreparation = (
     disabled: hostConnectionStatus !== "connected"
       || !preparation.current?.canPrepareLaunchRequest,
   }, "Open focused Controller for Launch");
+  const issueLabel = element("label", { for: "harness-launch-issue" }, "Issue number");
+  const issueInput = element("input", {
+    id: "harness-launch-issue",
+    type: "number",
+    min: "1",
+    max: "999999999",
+    step: "1",
+    inputmode: "numeric",
+  });
+  const branchLabel = element(
+    "label",
+    { for: "harness-launch-branch" },
+    "Target branch",
+  );
+  const branchInput = element("input", {
+    id: "harness-launch-branch",
+    type: "text",
+    autocomplete: "off",
+    placeholder: "sandcastle/issue-152",
+  });
+  const launchButton = element("button", {
+    id: "launch-harness",
+    type: "button",
+    "data-action": "launch-harness",
+    "data-host-mutation": "true",
+    disabled: hostConnectionStatus !== "connected"
+      || !preparation.current?.canPrepareLaunchRequest,
+  }, "Launch");
+  harnessLaunchFeedback = element("p", { id: "harness-launch-feedback", role: "status" });
+  const confirmation = element("dialog", {
+    id: "harness-launch-confirmation",
+    "aria-labelledby": "harness-launch-confirmation-title",
+  });
+  const confirmationTitle = element(
+    "h3",
+    { id: "harness-launch-confirmation-title" },
+    "You’re about to launch the Harness — continue?",
+  );
+  const confirmationDetail = element("p", {},
+    "This immediately starts delegated Harness work for the selected Project.");
+  const skipConfirmation = element("input", {
+    id: "harness-launch-confirmation-skip",
+    type: "checkbox",
+  });
+  const skipConfirmationLabel = element(
+    "label",
+    { for: "harness-launch-confirmation-skip" },
+    "Don’t show again",
+  );
+  const confirmYes = element("button", {
+    id: "harness-launch-confirmation-yes",
+    type: "button",
+    value: "yes",
+  }, "Yes");
+  const confirmNo = element("button", {
+    id: "harness-launch-confirmation-no",
+    type: "button",
+    value: "no",
+  }, "No");
+  confirmation.append(
+    confirmationTitle,
+    confirmationDetail,
+    skipConfirmation,
+    skipConfirmationLabel,
+    element("div", { class: "harness-launch-confirmation__actions" }),
+  );
+  confirmation.lastElementChild.append(confirmYes, confirmNo);
+
+  issueInput.addEventListener("input", () => {
+    const issueNumber = Number(issueInput.value);
+    if (Number.isSafeInteger(issueNumber) && issueNumber > 0) {
+      branchInput.value = `sandcastle/issue-${issueNumber}`;
+    }
+  });
+  const launch = () => {
+    const issueNumber = Number(issueInput.value);
+    const targetBranch = branchInput.value.trim();
+    if (
+      !currentProject
+      || currentProject.canPrepareLaunchRequest !== true
+      || !selectedProjectLaunchReady()
+      || hostConnectionStatus !== "connected"
+      || pendingHarnessLaunchRequestId !== null
+    ) {
+      harnessLaunchFeedback.textContent =
+        "Harness was not launched: the selected Project is not launch-ready.";
+      updateProjectActionAvailability();
+      return false;
+    }
+    if (
+      !Number.isSafeInteger(issueNumber)
+      || issueNumber < 1
+      || issueNumber > 999_999_999
+      || targetBranch !== `sandcastle/issue-${issueNumber}`
+    ) {
+      harnessLaunchFeedback.textContent =
+        "Harness was not launched: enter an issue number and its sandcastle branch.";
+      return false;
+    }
+    pendingHarnessLaunchRequestId = `harness-launch-${harnessRequestSequence}`;
+    harnessRequestSequence += 1;
+    launchButton.disabled = true;
+    harnessLaunchFeedback.textContent = "Launching the Harness run…";
+    socket.send(JSON.stringify({
+      channel: "control",
+      message: {
+        type: "browser.harness-run.launch",
+        requestId: pendingHarnessLaunchRequestId,
+        projectId: currentProject.projectId,
+        parameters: { issueNumber, targetBranch },
+        idempotencyKey: mutationKey(),
+      },
+    }));
+    return true;
+  };
+  launchButton.addEventListener("click", () => {
+    if (launchConfirmationSuppressed()) {
+      launch();
+    } else {
+      skipConfirmation.checked = false;
+      confirmation.showModal();
+    }
+  });
+  confirmYes.addEventListener("click", () => {
+    confirmation.close("yes");
+    if (launch() && skipConfirmation.checked) suppressLaunchConfirmation();
+  });
+  confirmNo.addEventListener("click", () => confirmation.close("no"));
   const claudeProvider = controllerProviders.find((provider) =>
     provider.providerId === "claude-code");
   const claudeAvailable = claudeProvider?.availability.status === "available";
@@ -623,6 +773,17 @@ const renderProjectPreparation = (
     "data-session-state": "closed",
     hidden: true,
   });
+  const updateProjectActionAvailability = () => {
+    const launchReady = currentProject?.canPrepareLaunchRequest === true
+      && selectedProjectLaunchReady();
+    launchButton.disabled = hostConnectionStatus !== "connected"
+      || !launchReady
+      || pendingHarnessLaunchRequestId !== null;
+    openController.disabled = hostConnectionStatus !== "connected" || !launchReady;
+    openClaudeController.disabled = hostConnectionStatus !== "connected"
+      || !launchReady
+      || !claudeAvailable;
+  };
 
   openButton.addEventListener("click", async () => {
     openButton.disabled = true;
@@ -667,6 +828,7 @@ const renderProjectPreparation = (
             outcome.code}. Its retained readiness is shown above.`
         : `Project was not changed: ${outcome.code}. ${
             outcome.resolution?.actions?.join(", ") ?? "Review the typed guidance."}`;
+      updateProjectActionAvailability();
       openButton.disabled = hostConnectionStatus !== "connected";
       return;
     }
@@ -676,12 +838,8 @@ const renderProjectPreparation = (
     currentNode.replaceWith(replacement);
     currentNode = replacement;
     updateWorkbenchChrome({ currentProject: outcome.project });
-    feedback.textContent = "Project and conformance Harness are ready for Launch preparation.";
-    openController.disabled = hostConnectionStatus !== "connected"
-      || !outcome.project.canPrepareLaunchRequest;
-    openClaudeController.disabled = hostConnectionStatus !== "connected"
-      || !outcome.project.canPrepareLaunchRequest
-      || !claudeAvailable;
+    feedback.textContent = "Project and conformance Harness are ready to launch.";
+    updateProjectActionAvailability();
     openButton.disabled = hostConnectionStatus !== "connected";
   });
 
@@ -713,14 +871,12 @@ const renderProjectPreparation = (
       accessibleLabel: "Project Controller terminal",
       requestedMode: reconnected ? "read-write-if-available" : "read-write",
       description: [
-        element("p", {}, `Focused Controller session ${focused.sessionId} owns Launch decisions for ${focused.workContext.workContextId}.`),
-        element("p", { "data-browser-approval": "prohibited" },
-          "The Cockpit can navigate to this conversation but cannot submit a Launch approval assertion."),
+        element("p", {}, `Focused Controller session ${focused.sessionId} can launch the Harness for ${focused.workContext.workContextId} with the ordinary sandking CLI.`),
       ],
     });
     controllerFeedback.textContent = reconnected
       ? "Reconnected to the existing focused Controller and retained terminal output."
-      : "Use the focused Controller conversation to inspect, prepare, approve, or reject.";
+      : "Use the focused Controller conversation for project work or launch with sandking.";
   };
 
   const openFocusedController = async (providerId, sourceButton) => {
@@ -768,6 +924,14 @@ const renderProjectPreparation = (
     openButton,
     feedback,
     currentNode,
+    element("h3", {}, "Launch Harness"),
+    issueLabel,
+    issueInput,
+    branchLabel,
+    branchInput,
+    launchButton,
+    harnessLaunchFeedback,
+    confirmation,
     openController,
     openClaudeController,
     claudeProviderStatus,
@@ -816,31 +980,24 @@ const renderHarnessRun = (observation) => {
   );
   if (!observation.run) {
     section.append(element("p", { id: "harness-run-empty" },
-      "No approved Harness run has started."));
+      "No Harness run has launched."));
     return section;
   }
   const run = observation.run;
   section.dataset.runId = run.harnessRunId;
   section.dataset.runStatus = run.status;
-  section.dataset.launchRequestId = run.launchRequestId;
-  section.dataset.projectId = observation.launchRequest?.project.projectId ?? run.projectId;
+  section.dataset.projectId = run.projectId;
   section.dataset.harnessPin = run.harnessPinnedRevision;
-  section.dataset.controllerSessionId = run.controllerSessionId;
-  section.dataset.startAuditId = run.startAuditId;
-  section.dataset.launchRequestStatus = observation.launchRequest?.status ?? "unknown";
-  section.dataset.launchExecutionStatus =
-    observation.launchRequest?.execution.status ?? "unknown";
-  section.dataset.launchDecisionId = observation.launchRequest?.decision?.decisionId ?? "";
-  section.dataset.launchDecisionAuditId = observation.launchRequest?.decision?.auditId ?? "";
+  section.dataset.controllerSessionId = run.controllerSessionId ?? "";
+  const launchAuditId = run.launchAuditId ?? run.startAuditId;
+  const launchSource = run.source ?? "legacy-approved-launch";
+  section.dataset.launchAuditId = launchAuditId;
+  section.dataset.launchSource = launchSource;
   section.append(
     element("h3", {}, `Harness run ${run.harnessRunId}`),
     element("p", { "data-run-status": run.status }, `Lifecycle status: ${run.status}`),
-    element("p", {
-      "data-launch-request-status": observation.launchRequest?.status ?? "unknown",
-      "data-launch-execution-status": observation.launchRequest?.execution.status ?? "unknown",
-    }, `Launch request: ${run.launchRequestId} (${observation.launchRequest?.status ?? "unknown"}; `
-      + `execution ${observation.launchRequest?.execution.status ?? "unknown"})`),
-    element("p", {}, `Project: ${observation.launchRequest?.project.projectId ?? run.projectId}`),
+    element("p", { "data-launch-source": launchSource }, `Launched from: ${launchSource}`),
+    element("p", {}, `Project: ${run.projectId}`),
     element("p", {}, `Harness: ${run.harnessId} @ ${run.harnessPinnedRevision}`),
   );
   const events = element("ol", {
@@ -954,13 +1111,9 @@ const applyHarnessRunObservation = (observation) => {
     }
   }
   clearTimeout(harnessObservationTimer);
-  const launchExecutionTerminal = ["succeeded", "failed", "cancelled"].includes(
-    visibleObservation.launchRequest?.execution.status,
-  );
   if (
     !visibleObservation.run
     || !["succeeded", "failed", "cancelled"].includes(visibleObservation.run.status)
-    || !launchExecutionTerminal
   ) {
     harnessObservationTimer = setTimeout(requestHarnessRunObservation, 75);
   }
@@ -1212,27 +1365,21 @@ const synchronizeWorkbenchChrome = () => {
         : "No Controller provider is attached.";
     }
   }
-  const launchRequestPending =
-    workbenchChromeState.harnessRunObservation?.launchRequest?.status === "pending";
   const personAction = document.getElementById("workbench-person-action");
   if (personAction) {
-    personAction.classList.toggle("is-pending", launchRequestPending);
-    personAction.dataset.personAction = launchRequestPending ? "launch-approval" : "none";
+    personAction.classList.remove("is-pending");
+    personAction.dataset.personAction = "none";
     const eyebrow = personAction.querySelector(".workbench-eyebrow");
     const title = personAction.querySelector("h3");
     const description = personAction.querySelector("h3 + p");
     if (eyebrow) {
-      eyebrow.textContent = launchRequestPending ? "Person required" : "Person action";
+      eyebrow.textContent = "Person action";
     }
     if (title) {
-      title.textContent = launchRequestPending
-        ? "Review Launch request in Controller"
-        : "No pending person action";
+      title.textContent = "No pending person action";
     }
     if (description) {
-      description.textContent = launchRequestPending
-        ? "Approval remains inside the focused Controller conversation."
-        : "The Cockpit cannot assert Launch approval.";
+      description.textContent = "Launch uses its own optional confirmation preference.";
     }
   }
 };
@@ -1463,22 +1610,15 @@ const renderWorkbench = (message) => {
       ? `${focused.provider.providerId} · runtime-owned PTY · attachment negotiating`
       : "No Controller provider is attached."),
   );
-  const launchRequestPending = observation.launchRequest?.status === "pending";
   const personAction = element("section", {
     id: "workbench-person-action",
-    class: `workbench-context__section workbench-person-action${
-      launchRequestPending ? " is-pending" : ""}`,
-    "data-person-action": launchRequestPending ? "launch-approval" : "none",
+    class: "workbench-context__section workbench-person-action",
+    "data-person-action": "none",
   });
   personAction.append(
-    element("p", { class: "workbench-eyebrow" },
-      launchRequestPending ? "Person required" : "Person action"),
-    element("h3", {}, launchRequestPending
-      ? "Review Launch request in Controller"
-      : "No pending person action"),
-    element("p", {}, launchRequestPending
-      ? "Approval remains inside the focused Controller conversation."
-      : "The Cockpit cannot assert Launch approval."),
+    element("p", { class: "workbench-eyebrow" }, "Person action"),
+    element("h3", {}, "No pending person action"),
+    element("p", {}, "Launch uses its own optional confirmation preference."),
   );
   context.append(contextHeader, attachment, personAction, planning, harnessRun);
   shell.append(navigation, main, context);
@@ -1680,6 +1820,32 @@ socket.addEventListener("message", (event) => {
     return;
   }
 
+  if (message?.type === "runtime.harness-run.launch-result") {
+    if (
+      !runtimeNegotiated
+      || !harnessLaunchFeedback
+      || message.requestId !== pendingHarnessLaunchRequestId
+    ) {
+      requireReload("runtime_harness_launch_result_mismatch");
+      return;
+    }
+    pendingHarnessLaunchRequestId = null;
+    const launchButton = document.getElementById("launch-harness");
+    if (launchButton) {
+      launchButton.disabled = hostConnectionStatus !== "connected"
+        || !selectedProjectLaunchReady();
+    }
+    if (message.outcome.type === "harness.run.launch.result") {
+      harnessLaunchFeedback.textContent =
+        `Harness run ${message.outcome.run.harnessRunId} launched.`;
+      requestHarnessRunObservation();
+    } else {
+      harnessLaunchFeedback.textContent =
+        `Harness was not launched: ${message.outcome.code}.`;
+    }
+    return;
+  }
+
   if (message?.type === "runtime.harness-run.logs.result") {
     if (!runtimeNegotiated || !harnessRunSection) {
       requireReload("runtime_harness_logs_before_negotiation");
@@ -1787,14 +1953,8 @@ socket.addEventListener("message", (event) => {
     harnessObservation?.type === "harness.run.observe.result"
     && resynchronizationConsistent
     && (harnessObservation.run === null
-      ? harnessObservation.launchRequest === null
-        || (
-          harnessObservation.launchRequest?.project?.projectId
-            === message?.viewModel?.projectPreparation?.current?.projectId
-          && harnessObservation.launchRequest?.execution?.status === "not_started"
-        )
-      : harnessObservation.launchRequest?.launchRequestId
-        === harnessObservation.run.launchRequestId);
+      || harnessObservation.run.projectId
+        === message?.viewModel?.projectPreparation?.current?.projectId);
 
   if (
     message?.type !== "runtime.hello-ack"

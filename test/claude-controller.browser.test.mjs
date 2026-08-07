@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { launchBrowser } from "./browser-launch.mjs";
@@ -28,17 +28,16 @@ test("local-walking-skeleton/operates-installed-claude-controller uses the share
 if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
   printf '%s\\n' '2.1.141 (Claude Code)'
 elif [ "$#" -eq 1 ] && [ "$1" = "--help" ]; then
-  printf '%s\\n' '--session-id <uuid> --plugin-dir <path>'
-elif [ "$1" = "plugin" ] && [ "$2" = "validate" ]; then
-  printf '%s\\n' 'Validated plugin'
-elif [ "$1" = "--plugin-dir" ] && [ "$3" = "plugin" ] && [ "$4" = "list" ]; then
-  printf '%s' '[{"name":"sandking-controller","version":"1.0.0"}]'
+  printf '%s\\n' '--session-id <uuid> --settings <json>'
 elif [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   printf '%s' '{"loggedIn":true}'
 else
   if [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then exit 88; fi
   case " $* " in *' --session-id '*) ;; *) exit 89 ;; esac
-  case " $* " in *' --plugin-dir '*) ;; *) exit 89 ;; esac
+  case " $* " in *' --plugin-dir '*) exit 89 ;; esac
+  command -v sandking >/dev/null || exit 90
+  sandking --help >/dev/null || exit 91
+  printf 'Discovered ordinary sandking CLI help.\\r\\n'
   printf 'Fake installed Claude owns this runtime PTY.\\r\\n'
   printf 'Working context directory: %s\\r\\n' "$PWD"
   while IFS= read -r _line; do :; done
@@ -48,6 +47,7 @@ fi
   const productEnvironment = {
     ...process.env,
     HOME: userHome,
+    PATH: `${dirname(installed.command)}:${process.env.PATH ?? ""}`,
     SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
     ANTHROPIC_API_KEY: secret,
     CLAUDE_CODE_OAUTH_TOKEN: `${secret}-oauth`,
@@ -94,7 +94,7 @@ fi
 
     await page.locator("#project-path").fill(projectPath);
     await page.locator("#open-project").click();
-    await page.waitForSelector("#project-readiness[data-launch-request-ready='true']", {
+    await page.waitForSelector("#project-readiness[data-harness-launch-ready='true']", {
       timeout: 90_000,
     });
     assert.equal(await page.locator("#open-project-claude-controller").isEnabled(), true);
@@ -112,7 +112,15 @@ fi
       /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
     await page.waitForFunction((path) => document.querySelector(
       "#project-controller-terminal-output",
-    )?.textContent?.includes(`Working context directory: ${path}`), projectPath);
+    )?.textContent?.includes(`Working context directory: ${path}`), projectPath, {
+      timeout: 180_000,
+    }).catch(async (error) => assert.fail(
+      `${error.message}\nterminal output: ${JSON.stringify(
+        await page.locator("#project-controller-terminal-output").textContent(),
+      )}`,
+    ));
+    assert.match(await page.locator("#project-controller-terminal-output").textContent(),
+      /Discovered ordinary sandking CLI help/);
     assert.deepEqual(sessionOpenRequests, [{
       projectId: await panel.getAttribute("data-work-context-id"),
       providerId: "claude-code",
@@ -130,9 +138,14 @@ fi
     assert.equal(retained.terminal.runtimeOwned, true);
     assert.equal(retained.terminal.status, "running");
     const auditText = await readFile(join(dataDir, "audit.jsonl"), "utf8");
+    const audits = auditText.trim().split("\n").map((line) => JSON.parse(line));
+    assert.ok(audits.some((audit) =>
+      audit.action === "controller.provider.operation"
+      && audit.outcome === "accepted"
+      && audit.details.sessionId === controllerSessionId
+      && audit.details.operation === "controller-cli.describe"));
     assert.doesNotMatch(auditText + JSON.stringify(sessions), new RegExp(secret));
     if (process.env.SANDKING_ACCEPTANCE_OBSERVATION_PATH) {
-      const audits = auditText.trim().split("\n").map((line) => JSON.parse(line));
       const controllerStart = audits.find((audit) =>
         audit.action === "controller.session.start"
         && audit.outcome === "accepted"
@@ -153,15 +166,10 @@ fi
             adapterProtocol: retained.adapterProtocol,
             reportedVersion: "2.1.141",
             destinationLocalAuthentication: true,
-            capabilityProbe:
-              "non-model-cli-help-strict-plugin-validation-and-session-plugin-inventory",
+            capabilityProbe: "non-model-cli-help-and-stable-session-identity",
             reportedCapabilities: retained.capabilities,
-            pluginId: "sandking-controller",
-            pluginVersion: "1.0.0",
-            pluginScope: "session",
-            pluginLoading: "--plugin-dir",
             pluginInstalled: false,
-            shimBoundary: "session-plugin-private-typed-shim",
+            controllerCommand: "ordinary-sandking-cli",
           },
           focusedSession: {
             sessionId: controllerSessionId,
@@ -178,9 +186,7 @@ fi
             "cockpit.project-focused-session",
             "controller-runtime.provider-session",
             "controller.work-context.inspect",
-            "controller.launch-request.prepare",
-            "controller.launch-request.decide",
-            "controller.harness-run.start",
+            "controller.harness-run.launch",
             "cockpit.harness-run.observe"
           ],
           typedProviderOutcomesTested: [

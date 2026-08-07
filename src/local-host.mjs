@@ -19,10 +19,6 @@ import {
 import { acceptHostIdentity, readHostIdentity } from "./host-identity.mjs";
 import { appendPrivateJsonLine } from "./private-state.mjs";
 import { createProjectRegistry } from "./project-registration.mjs";
-import {
-  createLaunchRequestManager,
-  prepareConformanceHarnessLaunch,
-} from "./launch-requests.mjs";
 import { createHarnessRunManager } from "./harness-runs.mjs";
 
 /** @param {string[]} argv */
@@ -342,21 +338,13 @@ const main = async () => {
     dataDir,
     recordAudit: recordProjectAudit,
   });
-  const launchRequests = await createLaunchRequestManager({
-    dataDir,
-    hostId: negotiatedHostId,
-    recordAudit: recordProjectAudit,
-    loadLaunchContext: projectRegistry.loadLaunchContext,
-    prepareHarness: prepareConformanceHarnessLaunch,
-  });
   const harnessRuns = await createHarnessRunManager({
     dataDir,
     hostId: negotiatedHostId,
     recordAudit: recordProjectAudit,
-    launchRequests,
     loadLaunchContext: projectRegistry.loadLaunchContext,
   });
-  let delayedHarnessRunStartResponse = false;
+  let delayedHarnessRunLaunchResponse = false;
   let pausedAfterProjectRegistration = false;
 
   // The Host is a durable process boundary. It remains available after
@@ -412,18 +400,10 @@ const main = async () => {
       writeFrame(process.stdout, await projectRegistry.pinConformanceHarness(frame.message));
       continue;
     }
-    if (frame.message.type === "launch.request.prepare") {
-      writeFrame(process.stdout, await launchRequests.prepare(frame.message));
-      continue;
-    }
-    if (frame.message.type === "launch.request.decision") {
-      writeFrame(process.stdout, await launchRequests.decide(frame.message));
-      continue;
-    }
-    if (frame.message.type === "harness.run.start") {
-      const outcome = await harnessRuns.start(frame.message);
-      if (mode === "delayed-harness-run-start-response" && !delayedHarnessRunStartResponse) {
-        delayedHarnessRunStartResponse = true;
+    if (frame.message.type === "harness.run.launch") {
+      const outcome = await harnessRuns.launch(frame.message);
+      if (mode === "delayed-harness-run-launch-response" && !delayedHarnessRunLaunchResponse) {
+        delayedHarnessRunLaunchResponse = true;
         await new Promise((resolve) => setTimeout(resolve, 3_250));
       }
       writeFrame(process.stdout, outcome);

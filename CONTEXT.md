@@ -80,8 +80,8 @@ _Avoid_: Ad hoc prompt, chat summary, mini-spec
 A revisioned, reviewed proposal to change the structure or meaning of a published Ticket set.
 _Avoid_: Ticket edit, backlog rewrite, graph patch
 
-**Launch request**:
-A controller-prepared proposal for starting a harness run, presented to a person for explicit approval before delegated work begins.
+**Harness launch**:
+A single Controller or Cockpit action that validates the current Project and pinned Harness and immediately starts a durable harness run.
 _Avoid_: Run command, confirmation prompt, job
 
 **Credential transfer request**:

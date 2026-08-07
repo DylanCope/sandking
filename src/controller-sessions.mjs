@@ -59,16 +59,35 @@ const reportedCapabilitiesSchema = z.array(z.enum([
   "controller.session.interactive",
   "controller.session.terminate",
   "controller.work-context.inspect",
-  "controller.launch-request.prepare",
-  "controller.launch-request.decide",
-  "controller.harness-run.start",
+  "controller.harness-run.launch",
   "controller.session.stable-identity",
   "controller.session.typed-exit",
-])).max(9).refine((capabilities) => new Set(capabilities).size === capabilities.length);
+])).max(7).refine((capabilities) => new Set(capabilities).size === capabilities.length);
 const operationalCapabilitiesSchema = reportedCapabilitiesSchema.refine((capabilities) =>
   capabilities.includes("controller.session.start")
   && capabilities.includes("controller.session.interactive")
   && capabilities.includes("controller.session.terminate"));
+const legacyOperationalCapabilitiesSchema = z.array(z.enum([
+  "controller.session.start",
+  "controller.session.interactive",
+  "controller.session.terminate",
+  "controller.work-context.inspect",
+  "controller.session.stable-identity",
+  "controller.launch-request.prepare",
+  "controller.launch-request.decide",
+  "controller.harness-run.start",
+  "controller.session.typed-exit",
+])).max(9).refine((capabilities) =>
+  new Set(capabilities).size === capabilities.length
+  && capabilities.includes("controller.session.start")
+  && capabilities.includes("controller.session.interactive")
+  && capabilities.includes("controller.session.terminate"));
+// Retained main-era sessions remain readable for reconnect and history, but
+// retired launch capabilities cannot be mixed into a current session record.
+const retainedCapabilitiesSchema = z.union([
+  operationalCapabilitiesSchema,
+  legacyOperationalCapabilitiesSchema,
+]);
 const availabilitySchema = z.object({
   status: z.enum(["available", "unavailable", "unauthenticated"]),
   command: z.literal("claude"),
@@ -88,15 +107,6 @@ const availabilitySchema = z.object({
     retryable: z.boolean(),
   }).strict().nullable(),
 }).strict();
-const integrationSchema = z.object({
-  pluginId: z.literal("sandking-controller"),
-  pluginVersion: z.literal("1.0.0"),
-  scope: z.literal("session"),
-  loading: z.literal("--plugin-dir"),
-  installed: z.literal(false),
-  boundary: z.literal("session-plugin-private-typed-shim"),
-  credentialsTransferred: z.literal(false),
-}).strict();
 const probeSchema = z.object({
   type: z.literal("provider.adapter.probe"),
   adapterProtocol: adapterProtocolSchema,
@@ -108,7 +118,6 @@ const probeSchema = z.object({
     ptyRequired: z.literal(true),
     runtimeOwnershipRequired: z.literal(true),
   }).strict(),
-  integration: integrationSchema.optional(),
 }).strict().superRefine((probe, context) => {
   const expected = providerDefinitions[probe.provider.providerId];
   if (expected.adapterId !== probe.adapterId) {
@@ -119,7 +128,7 @@ const probeSchema = z.object({
   }
   if (
     probe.availability?.status === "available"
-    && probe.capabilities.length !== 9
+    && probe.capabilities.length !== 6
   ) {
     context.addIssue({ code: "custom", message: "available provider capabilities incomplete" });
   }
@@ -147,9 +156,6 @@ const preparedSchema = z.object({
     endpoint: z.string().min(1).max(512),
   }).strict(),
   sessionIdentity: sessionIdentitySchema.optional(),
-  integration: integrationSchema.extend({
-    pluginDirectory: z.string().min(1).max(4_096),
-  }).strict().optional(),
   command: z.object({
     executable: z.string().min(1),
     args: z.array(z.string()).min(1).max(32),
@@ -246,12 +252,19 @@ const providerOperationRequestSchema = z.object({
   providerSessionId: providerSessionIdSchema,
   operation: z.enum([
     "work-context.inspect",
-    "launch-request.prepare",
-    "launch-request.decide",
-    "harness-run.start",
+    "controller-cli.describe",
+    "harness-run.launch",
     "harness-run.lookup",
   ]),
   input: z.unknown(),
+}).strict();
+const controllerCliDescriptionSchema = z.object({
+  type: z.literal("controller.cli.description"),
+  protocol: z.literal("1.0.0"),
+  command: z.literal("sandking launch"),
+  focusedProjectId: z.string().regex(/^project-[a-f0-9]{24}$/),
+  projectArgumentOptional: z.literal(true),
+  pluginRequired: z.literal(false),
 }).strict();
 const retainedSessionSchema = z.object({
   sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
@@ -259,7 +272,7 @@ const retainedSessionSchema = z.object({
   providerId: providerIdSchema,
   providerAdapterId: adapterIdSchema,
   adapterProtocol: z.string().regex(/^1\.[0-9]+\.[0-9]+$/),
-  capabilities: operationalCapabilitiesSchema,
+  capabilities: retainedCapabilitiesSchema,
   providerAvailability: availabilitySchema.optional(),
   sessionIdentity: sessionIdentitySchema.optional(),
   workContextId: identifierSchema,
@@ -577,6 +590,16 @@ const openProviderControl = async (context) => {
               operation: operationRequest.operation,
               input: operationRequest.input,
             });
+            const cliDescription = operationRequest.operation === "controller-cli.describe"
+              ? controllerCliDescriptionSchema.safeParse(outcome)
+              : null;
+            if (
+              cliDescription
+              && (!cliDescription.success
+                || cliDescription.data.focusedProjectId !== context.workContext.workContextId)
+            ) {
+              throw new ControllerSessionError("controller_cli_protocol_invalid");
+            }
             await context.recordAudit("controller.provider.operation", "accepted", {
               sessionId: context.sessionId,
               providerSessionId: context.providerSessionId,
@@ -584,6 +607,12 @@ const openProviderControl = async (context) => {
               operation: operationRequest.operation,
               operationId: operationRequest.operationId,
               idempotencyKeyHash,
+              ...(cliDescription?.success ? {
+                cliProtocol: cliDescription.data.protocol,
+                cliCommand: cliDescription.data.command,
+                projectArgumentOptional: cliDescription.data.projectArgumentOptional,
+                pluginRequired: cliDescription.data.pluginRequired,
+              } : {}),
               inputRetained: false,
             });
             socket.write(`${JSON.stringify({
@@ -1107,7 +1136,6 @@ export const createControllerSessionManager = async (options) => {
         },
         ...(adapter.availability ? { availability: adapter.availability } : {}),
         ...(prepared.sessionIdentity ? { sessionIdentity: prepared.sessionIdentity } : {}),
-        ...(adapter.integration ? { integration: adapter.integration } : {}),
       },
       terminal: {
         streamId,

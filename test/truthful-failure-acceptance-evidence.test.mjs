@@ -10,6 +10,7 @@ import {
   captureIssue122EvidenceSourceRevision,
   ISSUE_122_DEMONSTRATED_PATHS,
 } from "./issue-122-evidence-source.mjs";
+import { verifyRetainedEvidenceCurrentOrSuperseded } from "./retained-evidence-supersession.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -78,20 +79,12 @@ test("issue 122 manifest traces the complete truthful-failure slice", () => {
 });
 
 test("retained issue 122 evidence identifies the unchanged demonstrated revision", async () => {
-  const { stdout: resolvedCommit } = await execFileAsync(
-    "git",
-    ["rev-parse", "--verify", `${evidence.generatedFromCommit}^{commit}`],
-    { cwd: repositoryRoot },
-  );
-  assert.equal(resolvedCommit.trim(), evidence.generatedFromCommit);
-  await execFileAsync("git", [
-    "merge-base", "--is-ancestor", evidence.generatedFromCommit, "HEAD",
-  ], { cwd: repositoryRoot });
-  const { stdout: changes } = await execFileAsync("git", [
-    "diff", "--name-only", `${evidence.generatedFromCommit}..HEAD`, "--",
-    ...ISSUE_122_DEMONSTRATED_PATHS,
-  ], { cwd: repositoryRoot });
-  assert.equal(changes.trim(), "", `retained evidence predates demonstrated changes:\n${changes}`);
+  await verifyRetainedEvidenceCurrentOrSuperseded({
+    repositoryRoot,
+    issue: 122,
+    evidence,
+    demonstratedPaths: ISSUE_122_DEMONSTRATED_PATHS,
+  });
 });
 
 test("retained issue 122 evidence proves a truthful visible Harness failure", () => {

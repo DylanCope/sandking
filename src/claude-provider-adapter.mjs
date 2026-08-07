@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,10 +27,7 @@ const capabilities = Object.freeze([
   "controller.session.start",
   "controller.session.interactive",
   "controller.session.terminate",
-  "controller.work-context.inspect",
-  "controller.launch-request.prepare",
-  "controller.launch-request.decide",
-  "controller.harness-run.start",
+  "controller.harness-run.launch",
   "controller.session.stable-identity",
   "controller.session.typed-exit",
 ]);
@@ -38,20 +36,11 @@ const baseSessionCapabilities = Object.freeze([
   "controller.session.interactive",
   "controller.session.terminate",
 ]);
-const pluginCapabilities = Object.freeze([
-  "controller.work-context.inspect",
-  "controller.launch-request.prepare",
-  "controller.launch-request.decide",
-  "controller.harness-run.start",
-  "controller.session.typed-exit",
-]);
 const adapterPath = fileURLToPath(import.meta.url);
-const pluginDirectory = fileURLToPath(new URL("./claude-controller-plugin", import.meta.url));
 const controllerSessionPattern = /^controller-session-[a-f0-9]{24}$/;
 const providerSessionPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const workContextPattern = /^[a-zA-Z0-9._:-]{1,160}$/;
 const canonicalReferencePattern = /^(?:github:fixture:issue:[0-9]+|sandking:project:project-[a-f0-9]{24})$/;
-const launchRequestPattern = /^launch-request-[a-f0-9]{24}$/;
 const claudeStopFailureTypes = new Set([
   "authentication_failed",
   "oauth_org_not_allowed",
@@ -65,6 +54,19 @@ const claudeStopFailureTypes = new Set([
   "max_output_tokens",
   "unknown",
 ]);
+// `--settings` predates the notification-only StopFailure event. Treat the
+// documented 2.1.78 introduction as part of the typed-exit capability seam.
+const claudeStopFailureMinimumVersion = Object.freeze([2, 1, 78]);
+
+/** @param {string} version @param {readonly number[]} minimum */
+const versionAtLeast = (version, minimum) => {
+  const parts = version.split(".").map(Number);
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (parts[index] > minimum[index]) return true;
+    if (parts[index] < minimum[index]) return false;
+  }
+  return true;
+};
 
 /** @param {unknown} input */
 export const classifyClaudeStopFailure = (input) => {
@@ -103,9 +105,17 @@ export const classifyClaudeStopFailure = (input) => {
   if (failureType === "overloaded" || failureType === "server_error") {
     return { code: "provider_outage", retryable: true, source: "claude-stop-failure" };
   }
-  const details = "error_details" in input && typeof input.error_details === "string"
-    ? input.error_details.slice(0, 512)
-    : "";
+  const details = [
+    "error_details" in input && typeof input.error_details === "string"
+      ? input.error_details
+      : "",
+    "last_assistant_message" in input && typeof input.last_assistant_message === "string"
+      ? input.last_assistant_message
+      : "",
+  ]
+    .filter(Boolean)
+    .map((detail) => detail.slice(0, 512))
+    .join("\n");
   if (
     failureType === "network_error"
     || (failureType === "unknown"
@@ -216,22 +226,6 @@ const parseClaudeAuthenticationStatus = (stdout) => {
   return declarations[0];
 };
 
-/** @param {unknown} inventory */
-const hasLoadedControllerPlugin = (inventory) => {
-  const records = Array.isArray(inventory)
-    ? inventory
-    : inventory && typeof inventory === "object" && "plugins" in inventory
-      && Array.isArray(inventory.plugins)
-      ? inventory.plugins
-      : [];
-  return records.some((record) => record && typeof record === "object"
-    && (record.name === "sandking-controller"
-      || record.id === "sandking-controller"
-      || record.id === "sandking-controller@inline")
-    && record.version === "1.0.0"
-    && record.enabled !== false);
-};
-
 /** @param {string[]} detectedCapabilities */
 const baseProbe = (detectedCapabilities) => ({
   type: "provider.adapter.probe",
@@ -243,19 +237,10 @@ const baseProbe = (detectedCapabilities) => ({
     ptyRequired: true,
     runtimeOwnershipRequired: true,
   },
-  integration: {
-    pluginId: "sandking-controller",
-    pluginVersion: "1.0.0",
-    scope: "session",
-    loading: "--plugin-dir",
-    installed: false,
-    boundary: "session-plugin-private-typed-shim",
-    credentialsTransferred: false,
-  },
 });
 
-/** @param {string} executable */
-const detectClaudeCapabilities = async (executable) => {
+/** @param {string} executable @param {string} version */
+const detectClaudeCapabilities = async (executable, version) => {
   const detected = new Set();
   let help;
   try {
@@ -266,21 +251,13 @@ const detectClaudeCapabilities = async (executable) => {
   for (const capability of baseSessionCapabilities) detected.add(capability);
   if (/(?:^|\s)--session-id(?:[=\s,]|$)/m.test(help)) {
     detected.add("controller.session.stable-identity");
+    detected.add("controller.harness-run.launch");
   }
-  if (/(?:^|\s)--plugin-dir(?:[=\s,]|$)/m.test(help)) {
-    try {
-      await invokeClaudeMetadataCommand(executable, [
-        "plugin", "validate", pluginDirectory, "--strict",
-      ]);
-      const result = await invokeClaudeMetadataCommand(executable, [
-        "--plugin-dir", pluginDirectory, "plugin", "list", "--json",
-      ]);
-      if (hasLoadedControllerPlugin(JSON.parse(result.stdout))) {
-        for (const capability of pluginCapabilities) detected.add(capability);
-      }
-    } catch {
-      // A CLI that cannot load and enumerate the shipped plugin does not support its capabilities.
-    }
+  if (
+    /(?:^|\s)--settings(?:[=\s,]|$)/m.test(help)
+    && versionAtLeast(version, claudeStopFailureMinimumVersion)
+  ) {
+    detected.add("controller.session.typed-exit");
   }
   return capabilities.filter((capability) => detected.has(capability));
 };
@@ -312,7 +289,7 @@ export const probeClaude = async () => {
     };
   }
 
-  const detectedCapabilities = await detectClaudeCapabilities(executable);
+  const detectedCapabilities = await detectClaudeCapabilities(executable, version);
   if (detectedCapabilities.length !== capabilities.length) {
     return {
       ...baseProbe(detectedCapabilities),
@@ -413,8 +390,6 @@ const prepareClaude = async (argv) => {
   }
   const environment = {
     ...createClaudeDestinationEnvironment(),
-    SANDKING_CLAUDE_SESSION_ID: providerSessionId,
-    SANDKING_CONTROLLER_SESSION_ID: sessionId,
   };
   return {
     type: "provider.session.prepared",
@@ -438,16 +413,6 @@ const prepareClaude = async (argv) => {
       stable: true,
       source: "controller-assigned-supported-cli-flag",
     },
-    integration: {
-      pluginDirectory,
-      pluginId: "sandking-controller",
-      pluginVersion: "1.0.0",
-      scope: "session",
-      loading: "--plugin-dir",
-      installed: false,
-      boundary: "session-plugin-private-typed-shim",
-      credentialsTransferred: false,
-    },
     command: {
       executable: process.execPath,
       args: [
@@ -461,7 +426,6 @@ const prepareClaude = async (argv) => {
       ],
       providerArgs: [
         "--session-id", providerSessionId,
-        "--plugin-dir", pluginDirectory,
       ],
       environment,
     },
@@ -476,6 +440,7 @@ const prepareClaude = async (argv) => {
 const openRuntimeControl = async (endpoint, readyMessage) => new Promise((resolve, reject) => {
   const socket = createConnection(endpoint);
   const pending = new Map();
+  const timedOutOperationIds = new Set();
   let input = "";
   let operationSequence = 0;
   let settled = false;
@@ -500,6 +465,7 @@ const openRuntimeControl = async (endpoint, readyMessage) => new Promise((resolv
         operationSequence += 1;
         const operationTimeout = setTimeout(() => {
           pending.delete(operationId);
+          timedOutOperationIds.add(operationId);
           rejectOperation(new Error("provider_operation_timeout"));
         }, 5_000);
         pending.set(operationId, {
@@ -556,7 +522,17 @@ const openRuntimeControl = async (endpoint, readyMessage) => new Promise((resolv
         return;
       }
       const operation = pending.get(response?.operationId);
-      if (!operation || response?.type !== "provider.operation.result") {
+      if (!operation) {
+        if (
+          response?.type === "provider.operation.result"
+          && timedOutOperationIds.delete(response.operationId)
+        ) {
+          continue;
+        }
+        socket.destroy(new Error("provider_control_protocol_invalid"));
+        return;
+      }
+      if (response?.type !== "provider.operation.result") {
         socket.destroy(new Error("provider_control_protocol_invalid"));
         return;
       }
@@ -571,6 +547,7 @@ const openRuntimeControl = async (endpoint, readyMessage) => new Promise((resolv
       operation.reject(new Error("provider_control_unavailable"));
     }
     pending.clear();
+    timedOutOperationIds.clear();
     if (!settled) finish(new Error("provider_control_unavailable"));
   });
 });
@@ -581,132 +558,236 @@ const canonicalDigest = (value) => createHash("sha256")
   .digest("hex");
 
 /**
- * @param {{sessionId: string, providerSessionId: string, control: any, recordProviderFailure: (failure: {code: string, retryable: boolean, source: string}) => void}} options
+ * Keep the adapter entry point self-contained while enforcing the same
+ * correlation contract as the packaged CLI at the provider/runtime seam.
+ * @param {any} outcome
+ * @param {{projectId: string, controllerSessionId: string, parameters: any, idempotencyKey: string}} request
  */
-const openPluginShimServer = async ({
+const requireCorrelatedControllerLaunchResult = (outcome, request) => {
+  const run = outcome?.run;
+  const expectedIdempotencyKeyHash = `sha256:${createHash("sha256")
+    .update(request.idempotencyKey).digest("hex")}`;
+  if (
+    outcome?.type !== "harness.run.launch.result"
+    || !["harness_run_created", "harness_run_found"].includes(outcome.code)
+    || outcome.authorizationClass !== "harness_run_launch"
+    || outcome.idempotencyKeyHash !== expectedIdempotencyKeyHash
+    || !/^harness-run-[a-f0-9]{24}$/.test(run?.harnessRunId ?? "")
+    || run?.projectId !== request.projectId
+    || run?.controllerSessionId !== request.controllerSessionId
+    || run?.source !== "controller-cli"
+    || run?.parameters?.issueNumber !== request.parameters.issueNumber
+    || run?.parameters?.targetBranch !== request.parameters.targetBranch
+  ) {
+    throw new Error("controller_cli_protocol_invalid");
+  }
+  return outcome;
+};
+
+/**
+ * A successful lookup can recover either side of the original launch
+ * mutation. Keep that transport success distinct from the launch outcome so
+ * the ordinary CLI never exits zero for a durably retained Host failure.
+ * @param {any} outcome
+ * @param {{projectId: string, controllerSessionId: string, parameters: any, idempotencyKey: string}} request
+ */
+const requireSuccessfulControllerLaunch = (outcome, request) => {
+  if (
+    outcome?.type === "harness.run.launch.result"
+    && /^harness-run-[a-f0-9]{24}$/.test(outcome.run?.harnessRunId ?? "")
+  ) {
+    return requireCorrelatedControllerLaunchResult(outcome, request);
+  }
+  if (
+    outcome?.type === "harness.run.launch.failure"
+    && /^[a-z0-9_]{1,128}$/.test(outcome.code ?? "")
+  ) {
+    throw new Error(outcome.code);
+  }
+  throw new Error("controller_cli_protocol_invalid");
+};
+
+/**
+ * Preserve Claude's typed API failures without loading a plugin. This
+ * provider-owned, notification-only HTTP hook does not mediate tool calls or
+ * Harness launches; it only forwards the documented StopFailure event.
+ * @param {{providerSessionId: string, recordProviderFailure: (failure: {code: string, retryable: boolean, source: string}) => void}} options
+ */
+const openClaudeFailureTelemetry = async ({ providerSessionId, recordProviderFailure }) => {
+  const path = `/stop-failure/${randomBytes(12).toString("hex")}`;
+  const server = createHttpServer((request, response) => {
+    if (
+      request.method !== "POST"
+      || request.url !== path
+      || request.headers["content-type"]?.split(";", 1)[0] !== "application/json"
+    ) {
+      response.writeHead(404).end();
+      return;
+    }
+    /** @type {Buffer[]} */
+    const chunks = [];
+    let size = 0;
+    request.on("data", (chunk) => {
+      size += chunk.byteLength;
+      if (size > 32_768) {
+        request.destroy();
+        response.writeHead(413).end();
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    });
+    request.once("end", () => {
+      if (size > 32_768) return;
+      let event;
+      try {
+        event = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        response.writeHead(400).end();
+        return;
+      }
+      if (
+        event?.hook_event_name !== "StopFailure"
+        || event.session_id !== providerSessionId
+      ) {
+        response.writeHead(400).end();
+        return;
+      }
+      recordProviderFailure(classifyClaudeStopFailure(event));
+      response.writeHead(204).end();
+    });
+  });
+  server.maxConnections = 4;
+  await new Promise((resolve, reject) => {
+    const onError = () => reject(new Error("claude_failure_telemetry_unavailable"));
+    server.once("error", onError);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", onError);
+      resolve(undefined);
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await new Promise((resolve) => server.close(() => resolve(undefined)));
+    throw new Error("claude_failure_telemetry_unavailable");
+  }
+  const url = `http://127.0.0.1:${address.port}${path}`;
+  return {
+    settings: {
+      allowedHttpHookUrls: [url],
+      hooks: {
+        StopFailure: [{
+          hooks: [{ type: "http", url, timeout: 3 }],
+        }],
+      },
+    },
+    close: () => new Promise((resolve) => server.close(() => resolve(undefined))),
+  };
+};
+
+/**
+ * @param {{sessionId: string, workContextId: string, control: any}} options
+ */
+const openControllerCliServer = async ({
   sessionId,
-  providerSessionId,
+  workContextId,
   control,
-  recordProviderFailure,
 }) => {
   const directory = process.platform === "win32"
     ? null
-    : await mkdtemp(join(tmpdir(), "sandking-claude-shim-"));
+    : await mkdtemp(join(tmpdir(), "sandking-controller-cli-"));
   const endpoint = directory
     ? join(directory, "operations.sock")
-    : `\\\\.\\pipe\\sandking-claude-shim-${canonicalDigest({ sessionId }).slice(0, 24)}`;
+    : `\\\\.\\pipe\\sandking-controller-cli-${canonicalDigest({ sessionId }).slice(0, 24)}`;
   let closed = false;
+  let providerReady = false;
+  /** @type {() => void} */
+  let releaseProviderReady = () => undefined;
+  /** @type {Promise<void>} */
+  const waitForProviderReady = new Promise((resolve) => {
+    releaseProviderReady = () => resolve();
+  });
 
   /** @param {any} request */
   const handle = async (request) => {
     if (
-      request?.type !== "claude.plugin.operation.request"
+      request?.type !== "sandking.cli.request"
       || request.protocol !== "1.0.0"
-      || typeof request.operationId !== "string"
-      || !/^claude-plugin-operation-[a-f0-9]{24}$/.test(request.operationId)
+      || !/^sandking-cli-[a-f0-9]{16}$/.test(request.requestId ?? "")
       || request.controllerSessionId !== sessionId
-      || request.providerSessionId !== providerSessionId
-      || !request.input
-      || typeof request.input !== "object"
+      || request.projectId !== workContextId
+      || !["describe", "harness-run.launch"].includes(request.operation)
     ) {
-      throw new Error("claude_plugin_protocol_invalid");
+      throw new Error("controller_cli_contract_invalid");
     }
-    if (request.operation === "work-context.inspect") {
-      return control.request("work-context.inspect", {});
+    // A freshly spawned provider can discover and invoke `sandking` before
+    // this adapter's spawn event is delivered. Keep that operation queued so
+    // provider.session.ready is always the first frame on the shared control
+    // socket; otherwise the runtime can reject a valid session nondeterministically.
+    await waitForProviderReady;
+    if (!providerReady) {
+      throw new Error("controller_cli_unavailable");
     }
-    if (request.operation === "launch-request.prepare") {
-      const parameters = request.input.parameters;
-      const expiresInSeconds = Number(request.input.expiresInSeconds);
-      if (
-        !parameters
-        || typeof parameters !== "object"
-        || !Number.isSafeInteger(parameters.issueNumber)
-        || parameters.issueNumber < 1
-        || parameters.issueNumber > 4_095
-        || parameters.targetBranch !== `sandcastle/issue-${parameters.issueNumber}`
-        || expiresInSeconds !== 300
-      ) {
-        throw new Error("launch_request_parameters_invalid");
+    if (request.operation === "describe") {
+      return control.request("controller-cli.describe", {});
+    }
+    if (
+      !request.parameters
+      || typeof request.parameters !== "object"
+      || !Number.isSafeInteger(request.parameters.issueNumber)
+      || request.parameters.issueNumber < 1
+      || request.parameters.issueNumber > 999_999_999
+      || request.parameters.targetBranch
+        !== `sandcastle/issue-${request.parameters.issueNumber}`
+      || typeof request.idempotencyKey !== "string"
+      || request.idempotencyKey.length < 1
+      || request.idempotencyKey.length > 256
+    ) {
+      throw new Error("controller_cli_contract_invalid");
+    }
+    const correlation = {
+      projectId: workContextId,
+      controllerSessionId: sessionId,
+      parameters: request.parameters,
+      idempotencyKey: request.idempotencyKey,
+    };
+    try {
+      return requireSuccessfulControllerLaunch(await control.request("harness-run.launch", {
+        parameters: request.parameters,
+        idempotencyKey: request.idempotencyKey,
+      }), correlation);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "provider_operation_timeout") {
+        throw error;
       }
-      return control.request("launch-request.prepare", {
-        parameters,
-        expiresInSeconds,
-        idempotencyKey: `provider:${sessionId}:prepare:${canonicalDigest(parameters)}`,
-      });
-    }
-    if (request.operation === "launch-request.decide") {
-      const { launchRequestId, decision } = request.input;
-      const expectedRevision = Number(request.input.expectedRevision);
-      if (
-        !launchRequestPattern.test(String(launchRequestId))
-        || (decision !== "approved" && decision !== "rejected")
-        || !Number.isSafeInteger(expectedRevision)
-        || expectedRevision < 1
-      ) {
-        throw new Error("launch_request_decision_invalid");
+      let lookup;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          lookup = await control.request("harness-run.lookup", {
+            idempotencyKey: request.idempotencyKey,
+          });
+          break;
+        } catch (lookupError) {
+          if (
+            !(lookupError instanceof Error)
+            || lookupError.message !== "provider_operation_timeout"
+            || attempt === 1
+          ) {
+            throw lookupError;
+          }
+          // The runtime serializes provider operations, so the first lookup
+          // can spend its whole window queued behind the accepted launch.
+          // Retry only the exact same-key read; never issue a second launch.
+        }
       }
-      return control.request("launch-request.decide", {
-        launchRequestId,
-        decision,
-        expectedRevision,
-        idempotencyKey:
-          `provider:${sessionId}:decision:${launchRequestId}:${expectedRevision}:${decision}`,
-      });
-    }
-    if (request.operation === "harness-run.start") {
-      const { launchRequestId } = request.input;
-      const expectedRevision = Number(request.input.expectedRevision);
       if (
-        !launchRequestPattern.test(String(launchRequestId))
-        || !Number.isSafeInteger(expectedRevision)
-        || expectedRevision < 1
+        lookup?.type !== "harness.run.lookup.result"
+        || lookup.found !== true
+        || !lookup.launchOutcome
       ) {
-        throw new Error("harness_run_start_invalid");
+        throw error;
       }
-      return control.request("harness-run.start", {
-        launchRequestId,
-        expectedRevision,
-        idempotencyKey:
-          `provider:${sessionId}:harness-run:start:${launchRequestId}:${expectedRevision}`,
-      });
+      return requireSuccessfulControllerLaunch(lookup.launchOutcome, correlation);
     }
-    if (request.operation === "claude.session-start") {
-      if (
-        request.input.hookEventName !== "SessionStart"
-        || request.input.sessionId !== providerSessionId
-        || !["startup", "resume"].includes(request.input.source)
-      ) {
-        throw new Error("claude_session_identity_mismatch");
-      }
-      const inspected = await control.request("work-context.inspect", {});
-      return {
-        hookSpecificOutput: {
-          hookEventName: "SessionStart",
-          additionalContext:
-            `Sand-King selected work context (sanitized): ${JSON.stringify(inspected)}`,
-        },
-      };
-    }
-    if (request.operation === "claude.stop-failure") {
-      if (
-        request.input.hookEventName !== "StopFailure"
-        || request.input.sessionId !== providerSessionId
-      ) {
-        throw new Error("claude_session_identity_mismatch");
-      }
-      const failure = classifyClaudeStopFailure(request.input);
-      recordProviderFailure(failure);
-      control.notify({
-        type: "provider.session.failure",
-        controlProtocol: adapterProtocol,
-        adapterId,
-        sessionId,
-        providerSessionId,
-        failure,
-      });
-      return { reported: true, failure };
-    }
-    throw new Error("claude_plugin_operation_unsupported");
   };
 
   const server = createNetServer((socket) => {
@@ -729,28 +810,28 @@ const openPluginShimServer = async ({
       }
       handle(request).then(
         (outcome) => socket.end(`${JSON.stringify({
-          type: "claude.plugin.operation.result",
+          type: "sandking.cli.result",
           protocol: "1.0.0",
-          operationId: request.operationId,
+          requestId: request.requestId,
           ok: true,
           outcome,
         })}\n`),
         (error) => socket.end(`${JSON.stringify({
-          type: "claude.plugin.operation.result",
+          type: "sandking.cli.result",
           protocol: "1.0.0",
-          operationId: request.operationId,
+          requestId: request.requestId,
           ok: false,
           failure: {
             code: error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
               ? error.message
-              : "claude_plugin_operation_failed",
+              : "controller_cli_operation_failed",
           },
         })}\n`),
       );
     });
   });
   await new Promise((resolve, reject) => {
-    const onError = () => reject(new Error("claude_plugin_channel_unavailable"));
+    const onError = () => reject(new Error("controller_cli_unavailable"));
     server.once("error", onError);
     server.listen(endpoint, () => {
       server.off("error", onError);
@@ -759,9 +840,16 @@ const openPluginShimServer = async ({
   });
   return {
     endpoint,
+    announceProviderReady: () => {
+      if (closed || providerReady) return false;
+      providerReady = true;
+      releaseProviderReady();
+      return true;
+    },
     close: async () => {
       if (closed) return;
       closed = true;
+      releaseProviderReady();
       await new Promise((resolve) => server.close(() => resolve(undefined)));
       if (directory) await rm(directory, { recursive: true, force: true });
     },
@@ -805,17 +893,31 @@ const runClaude = async (argv) => {
     terminal: { stdinTty: true, stdoutTty: true },
   };
   const control = await openRuntimeControl(controlEndpoint, readyMessage);
-  let providerFailure = null;
-  const shim = await openPluginShimServer({
+  const controllerCli = await openControllerCliServer({
     sessionId,
-    providerSessionId,
+    workContextId,
     control,
+  });
+  let providerFailure = null;
+  const failureTelemetry = await openClaudeFailureTelemetry({
+    providerSessionId,
     recordProviderFailure: (failure) => {
       providerFailure = failure;
+      control.notify({
+        type: "provider.session.failure",
+        controlProtocol: adapterProtocol,
+        adapterId,
+        sessionId,
+        providerSessionId,
+        failure,
+      });
     },
   });
   const executable = process.env.SANDKING_CLAUDE_EXECUTABLE ?? "claude";
-  const providerArgs = ["--session-id", providerSessionId, "--plugin-dir", pluginDirectory];
+  const providerArgs = [
+    "--session-id", providerSessionId,
+    "--settings", JSON.stringify(failureTelemetry.settings),
+  ];
   let runtimeTerminated = false;
   /** @type {import("node:child_process").ChildProcess} */
   let child;
@@ -825,9 +927,9 @@ const runClaude = async (argv) => {
       stdio: "inherit",
       env: {
         ...createClaudeDestinationEnvironment(),
-        SANDKING_CLAUDE_SHIM_ENDPOINT: shim.endpoint,
-        SANDKING_CLAUDE_SESSION_ID: providerSessionId,
+        SANDKING_CONTROLLER_ENDPOINT: controllerCli.endpoint,
         SANDKING_CONTROLLER_SESSION_ID: sessionId,
+        SANDKING_WORK_CONTEXT_ID: workContextId,
       },
     });
     await new Promise((resolve, reject) => {
@@ -835,6 +937,9 @@ const runClaude = async (argv) => {
       child.once("error", reject);
     });
     control.ready();
+    if (!controllerCli.announceProviderReady()) {
+      throw new Error("controller_cli_unavailable");
+    }
   } catch {
     const reason = {
       code: "provider_cli_unavailable",
@@ -849,7 +954,8 @@ const runClaude = async (argv) => {
       providerSessionId,
       reason,
     });
-    await shim.close();
+    await controllerCli.close();
+    await failureTelemetry.close();
     await control.close();
     throw new Error(reason.code);
   }
@@ -886,7 +992,8 @@ const runClaude = async (argv) => {
     providerSessionId,
     reason,
   });
-  await shim.close();
+  await controllerCli.close();
+  await failureTelemetry.close();
   await control.close();
   process.exitCode = outcome.exitCode ?? (outcome.signal ? 1 : 0);
 };

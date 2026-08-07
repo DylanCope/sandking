@@ -104,7 +104,7 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
       await page.locator("#project-test-command").fill("npm run test");
       await page.locator("#open-project").click();
       await page.waitForSelector(
-        "#project-readiness[data-launch-request-ready='true']",
+        "#project-readiness[data-harness-launch-ready='true']",
         { timeout: 10_000 },
       );
       const readiness = page.locator("#project-readiness");
@@ -120,8 +120,8 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
       assert.match(await readiness.textContent(), new RegExp(`Project identity: ${projectId}`));
       assert.match(await readiness.textContent(), new RegExp(`Harness identity: ${harnessId}`));
       assert.match(await readiness.textContent(), new RegExp(pinnedRevision));
-      assert.match(await readiness.textContent(), /A Launch request can be prepared/);
-      assert.match(await page.locator("#project-feedback").textContent(), /ready for Launch/i);
+      assert.match(await readiness.textContent(), /pinned Harness is ready to launch/);
+      assert.match(await page.locator("#project-feedback").textContent(), /ready to launch/i);
 
       assert.equal(projectRequests.length, 2);
       const acceptedRequest = projectRequests[1];

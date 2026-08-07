@@ -10,6 +10,7 @@ import {
   captureCleanEvidenceSourceRevision,
   ISSUE_123_DEMONSTRATED_PATHS,
 } from "./issue-123-evidence-source.mjs";
+import { verifyRetainedEvidenceCurrentOrSuperseded } from "./retained-evidence-supersession.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -82,35 +83,12 @@ test("issue 123 acceptance manifest drives the named packaged browser scenario",
 });
 
 test("retained issue 123 evidence identifies the demonstrated product-path revision", async () => {
-  const { stdout: resolvedCommit } = await execFileAsync(
-    "git",
-    ["rev-parse", "--verify", `${evidence.generatedFromCommit}^{commit}`],
-    { cwd: repositoryRoot },
-  );
-  assert.equal(resolvedCommit.trim(), evidence.generatedFromCommit);
-
-  await execFileAsync(
-    "git",
-    ["merge-base", "--is-ancestor", evidence.generatedFromCommit, "HEAD"],
-    { cwd: repositoryRoot },
-  );
-
-  const { stdout: productPathChanges } = await execFileAsync(
-    "git",
-    [
-      "diff",
-      "--name-only",
-      `${evidence.generatedFromCommit}..HEAD`,
-      "--",
-      ...ISSUE_123_DEMONSTRATED_PATHS,
-    ],
-    { cwd: repositoryRoot },
-  );
-  assert.equal(
-    productPathChanges.trim(),
-    "",
-    `retained evidence predates demonstrated product-path changes:\n${productPathChanges}`,
-  );
+  await verifyRetainedEvidenceCurrentOrSuperseded({
+    repositoryRoot,
+    issue: 123,
+    evidence,
+    demonstratedPaths: ISSUE_123_DEMONSTRATED_PATHS,
+  });
 });
 
 test("retained issue 123 evidence proves the optional Planning path and mutation invariants", () => {

@@ -51,6 +51,20 @@ test("an installed production package launches outside the source checkout", asy
     ], { cwd: root });
 
     const command = join(installDirectory, "node_modules", ".bin", "sandking");
+    const { stdout: help } = await execFileAsync(command, ["launch", "--help"], {
+      cwd: root,
+      env: process.env,
+    });
+    assert.match(help, /sandking launch \[<project-id>\] --issue <number>/);
+    assert.match(help, /defaults to the focused Controller Project/);
+    for (const invocation of [["-h"], ["help", "launch"]]) {
+      const { stdout: discoveredHelp } = await execFileAsync(command, invocation, {
+        cwd: root,
+        env: process.env,
+      });
+      assert.equal(discoveredHelp, help);
+    }
+
     const { stdout } = await execFileAsync(command, [
       "launch", "--data-dir", runtimeDirectory, "--json", "--no-open",
     ], { cwd: root, env: process.env });

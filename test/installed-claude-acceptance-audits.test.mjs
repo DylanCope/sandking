@@ -13,154 +13,256 @@ const projectRegistration = {
 const session = {
   sessionId: `controller-session-${"1".repeat(24)}`,
   providerSessionId: "550e8400-e29b-41d4-a716-446655440000",
+  capabilities: [
+    "controller.session.start",
+    "controller.session.interactive",
+    "controller.session.terminate",
+    "controller.harness-run.launch",
+    "controller.session.stable-identity",
+    "controller.session.typed-exit",
+  ],
   workContextId: projectRegistration.projectId,
   workContextKind: "project",
   canonicalReference: `sandking:project:${projectRegistration.projectId}`,
-};
-const launchRequest = {
-  launchRequestId: `launch-request-${"2".repeat(24)}`,
-  project: { projectId: projectRegistration.projectId },
+  terminal: { streamId: `controller-terminal-${"2".repeat(24)}` },
 };
 const run = {
   harnessRunId: `harness-run-${"3".repeat(24)}`,
   projectId: projectRegistration.projectId,
+  controllerSessionId: session.sessionId,
+  parameters: {
+    issueNumber: 152,
+    targetBranch: "sandcastle/issue-152",
+  },
   outcome: {
     outcomeId: `harness-outcome-${"4".repeat(24)}`,
     status: "succeeded",
-    code: "conformance_completed",
+    code: "conformance_run_succeeded",
   },
 };
-
-const audit = (auditId, action, outcome, details) => ({
-  auditId,
-  action,
-  outcome,
-  details,
-});
+const launchIdempotencyKeyHash = `sha256:${"6".repeat(64)}`;
+const audit = (auditId, action, outcome, details) => ({ auditId, action, outcome, details });
 const acceptedAuditChain = [
   audit("audit-session", "controller.session.start", "accepted", {
     sessionId: session.sessionId,
     controllerSessionId: session.sessionId,
     providerSessionId: session.providerSessionId,
     workContextId: projectRegistration.projectId,
-    canonicalReference: `sandking:project:${projectRegistration.projectId}`,
+    canonicalReference: session.canonicalReference,
   }),
-  audit("audit-session-context", "controller.provider.operation", "accepted", {
+  audit("audit-terminal-attach", "controller.terminal.attach", "accepted", {
+    sessionId: session.sessionId,
+    providerSessionId: session.providerSessionId,
+    streamId: session.terminal.streamId,
+    mode: "read-write",
+  }),
+  audit("audit-cli-description", "controller.provider.operation", "accepted", {
     sessionId: session.sessionId,
     providerSessionId: session.providerSessionId,
     workContextId: projectRegistration.projectId,
-    operation: "work-context.inspect",
+    operation: "controller-cli.describe",
+    cliProtocol: "1.0.0",
+    cliCommand: "sandking launch",
+    projectArgumentOptional: true,
+    pluginRequired: false,
   }),
-  audit("audit-inspect", "controller.provider.operation", "accepted", {
-    sessionId: session.sessionId,
-    providerSessionId: session.providerSessionId,
-    workContextId: projectRegistration.projectId,
-    operation: "work-context.inspect",
-  }),
-  audit("audit-prepare", "launch.request.prepare", "accepted", {
+  audit("audit-launch", "harness.run.launch", "accepted", {
     controllerSessionId: session.sessionId,
-    launchRequestId: launchRequest.launchRequestId,
-    projectId: projectRegistration.projectId,
-  }),
-  audit("audit-decision", "launch.request.decision", "accepted", {
-    controllerSessionId: session.sessionId,
-    launchRequestId: launchRequest.launchRequestId,
-    projectId: projectRegistration.projectId,
-    decision: "approved",
-  }),
-  audit("audit-start", "harness.run.start", "accepted", {
-    controllerSessionId: session.sessionId,
-    launchRequestId: launchRequest.launchRequestId,
     harnessRunId: run.harnessRunId,
     projectId: projectRegistration.projectId,
+    source: "controller-cli",
+    parameters: run.parameters,
+    idempotencyKeyHash: launchIdempotencyKeyHash,
+  }),
+  audit("audit-provider-launch", "controller.provider.operation", "accepted", {
+    sessionId: session.sessionId,
+    providerSessionId: session.providerSessionId,
+    workContextId: projectRegistration.projectId,
+    operation: "harness-run.launch",
+    idempotencyKeyHash: launchIdempotencyKeyHash,
   }),
   audit("audit-outcome", "harness.run.outcome", "observed", {
-    launchRequestId: launchRequest.launchRequestId,
     harnessRunId: run.harnessRunId,
     outcomeReference: run.outcome.outcomeId,
     status: run.outcome.status,
     code: run.outcome.code,
   }),
+  audit("audit-terminal-reattach", "controller.terminal.attach", "accepted", {
+    sessionId: session.sessionId,
+    providerSessionId: session.providerSessionId,
+    streamId: session.terminal.streamId,
+    mode: "read-write",
+  }),
 ];
 
 test("the real Claude gate selects only the configured Project registration", () => {
-  const selected = {
-    projectId: `project-${"5".repeat(24)}`,
-    canonicalPath: "/projects/selected",
-    status: "active",
-  };
-  const projectState = {
-    projects: [
-      {
-        projectId: `project-${"6".repeat(24)}`,
-        canonicalPath: "/projects/other",
-        status: "active",
-      },
-      selected,
-    ],
-  };
-
   assert.equal(selectInstalledClaudeProjectRegistration({
-    projectState,
-    projectPath: selected.canonicalPath,
-  }), selected);
+    issue: 152,
+    projectState: { projects: [{ ...projectRegistration }] },
+    projectPath: projectRegistration.canonicalPath,
+  }).projectId, projectRegistration.projectId);
   assert.throws(() => selectInstalledClaudeProjectRegistration({
-    projectState,
-    projectPath: "/projects/not-opened",
-  }), /issue_124_real_acceptance_selected_project_not_registered/);
+    issue: 152,
+    projectState: { projects: [] },
+    projectPath: projectRegistration.canonicalPath,
+  }), /issue_152_real_acceptance_selected_project_not_registered/);
 });
 
-test("the real Claude gate selects one fully correlated accepted audit chain", () => {
-  const misleading = audit("audit-rejected", "launch.request.decision", "rejected", {
+test("the real Claude gate selects one correlated ordinary-CLI launch chain", () => {
+  const misleading = audit("audit-rejected", "harness.run.launch", "rejected", {
     controllerSessionId: session.sessionId,
-    launchRequestId: launchRequest.launchRequestId,
-    decision: "approved",
   });
   assert.deepEqual(selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
     audits: [misleading, ...acceptedAuditChain],
     session,
     projectRegistration,
-    launchRequest,
     run,
   }), acceptedAuditChain);
 });
 
-test("the real Claude gate rejects a complete flow without explicit work-context inspection", () => {
+test("the real Claude gate rejects a flow without the provider launch operation", () => {
   assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
-    audits: acceptedAuditChain.filter((entry) => entry.auditId !== "audit-inspect"),
+    issue: 152,
+    audits: acceptedAuditChain.filter((entry) => entry.auditId !== "audit-provider-launch"),
     session,
     projectRegistration,
-    launchRequest,
     run,
-  }), /issue_124_real_acceptance_audit_chain_incomplete/);
+  }), /issue_152_real_acceptance_audit_chain_incomplete/);
 });
 
-test("the real Claude gate rejects a session focused on another Project", () => {
+test("the real Claude gate rejects a flow without executable CLI discovery", () => {
   assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: acceptedAuditChain.filter((entry) => entry.auditId !== "audit-cli-description"),
+    session,
+    projectRegistration,
+    run,
+  }), /issue_152_real_acceptance_audit_chain_incomplete/);
+});
+
+test("the real Claude gate rejects a plugin-gated CLI description", () => {
+  const pluginGated = acceptedAuditChain.map((entry) =>
+    entry.auditId === "audit-cli-description"
+      ? { ...entry, details: { ...entry.details, pluginRequired: true } }
+      : entry);
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: pluginGated,
+    session,
+    projectRegistration,
+    run,
+  }), /issue_152_real_acceptance_audit_chain_incomplete/);
+});
+
+test("the real Claude gate requires CLI discovery before the launch operation", () => {
+  const description = acceptedAuditChain.find((entry) =>
+    entry.auditId === "audit-cli-description");
+  assert.ok(description);
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: [
+      ...acceptedAuditChain.filter((entry) => entry !== description),
+      description,
+    ],
+    session,
+    projectRegistration,
+    run,
+  }), /issue_152_real_acceptance_audit_chain_incomplete/);
+});
+
+test("the real Claude gate requires executable Controller reattachment evidence", () => {
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: acceptedAuditChain.filter((entry) =>
+      entry.auditId !== "audit-terminal-reattach"),
+    session,
+    projectRegistration,
+    run,
+  }), /issue_152_real_acceptance_audit_chain_incomplete/);
+});
+
+test("the real Claude gate rejects an uncorrelated provider launch operation", () => {
+  const uncorrelated = acceptedAuditChain.map((entry) => entry.auditId === "audit-provider-launch"
+    ? {
+        ...entry,
+        details: { ...entry.details, idempotencyKeyHash: `sha256:${"7".repeat(64)}` },
+      }
+    : entry);
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: uncorrelated,
+    session,
+    projectRegistration,
+    run,
+  }), /issue_152_real_acceptance_audit_chain_incomplete/);
+});
+
+test("the real Claude gate requires exactly one accepted provider launch operation", () => {
+  const providerLaunch = acceptedAuditChain.find((entry) =>
+    entry.auditId === "audit-provider-launch");
+  assert.ok(providerLaunch);
+  const secondProviderLaunch = {
+    ...providerLaunch,
+    auditId: "audit-provider-launch-duplicate",
+  };
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: [...acceptedAuditChain, secondProviderLaunch],
+    session,
+    projectRegistration,
+    run,
+  }), /issue_152_real_acceptance_audit_chain_incomplete/);
+});
+
+test("the real Claude gate rejects a run launched by another Controller", () => {
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: acceptedAuditChain,
+    session,
+    projectRegistration,
+    run: { ...run, controllerSessionId: `controller-session-${"9".repeat(24)}` },
+  }), /issue_152_real_acceptance_selected_project_not_focused/);
+});
+
+test("the real Claude gate requires the retained run to target issue 152", () => {
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
+    audits: acceptedAuditChain,
+    session,
+    projectRegistration,
+    run: {
+      ...run,
+      parameters: {
+        issueNumber: 151,
+        targetBranch: "sandcastle/issue-151",
+      },
+    },
+  }), /issue_152_real_acceptance_launch_parameters_mismatch/);
+});
+
+test("the real Claude gate rejects retained approval capabilities or ceremony audits", () => {
+  assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
+    issue: 152,
     audits: acceptedAuditChain,
     session: {
       ...session,
-      workContextId: `project-${"6".repeat(24)}`,
-      canonicalReference: `sandking:project:project-${"6".repeat(24)}`,
+      capabilities: [...session.capabilities, "controller.launch-request.prepare"],
     },
     projectRegistration,
-    launchRequest,
     run,
-  }), /issue_124_real_acceptance_selected_project_not_focused/);
-});
+  }), /issue_152_real_acceptance_retired_launch_lifecycle_observed/);
 
-test("the real Claude gate rejects a session-start audit without Controller correlation", () => {
-  const incomplete = [
-    audit("audit-session", "controller.session.start", "accepted", {
-      sessionId: session.sessionId,
-      providerSessionId: session.providerSessionId,
-    }),
-  ];
   assert.throws(() => selectInstalledClaudeAcceptanceAuditChain({
-    audits: incomplete,
+    issue: 152,
+    audits: [
+      ...acceptedAuditChain,
+      audit("audit-approval", "launch.request.decision", "accepted", {
+        decision: "approved",
+      }),
+    ],
     session,
     projectRegistration,
-    launchRequest,
     run,
-  }), /issue_124_real_acceptance_audit_chain_incomplete/);
+  }), /issue_152_real_acceptance_retired_launch_lifecycle_observed/);
 });

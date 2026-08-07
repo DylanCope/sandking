@@ -91,45 +91,40 @@ for Projects. The real local Host creates or reuses a generated, path-anchored
 Project identity without a separate approval, registers the named conformance
 Harness in its own Git-versioned Harness workspace, and pins its exact commit.
 The Cockpit shows the Project and Harness identities, pin, checks and
-configuration readiness, and whether a Launch request can be prepared. Moved,
+configuration readiness, and whether the Harness can launch. Moved,
 replaced, conflicting, missing, and tombstoned paths fail with typed resolution
 guidance rather than inheriting an old identity. Registration, Harness links,
 pins, idempotency outcomes, and audits remain in Host-private state; neither the
 Project nor the Harness workspace receives execution state, and the Project
 receives no manifest or `.sandcastle/` projection in this slice.
 
-From a ready Project, the Cockpit can navigate to one focused conformance
-Controller session but cannot submit a Launch approval assertion. Inside that
-runtime-owned PTY, `inspect` reads the selected Project work context and
-`prepare <issue> sandcastle/issue-<issue>` invokes the exact pinned Harness
-adapter through its capability-negotiated subprocess boundary. Preparation
-accepts only the bounded secret-free conformance parameters, starts no delegated
-work, and presents a sanitized preview with the immutable Launch-request ID and
-revision, Host, Project revision, Harness pin, supplied capabilities,
-authorization class, expiry, and captured preconditions.
+From any ready Project, Launch is one revision-free, idempotent action through
+the Controller runtime and framed Host protocol. The Cockpit exposes a Launch
+button with one Yes/No confirmation dialog and a persisted **Don’t show again**
+preference; it adds no proposal, approval, revision, or separate start gate.
+A focused Controller can invoke the same action with the ordinary executable:
+`sandking launch [<project-id>] --issue <issue> --target-branch
+sandcastle/issue-<issue>`. Inside that Controller session, the Project ID
+defaults to the focused Project. The packaged command advertises this surface
+through `sandking launch --help`, so the agent does not need a plugin or
+pre-scripted command syntax. In a Controller session, using that help surface
+records a sanitized CLI-description operation, allowing real-provider evidence
+to prove executable discovery instead of inferring it from terminal prose or a
+human checkbox. The runtime never parses terminal prose as a command or
+authorization assertion. The real-provider gate also rejects retained plugin
+capabilities or any prepare, decision, or separate-start operation/audit in the
+same fresh lifecycle. One PTY view may write while secondary
+views attach read-only, and browser disconnection does not terminate the
+provider PTY.
 
-The person decides by entering the exact `approve <request-id> <revision>` or
-`reject <request-id> <revision>` assertion in that owning Controller
-conversation. The provider sends the same typed framed Host operation required
-of other provider adapters; terminal output is never parsed as authorization.
-Silence, unrelated input, a Cockpit POST, a different Controller session, or a
-stale/materially changed request fails closed. Identical decision retries return
-the original durable result, changed idempotency content conflicts, and rejected
-or expired requests are terminal. Approval records `not_started` execution
-linkage and does not itself create a Harness run. One PTY view may
-write while secondary views attach read-only, and browser disconnection does
-not terminate the provider PTY.
-
-After approval, `start <request-id> <revision>` sends a separate typed,
-revisioned, idempotent Harness-run mutation through the provider, Controller
-runtime, and framed Host protocol. The Host durably creates or finds one
-canonical run and returns while supervision continues. It invokes the exact
+The Host validates the current Project and pinned Harness at launch time,
+durably creates or finds one canonical run, and returns while supervision
+continues. It invokes the exact
 pinned conformance Harness adapter entry point declared with its protocol in the
 committed compatibility envelope. The dedicated framed channel carries adapter
 readiness, bounded progress with unique identities and valid published parents,
 and exactly one terminal envelope; stdout and stderr remain independently ranged
-diagnostic streams. Observed expiry or material drift permanently invalidates
-the original approval. Adapter-channel closure, process exit, or log text never
+diagnostic streams. Adapter-channel closure, process exit, or log text never
 implies success. The Cockpit observes ordered lifecycle events, explicitly
 fetches each log range over the opaque bulk channel, and renders the structured
 outcome. Closing or refreshing the browser neither cancels the run nor
@@ -138,7 +133,7 @@ to the same runtime and reattaches that existing provider PTY using its retained
 output and next input sequence; it does not launch another provider session.
 Harness-run observation acknowledges its last sequence and requests only later
 retained events. An unavailable or incompatible run cursor returns typed
-`resync-required` with the canonical Launch request, run snapshot, retained
+`resync-required` with the canonical run snapshot, retained
 events, log references, and structured outcome instead of claiming gap-free
 continuity.
 
@@ -156,25 +151,20 @@ alone is visibly stale and mutation-disabled.
 
 For an explicitly selected Project, the same focused-session Cockpit action can
 also operate an installed Claude Code CLI. Without invoking a model, the runtime
-probes the destination-local version and authentication, checks the installed
-CLI's session-ID and plugin-loading surfaces, and strictly validates, loads, and
-exactly enumerates the bundled plugin before advertising its negotiated
-capabilities. It reports a
+probes the destination-local version and authentication and checks the installed
+CLI's stable session-ID surface before advertising its negotiated capabilities. It reports a
 typed unavailable, incompatible, or unauthenticated state and enables **Open
 installed Claude Code** only when the complete minimal surface is ready.
 Sand-King launches Claude in its runtime-owned PTY with a stable
-controller-assigned CLI session ID. The bundled plugin is loaded for that
-session with `--plugin-dir`; it has no user-installed plugin record and is
-truthfully paired with a runtime-private typed CLI shim. The plugin exposes only
-sanitized work-context inspection, immutable Launch preparation, the exact
-approve or reject decision, and a separate approved-run start over the private
-typed Controller channel. User-scoped plugin installation and update lifecycle
-remain part of the later complete Claude integration slice. Credentials stay
+controller-assigned CLI session ID and makes the ordinary `sandking` executable
+available to the agent. No Sand-King Claude plugin, skill, launch-mediating hook,
+plugin inventory, or `--plugin-dir` loading path is involved. A provider-owned,
+notification-only `StopFailure` HTTP hook preserves typed provider failures and
+never mediates a tool call or Harness launch. Credentials stay
 in the destination-local Claude store and are excluded from the adapter command
 environment, browser models, prompts supplied by Sand-King, logs, state, audit,
 and retained evidence. Conformance remains the deterministic Harness oracle;
-Claude uses the same work-context, preview, approval, run, and observation
-interfaces.
+Claude uses the same one-action launch and run-observation interfaces.
 
 The Cockpit also projects a thin optional Planning journey. Its Journey Rail
 shows the built-in Wayfinding, Speccing, and Ticketing stages from data labelled
@@ -224,8 +214,7 @@ Its retained sanitized evidence is generated with
 `npm run acceptance:issue-118:update-evidence` and stored in
 `acceptance/evidence/issue-118.json`.
 
-Run the immutable Launch-request preparation and focused-Controller approval
-scenario with:
+Run the historical issue-119 acceptance scenario with:
 
 ```bash
 npm run acceptance:issue-119
@@ -295,7 +284,7 @@ SANDKING_REAL_CLAUDE_PROJECT=/absolute/path \
 npm run acceptance:issue-124:real
 ```
 
-The gated runner opens the Cockpit, prints the exact in-conversation inspection,
-preparation, approval, separate start, structured-outcome, and browser-detach
-checklist, then verifies the durable canonical records. It never copies
-credentials or treats automation as evidence that a person approved a request.
+The gated runner opens the Cockpit, prints the exact ordinary-CLI launch,
+structured-outcome, and browser-detach checklist, then verifies the durable
+canonical records. It never copies credentials or treats terminal prose as a
+launch operation.

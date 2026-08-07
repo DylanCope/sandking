@@ -10,7 +10,10 @@ import {
   loadPinnedHarnessAdapter,
   readHarnessAdapterFrame,
 } from "./harness-adapter-protocol.mjs";
-import { prepareConformanceHarnessLaunch } from "./launch-requests.mjs";
+import {
+  launchParametersSchema,
+  validateConformanceHarnessLaunch,
+} from "./harness-launch.mjs";
 import {
   ensurePrivateDirectory,
   PRIVATE_FILE_MODE,
@@ -23,7 +26,7 @@ const auditIdSchema = z.string().regex(/^audit-[a-f0-9]{24}$/);
 const hostIdSchema = z.string().regex(/^host-[a-f0-9]{24}$/);
 const projectIdSchema = z.string().regex(/^project-[a-f0-9]{24}$/);
 const harnessIdSchema = z.string().regex(/^harness-[a-f0-9]{24}$/);
-const launchRequestIdSchema = z.string().regex(/^launch-request-[a-f0-9]{24}$/);
+const legacyLaunchRequestIdSchema = z.string().regex(/^launch-request-[a-f0-9]{24}$/);
 const harnessRunIdSchema = z.string().regex(/^harness-run-[a-f0-9]{24}$/);
 const outcomeIdSchema = z.string().regex(/^harness-outcome-[a-f0-9]{24}$/);
 const eventIdSchema = z.string().regex(/^harness-event-[a-f0-9]{24}$/);
@@ -116,11 +119,35 @@ const logStreamSchema = z.object({
   insertedIntoControllerConversation: z.literal(false),
 }).strict();
 
-export const harnessRunSchema = z.object({
+const currentHarnessRunSchema = z.object({
   harnessRunId: harnessRunIdSchema,
   revision: z.number().int().positive(),
   status: runStatusSchema,
-  launchRequestId: launchRequestIdSchema,
+  hostId: hostIdSchema,
+  projectId: projectIdSchema,
+  harnessId: harnessIdSchema,
+  harnessPinnedRevision: commitSchema,
+  adapterId: z.literal("conformance-harness-adapter-v1"),
+  adapterProtocol: z.literal("1.0.0"),
+  adapterEntryPoint: harnessAdapterEntryPointSchema,
+  parameters: launchParametersSchema,
+  source: z.enum(["controller-cli", "cockpit"]),
+  controllerId: controllerIdSchema,
+  controllerSessionId: controllerSessionIdSchema.nullable(),
+  createdAt: z.string().datetime(),
+  adapterReadyAt: z.string().datetime().nullable(),
+  completedAt: z.string().datetime().nullable(),
+  launchAuditId: auditIdSchema,
+}).strict();
+
+// Schema v1 runs are durable execution history. Keep their exact public shape
+// readable after the launch-request command path is retired instead of
+// inventing parameters or an invocation source that v1 did not retain.
+const legacyHarnessRunSchema = z.object({
+  harnessRunId: harnessRunIdSchema,
+  revision: z.number().int().positive(),
+  status: runStatusSchema,
+  launchRequestId: legacyLaunchRequestIdSchema,
   launchRequestRevision: z.number().int().positive(),
   hostId: hostIdSchema,
   projectId: projectIdSchema,
@@ -137,27 +164,46 @@ export const harnessRunSchema = z.object({
   startAuditId: auditIdSchema,
 }).strict();
 
-const storedRunSchema = harnessRunSchema.extend({
+export const harnessRunSchema = z.union([
+  currentHarnessRunSchema,
+  legacyHarnessRunSchema,
+]);
+
+const storedRunFields = {
   events: z.array(harnessRunEventSchema).max(MAX_RETAINED_RUN_EVENTS),
   outcome: harnessRunOutcomeSchema.nullable(),
   terminalEnvelopeValidation: terminalEnvelopeValidationSchema,
   logStreams: z.tuple([logStreamSchema, logStreamSchema]),
-}).strict();
+};
+const currentStoredRunSchema = currentHarnessRunSchema.extend(storedRunFields).strict();
+const legacyStoredRunSchema = legacyHarnessRunSchema.extend(storedRunFields).strict();
+const storedRunSchema = z.union([currentStoredRunSchema, legacyStoredRunSchema]);
 const retainedOutcomeSchema = z.object({
   idempotencyKeyHash: digestSchema,
   requestFingerprint: digestSchema,
   response: z.object({}).passthrough(),
 }).strict();
 const stateSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   // Canonical runs and keyed mutation outcomes cannot be evicted without
   // breaking reconnect and ambiguous-outcome lookup. Retention/cleanup is a
   // later explicit workflow; the records themselves remain schema-bounded.
   runs: z.array(storedRunSchema),
+  launchOutcomes: z.array(retainedOutcomeSchema),
+  legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
+}).strict();
+const legacyStateSchema = z.object({
+  schemaVersion: z.literal(1),
+  runs: z.array(legacyStoredRunSchema),
   startOutcomes: z.array(retainedOutcomeSchema),
 }).strict();
 
-const initialState = () => ({ schemaVersion: 1, runs: [], startOutcomes: [] });
+const initialState = () => ({
+  schemaVersion: 2,
+  runs: [],
+  launchOutcomes: [],
+  legacyStartOutcomes: [],
+});
 /** @param {string} dataDir */
 const statePath = (dataDir) => join(dataDir, "harness-runs.json");
 /** @param {string} dataDir @param {string} harnessRunId @param {"stdout" | "stderr"} producer */
@@ -169,26 +215,36 @@ const digest = (value) => `sha256:${createHash("sha256").update(value).digest("h
 const fingerprint = (value) => digest(JSON.stringify(value));
 
 /** @param {z.infer<typeof storedRunSchema>} run */
-const publicRun = (run) => harnessRunSchema.parse({
-  harnessRunId: run.harnessRunId,
-  revision: run.revision,
-  status: run.status,
-  launchRequestId: run.launchRequestId,
-  launchRequestRevision: run.launchRequestRevision,
-  hostId: run.hostId,
-  projectId: run.projectId,
-  harnessId: run.harnessId,
-  harnessPinnedRevision: run.harnessPinnedRevision,
-  adapterId: run.adapterId,
-  adapterProtocol: run.adapterProtocol,
-  adapterEntryPoint: run.adapterEntryPoint,
-  controllerId: run.controllerId,
-  controllerSessionId: run.controllerSessionId,
-  createdAt: run.createdAt,
-  adapterReadyAt: run.adapterReadyAt,
-  completedAt: run.completedAt,
-  startAuditId: run.startAuditId,
-});
+const publicRun = (run) => {
+  const common = {
+    harnessRunId: run.harnessRunId,
+    revision: run.revision,
+    status: run.status,
+    hostId: run.hostId,
+    projectId: run.projectId,
+    harnessId: run.harnessId,
+    harnessPinnedRevision: run.harnessPinnedRevision,
+    adapterId: run.adapterId,
+    adapterProtocol: run.adapterProtocol,
+    adapterEntryPoint: run.adapterEntryPoint,
+    controllerId: run.controllerId,
+    controllerSessionId: run.controllerSessionId,
+    createdAt: run.createdAt,
+    adapterReadyAt: run.adapterReadyAt,
+    completedAt: run.completedAt,
+  };
+  return harnessRunSchema.parse("launchRequestId" in run ? {
+    ...common,
+    launchRequestId: run.launchRequestId,
+    launchRequestRevision: run.launchRequestRevision,
+    startAuditId: run.startAuditId,
+  } : {
+    ...common,
+    parameters: structuredClone(run.parameters),
+    source: run.source,
+    launchAuditId: run.launchAuditId,
+  });
+};
 
 /**
  * @param {z.infer<typeof storedRunSchema>} run
@@ -360,7 +416,6 @@ const superviseConformanceHarness = async (run, context, observer) => {
  *   dataDir: string,
  *   hostId: string,
  *   recordAudit: (action: string, outcome: "accepted" | "rejected" | "observed", details?: Record<string, unknown>) => Promise<string>,
- *   launchRequests: {get: (launchRequestId: string) => Promise<any>, expireExecutionAuthorization: (request: any) => Promise<any>, claimExecution: (request: any) => Promise<any>, completeExecution: (request: any) => Promise<any>},
  *   loadLaunchContext: (projectId: string) => Promise<any>,
  *   now?: () => Date,
  * }} options
@@ -375,14 +430,42 @@ export const createHarnessRunManager = async (options) => {
     mutationQueue = current.then(() => undefined, () => undefined);
     return current;
   };
-  const readState = async () => stateSchema.parse(
-    await readJson(statePath(options.dataDir), initialState()),
-  );
+  const readState = async () => {
+    const raw = await readJson(statePath(options.dataDir), initialState());
+    if (
+      raw
+      && typeof raw === "object"
+      && "schemaVersion" in raw
+      && raw.schemaVersion === 1
+    ) {
+      const legacy = legacyStateSchema.parse(raw);
+      const migrated = stateSchema.parse({
+        schemaVersion: 2,
+        runs: legacy.runs,
+        launchOutcomes: [],
+        legacyStartOutcomes: legacy.startOutcomes,
+      });
+      await writePrivateJson(statePath(options.dataDir), migrated);
+      return migrated;
+    }
+    return stateSchema.parse(raw);
+  };
   /** @param {z.infer<typeof stateSchema>} state */
   const persist = (state) => writePrivateJson(
     statePath(options.dataDir),
     stateSchema.parse(state),
   );
+  // Complete the one-time upgrade before exposing read and mutation methods.
+  // Otherwise a first observation can migrate a stale v1 snapshot concurrently
+  // with a first launch and overwrite the newly retained run.
+  await readState();
+  /** @param {z.infer<typeof stateSchema>} state @param {string | null} idempotencyKeyHash */
+  const retainedMutationOutcome = (state, idempotencyKeyHash) => idempotencyKeyHash
+    ? state.launchOutcomes.find((outcome) =>
+        outcome.idempotencyKeyHash === idempotencyKeyHash)
+      ?? state.legacyStartOutcomes.find((outcome) =>
+        outcome.idempotencyKeyHash === idempotencyKeyHash)
+    : null;
 
   /** @param {string} harnessRunId @param {(run: z.infer<typeof storedRunSchema>, state: z.infer<typeof stateSchema>) => Promise<void> | void} update */
   const updateRun = (harnessRunId, update) => withMutationLock(async () => {
@@ -535,15 +618,9 @@ export const createHarnessRunManager = async (options) => {
         { outcomeReference: outcomeId },
       );
     });
-    await options.launchRequests.completeExecution({
-      launchRequestId: finalized.launchRequestId,
-      harnessRunId: finalized.harnessRunId,
-      status,
-      outcomeReference: outcomeId,
-    });
     await options.recordAudit("harness.run.outcome", "observed", {
       harnessRunId: finalized.harnessRunId,
-      launchRequestId: finalized.launchRequestId,
+      projectId: finalized.projectId,
       outcomeReference: outcomeId,
       status,
       code,
@@ -558,53 +635,43 @@ export const createHarnessRunManager = async (options) => {
   };
 
   /** @param {any} request */
-  const start = (request) => withMutationLock(async () => {
-    const authorizationClass = "approved_launch_request_execution";
+  const launch = (request) => withMutationLock(async () => {
+    const authorizationClass = "harness_run_launch";
     const keyValid = typeof request.idempotencyKey === "string"
       && request.idempotencyKey.length > 0
       && request.idempotencyKey.length <= 256;
     const idempotencyKeyHash = keyValid ? digest(request.idempotencyKey) : null;
     const requestFingerprint = fingerprint({
-      launchRequestId: request.launchRequestId,
+      projectId: request.projectId,
+      parameters: request.parameters,
       controllerId: request.controllerId,
       controllerSessionId: request.controllerSessionId,
+      source: request.source,
       authorizationClass: request.authorizationClass,
-      expectedRevision: request.expectedRevision,
     });
     const retained = await readState();
-    const existing = idempotencyKeyHash
-      ? retained.startOutcomes.find((outcome) =>
-          outcome.idempotencyKeyHash === idempotencyKeyHash)
-      : null;
+    const existing = retainedMutationOutcome(retained, idempotencyKeyHash);
     if (existing) {
       if (existing.requestFingerprint !== requestFingerprint) {
-        const launchRequest = await options.launchRequests.get(request.launchRequestId);
-        const auditId = await options.recordAudit("harness.run.start", "rejected", {
+        const auditId = await options.recordAudit("harness.run.launch", "rejected", {
           code: "idempotency_key_conflict",
           authorizationClass,
           idempotencyKeyHash,
-          expectedRevision: Number.isSafeInteger(request.expectedRevision)
-            ? request.expectedRevision
-            : null,
-          actualRevision: launchRequest?.revision ?? 0,
-          harnessRunStarted: false,
+          harnessRunCreated: false,
         });
         return {
-          type: "harness.run.start.failure",
+          type: "harness.run.launch.failure",
           requestId: request.requestId,
           code: "idempotency_key_conflict",
           retryable: false,
           authorizationClass,
           idempotencyKeyHash,
-          expectedRevision: request.expectedRevision,
-          actualRevision: launchRequest?.revision ?? 0,
           idempotentReplay: false,
           auditId,
-          current: launchRequest,
-          prohibitedSideEffects: { harnessRunStarted: false, projectWrite: false },
+          prohibitedSideEffects: { harnessRunCreated: false, projectWrite: false },
         };
       }
-      await options.recordAudit("harness.run.start", "observed", {
+      await options.recordAudit("harness.run.launch", "observed", {
         authorizationClass,
         idempotencyKeyHash,
         idempotentReplay: true,
@@ -618,147 +685,80 @@ export const createHarnessRunManager = async (options) => {
       };
     }
 
-    let launchRequest = launchRequestIdSchema.safeParse(request.launchRequestId).success
-      ? await options.launchRequests.get(request.launchRequestId)
-      : null;
+    const parameters = launchParametersSchema.safeParse(request.parameters);
     let code = null;
     if (
       request.authorizationClass !== authorizationClass
       || !idempotencyKeyHash
-      || !launchRequestIdSchema.safeParse(request.launchRequestId).success
+      || !projectIdSchema.safeParse(request.projectId).success
       || !controllerIdSchema.safeParse(request.controllerId).success
-      || !controllerSessionIdSchema.safeParse(request.controllerSessionId).success
-      || !Number.isSafeInteger(request.expectedRevision)
-      || request.expectedRevision < 1
+      || !["controller-cli", "cockpit"].includes(request.source)
+      || (request.source === "controller-cli"
+        ? !controllerSessionIdSchema.safeParse(request.controllerSessionId).success
+        : request.controllerSessionId !== null)
     ) {
       code = "mutation_contract_invalid";
-    } else if (!launchRequest) {
-      code = "launch_request_not_found";
-    } else if (launchRequest.owner.controllerId !== request.controllerId
-      || launchRequest.owner.controllerSessionId !== request.controllerSessionId) {
-      code = "authorization_failed";
-    } else if (launchRequest.status === "pending") {
-      code = "launch_request_unapproved";
-    } else if (launchRequest.status !== "approved") {
-      code = "launch_request_terminal";
-    } else if (launchRequest.execution.status !== "not_started") {
-      const canonical = retained.runs.find((run) =>
-        run.harnessRunId === launchRequest.execution.harnessRunId);
-      if (canonical) {
-        const auditId = await options.recordAudit("harness.run.start", "observed", {
-          authorizationClass,
-          idempotencyKeyHash,
-          expectedRevision: request.expectedRevision,
-          actualRevision: launchRequest.revision,
-          launchRequestId: launchRequest.launchRequestId,
-          harnessRunId: canonical.harnessRunId,
-          canonicalRunFound: true,
-        });
-        const response = {
-          type: "harness.run.start.result",
-          requestId: request.requestId,
-          code: "harness_run_found",
-          authorizationClass,
-          idempotencyKeyHash,
-          expectedRevision: request.expectedRevision,
-          launchRequestRevision: launchRequest.revision,
-          revision: canonical.revision,
-          idempotentReplay: false,
-          auditId,
-          run: publicRun(canonical),
-        };
-        retained.startOutcomes.push({ idempotencyKeyHash, requestFingerprint, response });
-        await persist(retained);
-        return response;
-      }
-      code = "launch_request_already_started";
-    } else if (now().getTime() >= Date.parse(launchRequest.expiresAt)) {
-      code = "launch_request_expired";
-    } else if (launchRequest.revision !== request.expectedRevision) {
-      code = "mutation_revision_conflict";
-    }
-
-    if (code === "launch_request_expired" && launchRequest) {
-      const observedAt = now().toISOString();
-      launchRequest = await options.launchRequests.expireExecutionAuthorization({
-        launchRequestId: launchRequest.launchRequestId,
-        expectedRevision: launchRequest.revision,
-        reason: "launch_request_expired",
-        observedAt,
-      });
+    } else if (!parameters.success) {
+      code = "bounded_configuration_invalid";
     }
 
     let context;
-    if (!code && launchRequest) {
+    let prepared;
+    if (!code && parameters.success) {
       try {
-        context = await options.loadLaunchContext(launchRequest.project.projectId);
-        const prepared = await prepareConformanceHarnessLaunch(context, launchRequest.parameters);
+        context = await options.loadLaunchContext(request.projectId);
+        prepared = await validateConformanceHarnessLaunch(context, parameters.data);
         if (
-          context.project.projectId !== launchRequest.project.projectId
-          || context.project.revision !== launchRequest.project.revision
-          || context.harness.harnessId !== launchRequest.harness.harnessId
-          || context.harness.immutableRevision !== launchRequest.harness.pinnedRevision
-          || prepared.adapterId !== launchRequest.harness.adapterId
-          || prepared.adapterProtocol !== launchRequest.harness.adapterProtocol
-          || prepared.adapterEntryPoint !== launchRequest.harness.adapterEntryPoint
-          || JSON.stringify(prepared.suppliedCapabilities)
-            !== JSON.stringify(launchRequest.suppliedCapabilities)
-          || prepared.sanitizedPreview.summary !== launchRequest.preview.summary
+          context.project.projectId !== request.projectId
+          || context.harness.harnessId !== context.project.harness.harnessId
+          || context.harness.immutableRevision !== context.project.harness.pinnedRevision
+          || prepared.adapterId !== context.harness.adapterId
+          || prepared.adapterProtocol
+            !== context.project.harness.boundedConfiguration.adapterProtocol
         ) {
-          code = "launch_request_stale";
+          code = "harness_pin_invalid";
         }
-      } catch {
-        code = "launch_request_stale";
-      }
-      if (code === "launch_request_stale") {
-        const observedAt = now().toISOString();
-        launchRequest = await options.launchRequests.expireExecutionAuthorization({
-          launchRequestId: launchRequest.launchRequestId,
-          expectedRevision: launchRequest.revision,
-          reason: "launch_request_stale",
-          observedAt,
-        });
+      } catch (error) {
+        const typedCode = error instanceof Error ? error.message : "";
+        code = new Set([
+          "project_not_found",
+          "harness_not_found",
+          "harness_pin_missing",
+          "harness_pin_invalid",
+          "harness_workspace_invalid",
+          "harness_capability_unsupported",
+          "harness_adapter_protocol_invalid",
+          "harness_preparation_side_effect_detected",
+        ]).has(typedCode) ? typedCode : "harness_workspace_invalid";
       }
     }
 
-    if (code || !launchRequest || !context || !idempotencyKeyHash) {
+    if (code || !context || !prepared || !parameters.success || !idempotencyKeyHash) {
       const failureCode = code ?? "mutation_contract_invalid";
-      const auditId = await options.recordAudit("harness.run.start", "rejected", {
+      const auditId = await options.recordAudit("harness.run.launch", "rejected", {
         code: failureCode,
         authorizationClass,
         idempotencyKeyHash,
-        expectedRevision: Number.isSafeInteger(request.expectedRevision)
-          ? request.expectedRevision
-          : null,
-        actualRevision: launchRequest?.revision ?? 0,
-        launchRequestId: launchRequest?.launchRequestId ?? null,
-        hostId: launchRequest?.host.hostId ?? parsedHostId,
-        projectId: launchRequest?.project.projectId ?? null,
-        harnessId: launchRequest?.harness.harnessId ?? null,
-        harnessRunStarted: false,
+        hostId: parsedHostId,
+        projectId: projectIdSchema.safeParse(request.projectId).success ? request.projectId : null,
+        harnessId: context?.harness?.harnessId ?? null,
+        source: ["controller-cli", "cockpit"].includes(request.source) ? request.source : null,
+        harnessRunCreated: false,
         projectWrite: false,
       });
       const response = {
-        type: "harness.run.start.failure",
+        type: "harness.run.launch.failure",
         requestId: typeof request.requestId === "string" ? request.requestId : "invalid-request",
         code: failureCode,
-        retryable: [
-          "mutation_revision_conflict",
-          "launch_request_not_found",
-        ].includes(failureCode),
+        retryable: failureCode === "project_not_found",
         authorizationClass,
         idempotencyKeyHash,
-        expectedRevision: Number.isSafeInteger(request.expectedRevision)
-          ? request.expectedRevision
-          : null,
-        actualRevision: launchRequest?.revision ?? 0,
         idempotentReplay: false,
         auditId,
-        current: launchRequest,
-        prohibitedSideEffects: { harnessRunStarted: false, projectWrite: false },
+        prohibitedSideEffects: { harnessRunCreated: false, projectWrite: false },
       };
       if (idempotencyKeyHash) {
-        retained.startOutcomes.push({ idempotencyKeyHash, requestFingerprint, response });
+        retained.launchOutcomes.push({ idempotencyKeyHash, requestFingerprint, response });
         await persist(retained);
       }
       return response;
@@ -766,21 +766,21 @@ export const createHarnessRunManager = async (options) => {
 
     const harnessRunId = `harness-run-${randomBytes(12).toString("hex")}`;
     const createdAt = now().toISOString();
-    const auditId = await options.recordAudit("harness.run.start", "accepted", {
+    const auditId = await options.recordAudit("harness.run.launch", "accepted", {
       authorizationClass,
       idempotencyKeyHash,
-      expectedRevision: request.expectedRevision,
-      launchRequestId: launchRequest.launchRequestId,
       harnessRunId,
-      hostId: launchRequest.host.hostId,
-      projectId: launchRequest.project.projectId,
-      harnessId: launchRequest.harness.harnessId,
-      harnessPinnedRevision: launchRequest.harness.pinnedRevision,
+      hostId: parsedHostId,
+      projectId: context.project.projectId,
+      harnessId: context.harness.harnessId,
+      harnessPinnedRevision: context.harness.immutableRevision,
       controllerId: request.controllerId,
       controllerSessionId: request.controllerSessionId,
-      adapterId: launchRequest.harness.adapterId,
-      adapterProtocol: launchRequest.harness.adapterProtocol,
-      adapterEntryPoint: launchRequest.harness.adapterEntryPoint,
+      source: request.source,
+      parameters: structuredClone(parameters.data),
+      adapterId: prepared.adapterId,
+      adapterProtocol: prepared.adapterProtocol,
+      adapterEntryPoint: prepared.adapterEntryPoint,
       returnedBeforeTerminal: true,
       projectWrite: false,
     });
@@ -788,21 +788,21 @@ export const createHarnessRunManager = async (options) => {
       harnessRunId,
       revision: 1,
       status: "starting",
-      launchRequestId: launchRequest.launchRequestId,
-      launchRequestRevision: launchRequest.revision,
-      hostId: launchRequest.host.hostId,
-      projectId: launchRequest.project.projectId,
-      harnessId: launchRequest.harness.harnessId,
-      harnessPinnedRevision: launchRequest.harness.pinnedRevision,
-      adapterId: launchRequest.harness.adapterId,
-      adapterProtocol: launchRequest.harness.adapterProtocol,
-      adapterEntryPoint: launchRequest.harness.adapterEntryPoint,
+      hostId: parsedHostId,
+      projectId: context.project.projectId,
+      harnessId: context.harness.harnessId,
+      harnessPinnedRevision: context.harness.immutableRevision,
+      adapterId: prepared.adapterId,
+      adapterProtocol: prepared.adapterProtocol,
+      adapterEntryPoint: prepared.adapterEntryPoint,
+      parameters: parameters.data,
+      source: request.source,
       controllerId: request.controllerId,
       controllerSessionId: request.controllerSessionId,
       createdAt,
       adapterReadyAt: null,
       completedAt: null,
-      startAuditId: auditId,
+      launchAuditId: auditId,
       events: [],
       outcome: null,
       terminalEnvelopeValidation: {
@@ -832,11 +832,6 @@ export const createHarnessRunManager = async (options) => {
       ],
     });
     appendEvent(run, "harness_run_created");
-    const linkedLaunch = await options.launchRequests.claimExecution({
-      launchRequestId: launchRequest.launchRequestId,
-      expectedRevision: request.expectedRevision,
-      harnessRunId,
-    });
     const logsDirectory = join(options.dataDir, "harness-runs", harnessRunId);
     await ensurePrivateDirectory(logsDirectory);
     await Promise.all([
@@ -849,24 +844,22 @@ export const createHarnessRunManager = async (options) => {
     ]);
     retained.runs.push(run);
     const response = {
-      type: "harness.run.start.result",
+      type: "harness.run.launch.result",
       requestId: request.requestId,
       code: "harness_run_created",
       authorizationClass,
       idempotencyKeyHash,
-      expectedRevision: request.expectedRevision,
-      launchRequestRevision: linkedLaunch.revision,
       revision: run.revision,
       idempotentReplay: false,
       auditId,
       run: publicRun(run),
     };
-    retained.startOutcomes.push({ idempotencyKeyHash, requestFingerprint, response });
+    retained.launchOutcomes.push({ idempotencyKeyHash, requestFingerprint, response });
     await persist(retained);
     setImmediate(() => {
       supervise(structuredClone(run), {
         ...context,
-        parameters: structuredClone(launchRequest.parameters),
+        parameters: structuredClone(parameters.data),
       }).catch(() => undefined);
     });
     return response;
@@ -885,7 +878,6 @@ export const createHarnessRunManager = async (options) => {
         code: "harness_run_absent",
         mode: "snapshot",
         resynchronization: null,
-        launchRequest: null,
         run: null,
         events: [],
         nextSequence: 0,
@@ -917,7 +909,6 @@ export const createHarnessRunManager = async (options) => {
       availableFromSequence,
       canonicalSnapshot: true,
     } : null;
-    const launchRequest = await options.launchRequests.get(run.launchRequestId);
     return {
       type: "harness.run.observe.result",
       requestId: request.requestId,
@@ -928,7 +919,6 @@ export const createHarnessRunManager = async (options) => {
           ? "snapshot"
           : "resume",
       resynchronization,
-      launchRequest,
       run: publicRun(run),
       events: structuredClone(resynchronization
         ? run.events
@@ -992,20 +982,18 @@ export const createHarnessRunManager = async (options) => {
       && request.idempotencyKey.length <= 256
       ? digest(request.idempotencyKey)
       : null;
-    const existing = idempotencyKeyHash
-      ? retained.startOutcomes.find((outcome) => outcome.idempotencyKeyHash === idempotencyKeyHash)
-      : null;
+    const existing = retainedMutationOutcome(retained, idempotencyKeyHash);
     return {
       type: "harness.run.lookup.result",
       requestId: request.requestId,
-      code: existing ? "harness_run_start_outcome_found" : "harness_run_start_outcome_absent",
+      code: existing ? "harness_run_launch_outcome_found" : "harness_run_launch_outcome_absent",
       idempotencyKeyHash,
       found: Boolean(existing),
-      startOutcome: existing ? structuredClone(existing.response) : null,
+      launchOutcome: existing ? structuredClone(existing.response) : null,
     };
   };
 
-  return { start, lookup, observe, readLogs };
+  return { launch, lookup, observe, readLogs };
 };
 
 export const harnessRunInternals = Object.freeze({ statePath, logPath });

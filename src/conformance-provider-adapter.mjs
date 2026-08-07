@@ -22,9 +22,7 @@ const capabilities = Object.freeze([
   "controller.session.interactive",
   "controller.session.terminate",
   "controller.work-context.inspect",
-  "controller.launch-request.prepare",
-  "controller.launch-request.decide",
-  "controller.harness-run.start",
+  "controller.harness-run.launch",
 ]);
 const identifierPattern = /^[a-zA-Z0-9._:-]{1,160}$/;
 const providerSessionPattern = /^conformance-provider-session-[a-f0-9]{24}$/;
@@ -304,87 +302,24 @@ const run = async (argv) => {
       }
       return;
     }
-    const prepareMatch = /^prepare ([1-9][0-9]{0,4095}) (sandcastle\/issue-[1-9][0-9]{0,4095})$/
+    const launchMatch = /^launch ([1-9][0-9]{0,4095}) (sandcastle\/issue-[1-9][0-9]{0,4095})$/
       .exec(line);
-    if (prepareMatch) {
-      const issueDigits = prepareMatch[1];
+    if (launchMatch) {
+      const issueDigits = launchMatch[1];
       const parsedIssueNumber = Number(issueDigits);
       const issueNumber = Number.isSafeInteger(parsedIssueNumber)
         ? parsedIssueNumber
         : issueDigits;
-      const targetBranch = prepareMatch[2];
+      const targetBranch = launchMatch[2];
       const inputDigest = createHash("sha256")
         .update(`${issueDigits}\0${targetBranch}`)
         .digest("hex");
-      const outcome = await control.request("launch-request.prepare", {
-        parameters: { issueNumber, targetBranch },
-        expiresInSeconds: 300,
-        idempotencyKey: `provider:${sessionId}:prepare:${inputDigest}`,
-      });
-      if (outcome?.type !== "launch.request.prepare.result") {
-        process.stdout.write(
-          `Launch preparation failed safely: ${outcome?.code ?? "provider_operation_failed"}.\r\ncontroller> `,
-        );
-        return;
-      }
-      const request = outcome.launchRequest;
-      const preview = request.preview;
-      process.stdout.write(
-        `Launch request: ${request.launchRequestId} (revision ${request.revision}).\r\n`
-          + `Host: ${preview.hostId}.\r\n`
-          + `Project: ${preview.projectId}.\r\n`
-          + `Harness: ${preview.harnessId} @ ${preview.harnessPinnedRevision}.\r\n`
-          + `Parameters: issue #${preview.parameters.issueNumber}; branch ${preview.parameters.targetBranch}.\r\n`
-          + `Supplied capabilities: ${preview.suppliedCapabilities.join(", ")}.\r\n`
-          + `Authorization: ${preview.authorizationClass}; expires ${preview.expiresAt}.\r\n`
-          + `Preview: ${preview.summary}\r\n`
-          + `Secret-free preview: ${preview.secretFree ? "yes" : "no"}.\r\n`
-          + `Delegated work started: ${preview.delegatedWorkStarted ? "yes" : "no"}.\r\n`
-          + `Reply exactly: approve ${request.launchRequestId} ${request.revision} or reject ${request.launchRequestId} ${request.revision}.\r\ncontroller> `,
-      );
-      return;
-    }
-    const decisionMatch = /^(approve|reject) (launch-request-[a-f0-9]{24}) ([1-9][0-9]*)$/.exec(line);
-    if (decisionMatch) {
-      const decision = decisionMatch[1] === "approve" ? "approved" : "rejected";
-      const launchRequestId = decisionMatch[2];
-      const expectedRevision = Number(decisionMatch[3]);
-      const outcome = await control.request("launch-request.decide", {
-        launchRequestId,
-        decision,
-        expectedRevision,
-        idempotencyKey:
-          `provider:${sessionId}:decision:${launchRequestId}:${expectedRevision}:${decision}`,
-      });
-      if (outcome?.type !== "launch.request.decision.result") {
-        process.stdout.write(
-          `Launch decision failed safely: ${outcome?.code ?? "provider_operation_failed"}`
-            + `${outcome?.current ? `; current revision ${outcome.current.revision} (${outcome.current.status})` : ""}.\r\ncontroller> `,
-        );
-        return;
-      }
-      process.stdout.write(
-        `Launch request ${launchRequestId} ${decision} at revision ${outcome.revision}. `
-          + "No Harness run was started. "
-          + (decision === "approved"
-            ? `Start it exactly: start ${launchRequestId} ${outcome.revision}.`
-            : "")
-          + "\r\ncontroller> ",
-      );
-      return;
-    }
-    const startMatch = /^start (launch-request-[a-f0-9]{24}) ([1-9][0-9]*)$/.exec(line);
-    if (startMatch) {
-      const launchRequestId = startMatch[1];
-      const expectedRevision = Number(startMatch[2]);
-      const idempotencyKey =
-        `provider:${sessionId}:harness-run:start:${launchRequestId}:${expectedRevision}`;
+      const idempotencyKey = `provider:${sessionId}:launch:${inputDigest}`;
       let outcome;
       let recoveredFromAmbiguousResponse = false;
       try {
-        outcome = await control.request("harness-run.start", {
-          launchRequestId,
-          expectedRevision,
+        outcome = await control.request("harness-run.launch", {
+          parameters: { issueNumber, targetBranch },
           idempotencyKey,
         });
       } catch (error) {
@@ -395,19 +330,19 @@ const run = async (argv) => {
           return;
         }
         const lookup = await control.request("harness-run.lookup", { idempotencyKey });
-        outcome = lookup?.found ? lookup.startOutcome : null;
+        outcome = lookup?.found ? lookup.launchOutcome : null;
         recoveredFromAmbiguousResponse = Boolean(lookup?.found);
       }
-      if (outcome?.type !== "harness.run.start.result") {
+      if (outcome?.type !== "harness.run.launch.result") {
         process.stdout.write(
-          `Harness run did not start: ${outcome?.code ?? "harness_run_start_indeterminate"}.\r\ncontroller> `,
+          `Harness run did not launch: ${outcome?.code ?? "harness_run_launch_indeterminate"}.\r\ncontroller> `,
         );
         return;
       }
       process.stdout.write(
         `Harness run ${outcome.run.harnessRunId} ${outcome.code === "harness_run_created" ? "created" : "found"}. `
           + (recoveredFromAmbiguousResponse
-            ? "Recovered the accepted outcome by exact idempotency-key lookup after the start response timed out. "
+            ? "Recovered the accepted outcome by exact idempotency-key lookup after the launch response timed out. "
             : "")
           + "Terminal observation continues asynchronously in the Cockpit.\r\ncontroller> ",
       );

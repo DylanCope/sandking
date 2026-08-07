@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "issue": 152,
+  "parentPrd": null,
+  "sourceIssue": {
+    "githubBodyUtf8Sha256": "5777030649523736625efbcdaa0674951bb57a67d97333401e70fcbbc70ed492"
+  },
+  "scenarios": [
+    {
+      "id": "harness-launch/uses-one-action-from-cockpit-and-controller",
+      "requirements": [
+        "one revision-free action launches a Harness run from a fresh Project",
+        "Cockpit uses exactly one persistable Yes/No confirmation",
+        "Controller sessions discover and invoke the packaged ordinary sandking CLI without a plugin",
+        "main-era Harness-run and Controller-session state remains readable",
+        "auth, audit, terminal, reconnect, Project, and Host behavior remains covered"
+      ],
+      "evidence": "acceptance/evidence/issue-152.json"
+    },
+    {
+      "id": "harness-launch/uses-real-installed-claude-controller",
+      "requirements": [
+        "an authenticated installed Claude Controller records executable discovery of the packaged sandking command",
+        "Claude invokes one ordinary launch command without plugin, approval, revision, or separate start behavior",
+        "the launch produces one correlated durable Harness outcome and survives browser reconnect"
+      ],
+      "evidence": "acceptance/evidence/issue-152.real.json"
+    }
+  ],
+  "environmentGate": {
+    "name": "SANDKING_REAL_CLAUDE_ACCEPTANCE",
+    "enabledValue": "1",
+    "executionCommand": "SANDKING_REAL_CLAUDE_ACCEPTANCE=1 SANDKING_REAL_CLAUDE_PROJECT=/absolute/path npm run acceptance:issue-152:real",
+    "requiresInstalledAuthenticatedClaude": true,
+    "missingProviderOutcome": "explicit external gate; never fabricated with a scripted provider"
+  },
+  "verification": {
+    "commands": [
+      [
+        "node",
+        "--test",
+        "test/protocol.test.mjs",
+        "test/browser-protocol.test.mjs",
+        "test/harness-run.test.mjs",
+        "test/harness-launch-host.test.mjs",
+        "test/controller-cli.test.mjs",
+        "test/controller-launch-session.test.mjs",
+        "test/controller-terminal-attachment.test.mjs",
+        "test/claude-provider-adapter.test.mjs",
+        "test/claude-controller-session.test.mjs",
+        "test/installed-claude-acceptance-audits.test.mjs",
+        "test/browser-launch.test.mjs",
+        "test/package-command.test.mjs",
+        "test/planning-spine.test.mjs",
+        "test/project-registration.test.mjs",
+        "test/security-boundary.test.mjs",
+        "test/host-negotiation.test.mjs",
+        "test/launch-runtime.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "--test-concurrency=1",
+        "test/harness-run.browser.test.mjs",
+        "test/reconnect-canonical.browser.test.mjs",
+        "test/truthful-failure.browser.test.mjs",
+        "test/project-preparation.browser.test.mjs",
+        "test/planning-spine.browser.test.mjs",
+        "test/claude-controller.browser.test.mjs",
+        "test/local-walking-skeleton.browser.test.mjs",
+        "test/workbench-terminal.browser.test.mjs",
+        "test/mobile-workbench-terminal.browser.test.mjs"
+      ]
+    ]
+  }
+}

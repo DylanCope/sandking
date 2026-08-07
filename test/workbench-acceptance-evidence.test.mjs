@@ -10,6 +10,7 @@ import {
   captureCleanIssue146EvidenceRevision,
   ISSUE_146_DEMONSTRATED_PATHS,
 } from "./issue-146-evidence-source.mjs";
+import { verifyRetainedEvidenceCurrentOrSuperseded } from "./retained-evidence-supersession.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -135,11 +136,12 @@ test("retained issue 146 evidence proves the unchanged packaged public seam", {
   assert.equal(evidence.realClaudeExecution.launchApprovalPermittedForWorker, false);
   assert.doesNotMatch(JSON.stringify(evidence),
     /bootstrap\?token=|sandking_session=|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|ALT-SCREEN-DECOY|FINAL STATUS/i);
-  const { stdout: changes } = await execFileAsync("git", [
-    "diff", "--name-only", `${evidence.generatedFromCommit}..HEAD`, "--",
-    ...ISSUE_146_DEMONSTRATED_PATHS,
-  ], { cwd: repositoryRoot });
-  assert.equal(changes.trim(), "", `retained evidence predates demonstrated changes:\n${changes}`);
+  await verifyRetainedEvidenceCurrentOrSuperseded({
+    repositoryRoot,
+    issue: 146,
+    evidence,
+    demonstratedPaths: ISSUE_146_DEMONSTRATED_PATHS,
+  });
 });
 
 test("retained issue 146 real-Claude evidence is structural and prohibits Launch effects", {
@@ -153,20 +155,13 @@ test("retained issue 146 real-Claude evidence is structural and prohibits Launch
   assert.equal(realEvidence.observations.ptyRuntimeOwned, true);
   assert.equal(realEvidence.observations.browserReconnection, true);
   assert.ok(Object.values(realEvidence.prohibitedEffects).every((value) => value === false));
-  assert.match(realEvidence.generatedFromCommit, /^[a-f0-9]{40}$/);
-  const { stdout: resolvedCommit } = await execFileAsync("git", [
-    "rev-parse", "--verify", `${realEvidence.generatedFromCommit}^{commit}`,
-  ], { cwd: repositoryRoot });
-  assert.equal(resolvedCommit.trim(), realEvidence.generatedFromCommit);
-  await execFileAsync("git", [
-    "merge-base", "--is-ancestor", realEvidence.generatedFromCommit, "HEAD",
-  ], { cwd: repositoryRoot });
-  const { stdout: changes } = await execFileAsync("git", [
-    "diff", "--name-only", `${realEvidence.generatedFromCommit}..HEAD`, "--",
-    ...ISSUE_146_DEMONSTRATED_PATHS,
-  ], { cwd: repositoryRoot });
-  assert.equal(changes.trim(), "",
-    `retained real-Claude evidence predates demonstrated changes:\n${changes}`);
+  await verifyRetainedEvidenceCurrentOrSuperseded({
+    repositoryRoot,
+    issue: 146,
+    evidence: realEvidence,
+    demonstratedPaths: ISSUE_146_DEMONSTRATED_PATHS,
+    requireRealProvider: true,
+  });
   assert.doesNotMatch(JSON.stringify(realEvidence),
     /bootstrap\?token=|sandking_session=|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN/);
 });

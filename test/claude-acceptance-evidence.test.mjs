@@ -10,6 +10,7 @@ import {
   captureCleanIssue124EvidenceRevision,
   ISSUE_124_DEMONSTRATED_PATHS,
 } from "./issue-124-evidence-source.mjs";
+import { verifyRetainedEvidenceCurrentOrSuperseded } from "./retained-evidence-supersession.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -110,20 +111,12 @@ test("issue 124 real-Claude acceptance fails closed unless its human gate is exp
 test("retained issue 124 evidence identifies the unchanged demonstrated revision", {
   skip: evidenceExists ? false : "generated after the implementation commit",
 }, async () => {
-  const { stdout } = await execFileAsync(
-    "git",
-    ["rev-parse", "--verify", `${evidence.generatedFromCommit}^{commit}`],
-    { cwd: repositoryRoot },
-  );
-  assert.equal(stdout.trim(), evidence.generatedFromCommit);
-  await execFileAsync("git", [
-    "merge-base", "--is-ancestor", evidence.generatedFromCommit, "HEAD",
-  ], { cwd: repositoryRoot });
-  const { stdout: changes } = await execFileAsync("git", [
-    "diff", "--name-only", `${evidence.generatedFromCommit}..HEAD`, "--",
-    ...ISSUE_124_DEMONSTRATED_PATHS,
-  ], { cwd: repositoryRoot });
-  assert.equal(changes.trim(), "", `retained evidence predates demonstrated changes:\n${changes}`);
+  await verifyRetainedEvidenceCurrentOrSuperseded({
+    repositoryRoot,
+    issue: 124,
+    evidence,
+    demonstratedPaths: ISSUE_124_DEMONSTRATED_PATHS,
+  });
 });
 
 test("retained issue 124 evidence proves the provider-neutral installed-CLI contract", {

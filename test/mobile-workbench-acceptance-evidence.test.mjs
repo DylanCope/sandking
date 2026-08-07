@@ -10,6 +10,7 @@ import {
   captureCleanIssue149EvidenceRevision,
   ISSUE_149_DEMONSTRATED_PATHS,
 } from "./issue-149-evidence-source.mjs";
+import { verifyRetainedEvidenceCurrentOrSuperseded } from "./retained-evidence-supersession.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -111,9 +112,10 @@ test("retained issue 149 evidence proves the unchanged packaged mobile seam", {
   );
   assert.doesNotMatch(JSON.stringify(evidence),
     /bootstrap\?token=|sandking_session=|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|mobile printable|scrollback-|ALT-SCREEN-DECOY|FINAL STATUS/i);
-  const { stdout: changes } = await execFileAsync("git", [
-    "diff", "--name-only", `${evidence.generatedFromCommit}..HEAD`, "--",
-    ...ISSUE_149_DEMONSTRATED_PATHS,
-  ], { cwd: repositoryRoot });
-  assert.equal(changes.trim(), "", `retained evidence predates demonstrated changes:\n${changes}`);
+  await verifyRetainedEvidenceCurrentOrSuperseded({
+    repositoryRoot,
+    issue: 149,
+    evidence,
+    demonstratedPaths: ISSUE_149_DEMONSTRATED_PATHS,
+  });
 });
