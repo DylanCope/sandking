@@ -20,6 +20,7 @@ test("a project-focused conformance Controller launches in one revision-free act
   const operations = [];
   const projectId = `project-${"2".repeat(24)}`;
   const harnessRunId = `harness-run-${"6".repeat(24)}`;
+  const secondHarnessRunId = `harness-run-${"7".repeat(24)}`;
   let launchOutcome = null;
   let launchAttempts = 0;
   let manager;
@@ -39,10 +40,14 @@ test("a project-focused conformance Controller launches in one revision-free act
             type: "harness.run.launch.result",
             code: "harness_run_created",
             idempotentReplay: false,
-            run: { harnessRunId },
+            run: {
+              harnessRunId: launchAttempts === 1 ? harnessRunId : secondHarnessRunId,
+            },
           };
           // Exercise ambiguous-response recovery without issuing a second launch.
-          await new Promise((resolve) => setTimeout(resolve, 3_250));
+          if (launchAttempts === 1) {
+            await new Promise((resolve) => setTimeout(resolve, 3_250));
+          }
           return launchOutcome;
         }
         if (request.operation === "harness-run.lookup") {
@@ -104,7 +109,29 @@ test("a project-focused conformance Controller launches in one revision-free act
     ]);
     assert.equal("parameters" in operations[0].input, false);
     assert.equal("expectedRevision" in operations[0].input, false);
-    assert.equal(operations[0].input.idempotencyKey, operations[1].input.idempotencyKey);
+    assert.match(operations[0].input.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    assert.equal(
+      operations[0].input.idempotencyKeyHash,
+      operations[1].input.idempotencyKeyHash,
+    );
+    assert.equal("idempotencyKey" in operations[0].input, false);
+    assert.equal("idempotencyKey" in operations[1].input, false);
+
+    await enter("launch");
+    await waitFor(() => output.join("").includes(
+      `Harness run ${secondHarnessRunId} created`,
+    ));
+    assert.equal(launchAttempts, 2);
+    assert.deepEqual(operations.map((operation) => operation.operation), [
+      "harness-run.launch",
+      "harness-run.lookup",
+      "harness-run.launch",
+    ]);
+    assert.notEqual(
+      operations[2].input.idempotencyKeyHash,
+      operations[0].input.idempotencyKeyHash,
+    );
+    assert.equal("idempotencyKey" in operations[2].input, false);
     assert.doesNotMatch(output.join(""), /Launch request|approve|reject|--plugin-dir/i);
     assert.ok(audits.some((audit) => audit.action === "controller.provider.operation"
       && audit.details.operation === "harness-run.launch"));

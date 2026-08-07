@@ -1,5 +1,5 @@
 import { spawn as spawnChild } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -576,13 +576,10 @@ const openProviderControl = async (context) => {
             && !Array.isArray(operationRequest.input)
             ? operationRequest.input
             : null;
-          const idempotencyKey = operationInput && "idempotencyKey" in operationInput
-            ? operationInput.idempotencyKey
-            : null;
-          const idempotencyKeyHash = typeof idempotencyKey === "string"
-            && idempotencyKey.length > 0
-            && idempotencyKey.length <= 256
-            ? `sha256:${createHash("sha256").update(idempotencyKey).digest("hex")}`
+          const idempotencyKeyHash = operationInput
+            && "idempotencyKeyHash" in operationInput
+            && /^sha256:[a-f0-9]{64}$/.test(String(operationInput.idempotencyKeyHash))
+            ? String(operationInput.idempotencyKeyHash)
             : null;
           try {
             const outcome = await context.handleOperation({

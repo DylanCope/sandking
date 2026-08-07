@@ -571,17 +571,15 @@ const canonicalDigest = (value) => createHash("sha256")
  * Keep the adapter entry point self-contained while enforcing the same
  * correlation contract as the packaged CLI at the provider/runtime seam.
  * @param {any} outcome
- * @param {{projectId: string, controllerSessionId: string, parameters: any, idempotencyKey: string}} request
+ * @param {{projectId: string, controllerSessionId: string, parameters: any, idempotencyKeyHash: string}} request
  */
 const requireCorrelatedControllerLaunchResult = (outcome, request) => {
   const run = outcome?.run;
-  const expectedIdempotencyKeyHash = `sha256:${createHash("sha256")
-    .update(request.idempotencyKey).digest("hex")}`;
   if (
     outcome?.type !== "harness.run.launch.result"
     || !["harness_run_created", "harness_run_found"].includes(outcome.code)
     || outcome.authorizationClass !== "harness_run_launch"
-    || outcome.idempotencyKeyHash !== expectedIdempotencyKeyHash
+    || outcome.idempotencyKeyHash !== request.idempotencyKeyHash
     || !/^harness-run-[a-f0-9]{24}$/.test(run?.harnessRunId ?? "")
     || run?.projectId !== request.projectId
     || run?.controllerSessionId !== request.controllerSessionId
@@ -598,7 +596,7 @@ const requireCorrelatedControllerLaunchResult = (outcome, request) => {
  * mutation. Keep that transport success distinct from the launch outcome so
  * the ordinary CLI never exits zero for a durably retained Host failure.
  * @param {any} outcome
- * @param {{projectId: string, controllerSessionId: string, parameters: any, idempotencyKey: string}} request
+ * @param {{projectId: string, controllerSessionId: string, parameters: any, idempotencyKeyHash: string}} request
  */
 const requireSuccessfulControllerLaunch = (outcome, request) => {
   if (
@@ -701,12 +699,10 @@ const openControllerCliServer = async ({
   workContextId,
   control,
 }) => {
-  const directory = process.platform === "win32"
-    ? null
-    : await mkdtemp(join(tmpdir(), "sandking-controller-cli-"));
-  const endpoint = directory
-    ? join(directory, "operations.sock")
-    : `\\\\.\\pipe\\sandking-controller-cli-${canonicalDigest({ sessionId }).slice(0, 24)}`;
+  const directory = await mkdtemp(join(tmpdir(), "sandking-controller-cli-"));
+  const endpoint = process.platform === "win32"
+    ? `\\\\.\\pipe\\sandking-controller-cli-${canonicalDigest({ sessionId }).slice(0, 24)}`
+    : join(directory, "operations.sock");
   let closed = false;
   let providerReady = false;
   /** @type {() => void} */
@@ -752,9 +748,7 @@ const openControllerCliServer = async ({
     }
     if (
       !parametersValid
-      || typeof request.idempotencyKey !== "string"
-      || request.idempotencyKey.length < 1
-      || request.idempotencyKey.length > 256
+      || !/^sha256:[a-f0-9]{64}$/.test(request.idempotencyKeyHash ?? "")
     ) {
       throw new Error("controller_cli_contract_invalid");
     }
@@ -762,12 +756,12 @@ const openControllerCliServer = async ({
       projectId: workContextId,
       controllerSessionId: sessionId,
       parameters,
-      idempotencyKey: request.idempotencyKey,
+      idempotencyKeyHash: request.idempotencyKeyHash,
     };
     try {
       return requireSuccessfulControllerLaunch(await control.request("harness-run.launch", {
         ...(Object.keys(parameters).length === 0 ? {} : { parameters }),
-        idempotencyKey: request.idempotencyKey,
+        idempotencyKeyHash: request.idempotencyKeyHash,
       }), correlation);
     } catch (error) {
       if (!(error instanceof Error) || error.message !== "provider_operation_timeout") {
@@ -777,7 +771,7 @@ const openControllerCliServer = async ({
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
           lookup = await control.request("harness-run.lookup", {
-            idempotencyKey: request.idempotencyKey,
+            idempotencyKeyHash: request.idempotencyKeyHash,
           });
           break;
         } catch (lookupError) {
@@ -854,6 +848,7 @@ const openControllerCliServer = async ({
   });
   return {
     endpoint,
+    retryDirectory: directory,
     announceProviderReady: () => {
       if (closed || providerReady) return false;
       providerReady = true;
@@ -865,7 +860,7 @@ const openControllerCliServer = async ({
       closed = true;
       releaseProviderReady();
       await new Promise((resolve) => server.close(() => resolve(undefined)));
-      if (directory) await rm(directory, { recursive: true, force: true });
+      await rm(directory, { recursive: true, force: true });
     },
   };
 };
@@ -942,6 +937,7 @@ const runClaude = async (argv) => {
       env: {
         ...createClaudeDestinationEnvironment(),
         SANDKING_CONTROLLER_ENDPOINT: controllerCli.endpoint,
+        SANDKING_CONTROLLER_RETRY_DIRECTORY: controllerCli.retryDirectory,
         SANDKING_CONTROLLER_SESSION_ID: sessionId,
         SANDKING_WORK_CONTEXT_ID: workContextId,
       },

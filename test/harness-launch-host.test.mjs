@@ -107,7 +107,7 @@ test("the framed Host launches a fresh Project with one revision-free message", 
       controllerSessionId,
       source: "controller-cli",
       authorizationClass: "harness_run_launch",
-      idempotencyKey: "launch-framed-harness",
+      idempotencyKeyHash: `sha256:${"4".repeat(64)}`,
     };
     assert.equal("expectedRevision" in launch, false);
     writeFrame(child.stdin, launch);
@@ -118,6 +118,12 @@ test("the framed Host launches a fresh Project with one revision-free message", 
     assert.deepEqual(created.run.parameters, launch.parameters);
     assert.equal(created.run.source, "controller-cli");
     assert.equal("launchRequestId" in created.run, false);
+    assert.equal(created.run.executionSnapshot.projectRegistration.revision, 2);
+    assert.equal(created.run.executionSnapshot.harness.revision, 1);
+    assert.deepEqual(created.run.executionSnapshot.credentialCapabilityReferences, [
+      "github.issues.read",
+      "project.git.read",
+    ]);
 
     writeFrame(child.stdin, { ...launch, requestId: "launch-framed-harness-replay" });
     const replay = await readFrame(child.stdout);
@@ -130,7 +136,7 @@ test("the framed Host launches a fresh Project with one revision-free message", 
     const parameterlessLaunch = {
       ...launchWithoutParameters,
       requestId: "launch-framed-harness-without-parameters",
-      idempotencyKey: "launch-framed-harness-without-parameters",
+      idempotencyKeyHash: `sha256:${"5".repeat(64)}`,
     };
     writeFrame(child.stdin, parameterlessLaunch);
     const parameterlessCreated = await readFrame(child.stdout);

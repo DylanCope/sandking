@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,8 +63,7 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
           type: "harness.run.launch.result",
           code: "harness_run_created",
           authorizationClass: "harness_run_launch",
-          idempotencyKeyHash: `sha256:${createHash("sha256")
-            .update(request.idempotencyKey).digest("hex")}`,
+          idempotencyKeyHash: request.idempotencyKeyHash,
           run: {
             harnessRunId: `harness-run-${"5".repeat(24)}`,
             projectId: request.projectId,
@@ -86,6 +85,7 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
       LANG: "C.UTF-8",
       PATH: process.env.PATH,
       SANDKING_CONTROLLER_ENDPOINT: endpoint,
+      SANDKING_CONTROLLER_RETRY_DIRECTORY: join(directory, "retry-state"),
       SANDKING_CONTROLLER_SESSION_ID: `controller-session-${"2".repeat(24)}`,
       SANDKING_WORK_CONTEXT_ID: projectId,
     };
@@ -98,7 +98,8 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
     });
     assert.match(help, /sandking launch \[<project-id>\] \[--parameters <json-object>\]/);
     assert.match(help, /defaults to the focused Controller Project/);
-    assert.doesNotMatch(help, /approve|prepare|plugin|skill|expected-revision/i);
+    assert.doesNotMatch(help,
+      /approve|prepare|plugin|skill|expected-revision|idempotency/i);
 
     const controllerHelpInvocations = [
       ["--help"],
@@ -155,6 +156,8 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
     assert.equal(requests[3].operation, "harness-run.launch");
     assert.equal(requests[3].projectId, projectId);
     assert.equal("parameters" in requests[3], false);
+    assert.match(requests[3].idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    assert.equal("idempotencyKey" in requests[3], false);
     assert.equal(requests[4].operation, "harness-run.launch");
     assert.equal(requests[4].projectId, projectId);
     assert.equal("parameters" in requests[4], false);
@@ -166,8 +169,130 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
       issueNumber: 152,
       targetBranch: "sandcastle/issue-152",
     });
+    assert.match(requests[6].idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    assert.equal("idempotencyKey" in requests[6], false);
     assert.equal("expectedRevision" in requests[6], false);
     assert.doesNotMatch(JSON.stringify(requests), /approve|prepare|plugin|skill/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an ordinary Controller CLI retry reuses its pending launch identity after a lost response", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-controller-cli-retry-"));
+  const endpoint = join(directory, "controller.sock");
+  const retryDirectory = join(directory, "retry-state");
+  const projectId = `project-${"a".repeat(24)}`;
+  const controllerSessionId = `controller-session-${"b".repeat(24)}`;
+  const requests = [];
+  const acceptedRuns = new Map();
+  let adapterStarts = 0;
+  let lifecycleTransitions = 0;
+  let projectWrites = 0;
+  const server = createServer((socket) => {
+    let input = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      input += chunk;
+      if (!input.includes("\n")) return;
+      const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+      requests.push(request);
+      let harnessRunId = acceptedRuns.get(request.idempotencyKeyHash);
+      if (!harnessRunId) {
+        harnessRunId = `harness-run-${String(acceptedRuns.size + 1).repeat(24)}`;
+        acceptedRuns.set(request.idempotencyKeyHash, harnessRunId);
+        adapterStarts += 1;
+        lifecycleTransitions += 1;
+      }
+      if (requests.length === 1) {
+        // The Controller accepted the launch, but its response never reached
+        // the ordinary CLI process.
+        socket.destroy();
+        return;
+      }
+      socket.end(`${JSON.stringify({
+        type: "sandking.cli.result",
+        protocol: "1.0.0",
+        requestId: request.requestId,
+        ok: true,
+        outcome: {
+          type: "harness.run.launch.result",
+          code: "harness_run_created",
+          authorizationClass: "harness_run_launch",
+          idempotencyKeyHash: request.idempotencyKeyHash,
+          run: {
+            harnessRunId,
+            projectId: request.projectId,
+            controllerSessionId: request.controllerSessionId,
+            source: "controller-cli",
+            parameters: request.parameters ?? {},
+          },
+        },
+      })}\n`);
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(endpoint, resolve);
+  });
+  const controllerEnvironment = {
+    LANG: "C.UTF-8",
+    PATH: process.env.PATH,
+    SANDKING_CONTROLLER_ENDPOINT: endpoint,
+    SANDKING_CONTROLLER_RETRY_DIRECTORY: retryDirectory,
+    SANDKING_CONTROLLER_SESSION_ID: controllerSessionId,
+    SANDKING_WORK_CONTEXT_ID: projectId,
+  };
+  const invocation = [cliPath, "launch", "--json"];
+  try {
+    await assert.rejects(execFileAsync(process.execPath, invocation, {
+      env: controllerEnvironment,
+    }), (error) => {
+      assert.match(error.stderr, /controller_cli_unavailable/);
+      return true;
+    });
+    const pendingState = await readFile(
+      join(retryDirectory, "harness-launch-retries.json"),
+      "utf8",
+    );
+    assert.match(pendingState, /sha256:[a-f0-9]{64}/);
+    assert.doesNotMatch(pendingState, /idempotencyKey/);
+
+    const { stdout: replayOutput } = await execFileAsync(process.execPath, invocation, {
+      env: controllerEnvironment,
+    });
+    const replay = JSON.parse(replayOutput);
+    assert.equal(replay.code, "harness_run_created");
+    assert.equal(replay.run.harnessRunId, `harness-run-${"1".repeat(24)}`);
+    assert.equal(requests[1].idempotencyKeyHash, requests[0].idempotencyKeyHash);
+    assert.equal(acceptedRuns.size, 1);
+    assert.equal(adapterStarts, 1);
+    assert.equal(lifecycleTransitions, 1);
+    assert.equal(projectWrites, 0);
+
+    const { stdout: deliberateOutput } = await execFileAsync(process.execPath, invocation, {
+      env: controllerEnvironment,
+    });
+    const deliberate = JSON.parse(deliberateOutput);
+    assert.equal(deliberate.code, "harness_run_created");
+    assert.equal(deliberate.run.harnessRunId, `harness-run-${"2".repeat(24)}`);
+    assert.notEqual(requests[2].idempotencyKeyHash, requests[1].idempotencyKeyHash);
+    assert.equal(acceptedRuns.size, 2);
+    assert.equal(adapterStarts, 2);
+    assert.equal(lifecycleTransitions, 2);
+    assert.equal(projectWrites, 0);
+
+    const requestCount = requests.length;
+    const { SANDKING_CONTROLLER_RETRY_DIRECTORY: _retryDirectory, ...unsafeEnvironment } =
+      controllerEnvironment;
+    await assert.rejects(execFileAsync(process.execPath, invocation, {
+      env: unsafeEnvironment,
+    }), (error) => {
+      assert.match(error.stderr, /controller_cli_retry_state_unavailable/);
+      return true;
+    });
+    assert.equal(requests.length, requestCount);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(directory, { recursive: true, force: true });
@@ -256,20 +381,23 @@ test("sandking launch rejects uncorrelated success responses", async () => {
           type: "harness.run.launch.result",
           code: "harness_run_created",
           authorizationClass: "harness_run_launch",
-          idempotencyKeyHash: `sha256:${createHash("sha256")
-            .update(request.idempotencyKey === "wrong-idempotency"
-              ? "another-idempotency-key"
-              : request.idempotencyKey).digest("hex")}`,
+          idempotencyKeyHash: request.idempotencyKeyHash === `sha256:${createHash("sha256")
+            .update("wrong-idempotency").digest("hex")}`
+            ? `sha256:${createHash("sha256").update("another-idempotency-key").digest("hex")}`
+            : request.idempotencyKeyHash,
           run: {
             harnessRunId: `harness-run-${"5".repeat(24)}`,
-            projectId: request.idempotencyKey === "wrong-project"
+            projectId: request.idempotencyKeyHash === `sha256:${createHash("sha256")
+              .update("wrong-project").digest("hex")}`
               ? `project-${"9".repeat(24)}`
               : request.projectId,
-            controllerSessionId: request.idempotencyKey === "wrong-session"
+            controllerSessionId: request.idempotencyKeyHash === `sha256:${createHash("sha256")
+              .update("wrong-session").digest("hex")}`
               ? `controller-session-${"9".repeat(24)}`
               : request.controllerSessionId,
             source: "controller-cli",
-            parameters: request.idempotencyKey === "wrong-parameters"
+            parameters: request.idempotencyKeyHash === `sha256:${createHash("sha256")
+              .update("wrong-parameters").digest("hex")}`
               ? mismatchedParameters
               : request.parameters,
           },

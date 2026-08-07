@@ -1,12 +1,22 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createConnection } from "node:net";
+import { isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { harnessLaunchParametersDeclarationSchema } from "./harness-adapter-protocol.mjs";
 import { launchParametersSchema } from "./harness-launch.mjs";
+import { readJson, removePrivateFile, writePrivateJson } from "./private-state.mjs";
 
 const projectIdPattern = /^project-[a-f0-9]{24}$/;
 const controllerSessionPattern = /^controller-session-[a-f0-9]{24}$/;
+const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const pendingLaunchStateSchema = z.object({
+  schemaVersion: z.literal(1),
+  launches: z.array(z.object({
+    requestFingerprint: digestSchema,
+    retryHash: digestSchema,
+  }).strict()).max(64),
+}).strict();
 const controllerCliDescriptionSchema = z.object({
   type: z.literal("controller.cli.description"),
   protocol: z.literal("1.0.0"),
@@ -33,9 +43,91 @@ const controllerLaunchResultSchema = z.object({
 // lookup can spend a second window queued behind it. Leave one final lookup
 // window plus bounded transport overhead without ever retrying the mutation.
 const CONTROLLER_CLI_TIMEOUT_MS = 17_000;
+const pendingLaunchStateFile = "harness-launch-retries.json";
+
+class ControllerCliAcknowledgedFailure extends Error {}
+
+/** @param {unknown} value @returns {string} */
+const canonicalJson = (value) => {
+  if (value === undefined) return '"<undefined>"';
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = /** @type {Record<string, unknown>} */ (value);
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+};
+
+/** @param {unknown} value */
+const digest = (value) => `sha256:${createHash("sha256").update(
+  typeof value === "string" ? value : canonicalJson(value),
+).digest("hex")}`;
+
+/** @param {NodeJS.ProcessEnv} environment */
+const retryStatePath = (environment) => {
+  const directory = environment.SANDKING_CONTROLLER_RETRY_DIRECTORY ?? "";
+  if (
+    directory.length < 1
+    || directory.length > 4_096
+    || /[\r\n\0]/.test(directory)
+    || !isAbsolute(directory)
+  ) {
+    throw new Error("controller_cli_retry_state_unavailable");
+  }
+  return join(directory, pendingLaunchStateFile);
+};
 
 /**
- * @param {{operation: "describe" | "harness-run.launch", projectId: string, parameters?: unknown, idempotencyKey?: string}} request
+ * Keep only hashed retry plumbing in the Controller-owned private directory.
+ * The file outlives one ordinary CLI process, but is removed with the active
+ * provider session and never touches the Project.
+ * @param {{projectId: string, controllerSessionId: string, parameters: unknown}} request
+ * @param {NodeJS.ProcessEnv} environment
+ */
+const retainPendingLaunch = async (request, environment) => {
+  const path = retryStatePath(environment);
+  const parsed = pendingLaunchStateSchema.safeParse(await readJson(path, {
+    schemaVersion: 1,
+    launches: [],
+  }));
+  if (!parsed.success) {
+    throw new Error("controller_cli_retry_state_invalid");
+  }
+  const requestFingerprint = digest(request);
+  const existing = parsed.data.launches.find((launch) =>
+    launch.requestFingerprint === requestFingerprint);
+  if (existing) {
+    return { path, requestFingerprint, retryHash: existing.retryHash };
+  }
+  if (parsed.data.launches.length >= 64) {
+    throw new Error("controller_cli_retry_capacity_exceeded");
+  }
+  const retryHash = digest(randomBytes(32));
+  parsed.data.launches.push({ requestFingerprint, retryHash });
+  await writePrivateJson(path, parsed.data);
+  return { path, requestFingerprint, retryHash };
+};
+
+/** @param {{path: string, requestFingerprint: string, retryHash: string}} pending */
+const clearPendingLaunch = async (pending) => {
+  const parsed = pendingLaunchStateSchema.safeParse(await readJson(pending.path, {
+    schemaVersion: 1,
+    launches: [],
+  }));
+  if (!parsed.success) {
+    throw new Error("controller_cli_retry_state_invalid");
+  }
+  parsed.data.launches = parsed.data.launches.filter((launch) =>
+    launch.requestFingerprint !== pending.requestFingerprint
+    || launch.retryHash !== pending.retryHash);
+  if (parsed.data.launches.length === 0) {
+    await removePrivateFile(pending.path);
+  } else {
+    await writePrivateJson(pending.path, parsed.data);
+  }
+};
+
+/**
+ * @param {{operation: "describe" | "harness-run.launch", projectId: string, parameters?: unknown, idempotencyKeyHash?: string}} request
  * @param {NodeJS.ProcessEnv} environment
  */
 const requestControllerOperation = async (request, environment) => {
@@ -80,7 +172,7 @@ const requestControllerOperation = async (request, environment) => {
         projectId: request.projectId,
         ...(request.operation === "harness-run.launch" ? {
           parameters: request.parameters,
-          idempotencyKey: request.idempotencyKey,
+          idempotencyKeyHash: request.idempotencyKeyHash,
         } : {}),
       })}\n`);
     });
@@ -102,7 +194,9 @@ const requestControllerOperation = async (request, environment) => {
           throw new Error("controller_cli_protocol_invalid");
         }
         if (response.ok !== true) {
-          throw new Error(response?.failure?.code ?? "controller_cli_operation_failed");
+          throw new ControllerCliAcknowledgedFailure(
+            response?.failure?.code ?? "controller_cli_operation_failed",
+          );
         }
         finish(null, response.outcome);
       } catch (error) {
@@ -138,15 +232,13 @@ export const requestControllerDescription = async (environment = process.env) =>
  * A success-shaped response for another Project or Controller session must
  * never be reported to the provider as a successful launch.
  * @param {unknown} outcome
- * @param {{projectId: string, controllerSessionId: string, parameters: import("zod").infer<typeof launchParametersSchema>, idempotencyKey: string}} request
+ * @param {{projectId: string, controllerSessionId: string, parameters: import("zod").infer<typeof launchParametersSchema>, idempotencyKeyHash: string}} request
  */
 export const requireCorrelatedControllerLaunchResult = (outcome, request) => {
   const parsed = controllerLaunchResultSchema.safeParse(outcome);
-  const expectedIdempotencyKeyHash = `sha256:${createHash("sha256")
-    .update(request.idempotencyKey).digest("hex")}`;
   if (
     !parsed.success
-    || parsed.data.idempotencyKeyHash !== expectedIdempotencyKeyHash
+    || parsed.data.idempotencyKeyHash !== request.idempotencyKeyHash
     || parsed.data.run.projectId !== request.projectId
     || parsed.data.run.controllerSessionId !== request.controllerSessionId
     || !isDeepStrictEqual(parsed.data.run.parameters, request.parameters)
@@ -159,29 +251,46 @@ export const requireCorrelatedControllerLaunchResult = (outcome, request) => {
 /**
  * Invoke the Controller runtime from the ordinary `sandking` executable made
  * available inside a Controller session.
- * @param {{projectId: string, parameters?: unknown, idempotencyKey: string}} request
+ * @param {{projectId: string, parameters?: unknown, idempotencyKey?: string}} request
  * @param {NodeJS.ProcessEnv} [environment]
  */
 export const requestControllerLaunch = async (request, environment = process.env) => {
   const parameters = launchParametersSchema.safeParse(request.parameters);
   if (
     !parameters.success
-    || typeof request.idempotencyKey !== "string"
-    || request.idempotencyKey.length < 1
-    || request.idempotencyKey.length > 256
+    || (request.idempotencyKey !== undefined
+      && (typeof request.idempotencyKey !== "string"
+        || request.idempotencyKey.length < 1
+        || request.idempotencyKey.length > 256))
   ) {
     throw new Error("controller_cli_contract_invalid");
   }
-  const outcome = await requestControllerOperation({
-    operation: "harness-run.launch",
-    projectId: request.projectId,
-    ...(Object.keys(parameters.data).length === 0 ? {} : { parameters: parameters.data }),
-    idempotencyKey: request.idempotencyKey,
-  }, environment);
-  return requireCorrelatedControllerLaunchResult(outcome, {
+  const correlation = {
     projectId: request.projectId,
     controllerSessionId: environment.SANDKING_CONTROLLER_SESSION_ID ?? "",
     parameters: parameters.data,
-    idempotencyKey: request.idempotencyKey,
-  });
+  };
+  const pending = request.idempotencyKey === undefined
+    ? await retainPendingLaunch(correlation, environment)
+    : null;
+  const idempotencyKeyHash = pending?.retryHash ?? digest(request.idempotencyKey);
+  try {
+    const outcome = await requestControllerOperation({
+      operation: "harness-run.launch",
+      projectId: request.projectId,
+      ...(Object.keys(parameters.data).length === 0 ? {} : { parameters: parameters.data }),
+      idempotencyKeyHash,
+    }, environment);
+    const result = requireCorrelatedControllerLaunchResult(outcome, {
+      ...correlation,
+      idempotencyKeyHash,
+    });
+    if (pending) await clearPendingLaunch(pending);
+    return result;
+  } catch (error) {
+    if (pending && error instanceof ControllerCliAcknowledgedFailure) {
+      await clearPendingLaunch(pending);
+    }
+    throw error;
+  }
 };

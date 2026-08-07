@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { randomUUID } from "node:crypto";
 import { openBrowser } from "./browser-launch.mjs";
 import {
   requestControllerDescription,
@@ -10,7 +9,7 @@ import { validateDeclaredLaunchParameters } from "./harness-launch.mjs";
 import { RuntimeStartupError, launchRuntime, stopRuntime } from "./runtime.mjs";
 
 const harnessLaunchHelp = `Usage:
-  sandking launch [<project-id>] [--parameters <json-object>] [<harness-declared-flags>] [--idempotency-key <key>] [--json]
+  sandking launch [<project-id>] [--parameters <json-object>] [<harness-declared-flags>] [--json]
 
 Launches one Harness run immediately. Inside a Controller session, <project-id>
 defaults to the focused Controller Project.
@@ -159,7 +158,9 @@ const main = async () => {
     output = await requestControllerLaunch({
       projectId,
       ...(Object.keys(parameters).length === 0 ? {} : { parameters }),
-      idempotencyKey: options.idempotencyKey ?? randomUUID(),
+      ...(options.idempotencyKey === undefined
+        ? {}
+        : { idempotencyKey: options.idempotencyKey }),
     });
   } else if (options.command === "launch") {
     output = await launchRuntime({

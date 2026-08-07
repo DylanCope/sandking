@@ -8,6 +8,7 @@ import {
   harnessRunEventSchema,
   harnessRunOutcomeSchema,
   harnessRunSchema,
+  retainedLegacyHarnessRunSchema,
 } from "./harness-runs.mjs";
 
 const FRAME_HEADER_BYTES = 4;
@@ -31,11 +32,11 @@ export const hostCapabilities = Object.freeze([
   "sandking.bulk-stream.v1",
   "sandking.project-registration.v1",
   "sandking.conformance-harness-registration.v1",
-  "sandking.harness-run.launch.v1",
-  "sandking.harness-run.v1",
+  "sandking.harness-run.launch.v2",
+  "sandking.harness-run.v2",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-harness-declared-launch-parameters")
+  .update("sandking-host-control-schema-v1-with-immutable-execution-snapshots")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -344,7 +345,7 @@ const harnessRunLaunchSchema = z.object({
     .nullable(),
   source: harnessRunLaunchSourceSchema,
   authorizationClass: harnessRunAuthorizationClassSchema,
-  idempotencyKey: z.string().min(1).max(256),
+  idempotencyKeyHash: digestSchema,
 }).strip();
 export const harnessRunLaunchResultSchema = z.object({
   type: z.literal("harness.run.launch.result"),
@@ -404,7 +405,7 @@ const legacyHarnessRunStartResultSchema = z.object({
   revision: z.number().int().positive(),
   idempotentReplay: z.boolean(),
   auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
-  run: harnessRunSchema,
+  run: retainedLegacyHarnessRunSchema,
 }).strip();
 const legacyHarnessRunStartFailureSchema = z.object({
   type: z.literal("harness.run.start.failure"),
@@ -442,7 +443,7 @@ const retainedHarnessRunMutationOutcomeSchema = z.union([
 const harnessRunLookupSchema = z.object({
   type: z.literal("harness.run.lookup"),
   requestId: identifierSchema,
-  idempotencyKey: z.string().min(1).max(256),
+  idempotencyKeyHash: digestSchema,
 }).strip();
 const harnessRunLookupResultSchema = z.object({
   type: z.literal("harness.run.lookup.result"),

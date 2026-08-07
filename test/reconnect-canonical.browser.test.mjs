@@ -86,7 +86,8 @@ test("one-action Harness launch reconnects to canonical state without duplicate 
         .exec(controllerOutput)?.[1];
       assert.match(harnessRunId, /^harness-run-[a-f0-9]{24}$/);
       assert.match(controllerOutput,
-        /Recovered the accepted outcome by exact idempotency-key lookup after the launch response timed out/);
+        /Recovered the original launch outcome after the launch response timed out/);
+      assert.doesNotMatch(controllerOutput, /idempotency/i);
 
       await page.waitForSelector(
         `#harness-run-observation[data-run-id='${harnessRunId}'][data-run-status='succeeded']`,
