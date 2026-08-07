@@ -224,10 +224,12 @@ test("one revision-free action launches a fresh Project's Harness run", async ()
 
 test("launch commit interruptions leave pre-commit work unclaimed and replay post-commit work", async () => {
   const preCommit = await createFixture("sandking-harness-launch-pre-commit-");
+  const stateCommit = await createFixture("sandking-harness-launch-state-commit-");
   const postCommit = await createFixture("sandking-harness-launch-post-commit-");
   const auditCommit = await createFixture("sandking-harness-launch-audit-commit-");
   const rawRetryKey = "recognizable-raw-launch-retry-key";
   const pointBeforeCommit = "harness_run_launch.before_commit";
+  const pointAfterStateCommit = "harness_run_launch.after_state_commit";
   const pointAfterCommit = "harness_run_launch.after_commit";
   try {
     const preFaults = [];
@@ -261,7 +263,91 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
       0,
     );
 
-    const projectFilesBefore = (await readdir(postCommit.projectPath)).sort();
+    const projectFilesBefore = (await readdir(stateCommit.projectPath)).sort();
+    const stateFaults = [];
+    const stateManager = await createHarnessRunManager({
+      dataDir: stateCommit.dataDir,
+      hostId,
+      recordAudit: stateCommit.recordAudit,
+      loadLaunchContext: stateCommit.registry.loadLaunchContext,
+      faultInjector: async (point) => {
+        stateFaults.push(point);
+        if (point === pointAfterStateCommit) {
+          throw new Error("injected_state_commit_interrupt");
+        }
+      },
+    });
+    const stateRequest = hashedLaunchRequest(launchRequest(
+      stateCommit.registered.project.projectId,
+      159,
+      { idempotencyKey: rawRetryKey },
+    ));
+    await assert.rejects(stateManager.launch(stateRequest), /injected_state_commit_interrupt/);
+    assert.deepEqual(stateFaults, [pointBeforeCommit, pointAfterStateCommit]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const committed = JSON.parse(
+      await readFile(join(stateCommit.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.equal(committed.runs.length, 1);
+    assert.equal(committed.launchOutcomes.length, 1);
+    assert.equal(committed.runs[0].status, "starting");
+    assert.deepEqual(committed.runs[0].events.map((event) => event.type), [
+      "harness_run_created",
+    ]);
+    assert.equal(stateCommit.audits.some((audit) =>
+      audit.action === "harness.run.launch" && audit.outcome === "accepted"), false);
+    assert.doesNotMatch(JSON.stringify({ committed, audits: stateCommit.audits }),
+      new RegExp(rawRetryKey));
+
+    const restarted = await createHarnessRunManager({
+      dataDir: stateCommit.dataDir,
+      hostId,
+      recordAudit: stateCommit.recordAudit,
+      loadLaunchContext: async () => {
+        throw new Error("mutable_launch_context_must_not_be_resolved_for_replay");
+      },
+    });
+    const lookup = await restarted.lookup({
+      requestId: "lookup-post-commit-launch",
+      idempotencyKeyHash: stateRequest.idempotencyKeyHash,
+    });
+    assert.equal(lookup.found, true);
+    const repairedLaunchAudits = stateCommit.audits.filter((audit) =>
+      audit.action === "harness.run.launch" && audit.outcome === "accepted");
+    assert.equal(repairedLaunchAudits.length, 1);
+    assert.equal(repairedLaunchAudits[0].auditId, committed.runs[0].launchAuditId);
+    assert.equal(repairedLaunchAudits[0].details.harnessRunId,
+      committed.runs[0].harnessRunId);
+    const replay = await restarted.launch({
+      ...stateRequest,
+      requestId: "replay-post-commit-launch",
+      parameters: {
+        targetBranch: "sandcastle/issue-159",
+        issueNumber: 159,
+      },
+    });
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.run.harnessRunId, lookup.launchOutcome.run.harnessRunId);
+
+    const conflict = await restarted.launch({
+      ...stateRequest,
+      requestId: "conflict-post-commit-launch",
+      parameters: { issueNumber: 160, targetBranch: "sandcastle/issue-160" },
+    });
+    assert.equal(conflict.code, "idempotency_key_conflict");
+    assert.deepEqual(conflict.prohibitedSideEffects, {
+      harnessRunCreated: false,
+      projectWrite: false,
+    });
+    const afterReplay = JSON.parse(
+      await readFile(join(stateCommit.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.equal(afterReplay.runs.length, 1);
+    assert.equal(afterReplay.launchOutcomes.length, 1);
+    assert.equal(afterReplay.runs[0].events.length, 1);
+    assert.deepEqual((await readdir(stateCommit.projectPath)).sort(), projectFilesBefore);
+
     const postFaults = [];
     const postManager = await createHarnessRunManager({
       dataDir: postCommit.dataDir,
@@ -276,27 +362,24 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
     const postRequest = hashedLaunchRequest(launchRequest(
       postCommit.registered.project.projectId,
       159,
-      { idempotencyKey: rawRetryKey },
+      { idempotencyKey: "post-commit-retry-key" },
     ));
     await assert.rejects(postManager.launch(postRequest), /injected_post_commit_interrupt/);
-    assert.deepEqual(postFaults, [pointBeforeCommit, pointAfterCommit]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    const committed = JSON.parse(
+    assert.deepEqual(postFaults, [
+      pointBeforeCommit,
+      pointAfterStateCommit,
+      pointAfterCommit,
+    ]);
+    const postState = JSON.parse(
       await readFile(join(postCommit.dataDir, "harness-runs.json"), "utf8"),
     );
-    assert.equal(committed.runs.length, 1);
-    assert.equal(committed.launchOutcomes.length, 1);
-    assert.equal(committed.runs[0].status, "starting");
-    assert.deepEqual(committed.runs[0].events.map((event) => event.type), [
-      "harness_run_created",
-    ]);
-    assert.equal(postCommit.audits.some((audit) =>
-      audit.action === "harness.run.launch" && audit.outcome === "accepted"), false);
-    assert.doesNotMatch(JSON.stringify({ committed, audits: postCommit.audits }),
-      new RegExp(rawRetryKey));
-
-    const restarted = await createHarnessRunManager({
+    const postAudits = postCommit.audits.filter((audit) =>
+      audit.action === "harness.run.launch" && audit.outcome === "accepted");
+    assert.equal(postState.runs.length, 1);
+    assert.equal(postState.launchOutcomes.length, 1);
+    assert.equal(postAudits.length, 1);
+    assert.equal(postAudits[0].auditId, postState.runs[0].launchAuditId);
+    const postRestarted = await createHarnessRunManager({
       dataDir: postCommit.dataDir,
       hostId,
       recordAudit: postCommit.recordAudit,
@@ -304,45 +387,14 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
         throw new Error("mutable_launch_context_must_not_be_resolved_for_replay");
       },
     });
-    const lookup = await restarted.lookup({
-      requestId: "lookup-post-commit-launch",
-      idempotencyKeyHash: postRequest.idempotencyKeyHash,
-    });
-    assert.equal(lookup.found, true);
-    const repairedLaunchAudits = postCommit.audits.filter((audit) =>
-      audit.action === "harness.run.launch" && audit.outcome === "accepted");
-    assert.equal(repairedLaunchAudits.length, 1);
-    assert.equal(repairedLaunchAudits[0].auditId, committed.runs[0].launchAuditId);
-    assert.equal(repairedLaunchAudits[0].details.harnessRunId,
-      committed.runs[0].harnessRunId);
-    const replay = await restarted.launch({
+    const postReplay = await postRestarted.launch({
       ...postRequest,
-      requestId: "replay-post-commit-launch",
-      parameters: {
-        targetBranch: "sandcastle/issue-159",
-        issueNumber: 159,
-      },
+      requestId: "replay-complete-post-commit-launch",
     });
-    assert.equal(replay.idempotentReplay, true);
-    assert.equal(replay.run.harnessRunId, lookup.launchOutcome.run.harnessRunId);
-
-    const conflict = await restarted.launch({
-      ...postRequest,
-      requestId: "conflict-post-commit-launch",
-      parameters: { issueNumber: 160, targetBranch: "sandcastle/issue-160" },
-    });
-    assert.equal(conflict.code, "idempotency_key_conflict");
-    assert.deepEqual(conflict.prohibitedSideEffects, {
-      harnessRunCreated: false,
-      projectWrite: false,
-    });
-    const afterReplay = JSON.parse(
-      await readFile(join(postCommit.dataDir, "harness-runs.json"), "utf8"),
-    );
-    assert.equal(afterReplay.runs.length, 1);
-    assert.equal(afterReplay.launchOutcomes.length, 1);
-    assert.equal(afterReplay.runs[0].events.length, 1);
-    assert.deepEqual((await readdir(postCommit.projectPath)).sort(), projectFilesBefore);
+    assert.equal(postReplay.idempotentReplay, true);
+    assert.equal(postReplay.run.harnessRunId, postState.runs[0].harnessRunId);
+    assert.equal(postCommit.audits.filter((audit) =>
+      audit.action === "harness.run.launch" && audit.outcome === "accepted").length, 1);
 
     let interruptAcceptedAudit = true;
     const auditManager = await createHarnessRunManager({
@@ -388,6 +440,7 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
   } finally {
     await Promise.all([
       rm(preCommit.root, { recursive: true, force: true }),
+      rm(stateCommit.root, { recursive: true, force: true }),
       rm(postCommit.root, { recursive: true, force: true }),
       rm(auditCommit.root, { recursive: true, force: true }),
     ]);

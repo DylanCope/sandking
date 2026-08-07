@@ -575,7 +575,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
  *   recordAudit: (action: string, outcome: "accepted" | "rejected" | "observed", details?: Record<string, unknown>, auditId?: string) => Promise<string>,
  *   loadLaunchContext: (projectId: string) => Promise<any>,
  *   now?: () => Date,
- *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_commit") => Promise<void> | void,
+ *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_state_commit" | "harness_run_launch.after_commit") => Promise<void> | void,
  * }} options
  */
 export const createHarnessRunManager = async (options) => {
@@ -1078,8 +1078,13 @@ export const createHarnessRunManager = async (options) => {
     // published before this canonical commit.
     await options.faultInjector?.("harness_run_launch.before_commit");
     await persist(retained);
-    await options.faultInjector?.("harness_run_launch.after_commit");
+    // The Host-private snapshot is already sufficient for exact replay here,
+    // but the accepted audit may still need idempotent publication after an
+    // interruption. Keep this repairable window distinct from the completed
+    // launch commit boundary.
+    await options.faultInjector?.("harness_run_launch.after_state_commit");
     await ensureAcceptedLaunchAudits(retained);
+    await options.faultInjector?.("harness_run_launch.after_commit");
     setImmediate(() => {
       supervise(structuredClone(run), {
         ...context,
