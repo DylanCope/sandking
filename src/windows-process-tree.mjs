@@ -1,5 +1,44 @@
 import { execFile } from "node:child_process";
 
+const WINDOWS_EPOCH_FILE_TIME = 116_444_736_000_000_000n;
+const WINDOWS_CREATION_TIME_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,7}))?Z$/;
+
+/** @param {unknown} value */
+const normalizeWindowsCreationTime = (value) => {
+  if (typeof value !== "string") return null;
+  const match = WINDOWS_CREATION_TIME_PATTERN.exec(value);
+  if (!match) return null;
+  const second = match[1];
+  const secondUnixMilliseconds = Date.parse(`${second}.000Z`);
+  if (
+    !Number.isFinite(secondUnixMilliseconds)
+    || new Date(secondUnixMilliseconds).toISOString() !== `${second}.000Z`
+  ) {
+    return null;
+  }
+  const fractionalFileTime = (match[2] ?? "").padEnd(7, "0");
+  const fileTime = BigInt(secondUnixMilliseconds) * 10_000n
+    + WINDOWS_EPOCH_FILE_TIME
+    + BigInt(fractionalFileTime || "0");
+  if (fileTime < 0n) return null;
+  return {
+    creationTime: `${second}.${fractionalFileTime}Z`,
+    fileTime,
+  };
+};
+
+/**
+ * @param {string} left
+ * @param {string} right
+ */
+const creationTimeIsNoLaterThan = (left, right) => {
+  const leftFileTime = normalizeWindowsCreationTime(left)?.fileTime;
+  const rightFileTime = normalizeWindowsCreationTime(right)?.fileTime;
+  return leftFileTime !== undefined
+    && rightFileTime !== undefined
+    && leftFileTime <= rightFileTime;
+};
+
 const listNativeWindowsProcesses = () => new Promise((resolve, reject) => {
   execFile("powershell.exe", [
     "-NoLogo",
@@ -19,15 +58,18 @@ const listNativeWindowsProcesses = () => new Promise((resolve, reject) => {
     try {
       const parsed = stdout.trim() === "" ? [] : JSON.parse(stdout);
       const rows = Array.isArray(parsed) ? parsed : [parsed];
-      resolve(rows.map((row) => ({
-        processId: Number(row.ProcessId),
-        parentProcessId: Number(row.ParentProcessId),
-        creationTime: new Date(row.CreationTime).toISOString(),
-      })).filter((row) => Number.isSafeInteger(row.processId)
+      resolve(rows.map((row) => {
+        const normalizedCreationTime = normalizeWindowsCreationTime(row.CreationTime);
+        return {
+          processId: Number(row.ProcessId),
+          parentProcessId: Number(row.ParentProcessId),
+          creationTime: normalizedCreationTime?.creationTime ?? null,
+        };
+      }).filter((row) => Number.isSafeInteger(row.processId)
         && row.processId > 0
         && Number.isSafeInteger(row.parentProcessId)
         && row.parentProcessId >= 0
-        && Number.isFinite(Date.parse(row.creationTime))));
+        && row.creationTime !== null));
     } catch (parseError) {
       reject(parseError);
     }
@@ -53,9 +95,14 @@ const readNativeWindowsProcessIdentity = (processId) => new Promise((resolve, re
     }
     try {
       const row = JSON.parse(stdout);
+      const normalizedCreationTime = normalizeWindowsCreationTime(row.CreationTime);
+      if (!normalizedCreationTime) {
+        reject(new Error("windows_process_creation_time_invalid"));
+        return;
+      }
       resolve({
         processId: Number(row.ProcessId),
-        creationTime: new Date(row.CreationTime).toISOString(),
+        creationTime: normalizedCreationTime.creationTime,
         commandLine: typeof row.CommandLine === "string" ? row.CommandLine : null,
       });
     } catch (parseError) {
@@ -72,8 +119,6 @@ public static class SandKingExactProcessTerminator
 {
     private const uint ProcessTerminate = 0x0001;
     private const uint ProcessQueryLimitedInformation = 0x1000;
-    private const long WindowsEpochFileTime = 116444736000000000L;
-
     [StructLayout(LayoutKind.Sequential)]
     private struct FileTime
     {
@@ -108,7 +153,7 @@ public static class SandKingExactProcessTerminator
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr processHandle);
 
-    public static int TerminateExact(uint processId, long expectedCreationUnixMilliseconds)
+    public static int TerminateExact(uint processId, long expectedCreationFileTime)
     {
         IntPtr processHandle = OpenProcess(
             ProcessTerminate | ProcessQueryLimitedInformation,
@@ -136,9 +181,7 @@ public static class SandKingExactProcessTerminator
             {
                 return 4;
             }
-            long creationUnixMilliseconds =
-                (creationTime.ToInt64() - WindowsEpochFileTime) / 10000L;
-            if (creationUnixMilliseconds != expectedCreationUnixMilliseconds)
+            if (creationTime.ToInt64() != expectedCreationFileTime)
             {
                 return 3;
             }
@@ -163,11 +206,14 @@ public static class SandKingExactProcessTerminator
 export const createNativeWindowsProcessTerminator = (execute = execFile) =>
   /** @param {{processId: number, creationTime: string}} processIdentity */
   (processIdentity) => new Promise((resolve) => {
-    const expectedCreationUnixMilliseconds = Date.parse(processIdentity.creationTime);
+    const expectedCreationFileTime = normalizeWindowsCreationTime(
+      processIdentity.creationTime,
+    )?.fileTime;
     if (
       !Number.isSafeInteger(processIdentity.processId)
       || processIdentity.processId <= 0
-      || !Number.isFinite(expectedCreationUnixMilliseconds)
+      || processIdentity.processId > 0xffff_ffff
+      || expectedCreationFileTime === undefined
     ) {
       resolve(false);
       return;
@@ -176,7 +222,7 @@ export const createNativeWindowsProcessTerminator = (execute = execFile) =>
 Add-Type -TypeDefinition @'
 ${exactWindowsProcessTerminatorSource}
 '@
-exit [SandKingExactProcessTerminator]::TerminateExact([uint32]${processIdentity.processId}, [int64]${expectedCreationUnixMilliseconds})`;
+exit [SandKingExactProcessTerminator]::TerminateExact([uint32]${processIdentity.processId}, [int64]${expectedCreationFileTime})`;
     execute("powershell.exe", [
       "-NoLogo",
       "-NoProfile",
@@ -198,22 +244,20 @@ const normalizeProcess = (value) => {
   const process = /** @type {Record<string, unknown>} */ (value);
   const processId = Number(process.processId);
   const parentProcessId = Number(process.parentProcessId);
-  const timestamp = typeof process.creationTime === "string"
-    ? Date.parse(process.creationTime)
-    : Number.NaN;
+  const normalizedCreationTime = normalizeWindowsCreationTime(process.creationTime);
   if (
     !Number.isSafeInteger(processId)
     || processId <= 0
     || !Number.isSafeInteger(parentProcessId)
     || parentProcessId < 0
-    || !Number.isFinite(timestamp)
+    || normalizedCreationTime === null
   ) {
     return null;
   }
   return {
     processId,
     parentProcessId,
-    creationTime: new Date(timestamp).toISOString(),
+    creationTime: normalizedCreationTime.creationTime,
   };
 };
 
@@ -355,7 +399,7 @@ export const createWindowsProcessTreeTracker = (options) => {
           : null;
         if (
           parent
-          && Date.parse(parent.creationTime) <= Date.parse(process.creationTime)
+          && creationTimeIsNoLaterThan(parent.creationTime, process.creationTime)
         ) {
           trackedIdentities.set(processKey, {
             processId: process.processId,
@@ -368,16 +412,15 @@ export const createWindowsProcessTreeTracker = (options) => {
     }
     for (const process of normalizedProcesses) {
       if (trackedIdentities.has(identityKey(process))) continue;
-      const processCreatedAt = Date.parse(process.creationTime);
       const possibleTrackedParent = [...trackedIdentities.values()].find((identity) =>
         identity.processId === process.parentProcessId
-        && Date.parse(identity.creationTime) <= processCreatedAt);
+        && creationTimeIsNoLaterThan(identity.creationTime, process.creationTime));
       if (!possibleTrackedParent) continue;
       const currentParent = currentByPid.get(process.parentProcessId);
       if (
         currentParent
         && identityKey(currentParent) !== identityKey(possibleTrackedParent)
-        && Date.parse(currentParent.creationTime) <= processCreatedAt
+        && creationTimeIsNoLaterThan(currentParent.creationTime, process.creationTime)
       ) {
         // The candidate was created after the replacement parent, so it belongs
         // to that replacement rather than to the supervised identity.

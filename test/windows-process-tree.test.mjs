@@ -15,7 +15,7 @@ test("native Windows force termination checks and kills through one retained pro
 
   assert.equal(await terminate({
     processId: 42,
-    creationTime: "2026-08-07T10:00:00.000Z",
+    creationTime: "2026-08-07T10:00:00.0001000Z",
   }), true);
   assert.equal(invocations.length, 1);
   assert.equal(invocations[0].file, "powershell.exe");
@@ -24,6 +24,10 @@ test("native Windows force termination checks and kills through one retained pro
   assert.match(command, /GetProcessTimes\(\s*processHandle,/);
   assert.match(command, /TerminateProcess\(processHandle,/);
   assert.match(command, /CloseHandle\(processHandle\)/);
+  const expectedCreationFileTime = BigInt(Date.parse("2026-08-07T10:00:00.000Z"))
+    * 10_000n + 116_444_736_000_000_000n + 1_000n;
+  assert.ok(command.includes(`[int64]${expectedCreationFileTime}`));
+  assert.doesNotMatch(command, /creationUnixMilliseconds|\/ 10000L/);
   assert.doesNotMatch(command, /Get-CimInstance|taskkill(?:\.exe)?/i);
 });
 
@@ -129,6 +133,34 @@ test("Windows cancellation never targets a tracked PID after that PID is reused"
   processes = [
     { processId: 700, parentProcessId: 10, creationTime: "2026-08-07T11:00:00.000Z" },
     { processId: 800, parentProcessId: 700, creationTime: "2026-08-07T11:00:01.000Z" },
+  ];
+  assert.equal(await tracker.forceTerminate(), false);
+  assert.deepEqual(terminated, []);
+  assert.equal(await tracker.processTreeAlive(), false);
+});
+
+test("Windows cancellation distinguishes PID reuse within one millisecond", async () => {
+  let processes = [
+    { processId: 700, parentProcessId: 10, creationTime: "2026-08-07T10:00:00.0001000Z" },
+  ];
+  const terminated = [];
+  const tracker = createWindowsProcessTreeTracker({
+    rootIdentity: {
+      processId: 700,
+      creationTime: "2026-08-07T10:00:00.0001000Z",
+    },
+    listProcesses: async () => processes,
+    terminateProcessTree: async (processIdentity) => {
+      terminated.push(processIdentity);
+      processes = processes.filter((process) =>
+        process.processId !== processIdentity.processId);
+      return true;
+    },
+  });
+
+  assert.equal(await tracker.prepareCancellation(), true);
+  processes = [
+    { processId: 700, parentProcessId: 10, creationTime: "2026-08-07T10:00:00.0009000Z" },
   ];
   assert.equal(await tracker.forceTerminate(), false);
   assert.deepEqual(terminated, []);
