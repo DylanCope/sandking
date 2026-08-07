@@ -56,6 +56,13 @@ const pendingCancellationStateFile = "harness-cancellation-retries.json";
 
 class ControllerCliAcknowledgedFailure extends Error {}
 
+const definitiveCancellationFailureCodes = new Set([
+  "mutation_contract_invalid",
+  "idempotency_key_conflict",
+  "harness_run_not_found",
+  "harness_run_not_cancellable",
+]);
+
 /** @param {unknown} value @returns {string} */
 const canonicalJson = (value) => {
   if (value === undefined) return '"<undefined>"';
@@ -369,7 +376,13 @@ export const requestControllerCancel = async (request, environment = process.env
     await clearPendingLaunch(pending);
     return parsed.data;
   } catch (error) {
-    if (error instanceof ControllerCliAcknowledgedFailure) {
+    if (
+      error instanceof ControllerCliAcknowledgedFailure
+      && definitiveCancellationFailureCodes.has(error.message)
+    ) {
+      // These are retained Host outcomes that prove cancellation was rejected
+      // without signalling. Transport, provider, and Host failures remain
+      // indeterminate and must keep the same private retry identity.
       await clearPendingLaunch(pending);
     }
     throw error;

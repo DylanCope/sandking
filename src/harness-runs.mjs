@@ -10,6 +10,7 @@ import {
   loadPinnedHarnessAdapter,
   readHarnessAdapterFrame,
 } from "./harness-adapter-protocol.mjs";
+import { sendHarnessCancellationRequest } from "./harness-process-control.mjs";
 import {
   launchParametersSchema,
   validateConformanceHarnessLaunch,
@@ -511,7 +512,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
     cwd: context.harnessWorkspacePath,
     env: { LANG: "C.UTF-8" },
     detached: process.platform !== "win32",
-    stdio: ["ignore", "pipe", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe", "pipe", "ipc"],
   });
   const windowsProcessTree = process.platform === "win32"
     && typeof child.pid === "number"
@@ -668,8 +669,9 @@ const superviseConformanceHarness = async (run, context, observer) => {
     }
     try {
       if (process.platform === "win32") {
-        if (child.exitCode !== null || child.signalCode !== null) return false;
-        return child.kill(signal);
+        // Windows ChildProcess.kill maps every supported signal to abrupt
+        // termination. Cooperative cancellation uses the adapter IPC request.
+        return false;
       }
       process.kill(-child.pid, signal);
       return true;
@@ -687,11 +689,24 @@ const superviseConformanceHarness = async (run, context, observer) => {
     if (cancellationOperation) return cancellationOperation;
     retainedCooperativeDeadlineAt = cooperativeDeadlineAt;
     const signalAndScheduleEscalation = () => {
-      if (signalProcessTree("SIGTERM")) {
+      const cooperativeRequestSent = windowsProcessTree
+        ? sendHarnessCancellationRequest(child, {
+            type: "harness.run.cancel",
+            adapterProtocol: run.adapterProtocol,
+            adapterId: run.adapterId,
+            harnessRunId: run.harnessRunId,
+            cooperativeDeadlineAt,
+          })
+        : signalProcessTree("SIGTERM");
+      if (cooperativeRequestSent) {
         cooperativeSignalSentAt = new Date().toISOString();
       }
       forcedTerminationTimer = setTimeout(() => {
         forcedTerminationOperation = (async () => {
+          const deadline = Date.parse(cooperativeDeadlineAt);
+          while (Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, deadline - Date.now()));
+          }
           const sent = windowsProcessTree
             ? await windowsProcessTree.forceTerminate()
             : signalProcessTree("SIGKILL");
@@ -702,7 +717,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
     cancellationOperation = (async () => {
       if (windowsProcessTree) {
         // Capture native-Windows descendants before signalling can let their
-        // adapter parent exit and become unavailable to taskkill /T.
+        // adapter parent exit and become unavailable to identity tracking.
         await windowsProcessTree.prepareCancellation();
         signalAndScheduleEscalation();
       } else {

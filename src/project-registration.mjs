@@ -584,11 +584,26 @@ if (command === "probe") {
     });
     process.exit(0);
   };
+  const handleCancellationRequest = (message) => {
+    if (
+      message?.type !== "harness.run.cancel"
+      || message.adapterProtocol !== adapterProtocol
+      || message.adapterId !== adapterId
+      || message.harnessRunId !== execution.harnessRunId
+      || !Number.isFinite(Date.parse(message.cooperativeDeadlineAt ?? ""))
+    ) {
+      return;
+    }
+    handleCancellation();
+  };
   if (normalized.issueNumber === 999999994) {
     process.on("SIGTERM", () => undefined);
+    process.on("message", () => undefined);
   } else {
     process.once("SIGTERM", handleCancellation);
+    process.once("message", handleCancellationRequest);
   }
+  process.channel?.unref();
   process.stdout.write(
     normalized.placeholderIdentifier
       ? \`Conformance diagnostic stdout for \${normalized.placeholderIdentifier}.\\n\`
