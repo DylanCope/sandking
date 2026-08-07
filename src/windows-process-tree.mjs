@@ -64,24 +64,133 @@ const readNativeWindowsProcessIdentity = (processId) => new Promise((resolve, re
   });
 });
 
-/** @param {{processId: number, creationTime: string}} processIdentity */
-const terminateNativeWindowsProcessTree = (processIdentity) => new Promise((resolve) => {
-  // Recheck the exact CIM identity in the same native operation immediately
-  // before taskkill. A reused numeric PID is never accepted as the retained
-  // Harness process merely because its number matches. Descendants are
-  // terminated individually from the creation-time-checked tracker; /T would
-  // reintroduce unsafe parent-PID inference inside taskkill.
-  execFile("powershell.exe", [
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    `$ErrorActionPreference='Stop'; $candidate = Get-CimInstance Win32_Process -Filter 'ProcessId = ${processIdentity.processId}'; if ($null -eq $candidate -or $candidate.CreationDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') -ne '${processIdentity.creationTime}') { exit 3 }; & taskkill.exe /PID ${processIdentity.processId} /F; exit $LASTEXITCODE`,
-  ], {
-    windowsHide: true,
-    timeout: 5_000,
-  }, (error) => resolve(error === null));
-});
+const exactWindowsProcessTerminatorSource = String.raw`
+using System;
+using System.Runtime.InteropServices;
+
+public static class SandKingExactProcessTerminator
+{
+    private const uint ProcessTerminate = 0x0001;
+    private const uint ProcessQueryLimitedInformation = 0x1000;
+    private const long WindowsEpochFileTime = 116444736000000000L;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileTime
+    {
+        public uint Low;
+        public uint High;
+
+        public long ToInt64()
+        {
+            return ((long)High << 32) | Low;
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(
+        uint desiredAccess,
+        bool inheritHandle,
+        uint processId
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetProcessTimes(
+        IntPtr processHandle,
+        out FileTime creationTime,
+        out FileTime exitTime,
+        out FileTime kernelTime,
+        out FileTime userTime
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr processHandle, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr processHandle);
+
+    public static int TerminateExact(uint processId, long expectedCreationUnixMilliseconds)
+    {
+        IntPtr processHandle = OpenProcess(
+            ProcessTerminate | ProcessQueryLimitedInformation,
+            false,
+            processId
+        );
+        if (processHandle == IntPtr.Zero)
+        {
+            return 3;
+        }
+
+        try
+        {
+            FileTime creationTime;
+            FileTime exitTime;
+            FileTime kernelTime;
+            FileTime userTime;
+            if (!GetProcessTimes(
+                processHandle,
+                out creationTime,
+                out exitTime,
+                out kernelTime,
+                out userTime
+            ))
+            {
+                return 4;
+            }
+            long creationUnixMilliseconds =
+                (creationTime.ToInt64() - WindowsEpochFileTime) / 10000L;
+            if (creationUnixMilliseconds != expectedCreationUnixMilliseconds)
+            {
+                return 3;
+            }
+            return TerminateProcess(processHandle, 1) ? 0 : 4;
+        }
+        finally
+        {
+            CloseHandle(processHandle);
+        }
+    }
+}
+`;
+
+/**
+ * Build the native Windows force-termination boundary. Creation identity and
+ * termination are both checked through one retained kernel handle: if the PID
+ * was reused before OpenProcess, GetProcessTimes rejects the replacement; if
+ * the original exits afterward, the handle cannot retarget the replacement.
+ *
+ * @param {typeof execFile} [execute]
+ */
+export const createNativeWindowsProcessTerminator = (execute = execFile) =>
+  /** @param {{processId: number, creationTime: string}} processIdentity */
+  (processIdentity) => new Promise((resolve) => {
+    const expectedCreationUnixMilliseconds = Date.parse(processIdentity.creationTime);
+    if (
+      !Number.isSafeInteger(processIdentity.processId)
+      || processIdentity.processId <= 0
+      || !Number.isFinite(expectedCreationUnixMilliseconds)
+    ) {
+      resolve(false);
+      return;
+    }
+    const command = `$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @'
+${exactWindowsProcessTerminatorSource}
+'@
+exit [SandKingExactProcessTerminator]::TerminateExact([uint32]${processIdentity.processId}, [int64]${expectedCreationUnixMilliseconds})`;
+    execute("powershell.exe", [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      command,
+    ], {
+      windowsHide: true,
+      timeout: 5_000,
+      maxBuffer: 65_536,
+    }, (error) => resolve(error === null));
+  });
+
+const terminateNativeWindowsProcessTree = createNativeWindowsProcessTerminator();
 
 /** @param {unknown} value */
 const normalizeProcess = (value) => {

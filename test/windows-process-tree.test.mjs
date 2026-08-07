@@ -2,8 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   captureWindowsProcessTreeSnapshot,
+  createNativeWindowsProcessTerminator,
   createWindowsProcessTreeTracker,
 } from "../src/windows-process-tree.mjs";
+
+test("native Windows force termination checks and kills through one retained process handle", async () => {
+  const invocations = [];
+  const terminate = createNativeWindowsProcessTerminator((file, args, options, callback) => {
+    invocations.push({ file, args, options });
+    callback(null);
+  });
+
+  assert.equal(await terminate({
+    processId: 42,
+    creationTime: "2026-08-07T10:00:00.000Z",
+  }), true);
+  assert.equal(invocations.length, 1);
+  assert.equal(invocations[0].file, "powershell.exe");
+  const command = invocations[0].args.at(-1);
+  assert.match(command, /OpenProcess/);
+  assert.match(command, /GetProcessTimes\(\s*processHandle,/);
+  assert.match(command, /TerminateProcess\(processHandle,/);
+  assert.match(command, /CloseHandle\(processHandle\)/);
+  assert.doesNotMatch(command, /Get-CimInstance|taskkill(?:\.exe)?/i);
+});
 
 test("Windows cancellation retains descendants after the adapter exits and confirms the whole tree", async () => {
   let processes = [
