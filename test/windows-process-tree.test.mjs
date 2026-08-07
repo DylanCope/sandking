@@ -82,7 +82,71 @@ test("Windows force termination preserves native creation ticks across process i
     mismatchedInventory.readProcessIdentity(42),
     /windows_process_creation_time_invalid/,
   );
-  assert.deepEqual(await mismatchedInventory.listProcesses(), []);
+  assert.deepEqual(await mismatchedInventory.listProcesses(), [{
+    processId: 42,
+    parentProcessId: 1,
+    creationTime: null,
+  }]);
+});
+
+test("native Windows inventory cannot confirm an unreadable tracked descendant exited", async () => {
+  const rootCreationTime = "2026-08-07T10:00:00.0001000Z";
+  const childCreationTime = "2026-08-07T10:00:01.0001000Z";
+  let childIdentityReadable = true;
+  const inventory = createNativeWindowsProcessInventory(
+    (file, args, options, callback) => {
+      const command = args.at(-1);
+      if (command.includes("ProcessId,CommandLine")) {
+        callback(null, JSON.stringify({
+          ProcessId: 100,
+          CommandLine: "node adapter.mjs harness-run-original",
+          CimCreationTime: rootCreationTime,
+          CreationTime: rootCreationTime,
+        }), "");
+        return;
+      }
+      callback(null, JSON.stringify([
+        {
+          ProcessId: 100,
+          ParentProcessId: 10,
+          CimCreationTime: rootCreationTime,
+          CreationTime: rootCreationTime,
+        },
+        {
+          ProcessId: 200,
+          ParentProcessId: 100,
+          CimCreationTime: childCreationTime,
+          CreationTime: childIdentityReadable ? childCreationTime : null,
+        },
+      ]), "");
+    },
+  );
+  const snapshot = await captureWindowsProcessTreeSnapshot(100, {
+    expectedCommandLineFragment: "harness-run-original",
+    ...inventory,
+  });
+  assert.ok(snapshot);
+  const tracker = createWindowsProcessTreeTracker({
+    ...snapshot,
+    listProcesses: inventory.listProcesses,
+    terminateProcessTree: async () => true,
+  });
+  assert.equal(await tracker.prepareCancellation(), true);
+
+  childIdentityReadable = false;
+  assert.deepEqual(await inventory.listProcesses(), [
+    {
+      processId: 100,
+      parentProcessId: 10,
+      creationTime: rootCreationTime,
+    },
+    {
+      processId: 200,
+      parentProcessId: 100,
+      creationTime: null,
+    },
+  ]);
+  assert.equal(await tracker.processTreeAlive(), true);
 });
 
 test("native Windows force termination checks and kills through one retained process handle", async () => {
@@ -139,6 +203,51 @@ test("Windows cancellation retains descendants after the adapter exits and confi
   assert.equal(await tracker.processTreeAlive(), true);
   assert.equal(await tracker.forceTerminate(), true);
   assert.deepEqual(terminated, [300, 200]);
+  assert.equal(await tracker.processTreeAlive(), false);
+});
+
+test("Windows deadline escalation joins cancellation inventory already in flight", async () => {
+  let processes = [
+    { processId: 100, parentProcessId: 10, creationTime: "2026-08-07T10:00:00.000Z" },
+  ];
+  let inventoryCalls = 0;
+  let releaseFirstInventory;
+  let reportFirstInventory;
+  const firstInventoryStarted = new Promise((resolve) => {
+    reportFirstInventory = resolve;
+  });
+  const firstInventoryRelease = new Promise((resolve) => {
+    releaseFirstInventory = resolve;
+  });
+  const tracker = createWindowsProcessTreeTracker({
+    rootIdentity: {
+      processId: 100,
+      creationTime: "2026-08-07T10:00:00.000Z",
+    },
+    initialProcesses: processes,
+    listProcesses: async () => {
+      inventoryCalls += 1;
+      if (inventoryCalls === 1) {
+        reportFirstInventory?.();
+        await firstInventoryRelease;
+      }
+      return processes;
+    },
+    terminateProcessTree: async (processIdentity) => {
+      processes = processes.filter((process) =>
+        process.processId !== processIdentity.processId);
+      return true;
+    },
+  });
+
+  const preparation = tracker.prepareCancellation();
+  await firstInventoryStarted;
+  const escalation = tracker.forceTerminate();
+  assert.equal(inventoryCalls, 1);
+  releaseFirstInventory?.();
+  assert.equal(await preparation, true);
+  assert.equal(await escalation, true);
+  assert.equal(inventoryCalls, 2);
   assert.equal(await tracker.processTreeAlive(), false);
 });
 

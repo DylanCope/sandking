@@ -7,7 +7,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
-import { createHarnessRunManager } from "../src/harness-runs.mjs";
+import {
+  createHarnessRunManager,
+  scheduleCancellationEscalation,
+} from "../src/harness-runs.mjs";
 import { createProjectRegistry } from "../src/project-registration.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -344,6 +347,46 @@ test("forced termination remains anchored to the durably accepted cooperative de
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("cancellation escalation is due at the absolute deadline while preparation is pending", async () => {
+  const acceptedAt = Date.parse("2026-08-07T10:00:00.000Z");
+  const cooperativeDeadlineAt = new Date(acceptedAt + 250).toISOString();
+  let releasePreparation;
+  const preparation = new Promise((resolve) => {
+    releasePreparation = resolve;
+  });
+  let escalationDue = false;
+  let scheduledDelay = null;
+  let runScheduledEscalation;
+  let currentTime = acceptedAt;
+  const scheduled = scheduleCancellationEscalation(
+    cooperativeDeadlineAt,
+    async () => {
+      escalationDue = true;
+      await preparation;
+    },
+    {
+      now: () => currentTime,
+      setTimer: (callback, delay) => {
+        scheduledDelay = delay;
+        runScheduledEscalation = callback;
+        return /** @type {any} */ ({});
+      },
+    },
+  );
+
+  try {
+    assert.equal(scheduledDelay, 250);
+    assert.equal(escalationDue, false);
+    currentTime = Date.parse(cooperativeDeadlineAt);
+    runScheduledEscalation?.();
+    await scheduled.deadlineReached;
+    assert.equal(escalationDue, true);
+  } finally {
+    releasePreparation?.();
+    await scheduled.operation;
   }
 });
 

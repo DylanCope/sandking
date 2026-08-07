@@ -482,6 +482,56 @@ const appendEvent = (run, type, details = {}) => {
 };
 
 /**
+ * Arm forced cancellation against the absolute deadline retained in canonical
+ * state. The escalation callback is invoked when the deadline becomes due even
+ * if platform-specific process-tree preparation is still pending inside it.
+ *
+ * @param {string} cooperativeDeadlineAt
+ * @param {() => Promise<void>} escalate
+ * @param {{now?: () => number, setTimer?: typeof setTimeout}} [timing]
+ */
+export const scheduleCancellationEscalation = (
+  cooperativeDeadlineAt,
+  escalate,
+  timing = {},
+) => {
+  const currentTime = timing.now ?? Date.now;
+  const setTimer = timing.setTimer ?? setTimeout;
+  let reportDeadlineReached = () => {};
+  const deadlineReached = new Promise((resolve) => {
+    reportDeadlineReached = () => resolve(undefined);
+  });
+  /** @type {(value: void | PromiseLike<void>) => void} */
+  let finishOperation = () => {};
+  /** @type {(reason?: unknown) => void} */
+  let failOperation = () => {};
+  const operation = new Promise((resolve, reject) => {
+    finishOperation = resolve;
+    failOperation = reject;
+  });
+  const deadline = Date.parse(cooperativeDeadlineAt);
+  const escalateWhenDue = () => {
+    const remaining = deadline - currentTime();
+    if (remaining > 0) {
+      setTimer(escalateWhenDue, remaining);
+      return;
+    }
+    let escalation;
+    try {
+      escalation = escalate();
+    } catch (error) {
+      reportDeadlineReached();
+      failOperation(error);
+      return;
+    }
+    reportDeadlineReached();
+    escalation.then(finishOperation, failOperation);
+  };
+  const timer = setTimer(escalateWhenDue, Math.max(0, deadline - currentTime()));
+  return { timer, deadlineReached, operation };
+};
+
+/**
  * @param {z.infer<typeof storedRunSchema>} run
  * @param {any} context
  * @param {{onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, onSupervisorAvailable: (supervisor: {requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>}) => void}} observer
@@ -700,8 +750,33 @@ const superviseConformanceHarness = async (run, context, observer) => {
   const requestCancellation = (cooperativeDeadlineAt) => {
     if (cancellationOperation) return cancellationOperation;
     retainedCooperativeDeadlineAt = cooperativeDeadlineAt;
-    /** @param {ReturnType<typeof createWindowsProcessTreeTracker> | null} windowsProcessTree */
-    const signalAndScheduleEscalation = (windowsProcessTree) => {
+    const windowsProcessTreePreparation = windowsProcessTreePromise
+      ? (async () => {
+          const windowsProcessTree = await windowsProcessTreePromise;
+          // Capture native-Windows descendants before signalling can let their
+          // adapter parent exit and become unavailable to identity tracking.
+          await windowsProcessTree.prepareCancellation();
+          return windowsProcessTree;
+        })()
+      : null;
+    const scheduledEscalation = scheduleCancellationEscalation(
+      cooperativeDeadlineAt,
+      async () => {
+        const windowsProcessTree = windowsProcessTreePromise
+          ? await windowsProcessTreePromise
+          : null;
+        const sent = windowsProcessTree
+          ? await windowsProcessTree.forceTerminate()
+          : signalProcessTree("SIGKILL");
+        if (sent) forcedTerminationSentAt = new Date().toISOString();
+      },
+    );
+    forcedTerminationTimer = scheduledEscalation.timer;
+    forcedTerminationOperation = scheduledEscalation.operation;
+    cancellationOperation = (async () => {
+      const windowsProcessTree = windowsProcessTreePreparation
+        ? await windowsProcessTreePreparation
+        : null;
       const cooperativeRequestSent = windowsProcessTree
         ? sendHarnessCancellationRequest(child, {
             type: "harness.run.cancel",
@@ -713,31 +788,6 @@ const superviseConformanceHarness = async (run, context, observer) => {
         : signalProcessTree("SIGTERM");
       if (cooperativeRequestSent) {
         cooperativeSignalSentAt = new Date().toISOString();
-      }
-      forcedTerminationTimer = setTimeout(() => {
-        forcedTerminationOperation = (async () => {
-          const deadline = Date.parse(cooperativeDeadlineAt);
-          while (Date.now() < deadline) {
-            await new Promise((resolve) => setTimeout(resolve, deadline - Date.now()));
-          }
-          const sent = windowsProcessTree
-            ? await windowsProcessTree.forceTerminate()
-            : signalProcessTree("SIGKILL");
-          if (sent) forcedTerminationSentAt = new Date().toISOString();
-        })();
-      }, Math.max(0, Date.parse(cooperativeDeadlineAt) - Date.now()));
-    };
-    cancellationOperation = (async () => {
-      const windowsProcessTree = windowsProcessTreePromise
-        ? await windowsProcessTreePromise
-        : null;
-      if (windowsProcessTree) {
-        // Capture native-Windows descendants before signalling can let their
-        // adapter parent exit and become unavailable to identity tracking.
-        await windowsProcessTree.prepareCancellation();
-        signalAndScheduleEscalation(windowsProcessTree);
-      } else {
-        signalAndScheduleEscalation(null);
       }
       await completion;
       let terminationConfirmedAt = null;

@@ -80,7 +80,7 @@ ${exactWindowsProcessSource}
     try {
       const parsed = stdout.trim() === "" ? [] : JSON.parse(stdout);
       const rows = Array.isArray(parsed) ? parsed : [parsed];
-      resolve(rows.map((row) => {
+      const inventory = rows.map((row) => {
         const normalizedCreationTime = normalizeWindowsCreationTime(row.CreationTime);
         const cimCreationTime = normalizeWindowsCreationTime(row.CimCreationTime);
         return {
@@ -94,11 +94,18 @@ ${exactWindowsProcessSource}
             ? normalizedCreationTime.creationTime
             : null,
         };
-      }).filter((row) => Number.isSafeInteger(row.processId)
-        && row.processId > 0
-        && Number.isSafeInteger(row.parentProcessId)
-        && row.parentProcessId >= 0
-        && row.creationTime !== null));
+      });
+      if (inventory.some((row) => !Number.isSafeInteger(row.processId)
+        || row.processId <= 0
+        || !Number.isSafeInteger(row.parentProcessId)
+        || row.parentProcessId < 0)) {
+        reject(new Error("windows_process_inventory_invalid"));
+        return;
+      }
+      // A CIM row proves that a PID is still present even when OpenProcess or
+      // GetProcessTimes cannot establish its exact creation identity. Preserve
+      // that row so the tracker cannot mistake unreadability for termination.
+      resolve(inventory);
     } catch (parseError) {
       reject(parseError);
     }
@@ -359,6 +366,26 @@ const normalizeProcess = (value) => {
   };
 };
 
+/** @param {unknown} value */
+const normalizeProcessInventoryEntry = (value) => {
+  const process = normalizeProcess(value);
+  if (process) return process;
+  if (!value || typeof value !== "object") return null;
+  const candidate = /** @type {Record<string, unknown>} */ (value);
+  const processId = Number(candidate.processId);
+  const parentProcessId = Number(candidate.parentProcessId);
+  if (
+    candidate.creationTime !== null
+    || !Number.isSafeInteger(processId)
+    || processId <= 0
+    || !Number.isSafeInteger(parentProcessId)
+    || parentProcessId < 0
+  ) {
+    return null;
+  }
+  return { processId, parentProcessId, creationTime: null };
+};
+
 /** @param {{processId: number, creationTime: string}} identity */
 const identityKey = (identity) => `${identity.processId}@${identity.creationTime}`;
 
@@ -372,7 +399,7 @@ const identityKey = (identity) => `${identity.processId}@${identity.creationTime
  * @param {{
  *   expectedCommandLineFragment?: string,
  *   readProcessIdentity?: (processId: number) => Promise<{processId: number, creationTime: string, commandLine: string | null} | null>,
- *   listProcesses?: () => Promise<Array<{processId: number, parentProcessId: number, creationTime: string}>>,
+ *   listProcesses?: () => Promise<Array<{processId: number, parentProcessId: number, creationTime: string | null}>>,
  * }} [options]
  */
 export const captureWindowsProcessTreeSnapshot = async (rootPid, options = {}) => {
@@ -461,9 +488,9 @@ export const createWindowsProcessTreeTracker = (options) => {
     });
   }
 
-  /** @param {Array<{processId: number, parentProcessId: number, creationTime: string}>} listedProcesses */
+  /** @param {Array<{processId: number, parentProcessId: number, creationTime: string | null}>} listedProcesses */
   const applyInventory = (listedProcesses) => {
-    const processes = listedProcesses.map(normalizeProcess);
+    const processes = listedProcesses.map(normalizeProcessInventoryEntry);
     if (
       processes.some((process) => process === null)
       || new Set(processes.map((process) => process?.processId)).size !== processes.length
@@ -471,8 +498,11 @@ export const createWindowsProcessTreeTracker = (options) => {
       trackingReliable = false;
       return false;
     }
-    const normalizedProcesses = /** @type {Array<NonNullable<ReturnType<typeof normalizeProcess>>>} */ (
+    const normalizedInventory = /** @type {Array<NonNullable<ReturnType<typeof normalizeProcessInventoryEntry>>>} */ (
       processes
+    );
+    const normalizedProcesses = /** @type {Array<NonNullable<ReturnType<typeof normalizeProcess>>>} */ (
+      normalizedInventory.filter((process) => process.creationTime !== null)
     );
     const currentByPid = new Map(normalizedProcesses.map((process) => [
       process.processId,
@@ -508,6 +538,26 @@ export const createWindowsProcessTreeTracker = (options) => {
         }
       }
     }
+    const possiblySupervisedPids = new Set(
+      [...trackedIdentities.values()].map((identity) => identity.processId),
+    );
+    let possibleDescendantDiscovered = true;
+    while (possibleDescendantDiscovered) {
+      possibleDescendantDiscovered = false;
+      for (const process of normalizedInventory) {
+        if (
+          !possiblySupervisedPids.has(process.processId)
+          && possiblySupervisedPids.has(process.parentProcessId)
+        ) {
+          possiblySupervisedPids.add(process.processId);
+          possibleDescendantDiscovered = true;
+        }
+      }
+    }
+    if (normalizedInventory.some((process) =>
+      process.creationTime === null && possiblySupervisedPids.has(process.processId))) {
+      trackingReliable = false;
+    }
     for (const process of normalizedProcesses) {
       if (trackedIdentities.has(identityKey(process))) continue;
       const possibleTrackedParent = [...trackedIdentities.values()].find((identity) =>
@@ -538,16 +588,27 @@ export const createWindowsProcessTreeTracker = (options) => {
 
   if (options.initialProcesses) applyInventory(options.initialProcesses);
 
-  const refresh = async () => {
-    /** @type {Array<{processId: number, parentProcessId: number, creationTime: string}>} */
-    let listedProcesses;
-    try {
-      listedProcesses = await listProcesses();
-    } catch {
-      trackingReliable = false;
-      return false;
-    }
-    return applyInventory(listedProcesses) && trackingReliable;
+  /** @type {Promise<boolean> | null} */
+  let refreshOperation = null;
+  const refresh = () => {
+    if (refreshOperation) return refreshOperation;
+    refreshOperation = (async () => {
+      /** @type {Array<{processId: number, parentProcessId: number, creationTime: string | null}>} */
+      let listedProcesses;
+      try {
+        listedProcesses = await listProcesses();
+      } catch {
+        trackingReliable = false;
+        return false;
+      }
+      return applyInventory(listedProcesses) && trackingReliable;
+    })();
+    void refreshOperation.then(() => {
+      refreshOperation = null;
+    }, () => {
+      refreshOperation = null;
+    });
+    return refreshOperation;
   };
 
   return {
