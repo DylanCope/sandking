@@ -285,6 +285,52 @@ test("cancellation forces an uncooperative supervised process after the bounded 
   }
 });
 
+test("forced termination remains anchored to the durably accepted cooperative deadline", async () => {
+  const fixture = await createFixture("sandking-harness-run-retained-deadline-");
+  const cancellationGraceMs = 50;
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      cancellationGraceMs,
+      faultInjector: async (point) => {
+        if (point === "harness_run_cancellation.after_state_commit") {
+          await new Promise((resolve) => setTimeout(resolve, 75));
+        }
+      },
+    });
+    const launched = await manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      999_999_994,
+    ));
+    await waitForRunStatus(manager, launched.run.harnessRunId, "running");
+    const accepted = await manager.cancel(cancellationRequest(launched.run.harnessRunId, {
+      idempotencyKey: "retained-cooperative-deadline",
+    }));
+
+    const terminal = await waitForTerminal(manager, launched.run.harnessRunId);
+    const cooperativeSignalAt = Date.parse(
+      terminal.run.cancellation.cooperativeSignalSentAt,
+    );
+    const forcedTerminationAt = Date.parse(
+      terminal.run.cancellation.forcedTerminationSentAt,
+    );
+    assert.ok(cooperativeSignalAt >= Date.parse(accepted.cooperativeDeadlineAt));
+    assert.ok(
+      forcedTerminationAt - cooperativeSignalAt < cancellationGraceMs / 2,
+      JSON.stringify({
+        cooperativeDeadlineAt: accepted.cooperativeDeadlineAt,
+        cooperativeSignalSentAt: terminal.run.cancellation.cooperativeSignalSentAt,
+        forcedTerminationSentAt: terminal.run.cancellation.forcedTerminationSentAt,
+      }),
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("cancellation forces an uncooperative descendant and marks the result incomplete", async () => {
   const fixture = await createFixture("sandking-harness-run-tree-cancellation-");
   try {
@@ -569,6 +615,69 @@ test("cancellation acceptance commits before the cooperative signal is dispatche
     assert.equal(terminal.outcome.incompleteResult, false);
   } finally {
     releaseStateCommit?.();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("cancellation acceptance remains in canonical history at progress capacity", async () => {
+  const fixture = await createFixture("sandking-harness-run-cancel-event-capacity-");
+  try {
+    const launched = await fixture.manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      999_999_993,
+    ));
+    await waitForRunStatus(fixture.manager, launched.run.harnessRunId, "running");
+    const statePath = join(fixture.dataDir, "harness-runs.json");
+    const retained = JSON.parse(await readFile(statePath, "utf8"));
+    const run = retained.runs[0];
+    const recordedAt = new Date().toISOString();
+    for (let index = 0; index < 1_021; index += 1) {
+      const suffix = (index + 100).toString(16).padStart(24, "0");
+      run.events.push({
+        eventId: `harness-event-${suffix}`,
+        harnessRunId: run.harnessRunId,
+        sequence: run.events.length + 1,
+        type: "harness_progress_published",
+        recordedAt,
+        progressRecord: {
+          recordId: `progress-${suffix}`,
+          schemaVersion: "1.0.0",
+          type: "conformance.capacity",
+          parentRecordId: null,
+          label: "Exercise retained event capacity",
+          summary: "Retain every accepted lifecycle transition at the bounded capacity.",
+          status: "complete",
+          timestamp: recordedAt,
+          payload: { index },
+        },
+        outcomeReference: null,
+      });
+    }
+    await writeFile(statePath, `${JSON.stringify(retained, null, 2)}\n`);
+
+    await fixture.manager.cancel(cancellationRequest(run.harnessRunId, {
+      idempotencyKey: "cancel-at-retained-event-capacity",
+    }));
+    const terminal = await waitForTerminal(fixture.manager, run.harnessRunId);
+    assert.equal(terminal.run.status, "cancelled");
+    assert.equal(terminal.events.filter((event) =>
+      event.type === "harness_run_cancellation_accepted").length, 1);
+    assert.equal(terminal.events.at(-2).type, "harness_run_cancellation_accepted");
+    assert.equal(terminal.events.at(-1).type, "harness_run_cancelled");
+    assert.equal(terminal.events.at(-1).sequence, terminal.events.length);
+    const incremental = await fixture.manager.observe({
+      requestId: "observe-capacity-cancellation-tail",
+      harnessRunId: run.harnessRunId,
+      afterSequence: 1_023,
+    });
+    assert.deepEqual(incremental.events.map((event) => event.type), [
+      "harness_run_cancellation_accepted",
+      "harness_run_cancelled",
+    ]);
+    assert.equal(incremental.nextSequence, 1_025);
+    assert.equal(incremental.run.status, "cancelled");
+    assert.equal(incremental.outcome.status, "cancelled");
+  } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
 });

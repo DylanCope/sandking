@@ -37,7 +37,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.cancel.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-harness-run-cancellation")
+  .update("sandking-host-control-schema-v1-with-audited-harness-run-cancellation-rejections")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -393,17 +393,22 @@ const harnessRunCancellationAuthorizationClassSchema = z.literal(
   "harness_run_cancellation",
 );
 const harnessRunCancellationSourceSchema = z.enum(["controller-cli", "cockpit"]);
+// Provider-originated values cross the Host boundary as bounded candidates so
+// the cancellation manager can retain a typed, audited rejection. Semantic
+// identity/hash validation remains part of the mutation contract below this
+// framed transport boundary.
+const harnessRunCancellationCandidateSchema = z.string().max(32_768);
 const harnessRunCancelSchema = z.object({
   type: z.literal("harness.run.cancel"),
   requestId: identifierSchema,
-  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
+  harnessRunId: harnessRunCancellationCandidateSchema,
   controllerId: runtimeIdSchema,
   controllerSessionId: z.string()
     .regex(/^controller-session-[a-f0-9]{24}$/)
     .nullable(),
   source: harnessRunCancellationSourceSchema,
   authorizationClass: harnessRunCancellationAuthorizationClassSchema,
-  idempotencyKeyHash: digestSchema,
+  idempotencyKeyHash: harnessRunCancellationCandidateSchema,
 }).strip();
 export const harnessRunCancelResultSchema = z.object({
   type: z.literal("harness.run.cancel.result"),
@@ -545,7 +550,7 @@ const harnessRunObserveResultSchema = z.object({
     canonicalSnapshot: z.literal(true),
   }).strict().nullable(),
   run: harnessRunSchema.nullable(),
-  events: z.array(harnessRunEventSchema).max(1_024),
+  events: z.array(harnessRunEventSchema).max(1_025),
   nextSequence: z.number().int().nonnegative(),
   outcome: harnessRunOutcomeSchema.nullable(),
   logStreams: z.array(harnessLogStreamProjectionSchema).max(2),

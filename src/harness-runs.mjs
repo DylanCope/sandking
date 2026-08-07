@@ -20,6 +20,7 @@ import {
   readJson,
   writePrivateJson,
 } from "./private-state.mjs";
+import { createWindowsProcessTreeTracker } from "./windows-process-tree.mjs";
 
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const auditIdSchema = z.string().regex(/^audit-[a-f0-9]{24}$/);
@@ -46,12 +47,11 @@ const credentialCapabilityReferenceSchema = z.enum([
   "github.issues.read",
   "project.git.read",
 ]);
-const MAX_RETAINED_RUN_EVENTS = 1_024;
-// Creation and readiness consume two lifecycle slots. Always reserve the
-// truthful terminal event after maximal progress. Cancellation acceptance is
-// also represented on the durable run snapshot; its additive lifecycle event
-// is retained whenever doing so still leaves that terminal slot available.
-const MAX_PROGRESS_RECORDS_PER_RUN = MAX_RETAINED_RUN_EVENTS - 3;
+// Cancellation adds one universal lifecycle transition to the prior 1,024
+// event bound. Preserve the previously valid 1,021 progress records while
+// reserving both cancellation acceptance and the one truthful terminal event.
+const MAX_RETAINED_RUN_EVENTS = 1_025;
+const MAX_PROGRESS_RECORDS_PER_RUN = MAX_RETAINED_RUN_EVENTS - 4;
 const PROGRESS_PERSIST_BATCH_SIZE = 32;
 
 const progressRecordSchema = z.object({
@@ -480,7 +480,7 @@ const appendEvent = (run, type, details = {}) => {
 /**
  * @param {z.infer<typeof storedRunSchema>} run
  * @param {any} context
- * @param {{onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, onSupervisorAvailable: (supervisor: {requestCancellation: () => void}) => void}} observer
+ * @param {{onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, onSupervisorAvailable: (supervisor: {requestCancellation: (cooperativeDeadlineAt: string) => void}) => void}} observer
  */
 const superviseConformanceHarness = async (run, context, observer) => {
   const pinnedAdapter = await loadPinnedHarnessAdapter({
@@ -513,6 +513,10 @@ const superviseConformanceHarness = async (run, context, observer) => {
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe", "pipe"],
   });
+  const windowsProcessTree = process.platform === "win32"
+    && typeof child.pid === "number"
+    ? createWindowsProcessTreeTracker({ rootPid: child.pid })
+    : null;
   const adapterChannel = child.stdio[3];
   if (!adapterChannel || !child.stdout || !child.stderr || !("readable" in adapterChannel)) {
     child.kill("SIGKILL");
@@ -615,12 +619,16 @@ const superviseConformanceHarness = async (run, context, observer) => {
   let cancellationRequested = false;
   let cooperativeSignalSentAt = null;
   let forcedTerminationSentAt = null;
+  let retainedCooperativeDeadlineAt = null;
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let forcedTerminationTimer;
+  let cancellationPreparation = Promise.resolve();
+  let forcedTerminationOperation = Promise.resolve();
   const processTreeAlive = async () => {
     if (typeof child.pid !== "number") return false;
     if (process.platform === "win32") {
-      return child.exitCode === null && child.signalCode === null;
+      // Missing or uncertain descendant tracking cannot prove tree termination.
+      return windowsProcessTree ? windowsProcessTree.processTreeAlive() : true;
     }
     if (process.platform === "linux") {
       try {
@@ -672,29 +680,50 @@ const superviseConformanceHarness = async (run, context, observer) => {
     }
   };
   observer.onSupervisorAvailable({
-    requestCancellation: () => {
+    requestCancellation: (cooperativeDeadlineAt) => {
       if (cancellationRequested) return;
       cancellationRequested = true;
-      if (signalProcessTree("SIGTERM")) {
-        cooperativeSignalSentAt = new Date().toISOString();
-      }
-      forcedTerminationTimer = setTimeout(() => {
-        if (signalProcessTree("SIGKILL")) {
-          forcedTerminationSentAt = new Date().toISOString();
+      retainedCooperativeDeadlineAt = cooperativeDeadlineAt;
+      const signalAndScheduleEscalation = () => {
+        if (signalProcessTree("SIGTERM")) {
+          cooperativeSignalSentAt = new Date().toISOString();
         }
-      }, context.cancellationGraceMs);
+        forcedTerminationTimer = setTimeout(() => {
+          forcedTerminationOperation = (async () => {
+            const sent = windowsProcessTree
+              ? await windowsProcessTree.forceTerminate()
+              : signalProcessTree("SIGKILL");
+            if (sent) forcedTerminationSentAt = new Date().toISOString();
+          })();
+        }, Math.max(0, Date.parse(cooperativeDeadlineAt) - Date.now()));
+      };
+      if (windowsProcessTree) {
+        cancellationPreparation = (async () => {
+          // Capture native-Windows descendants before signalling can let their
+          // adapter parent exit and become unavailable to taskkill /T.
+          await windowsProcessTree.prepareCancellation();
+          signalAndScheduleEscalation();
+        })();
+      } else {
+        signalAndScheduleEscalation();
+      }
     },
   });
   const [exitResult] = await Promise.all([exit, consumeFrames()]);
+  await cancellationPreparation;
   let terminationConfirmedAt = null;
   if (cancellationRequested) {
     // The adapter may exit cooperatively while an inherited descendant remains
     // in its supervised process group. Keep the forced deadline active until
     // the entire group is gone, then confirm termination from that boundary.
-    const confirmationDeadline = Date.now() + context.cancellationGraceMs + 1_000;
+    const confirmationDeadline = Math.max(
+      Date.now(),
+      Date.parse(retainedCooperativeDeadlineAt ?? ""),
+    ) + 1_000;
     while (await processTreeAlive() && Date.now() < confirmationDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    await forcedTerminationOperation;
     if (!(await processTreeAlive())) terminationConfirmedAt = new Date().toISOString();
   }
   clearTimeout(forcedTerminationTimer);
@@ -733,9 +762,10 @@ export const createHarnessRunManager = async (options) => {
     throw new Error("harness_run_cancellation_deadline_invalid");
   }
   let mutationQueue = Promise.resolve();
-  /** @type {Map<string, {requestCancellation: () => void}>} */
+  /** @type {Map<string, {requestCancellation: (cooperativeDeadlineAt: string) => void}>} */
   const activeSupervisions = new Map();
-  const acceptedCancellations = new Set();
+  /** @type {Map<string, string>} */
+  const acceptedCancellations = new Map();
   /** @template T @param {() => Promise<T>} operation */
   const withMutationLock = (operation) => {
     const current = mutationQueue.catch(() => undefined).then(operation);
@@ -932,8 +962,11 @@ export const createHarnessRunManager = async (options) => {
       supervision = await superviseConformanceHarness(initialRun, context, {
         onSupervisorAvailable: (supervisor) => {
           activeSupervisions.set(initialRun.harnessRunId, supervisor);
-          if (acceptedCancellations.has(initialRun.harnessRunId)) {
-            supervisor.requestCancellation();
+          const cooperativeDeadlineAt = acceptedCancellations.get(
+            initialRun.harnessRunId,
+          );
+          if (cooperativeDeadlineAt) {
+            supervisor.requestCancellation(cooperativeDeadlineAt);
           }
         },
         onReady: async (readyAt) => {
@@ -1400,8 +1433,12 @@ export const createHarnessRunManager = async (options) => {
       });
       if ((/** @type {any} */ (existing.response)).type === "harness.run.cancel.result") {
         const harnessRunId = /** @type {any} */ (existing.response).harnessRunId;
-        acceptedCancellations.add(harnessRunId);
-        setImmediate(() => activeSupervisions.get(harnessRunId)?.requestCancellation());
+        const cooperativeDeadlineAt = /** @type {any} */ (
+          existing.response
+        ).cooperativeDeadlineAt;
+        acceptedCancellations.set(harnessRunId, cooperativeDeadlineAt);
+        setImmediate(() => activeSupervisions.get(harnessRunId)
+          ?.requestCancellation(cooperativeDeadlineAt));
       }
       return {
         ...structuredClone(existing.response),
@@ -1492,9 +1529,7 @@ export const createHarnessRunManager = async (options) => {
       forcedTerminationSentAt: null,
       terminationConfirmedAt: null,
     });
-    if (run.events.length < MAX_RETAINED_RUN_EVENTS - 1) {
-      appendEvent(run, "harness_run_cancellation_accepted");
-    }
+    appendEvent(run, "harness_run_cancellation_accepted");
     const response = {
       type: "harness.run.cancel.result",
       requestId: request.requestId,
@@ -1517,8 +1552,9 @@ export const createHarnessRunManager = async (options) => {
     await options.faultInjector?.("harness_run_cancellation.after_state_commit");
     await ensureAcceptedCancellationAudits(retained);
     await options.faultInjector?.("harness_run_cancellation.after_commit");
-    acceptedCancellations.add(run.harnessRunId);
-    setImmediate(() => activeSupervisions.get(run.harnessRunId)?.requestCancellation());
+    acceptedCancellations.set(run.harnessRunId, cooperativeDeadlineAt);
+    setImmediate(() => activeSupervisions.get(run.harnessRunId)
+      ?.requestCancellation(cooperativeDeadlineAt));
     return response;
   });
 

@@ -50,7 +50,7 @@ export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-harness-run-cancellation")
+  .update("sandking-browser-runtime-schema-v1-with-complete-harness-run-cancellation-history")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -128,7 +128,7 @@ const harnessRunObservationProjectionSchema = z.object({
     canonicalSnapshot: z.literal(true),
   }).strict().nullable(),
   run: harnessRunSchema.nullable(),
-  events: z.array(harnessRunEventSchema).max(1_024),
+  events: z.array(harnessRunEventSchema).max(1_025),
   nextSequence: z.number().int().nonnegative(),
   outcome: harnessRunOutcomeSchema.nullable(),
   logStreams: z.array(z.object({

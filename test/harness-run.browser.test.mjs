@@ -313,6 +313,17 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
         `#harness-run-observation[data-run-id='${cancellationMessage.harnessRunId}'][data-run-status='cancelled']`,
         { timeout: 15_000 },
       );
+      const retainedCancellationProgress = page.locator(
+        "#harness-run-cancellation-progress[data-cancellation-accepted='true']",
+      );
+      await retainedCancellationProgress.waitFor({ state: "visible" });
+      assert.match(await retainedCancellationProgress.textContent(), /Cancellation accepted/);
+      assert.equal(await page.evaluate(() => {
+        const progress = document.querySelector("#harness-run-cancellation-progress");
+        const outcome = document.querySelector("#harness-run-structured-outcome");
+        return Boolean(progress && outcome
+          && progress.compareDocumentPosition(outcome) & Node.DOCUMENT_POSITION_FOLLOWING);
+      }), true);
       const retainedRuns = await waitForRetainedRuns(dataDir, 2);
       assert.deepEqual(retainedRuns[1].parameters, {
         issueNumber: 999_999_993,

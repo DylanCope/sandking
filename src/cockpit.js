@@ -25,7 +25,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:89aa7432ed69f745beb6912c8881b05ae7ddc86a60f6ee5960f2f5c995c86be8",
+  schemaDigest: "sha256:c45f5e50c1b13b445e41e4de7e4d1cc9664a8651feae11de8b6cf079fc168275",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -1091,8 +1091,10 @@ const renderHarnessRun = (observation) => {
   const cancellationFeedback = element("p", {
     id: "harness-run-cancellation-feedback",
     role: "status",
-  }, run.status === "cancelling"
-    ? `Cancellation accepted. Waiting until ${run.cancellation?.cooperativeDeadlineAt} for termination.`
+  }, run.cancellation
+    ? run.status === "cancelling"
+      ? `Cancellation accepted. Waiting until ${run.cancellation.cooperativeDeadlineAt} for termination.`
+      : `Cancellation accepted. Termination was confirmed at ${run.cancellation.terminationConfirmedAt}.`
     : "");
   if (["starting", "running"].includes(run.status)) {
     const cancelButton = element("button", {
@@ -1104,12 +1106,17 @@ const renderHarnessRun = (observation) => {
     cancelButton.addEventListener("click", () =>
       requestHarnessRunCancellation(run, cancelButton, cancellationFeedback));
     section.append(cancelButton, cancellationFeedback);
-  } else if (run.status === "cancelling") {
+  } else if (run.cancellation) {
     section.append(element("p", {
       id: "harness-run-cancellation-progress",
       "data-cancellation-accepted": "true",
-      "data-cooperative-deadline": run.cancellation?.cooperativeDeadlineAt ?? "",
-    }, "Cancellation accepted; termination remains asynchronously observable."),
+      "data-cooperative-deadline": run.cancellation.cooperativeDeadlineAt,
+      "data-termination-confirmed": String(
+        run.cancellation.terminationConfirmedAt !== null,
+      ),
+    }, run.status === "cancelling"
+      ? "Cancellation accepted; termination remains asynchronously observable."
+      : `Cancellation accepted; truthful terminal outcome: ${run.status}.`),
     cancellationFeedback);
   }
   const executionFacts = element("section", {
