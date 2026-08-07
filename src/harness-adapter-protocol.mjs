@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -30,11 +30,68 @@ const capabilitySchema = z.enum([
   "harness.run.v1",
 ]);
 
+const launchParameterNameSchema = z.string().min(1).max(64)
+  .regex(/^[a-z][a-zA-Z0-9]*$/);
+const launchParameterBase = {
+  name: launchParameterNameSchema,
+  label: z.string().min(1).max(80),
+  description: z.string().min(1).max(240).optional(),
+  cliFlag: z.string().min(3).max(66).regex(/^--[a-z][a-z0-9-]*$/).optional(),
+  required: z.boolean(),
+};
+export const harnessLaunchParameterFieldSchema = z.discriminatedUnion("valueType", [
+  z.object({
+    ...launchParameterBase,
+    valueType: z.literal("integer"),
+    minimum: z.number().int().safe(),
+    maximum: z.number().int().safe(),
+  }).strict().refine((field) => field.minimum <= field.maximum),
+  z.object({
+    ...launchParameterBase,
+    valueType: z.literal("string"),
+    minLength: z.number().int().nonnegative().max(4_096),
+    maxLength: z.number().int().positive().max(4_096),
+  }).strict().refine((field) => field.minLength <= field.maxLength),
+  z.object({
+    ...launchParameterBase,
+    valueType: z.literal("boolean"),
+  }).strict(),
+]);
+export const harnessLaunchParametersDeclarationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }).strict(),
+  z.object({
+    kind: z.literal("fields"),
+    fields: z.array(harnessLaunchParameterFieldSchema).max(16),
+  }).strict().superRefine((declaration, context) => {
+    const names = new Set();
+    const cliFlags = new Set();
+    for (const [index, field] of declaration.fields.entries()) {
+      if (names.has(field.name)) {
+        context.addIssue({
+          code: "custom",
+          message: "launch parameter names must be unique",
+          path: ["fields", index, "name"],
+        });
+      }
+      names.add(field.name);
+      if (field.cliFlag && cliFlags.has(field.cliFlag)) {
+        context.addIssue({
+          code: "custom",
+          message: "launch parameter CLI flags must be unique",
+          path: ["fields", index, "cliFlag"],
+        });
+      }
+      if (field.cliFlag) cliFlags.add(field.cliFlag);
+    }
+  }),
+]);
+
 export const harnessAdapterProbeSchema = z.object({
   type: z.literal("harness.adapter.probe"),
   adapterProtocol: adapterProtocolSchema,
   adapterId: adapterIdSchema,
   capabilities: z.array(capabilitySchema).min(2).max(2),
+  launchParameters: harnessLaunchParametersDeclarationSchema,
 }).strict().refine((probe) =>
   probe.capabilities.includes("harness.launch.prepare.v1")
   && probe.capabilities.includes("harness.run.v1"));
@@ -178,7 +235,49 @@ export const loadPinnedHarnessAdapter = async ({ workspacePath, pinnedRevision }
     compatibility: manifest.compatibility,
     entryPointPath,
     pinnedEntryPointSource,
+    workspacePath,
   };
+};
+
+/**
+ * Invoke the exact pinned adapter bytes across the framed protocol channel.
+ * @param {Awaited<ReturnType<typeof loadPinnedHarnessAdapter>>} pinnedAdapter
+ * @param {string[]} invocationArgs
+ */
+export const invokePinnedHarnessAdapter = async (pinnedAdapter, invocationArgs) => {
+  const child = spawn(process.execPath, [
+    "--input-type=module",
+    "--eval", pinnedAdapter.pinnedEntryPointSource,
+    pinnedAdapter.compatibility.entryPoint,
+    ...invocationArgs,
+  ], {
+    cwd: pinnedAdapter.workspacePath,
+    env: { LANG: "C.UTF-8" },
+    stdio: ["ignore", "pipe", "pipe", "pipe"],
+  });
+  const adapterChannel = child.stdio[3];
+  if (!adapterChannel || !("readable" in adapterChannel)) {
+    child.kill("SIGKILL");
+    throw new Error("harness_adapter_protocol_invalid");
+  }
+  const timeout = setTimeout(() => child.kill("SIGKILL"), 3_000);
+  try {
+    const [message, exit] = await Promise.all([
+      readHarnessAdapterFrame(adapterChannel),
+      new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("exit", (code, signal) => resolve({ code, signal }));
+      }),
+    ]);
+    if (exit.code !== 0 || exit.signal !== null) {
+      throw new Error("harness_adapter_protocol_invalid");
+    }
+    return { message, compatibility: pinnedAdapter.compatibility };
+  } catch {
+    throw new Error("harness_adapter_protocol_invalid");
+  } finally {
+    clearTimeout(timeout);
+  }
 };
 
 /** @type {WeakMap<import("node:stream").Readable, {buffer: Buffer, iterator: AsyncIterator<unknown>}>} */

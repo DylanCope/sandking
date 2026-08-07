@@ -7,6 +7,7 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as pty from "@lydell/node-pty";
 import { z } from "zod";
+import { harnessLaunchParametersDeclarationSchema } from "./harness-adapter-protocol.mjs";
 import { createClaudeDestinationEnvironment } from "./claude-provider-adapter.mjs";
 import { readJson, writePrivateJson } from "./private-state.mjs";
 
@@ -265,6 +266,7 @@ const controllerCliDescriptionSchema = z.object({
   focusedProjectId: z.string().regex(/^project-[a-f0-9]{24}$/),
   projectArgumentOptional: z.literal(true),
   pluginRequired: z.literal(false),
+  launchParameters: harnessLaunchParametersDeclarationSchema,
 }).strict();
 const retainedSessionSchema = z.object({
   sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
@@ -612,6 +614,7 @@ const openProviderControl = async (context) => {
                 cliCommand: cliDescription.data.command,
                 projectArgumentOptional: cliDescription.data.projectArgumentOptional,
                 pluginRequired: cliDescription.data.pluginRequired,
+                launchParameterKind: cliDescription.data.launchParameters.kind,
               } : {}),
               inputRetained: false,
             });

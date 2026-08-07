@@ -552,9 +552,19 @@ const openRuntimeControl = async (endpoint, readyMessage) => new Promise((resolv
   });
 });
 
+/** @param {unknown} value @returns {string} */
+const canonicalJson = (value) => {
+  if (value === undefined) return '"<undefined>"';
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = /** @type {Record<string, unknown>} */ (value);
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+};
+
 /** @param {unknown} value */
 const canonicalDigest = (value) => createHash("sha256")
-  .update(JSON.stringify(value))
+  .update(canonicalJson(value))
   .digest("hex");
 
 /**
@@ -576,8 +586,7 @@ const requireCorrelatedControllerLaunchResult = (outcome, request) => {
     || run?.projectId !== request.projectId
     || run?.controllerSessionId !== request.controllerSessionId
     || run?.source !== "controller-cli"
-    || run?.parameters?.issueNumber !== request.parameters.issueNumber
-    || run?.parameters?.targetBranch !== request.parameters.targetBranch
+    || canonicalDigest(run?.parameters ?? {}) !== canonicalDigest(request.parameters)
   ) {
     throw new Error("controller_cli_protocol_invalid");
   }
@@ -730,14 +739,19 @@ const openControllerCliServer = async ({
     if (request.operation === "describe") {
       return control.request("controller-cli.describe", {});
     }
+    const parameters = request.parameters ?? {};
+    let parametersValid = parameters
+      && typeof parameters === "object"
+      && !Array.isArray(parameters)
+      && Object.keys(parameters).length <= 16;
+    try {
+      parametersValid = parametersValid
+        && Buffer.byteLength(JSON.stringify(parameters), "utf8") <= 8_192;
+    } catch {
+      parametersValid = false;
+    }
     if (
-      !request.parameters
-      || typeof request.parameters !== "object"
-      || !Number.isSafeInteger(request.parameters.issueNumber)
-      || request.parameters.issueNumber < 1
-      || request.parameters.issueNumber > 999_999_999
-      || request.parameters.targetBranch
-        !== `sandcastle/issue-${request.parameters.issueNumber}`
+      !parametersValid
       || typeof request.idempotencyKey !== "string"
       || request.idempotencyKey.length < 1
       || request.idempotencyKey.length > 256
@@ -747,12 +761,12 @@ const openControllerCliServer = async ({
     const correlation = {
       projectId: workContextId,
       controllerSessionId: sessionId,
-      parameters: request.parameters,
+      parameters,
       idempotencyKey: request.idempotencyKey,
     };
     try {
       return requireSuccessfulControllerLaunch(await control.request("harness-run.launch", {
-        parameters: request.parameters,
+        ...(Object.keys(parameters).length === 0 ? {} : { parameters }),
         idempotencyKey: request.idempotencyKey,
       }), correlation);
     } catch (error) {

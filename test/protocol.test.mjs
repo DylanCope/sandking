@@ -93,6 +93,10 @@ test("Harness launch is one capability-negotiated revision-free Host operation",
 
   writeFrame(stream, launch);
   assert.deepEqual(await readFrame(stream), launch);
+  const { parameters: omittedParameters, ...parameterlessLaunch } = launch;
+  void omittedParameters;
+  writeFrame(stream, parameterlessLaunch);
+  assert.deepEqual(await readFrame(stream), parameterlessLaunch);
   assert.equal("expectedRevision" in launch, false);
   assert.throws(
     () => writeFrame(stream, {

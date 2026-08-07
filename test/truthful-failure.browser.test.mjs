@@ -83,7 +83,7 @@ test("one-action Cockpit launch shows a truthful Harness failure", async () => {
       await page.locator("#project-path").fill(projectPath);
       await page.locator("#open-project").click();
       await page.waitForSelector("#launch-harness:not([disabled])", { timeout: 90_000 });
-      await page.locator("#harness-launch-issue").fill("999999999");
+      await page.locator("#harness-launch-parameter-issueNumber").fill("999999999");
       await page.locator("#launch-harness").click();
       await page.locator("#harness-launch-confirmation-yes").click();
       await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} launched\./.test(

@@ -80,9 +80,29 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");
       const projectRevision = Number(await page.locator("#project-readiness")
         .getAttribute("data-project-revision"));
-      await page.locator("#harness-launch-issue").fill("152");
-      assert.equal(await page.locator("#harness-launch-branch").inputValue(),
-        "sandcastle/issue-152");
+      assert.equal(await page.locator("#harness-launch-parameters")
+        .getAttribute("data-parameter-count"), "2");
+      assert.deepEqual(
+        await page.locator("#harness-launch-parameters > label").allTextContents(),
+        ["Issue number", "Target branch"],
+      );
+      assert.deepEqual(await page.evaluate(async () => {
+        const { renderHarnessLaunchParameterFields } = await import(
+          "/cockpit-launch-parameters.mjs"
+        );
+        const empty = renderHarnessLaunchParameterFields(document, { kind: "none" });
+        document.body.append(empty);
+        const result = {
+          kind: empty.dataset.parameterKind,
+          count: empty.dataset.parameterCount,
+          inputs: empty.querySelectorAll("input, select").length,
+        };
+        empty.remove();
+        return result;
+      }), { kind: "none", count: "0", inputs: 0 });
+      await page.locator("#harness-launch-parameter-issueNumber").fill("152");
+      await page.locator("#harness-launch-parameter-targetBranch")
+        .fill("sandcastle/issue-152");
 
       await page.locator("#launch-harness").click();
       const dialog = page.locator("#harness-launch-confirmation");
@@ -181,6 +201,7 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       assert.equal(firstRun.projectId, projectId);
       assert.equal(firstRun.source, "cockpit");
       assert.equal(firstRun.controllerSessionId, null);
+      assert.deepEqual(firstRun.parameters, {});
       assert.equal("launchRequestId" in firstRun, false);
 
       await page.waitForSelector(
@@ -199,16 +220,24 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       observeFrames(page);
       await page.goto(new URL(runtime.bootstrapUrl).origin, { waitUntil: "domcontentloaded" });
       await page.waitForSelector("#launch-harness:not([disabled])", { timeout: 90_000 });
-      await page.locator("#harness-launch-issue").fill("152");
+      await page.locator("#harness-launch-parameter-issueNumber").fill("152");
+      await page.locator("#harness-launch-parameter-targetBranch")
+        .fill("sandcastle/issue-152");
       await page.locator("#launch-harness").click();
       assert.equal(await page.locator("#harness-launch-confirmation").isVisible(), false);
       await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} launched\./
         .test(document.querySelector("#harness-launch-feedback")?.textContent ?? ""));
-      await waitForRetainedRuns(dataDir, 2);
+      const retainedRuns = await waitForRetainedRuns(dataDir, 2);
+      assert.deepEqual(retainedRuns[1].parameters, {
+        issueNumber: 152,
+        targetBranch: "sandcastle/issue-152",
+      });
 
       const launchFrames = sentFrames.filter((frame) =>
         frame.includes('"type":"browser.harness-run.launch"'));
       assert.equal(launchFrames.length, 2);
+      assert.equal(launchFrames.some((frame) => frame.includes('"parameters"')), true);
+      assert.equal(launchFrames.some((frame) => !frame.includes('"parameters"')), true);
       for (const frame of launchFrames) {
         assert.doesNotMatch(frame, /expectedRevision|approve|prepare|launchRequest/);
       }

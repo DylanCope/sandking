@@ -643,7 +643,7 @@ export const createHarnessRunManager = async (options) => {
     const idempotencyKeyHash = keyValid ? digest(request.idempotencyKey) : null;
     const requestFingerprint = fingerprint({
       projectId: request.projectId,
-      parameters: request.parameters,
+      parameters: request.parameters === undefined ? {} : request.parameters,
       controllerId: request.controllerId,
       controllerSessionId: request.controllerSessionId,
       source: request.source,
@@ -726,6 +726,7 @@ export const createHarnessRunManager = async (options) => {
           "harness_pin_missing",
           "harness_pin_invalid",
           "harness_workspace_invalid",
+          "bounded_configuration_invalid",
           "harness_capability_unsupported",
           "harness_adapter_protocol_invalid",
           "harness_preparation_side_effect_detected",

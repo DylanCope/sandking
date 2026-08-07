@@ -1,26 +1,76 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
 import {
   harnessAdapterEntryPointSchema,
+  harnessAdapterProbeSchema,
+  harnessLaunchParametersDeclarationSchema,
   harnessPreparedEnvelopeSchema,
+  invokePinnedHarnessAdapter,
   loadPinnedHarnessAdapter,
-  readHarnessAdapterFrame,
 } from "./harness-adapter-protocol.mjs";
 
 const execFileAsync = promisify(execFile);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const capabilitySchema = z.enum(["github.issues.read", "project.git.read"]);
 
-export const boundedLaunchParametersSchema = z.object({
-  issueNumber: z.number().int().positive().max(999_999_999),
-  targetBranch: z.string().min(1).max(128).regex(/^sandcastle\/issue-[1-9][0-9]*$/),
-}).strict();
+const launchParameterNameSchema = z.string().min(1).max(64)
+  .regex(/^[a-z][a-zA-Z0-9]*$/);
+export const launchParametersSchema = z.record(launchParameterNameSchema, z.unknown())
+  .superRefine((parameters, context) => {
+    if (Object.keys(parameters).length > 16) {
+      context.addIssue({ code: "custom", message: "too many launch parameters" });
+    }
+    try {
+      if (Buffer.byteLength(JSON.stringify(parameters), "utf8") > 8_192) {
+        context.addIssue({ code: "custom", message: "launch parameters are too large" });
+      }
+    } catch {
+      context.addIssue({ code: "custom", message: "launch parameters are not serializable" });
+    }
+  }).default({});
 
-export const launchParametersSchema = boundedLaunchParametersSchema.refine(
-  (parameters) => parameters.targetBranch === `sandcastle/issue-${parameters.issueNumber}`,
-  { message: "the conformance branch must bind the selected issue" },
-);
+/**
+ * Validate a generic launch bag from the pinned adapter's declaration.
+ * Adapter-specific relationships remain the adapter prepare command's concern.
+ * @param {unknown} declaration
+ * @param {unknown} parameters
+ */
+export const validateDeclaredLaunchParameters = (declaration, parameters) => {
+  const parsedDeclaration = harnessLaunchParametersDeclarationSchema.safeParse(declaration);
+  const parsedParameters = launchParametersSchema.safeParse(parameters);
+  if (!parsedDeclaration.success || !parsedParameters.success) {
+    throw new Error("bounded_configuration_invalid");
+  }
+  const fields = parsedDeclaration.data.kind === "fields"
+    ? new Map(parsedDeclaration.data.fields.map((field) => [field.name, field]))
+    : new Map();
+  if (Object.keys(parsedParameters.data).some((name) => !fields.has(name))) {
+    throw new Error("bounded_configuration_invalid");
+  }
+  for (const field of fields.values()) {
+    const value = parsedParameters.data[field.name];
+    if (value === undefined) {
+      if (field.required) throw new Error("bounded_configuration_invalid");
+      continue;
+    }
+    if (
+      (field.valueType === "integer"
+        && (typeof value !== "number"
+          || !Number.isSafeInteger(value)
+          || value < field.minimum
+          || value > field.maximum))
+      || (field.valueType === "string"
+        && (typeof value !== "string"
+          || value.length < field.minLength
+          || value.length > field.maxLength))
+      || (field.valueType === "boolean" && typeof value !== "boolean")
+    ) {
+      throw new Error("bounded_configuration_invalid");
+    }
+  }
+  return parsedParameters.data;
+};
 
 const harnessLaunchValidationSchema = z.object({
   adapterId: z.literal("conformance-harness-adapter-v1"),
@@ -43,10 +93,10 @@ const harnessLaunchValidationSchema = z.object({
  * Validate one launch against the Project's currently pinned Harness revision.
  * This happens inside the launch action; it creates no proposal or intermediate state.
  * @param {any} context
- * @param {import("zod").infer<typeof launchParametersSchema>} parameters
+ * @param {unknown} parameters
  */
 export const validateConformanceHarnessLaunch = async (context, parameters) => {
-  const parsedParameters = launchParametersSchema.parse(parameters);
+  const launchParameters = launchParametersSchema.parse(parameters);
   const workspacePath = typeof context?.harnessWorkspacePath === "string"
     ? context.harnessWorkspacePath
     : "";
@@ -62,53 +112,6 @@ export const validateConformanceHarnessLaunch = async (context, parameters) => {
     timeout: 3_000,
     maxBuffer: 32_768,
   })).stdout.trim();
-  /**
-   * @param {Awaited<ReturnType<typeof loadPinnedHarnessAdapter>>} pinnedAdapter
-   * @param {string[]} invocationArgs
-   */
-  const invoke = async (pinnedAdapter, invocationArgs) => {
-    if (
-      pinnedAdapter.compatibility.adapterId !== context.harness.adapterId
-      || pinnedAdapter.compatibility.adapterProtocol
-        !== context.project.harness.boundedConfiguration.adapterProtocol
-    ) {
-      throw new Error("harness_adapter_protocol_invalid");
-    }
-    const child = spawn(process.execPath, [
-      "--input-type=module",
-      "--eval", pinnedAdapter.pinnedEntryPointSource,
-      pinnedAdapter.compatibility.entryPoint,
-      ...invocationArgs,
-    ], {
-      cwd: workspacePath,
-      env: environment,
-      stdio: ["ignore", "pipe", "pipe", "pipe"],
-    });
-    const adapterChannel = child.stdio[3];
-    if (!adapterChannel || !("readable" in adapterChannel)) {
-      child.kill("SIGKILL");
-      throw new Error("harness_adapter_protocol_invalid");
-    }
-    const timeout = setTimeout(() => child.kill("SIGKILL"), 3_000);
-    try {
-      const [message, exit] = await Promise.all([
-        readHarnessAdapterFrame(adapterChannel),
-        new Promise((resolve, reject) => {
-          child.once("error", reject);
-          child.once("exit", (code, signal) => resolve({ code, signal }));
-        }),
-      ]);
-      if (exit.code !== 0 || exit.signal !== null) {
-        throw new Error("harness_adapter_protocol_invalid");
-      }
-      return { message, compatibility: pinnedAdapter.compatibility };
-    } catch {
-      throw new Error("harness_adapter_protocol_invalid");
-    } finally {
-      clearTimeout(timeout);
-    }
-  };
-
   const [statusBefore, pinnedAdapter] = await Promise.all([
     git("status", "--porcelain"),
     loadPinnedHarnessAdapter({ workspacePath, pinnedRevision }),
@@ -116,9 +119,37 @@ export const validateConformanceHarnessLaunch = async (context, parameters) => {
   if (statusBefore !== "") {
     throw new Error("harness_workspace_invalid");
   }
+  if (
+    pinnedAdapter.compatibility.adapterId !== context.harness.adapterId
+    || pinnedAdapter.compatibility.adapterProtocol
+      !== context.project.harness.boundedConfiguration.adapterProtocol
+  ) {
+    throw new Error("harness_adapter_protocol_invalid");
+  }
+  const probedInvocation = await invokePinnedHarnessAdapter(pinnedAdapter, ["probe"]);
+  const parsedProbe = harnessAdapterProbeSchema.safeParse(probedInvocation.message);
+  if (!parsedProbe.success) {
+    throw new Error("harness_adapter_protocol_invalid");
+  }
+  const probe = parsedProbe.data;
+  if (
+    probe.adapterId !== probedInvocation.compatibility.adapterId
+    || probe.adapterProtocol !== probedInvocation.compatibility.adapterProtocol
+    || JSON.stringify(probe.launchParameters)
+      !== JSON.stringify(context.harness.launchParameters)
+  ) {
+    throw new Error("harness_adapter_protocol_invalid");
+  }
+  const parsedParameters = validateDeclaredLaunchParameters(
+    probe.launchParameters,
+    launchParameters,
+  );
   const encodedParameters = Buffer.from(JSON.stringify(parsedParameters), "utf8")
     .toString("base64url");
-  const preparedInvocation = await invoke(pinnedAdapter, ["prepare", encodedParameters]);
+  const preparedInvocation = await invokePinnedHarnessAdapter(
+    pinnedAdapter,
+    ["prepare", encodedParameters],
+  );
   if (
     preparedInvocation.message
     && typeof preparedInvocation.message === "object"

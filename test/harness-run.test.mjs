@@ -83,7 +83,17 @@ const createFixture = async (prefix) => {
     recordAudit,
     loadLaunchContext: registry.loadLaunchContext,
   });
-  return { root, dataDir, projectPath, audits, registry, registered, manager, recordAudit };
+  return {
+    root,
+    dataDir,
+    projectPath,
+    audits,
+    registry,
+    registered,
+    harness,
+    manager,
+    recordAudit,
+  };
 };
 
 const launchRequest = (projectId, issueNumber, overrides = {}) => ({
@@ -164,6 +174,67 @@ test("one revision-free action launches a fresh Project's Harness run", async ()
     assert.equal(cockpitLaunch.run.source, "cockpit");
     assert.equal(cockpitLaunch.run.controllerSessionId, null);
     await waitForTerminal(fixture.manager, cockpitLaunch.run.harnessRunId);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("a pinned Harness declaration permits a launch with no parameters", async () => {
+  const fixture = await createFixture("sandking-parameterless-harness-run-");
+  try {
+    assert.deepEqual(
+      fixture.harness.harness.launchParameters.fields.map((field) => ({
+        name: field.name,
+        required: field.required,
+      })),
+      [
+        { name: "issueNumber", required: false },
+        { name: "targetBranch", required: false },
+      ],
+    );
+    const launched = await fixture.manager.launch({
+      requestId: "launch-without-parameters",
+      projectId: fixture.registered.project.projectId,
+      controllerId,
+      controllerSessionId,
+      source: "controller-cli",
+      authorizationClass: "harness_run_launch",
+      idempotencyKey: "launch-without-parameters",
+    });
+
+    assert.equal(launched.type, "harness.run.launch.result");
+    assert.deepEqual(launched.run.parameters, {});
+    const replay = await fixture.manager.launch({
+      requestId: "launch-with-empty-parameters",
+      projectId: fixture.registered.project.projectId,
+      parameters: {},
+      controllerId,
+      controllerSessionId,
+      source: "controller-cli",
+      authorizationClass: "harness_run_launch",
+      idempotencyKey: "launch-without-parameters",
+    });
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.run.harnessRunId, launched.run.harnessRunId);
+    const observation = await waitForTerminal(fixture.manager, launched.run.harnessRunId);
+    assert.equal(observation.run.status, "succeeded");
+    assert.equal(observation.outcome.code, "conformance_run_succeeded");
+    assert.match(
+      observation.outcome.result.placeholderIdentifier,
+      /^conformance-placeholder-[a-f0-9]{24}$/,
+    );
+    const rejected = await fixture.manager.launch({
+      requestId: "launch-with-undeclared-parameter",
+      projectId: fixture.registered.project.projectId,
+      parameters: { genericSurfaceGuess: true },
+      controllerId,
+      controllerSessionId,
+      source: "controller-cli",
+      authorizationClass: "harness_run_launch",
+      idempotencyKey: "launch-with-undeclared-parameter",
+    });
+    assert.equal(rejected.type, "harness.run.launch.failure");
+    assert.equal(rejected.code, "bounded_configuration_invalid");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
