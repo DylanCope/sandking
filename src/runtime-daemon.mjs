@@ -1280,11 +1280,9 @@ const requestHostOperation = (message) => {
  * @param {unknown} requestContent
  */
 const requestFocusedHostMutation = async (action, message, requestContent) => {
-  const idempotencyKeyHash = typeof message.idempotencyKey === "string"
-    && message.idempotencyKey.length > 0
-    && message.idempotencyKey.length <= 256
-    ? hashIdempotencyKey(message.idempotencyKey)
-    : null;
+  const idempotencyKeyHash = /^sha256:[a-f0-9]{64}$/.test(
+    String(message.idempotencyKeyHash ?? ""),
+  ) ? message.idempotencyKeyHash : null;
   const fingerprint = mutationRequestFingerprint(requestContent);
   const outcomeKey = idempotencyKeyHash ? `${action}\0${idempotencyKeyHash}` : null;
   const existing = outcomeKey ? focusedHostMutationOutcomes.get(outcomeKey) : null;
@@ -1734,7 +1732,9 @@ const handleProviderOperation = async (request) => {
       controllerSessionId: request.sessionId,
       source: "controller-cli",
       authorizationClass: "harness_run_launch",
-      idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
+      idempotencyKeyHash: "idempotencyKeyHash" in input
+        ? String(input.idempotencyKeyHash)
+        : "",
     };
     return requestFocusedHostMutation("harness.run.launch", message, {
       projectId: message.projectId,
@@ -1749,7 +1749,9 @@ const handleProviderOperation = async (request) => {
     return requestHostOperation({
       type: "harness.run.lookup",
       requestId: `harness-run-lookup-${randomBytes(8).toString("hex")}`,
-      idempotencyKey: "idempotencyKey" in input ? String(input.idempotencyKey) : "",
+      idempotencyKeyHash: "idempotencyKeyHash" in input
+        ? String(input.idempotencyKeyHash)
+        : "",
     });
   }
   throw new ControllerSessionError("provider_operation_unsupported");
@@ -2386,7 +2388,7 @@ const handleBrowserConnection = (socket, sessionId, session) => {
             controllerSessionId: null,
             source: "cockpit",
             authorizationClass: "harness_run_launch",
-            idempotencyKey: control.idempotencyKey,
+            idempotencyKeyHash: control.idempotencyKeyHash,
           };
           const outcome = await requestFocusedHostMutation("harness.run.launch", message, {
             projectId: message.projectId,

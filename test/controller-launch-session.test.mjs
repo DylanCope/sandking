@@ -104,7 +104,13 @@ test("a project-focused conformance Controller launches in one revision-free act
     ]);
     assert.equal("parameters" in operations[0].input, false);
     assert.equal("expectedRevision" in operations[0].input, false);
-    assert.equal(operations[0].input.idempotencyKey, operations[1].input.idempotencyKey);
+    assert.match(operations[0].input.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    assert.equal(
+      operations[0].input.idempotencyKeyHash,
+      operations[1].input.idempotencyKeyHash,
+    );
+    assert.equal("idempotencyKey" in operations[0].input, false);
+    assert.equal("idempotencyKey" in operations[1].input, false);
     assert.doesNotMatch(output.join(""), /Launch request|approve|reject|--plugin-dir/i);
     assert.ok(audits.some((audit) => audit.action === "controller.provider.operation"
       && audit.details.operation === "harness-run.launch"));

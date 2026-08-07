@@ -112,6 +112,14 @@ const launchRequest = (projectId, issueNumber, overrides = {}) => ({
   ...overrides,
 });
 
+const hashedLaunchRequest = (request) => {
+  const { idempotencyKey, ...content } = request;
+  return {
+    ...content,
+    idempotencyKeyHash: `sha256:${createHash("sha256").update(idempotencyKey).digest("hex")}`,
+  };
+};
+
 test("one revision-free action launches a fresh Project's Harness run", async () => {
   const fixture = await createFixture("sandking-harness-run-");
   const projectFilesBefore = (await readdir(fixture.projectPath)).sort();
@@ -129,6 +137,36 @@ test("one revision-free action launches a fresh Project's Harness run", async ()
     assert.equal("launchRequestId" in launched.run, false);
     assert.equal("expectedRevision" in launched, false);
     assert.match(launched.run.harnessRunId, /^harness-run-[a-f0-9]{24}$/);
+    assert.deepEqual(launched.run.executionSnapshot, {
+      schemaVersion: 1,
+      capture: "launch",
+      hostId,
+      projectRegistration: {
+        projectId: fixture.registered.project.projectId,
+        revision: fixture.registered.project.revision + 1,
+        displayName: fixture.registered.project.displayName,
+      },
+      harness: {
+        harnessId: fixture.harness.harness.harnessId,
+        revision: fixture.harness.harness.revision,
+        name: fixture.harness.harness.name,
+        pinnedRevision: fixture.harness.harness.immutableRevision,
+      },
+      adapter: {
+        adapterId: "conformance-harness-adapter-v1",
+        protocol: "1.0.0",
+        entryPoint: "adapters/conformance.mjs",
+      },
+      parameters: request.parameters,
+      source: "controller-cli",
+      attribution: {
+        controllerId,
+        controllerSessionId,
+      },
+      createdAt: launched.run.createdAt,
+      credentialCapabilityReferences: ["github.issues.read", "project.git.read"],
+      launchAuditId: launched.auditId,
+    });
 
     const replay = await fixture.manager.launch({ ...request, requestId: "launch-replay" });
     assert.equal(replay.idempotentReplay, true);
@@ -175,6 +213,180 @@ test("one revision-free action launches a fresh Project's Harness run", async ()
     assert.equal(cockpitLaunch.run.source, "cockpit");
     assert.equal(cockpitLaunch.run.controllerSessionId, null);
     await waitForTerminal(fixture.manager, cockpitLaunch.run.harnessRunId);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("launch commit interruptions leave pre-commit work unclaimed and replay post-commit work", async () => {
+  const preCommit = await createFixture("sandking-harness-launch-pre-commit-");
+  const postCommit = await createFixture("sandking-harness-launch-post-commit-");
+  const rawRetryKey = "recognizable-raw-launch-retry-key";
+  const pointBeforeCommit = "harness_run_launch.before_commit";
+  const pointAfterCommit = "harness_run_launch.after_commit";
+  try {
+    const preFaults = [];
+    const preManager = await createHarnessRunManager({
+      dataDir: preCommit.dataDir,
+      hostId,
+      recordAudit: preCommit.recordAudit,
+      loadLaunchContext: preCommit.registry.loadLaunchContext,
+      faultInjector: async (point) => {
+        preFaults.push(point);
+        if (point === pointBeforeCommit) throw new Error("injected_pre_commit_interrupt");
+      },
+    });
+    const preRequest = hashedLaunchRequest(launchRequest(
+      preCommit.registered.project.projectId,
+      159,
+      { idempotencyKey: rawRetryKey },
+    ));
+    await assert.rejects(preManager.launch(preRequest), /injected_pre_commit_interrupt/);
+    assert.deepEqual(preFaults, [pointBeforeCommit]);
+    const preLookup = await preManager.lookup({
+      requestId: "lookup-pre-commit-launch",
+      idempotencyKeyHash: preRequest.idempotencyKeyHash,
+    });
+    assert.equal(preLookup.found, false);
+    assert.equal(preCommit.audits.some((audit) =>
+      audit.action === "harness.run.launch" && audit.outcome === "accepted"), false);
+    assert.equal(
+      await readFile(join(preCommit.dataDir, "harness-runs.json"), "utf8")
+        .then((source) => JSON.parse(source).runs.length, () => 0),
+      0,
+    );
+
+    const projectFilesBefore = (await readdir(postCommit.projectPath)).sort();
+    const postFaults = [];
+    const postManager = await createHarnessRunManager({
+      dataDir: postCommit.dataDir,
+      hostId,
+      recordAudit: postCommit.recordAudit,
+      loadLaunchContext: postCommit.registry.loadLaunchContext,
+      faultInjector: async (point) => {
+        postFaults.push(point);
+        if (point === pointAfterCommit) throw new Error("injected_post_commit_interrupt");
+      },
+    });
+    const postRequest = hashedLaunchRequest(launchRequest(
+      postCommit.registered.project.projectId,
+      159,
+      { idempotencyKey: rawRetryKey },
+    ));
+    await assert.rejects(postManager.launch(postRequest), /injected_post_commit_interrupt/);
+    assert.deepEqual(postFaults, [pointBeforeCommit, pointAfterCommit]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const committed = JSON.parse(
+      await readFile(join(postCommit.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.equal(committed.runs.length, 1);
+    assert.equal(committed.launchOutcomes.length, 1);
+    assert.equal(committed.runs[0].status, "starting");
+    assert.deepEqual(committed.runs[0].events.map((event) => event.type), [
+      "harness_run_created",
+    ]);
+    assert.doesNotMatch(JSON.stringify({ committed, audits: postCommit.audits }),
+      new RegExp(rawRetryKey));
+
+    const restarted = await createHarnessRunManager({
+      dataDir: postCommit.dataDir,
+      hostId,
+      recordAudit: postCommit.recordAudit,
+      loadLaunchContext: async () => {
+        throw new Error("mutable_launch_context_must_not_be_resolved_for_replay");
+      },
+    });
+    const lookup = await restarted.lookup({
+      requestId: "lookup-post-commit-launch",
+      idempotencyKeyHash: postRequest.idempotencyKeyHash,
+    });
+    assert.equal(lookup.found, true);
+    const replay = await restarted.launch({
+      ...postRequest,
+      requestId: "replay-post-commit-launch",
+      parameters: {
+        targetBranch: "sandcastle/issue-159",
+        issueNumber: 159,
+      },
+    });
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.run.harnessRunId, lookup.launchOutcome.run.harnessRunId);
+
+    const conflict = await restarted.launch({
+      ...postRequest,
+      requestId: "conflict-post-commit-launch",
+      parameters: { issueNumber: 160, targetBranch: "sandcastle/issue-160" },
+    });
+    assert.equal(conflict.code, "idempotency_key_conflict");
+    assert.deepEqual(conflict.prohibitedSideEffects, {
+      harnessRunCreated: false,
+      projectWrite: false,
+    });
+    const afterReplay = JSON.parse(
+      await readFile(join(postCommit.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.equal(afterReplay.runs.length, 1);
+    assert.equal(afterReplay.launchOutcomes.length, 1);
+    assert.equal(afterReplay.runs[0].events.length, 1);
+    assert.deepEqual((await readdir(postCommit.projectPath)).sort(), projectFilesBefore);
+  } finally {
+    await Promise.all([
+      rm(preCommit.root, { recursive: true, force: true }),
+      rm(postCommit.root, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("retained execution snapshots do not follow later Project or Harness registration changes", async () => {
+  const fixture = await createFixture("sandking-immutable-execution-snapshot-");
+  try {
+    const request = launchRequest(fixture.registered.project.projectId, 159);
+    const launched = await fixture.manager.launch(request);
+    await waitForTerminal(fixture.manager, launched.run.harnessRunId);
+    const originalSnapshot = structuredClone(launched.run.executionSnapshot);
+
+    const projectStatePath = join(fixture.dataDir, "project-registrations.json");
+    const harnessStatePath = join(fixture.dataDir, "harness-registry.json");
+    const projectState = JSON.parse(await readFile(projectStatePath, "utf8"));
+    const harnessState = JSON.parse(await readFile(harnessStatePath, "utf8"));
+    projectState.projects[0].revision += 1;
+    projectState.projects[0].displayName = "renamed-after-launch";
+    projectState.projects[0].harness.pinnedRevision = "a".repeat(40);
+    harnessState.harnesses[0].revision += 1;
+    harnessState.harnesses[0].name = "Renamed Harness after launch";
+    harnessState.harnesses[0].immutableRevision = "a".repeat(40);
+    harnessState.harnesses[0].launchParameters = { kind: "none" };
+    await Promise.all([
+      writeFile(projectStatePath, `${JSON.stringify(projectState)}\n`),
+      writeFile(harnessStatePath, `${JSON.stringify(harnessState)}\n`),
+    ]);
+
+    let mutableContextResolved = false;
+    const restarted = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: async () => {
+        mutableContextResolved = true;
+        throw new Error("mutable_launch_context_must_not_be_resolved");
+      },
+    });
+    const observation = await restarted.observe({
+      requestId: "observe-immutable-execution-snapshot",
+      harnessRunId: launched.run.harnessRunId,
+      afterSequence: 0,
+    });
+    assert.deepEqual(observation.run.executionSnapshot, originalSnapshot);
+    const replay = await restarted.launch({ ...request, requestId: "replay-immutable-snapshot" });
+    assert.equal(replay.idempotentReplay, true);
+    assert.deepEqual(replay.run.executionSnapshot, originalSnapshot);
+    assert.equal(mutableContextResolved, false);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"))
+        .runs[0].executionSnapshot,
+      originalSnapshot,
+    );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -432,7 +644,7 @@ test("distinct launch outcomes remain durable and lookup-safe past 256 keys", as
       assert.equal(outcome.code, "project_not_found");
     }
     const retained = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
-    assert.equal(retained.schemaVersion, 2);
+    assert.equal(retained.schemaVersion, 3);
     assert.equal(retained.launchOutcomes.length, 257);
     const reloaded = await createHarnessRunManager(options);
     const first = await reloaded.lookup({
@@ -452,6 +664,101 @@ test("distinct launch outcomes remain durable and lookup-safe past 256 keys", as
     assert.equal(conflict.code, "idempotency_key_conflict");
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("schema-v2 execution history migrates deterministically without losing accepted state", async () => {
+  const fixture = await createFixture("sandking-harness-v2-upgrade-");
+  try {
+    const request = launchRequest(fixture.registered.project.projectId, 159);
+    const launched = await fixture.manager.launch(request);
+    const terminal = await waitForTerminal(fixture.manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "succeeded");
+
+    const v3 = JSON.parse(await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"));
+    const v2 = structuredClone(v3);
+    v2.schemaVersion = 2;
+    for (const run of v2.runs) delete run.executionSnapshot;
+    for (const outcome of [...v2.launchOutcomes, ...v2.legacyStartOutcomes]) {
+      if (outcome.response?.run) delete outcome.response.run.executionSnapshot;
+    }
+    await writeFile(join(fixture.dataDir, "harness-runs.json"), `${JSON.stringify(v2)}\n`);
+
+    let mutableContextResolved = false;
+    const migratedManager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: async () => {
+        mutableContextResolved = true;
+        throw new Error("project_not_found");
+      },
+    });
+    assert.equal(mutableContextResolved, false);
+    const migrated = JSON.parse(
+      await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.equal(migrated.schemaVersion, 3);
+    const { executionSnapshot: migratedSnapshot, ...migratedHistory } = migrated.runs[0];
+    const { executionSnapshot: originalSnapshot, ...originalHistory } = v3.runs[0];
+    void originalSnapshot;
+    assert.deepEqual(migratedHistory, originalHistory);
+    assert.deepEqual(migratedSnapshot, {
+      schemaVersion: 1,
+      capture: "migration",
+      hostId: originalHistory.hostId,
+      projectRegistration: {
+        projectId: originalHistory.projectId,
+        revision: null,
+        displayName: null,
+      },
+      harness: {
+        harnessId: originalHistory.harnessId,
+        revision: null,
+        name: null,
+        pinnedRevision: originalHistory.harnessPinnedRevision,
+      },
+      adapter: {
+        adapterId: originalHistory.adapterId,
+        protocol: originalHistory.adapterProtocol,
+        entryPoint: originalHistory.adapterEntryPoint,
+      },
+      parameters: originalHistory.parameters,
+      source: originalHistory.source,
+      attribution: {
+        controllerId: originalHistory.controllerId,
+        controllerSessionId: originalHistory.controllerSessionId,
+      },
+      createdAt: originalHistory.createdAt,
+      credentialCapabilityReferences: null,
+      launchAuditId: originalHistory.launchAuditId,
+    });
+    assert.deepEqual(migrated.runs[0].events, v3.runs[0].events);
+    assert.deepEqual(migrated.runs[0].outcome, v3.runs[0].outcome);
+    assert.deepEqual(migrated.runs[0].logStreams, v3.runs[0].logStreams);
+
+    const lookup = await migratedManager.lookup({
+      requestId: "lookup-migrated-v2-launch",
+      idempotencyKey: request.idempotencyKey,
+    });
+    assert.equal(lookup.found, true);
+    assert.equal(lookup.launchOutcome.run.harnessRunId, launched.run.harnessRunId);
+    assert.deepEqual(lookup.launchOutcome.run.executionSnapshot, migratedSnapshot);
+
+    await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: async () => {
+        throw new Error("project_not_found");
+      },
+    });
+    assert.deepEqual(
+      JSON.parse(await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8")),
+      migrated,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
@@ -536,10 +843,51 @@ test("main-era Harness-run history remains observable after the launch-schema up
       join(dataDir, "harness-runs.json"),
       "utf8",
     ));
-    assert.equal(initialized.schemaVersion, 2);
-    assert.deepEqual(initialized.runs, [legacyRun]);
+    assert.equal(initialized.schemaVersion, 3);
+    const [{ executionSnapshot, ...migratedLegacyRun }] = initialized.runs;
+    assert.deepEqual(migratedLegacyRun, legacyRun);
+    assert.deepEqual(executionSnapshot, {
+      schemaVersion: 1,
+      capture: "migration",
+      hostId: legacyRun.hostId,
+      projectRegistration: {
+        projectId: legacyRun.projectId,
+        revision: null,
+        displayName: null,
+      },
+      harness: {
+        harnessId: legacyRun.harnessId,
+        revision: null,
+        name: null,
+        pinnedRevision: legacyRun.harnessPinnedRevision,
+      },
+      adapter: {
+        adapterId: legacyRun.adapterId,
+        protocol: legacyRun.adapterProtocol,
+        entryPoint: legacyRun.adapterEntryPoint,
+      },
+      parameters: null,
+      source: null,
+      attribution: {
+        controllerId: legacyRun.controllerId,
+        controllerSessionId: legacyRun.controllerSessionId,
+      },
+      createdAt: legacyRun.createdAt,
+      credentialCapabilityReferences: null,
+      launchAuditId: legacyRun.startAuditId,
+    });
     assert.deepEqual(initialized.launchOutcomes, []);
-    assert.deepEqual(initialized.legacyStartOutcomes, [legacyStartOutcome]);
+    assert.deepEqual({
+      ...initialized.legacyStartOutcomes[0],
+      response: {
+        ...initialized.legacyStartOutcomes[0].response,
+        run: legacyStartOutcome.response.run,
+      },
+    }, legacyStartOutcome);
+    assert.deepEqual(
+      initialized.legacyStartOutcomes[0].response.run.executionSnapshot,
+      executionSnapshot,
+    );
     const observation = await manager.observe({
       requestId: "observe-legacy-run",
       harnessRunId,
@@ -565,6 +913,7 @@ test("main-era Harness-run history remains observable after the launch-schema up
       adapterReadyAt: legacyRun.adapterReadyAt,
       completedAt: legacyRun.completedAt,
       startAuditId: legacyRun.startAuditId,
+      executionSnapshot,
     });
     const lookup = await manager.lookup({
       requestId: "lookup-legacy-start",
@@ -572,7 +921,11 @@ test("main-era Harness-run history remains observable after the launch-schema up
     });
     assert.equal(lookup.code, "harness_run_launch_outcome_found");
     assert.equal(lookup.found, true);
-    assert.deepEqual(lookup.launchOutcome, legacyStartOutcome.response);
+    assert.deepEqual({
+      ...lookup.launchOutcome,
+      run: legacyStartOutcome.response.run,
+    }, legacyStartOutcome.response);
+    assert.deepEqual(lookup.launchOutcome.run.executionSnapshot, executionSnapshot);
     const conflictingLaunch = await manager.launch({
       requestId: "launch-with-legacy-key",
       projectId: legacyRun.projectId,
@@ -589,10 +942,10 @@ test("main-era Harness-run history remains observable after the launch-schema up
     assert.equal(conflictingLaunch.code, "idempotency_key_conflict");
     assert.equal(conflictingLaunch.prohibitedSideEffects.harnessRunCreated, false);
     const migrated = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
-    assert.equal(migrated.schemaVersion, 2);
-    assert.deepEqual(migrated.runs, [legacyRun]);
+    assert.equal(migrated.schemaVersion, 3);
+    assert.deepEqual(migrated.runs, initialized.runs);
     assert.deepEqual(migrated.launchOutcomes, []);
-    assert.deepEqual(migrated.legacyStartOutcomes, [legacyStartOutcome]);
+    assert.deepEqual(migrated.legacyStartOutcomes, initialized.legacyStartOutcomes);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

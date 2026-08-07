@@ -204,15 +204,67 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       assert.equal(firstRun.controllerSessionId, null);
       assert.deepEqual(firstRun.parameters, {});
       assert.equal("launchRequestId" in firstRun, false);
+      assert.equal(firstRun.executionSnapshot.capture, "launch");
+      assert.equal(firstRun.executionSnapshot.projectRegistration.projectId, projectId);
+      assert.equal(firstRun.executionSnapshot.projectRegistration.revision, 2);
+      assert.equal(firstRun.executionSnapshot.projectRegistration.displayName, "selected-project");
+      assert.equal(firstRun.executionSnapshot.harness.pinnedRevision,
+        firstRun.harnessPinnedRevision);
+      assert.deepEqual(firstRun.executionSnapshot.parameters, {});
+      assert.deepEqual(firstRun.executionSnapshot.credentialCapabilityReferences, [
+        "github.issues.read",
+        "project.git.read",
+      ]);
 
       await page.waitForSelector(
         `#harness-run-observation[data-run-id='${firstRun.harnessRunId}'][data-run-status='succeeded']`,
         { timeout: 15_000 },
       );
+      const executionFacts = page.locator("#harness-run-execution-snapshot");
+      assert.equal(await executionFacts.getAttribute("data-launch-time"),
+        firstRun.createdAt);
+      assert.equal(await executionFacts.getAttribute("data-project-registration-revision"), "2");
+      assert.equal(await executionFacts.getAttribute("data-adapter-id"), firstRun.adapterId);
+      assert.equal(await executionFacts.getAttribute("data-adapter-protocol"),
+        firstRun.adapterProtocol);
+      assert.equal(await executionFacts.getAttribute("data-adapter-entry-point"),
+        firstRun.adapterEntryPoint);
+      assert.match(await executionFacts.textContent(), /Immutable execution facts/);
+      assert.equal(await page.locator("#harness-run-launch-parameters").textContent(), "{}");
+      assert.equal(await page.locator("#harness-run-events").getAttribute("data-event-count"), "4");
+      assert.equal(await page.locator("[data-log-producer='stdout']")
+        .getAttribute("data-range-end"), String(firstRun.logStreams[0].availableEnd));
       assert.equal(await page.locator("#harness-terminal-validation")
         .getAttribute("data-exactly-one-terminal"), "true");
       assert.equal(await page.locator("#harness-run-structured-outcome")
         .getAttribute("data-outcome-status"), "succeeded");
+
+      // Emulate a response lost after Host commit by restoring the Cockpit's
+      // hidden retry plumbing and reloading. The exact same hash/content must
+      // reconnect to the retained launch rather than create or start another run.
+      const firstLaunchFrame = sentFrames.find((frame) =>
+        frame.includes('"type":"browser.harness-run.launch"'));
+      const firstLaunchMessage = JSON.parse(firstLaunchFrame).message;
+      await page.evaluate((pending) => {
+        sessionStorage.setItem("sandking.pendingHarnessLaunch", JSON.stringify(pending));
+      }, {
+        projectId: firstLaunchMessage.projectId,
+        parameters: firstLaunchMessage.parameters ?? {},
+        idempotencyKeyHash: firstLaunchMessage.idempotencyKeyHash,
+      });
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} launched\./
+        .test(document.querySelector("#harness-launch-feedback")?.textContent ?? ""));
+      assert.equal((await waitForRetainedRuns(dataDir, 1)).length, 1);
+      assert.equal(await page.evaluate(() =>
+        sessionStorage.getItem("sandking.pendingHarnessLaunch")), null);
+      const replayFrames = sentFrames.filter((frame) =>
+        frame.includes('"type":"browser.harness-run.launch"')).map((frame) =>
+        JSON.parse(frame).message);
+      assert.equal(replayFrames.length, 2);
+      assert.equal(replayFrames[1].idempotencyKeyHash,
+        replayFrames[0].idempotencyKeyHash);
+      assert.deepEqual(replayFrames[1].parameters ?? {}, replayFrames[0].parameters ?? {});
 
       // A new page in the same browser session retains the explicit preference
       // and launches immediately without presenting another dialog.
@@ -236,11 +288,13 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
 
       const launchFrames = sentFrames.filter((frame) =>
         frame.includes('"type":"browser.harness-run.launch"'));
-      assert.equal(launchFrames.length, 2);
+      assert.equal(launchFrames.length, 3);
       assert.equal(launchFrames.some((frame) => frame.includes('"parameters"')), true);
       assert.equal(launchFrames.some((frame) => !frame.includes('"parameters"')), true);
       for (const frame of launchFrames) {
         assert.doesNotMatch(frame, /expectedRevision|approve|prepare|launchRequest/);
+        assert.doesNotMatch(frame, /"idempotencyKey":/);
+        assert.match(frame, /"idempotencyKeyHash":"sha256:[a-f0-9]{64}"/);
       }
       await assert.rejects(access(join(dataDir, "launch-requests.json")));
       const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
@@ -251,8 +305,15 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       assert.ok(launchAudits.every((audit) => audit.details.source === "cockpit"));
       assert.equal(audits.some((audit) => /launch\.request|approval/.test(audit.action)), false);
       assert.deepEqual((await readdir(projectPath)).sort(), projectFilesBefore);
-      const retainedText = `${JSON.stringify(firstRuns)}\n${JSON.stringify(audits)}`;
+      const retainedText = [
+        JSON.stringify(firstRuns),
+        JSON.stringify(audits),
+        JSON.stringify(sentFrames),
+        await page.locator("body").textContent(),
+      ].join("\n");
       assert.doesNotMatch(retainedText, /harness-run-browser-secret/);
+      assert.doesNotMatch(await page.locator("body").textContent(),
+        /idempotencyKey|sha256:[a-f0-9]{64}/);
       await context.close();
     } finally {
       await browser.close();

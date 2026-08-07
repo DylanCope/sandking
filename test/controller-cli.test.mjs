@@ -63,8 +63,7 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
           type: "harness.run.launch.result",
           code: "harness_run_created",
           authorizationClass: "harness_run_launch",
-          idempotencyKeyHash: `sha256:${createHash("sha256")
-            .update(request.idempotencyKey).digest("hex")}`,
+          idempotencyKeyHash: request.idempotencyKeyHash,
           run: {
             harnessRunId: `harness-run-${"5".repeat(24)}`,
             projectId: request.projectId,
@@ -98,7 +97,8 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
     });
     assert.match(help, /sandking launch \[<project-id>\] \[--parameters <json-object>\]/);
     assert.match(help, /defaults to the focused Controller Project/);
-    assert.doesNotMatch(help, /approve|prepare|plugin|skill|expected-revision/i);
+    assert.doesNotMatch(help,
+      /approve|prepare|plugin|skill|expected-revision|idempotency/i);
 
     const controllerHelpInvocations = [
       ["--help"],
@@ -155,6 +155,8 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
     assert.equal(requests[3].operation, "harness-run.launch");
     assert.equal(requests[3].projectId, projectId);
     assert.equal("parameters" in requests[3], false);
+    assert.match(requests[3].idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    assert.equal("idempotencyKey" in requests[3], false);
     assert.equal(requests[4].operation, "harness-run.launch");
     assert.equal(requests[4].projectId, projectId);
     assert.equal("parameters" in requests[4], false);
@@ -166,6 +168,8 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
       issueNumber: 152,
       targetBranch: "sandcastle/issue-152",
     });
+    assert.match(requests[6].idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    assert.equal("idempotencyKey" in requests[6], false);
     assert.equal("expectedRevision" in requests[6], false);
     assert.doesNotMatch(JSON.stringify(requests), /approve|prepare|plugin|skill/i);
   } finally {
@@ -256,20 +260,23 @@ test("sandking launch rejects uncorrelated success responses", async () => {
           type: "harness.run.launch.result",
           code: "harness_run_created",
           authorizationClass: "harness_run_launch",
-          idempotencyKeyHash: `sha256:${createHash("sha256")
-            .update(request.idempotencyKey === "wrong-idempotency"
-              ? "another-idempotency-key"
-              : request.idempotencyKey).digest("hex")}`,
+          idempotencyKeyHash: request.idempotencyKeyHash === `sha256:${createHash("sha256")
+            .update("wrong-idempotency").digest("hex")}`
+            ? `sha256:${createHash("sha256").update("another-idempotency-key").digest("hex")}`
+            : request.idempotencyKeyHash,
           run: {
             harnessRunId: `harness-run-${"5".repeat(24)}`,
-            projectId: request.idempotencyKey === "wrong-project"
+            projectId: request.idempotencyKeyHash === `sha256:${createHash("sha256")
+              .update("wrong-project").digest("hex")}`
               ? `project-${"9".repeat(24)}`
               : request.projectId,
-            controllerSessionId: request.idempotencyKey === "wrong-session"
+            controllerSessionId: request.idempotencyKeyHash === `sha256:${createHash("sha256")
+              .update("wrong-session").digest("hex")}`
               ? `controller-session-${"9".repeat(24)}`
               : request.controllerSessionId,
             source: "controller-cli",
-            parameters: request.idempotencyKey === "wrong-parameters"
+            parameters: request.idempotencyKeyHash === `sha256:${createHash("sha256")
+              .update("wrong-parameters").digest("hex")}`
               ? mismatchedParameters
               : request.parameters,
           },

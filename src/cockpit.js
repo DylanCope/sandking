@@ -19,12 +19,12 @@ const browserProtocol = Object.freeze({
       "cockpit.controller-terminal.v1",
       "cockpit.controller-terminal-resize.v1",
       "cockpit.project-preparation.v1",
-      "cockpit.harness-run-launch.v1",
-      "cockpit.harness-run-observation.v1",
+      "cockpit.harness-run-launch.v2",
+      "cockpit.harness-run-observation.v2",
     ],
     optional: [],
   },
-  schemaDigest: "sha256:cd065e4cb5bcdee1d6f413a1e6f49549addbe4df75816e42685d15ff3cea66b2",
+  schemaDigest: "sha256:d6f061032fc05d0d8ea720de9ad2372314962c13ed30c353fd343c8b81e9e438",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -49,6 +49,7 @@ let hostConnectionStatus = "connecting";
 let hostFreshness = "stale";
 const harnessRunCursorStorageKey = "sandking.harnessRunCursor";
 const launchConfirmationStorageKey = "sandking.skipLaunchConfirmation";
+const pendingHarnessLaunchStorageKey = "sandking.pendingHarnessLaunch";
 
 const launchConfirmationSuppressed = () => {
   try {
@@ -502,6 +503,36 @@ const attachTerminalSurface = ({
 const mutationKey = () => globalThis.crypto?.randomUUID?.()
   ?? `planning-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
+const harnessLaunchRetryHash = () => {
+  const bytes = new Uint8Array(32);
+  globalThis.crypto.getRandomValues(bytes);
+  return `sha256:${Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")}`;
+};
+
+const retainPendingHarnessLaunch = (launch) => {
+  sessionStorage.setItem(pendingHarnessLaunchStorageKey, JSON.stringify(launch));
+};
+
+const readPendingHarnessLaunch = () => {
+  try {
+    const launch = JSON.parse(sessionStorage.getItem(pendingHarnessLaunchStorageKey) ?? "null");
+    if (
+      !/^project-[a-f0-9]{24}$/.test(launch?.projectId ?? "")
+      || !/^sha256:[a-f0-9]{64}$/.test(launch?.idempotencyKeyHash ?? "")
+      || !launch.parameters
+      || typeof launch.parameters !== "object"
+      || Array.isArray(launch.parameters)
+    ) {
+      sessionStorage.removeItem(pendingHarnessLaunchStorageKey);
+      return null;
+    }
+    return launch;
+  } catch {
+    sessionStorage.removeItem(pendingHarnessLaunchStorageKey);
+    return null;
+  }
+};
+
 const submitPlanningMutation = async (path, body, expectedRevision, csrfToken) => {
   const response = await fetch(path, {
     method: "POST",
@@ -708,16 +739,22 @@ const renderProjectPreparation = (
     harnessRequestSequence += 1;
     launchButton.disabled = true;
     harnessLaunchFeedback.textContent = "Launching the Harness run…";
+    const pendingLaunch = {
+      projectId: currentProject.projectId,
+      parameters: parsedParameters.parameters,
+      idempotencyKeyHash: harnessLaunchRetryHash(),
+    };
+    retainPendingHarnessLaunch(pendingLaunch);
     socket.send(JSON.stringify({
       channel: "control",
       message: {
         type: "browser.harness-run.launch",
         requestId: pendingHarnessLaunchRequestId,
-        projectId: currentProject.projectId,
-        ...(Object.keys(parsedParameters.parameters).length === 0
+        projectId: pendingLaunch.projectId,
+        ...(Object.keys(pendingLaunch.parameters).length === 0
           ? {}
-          : { parameters: parsedParameters.parameters }),
-        idempotencyKey: mutationKey(),
+          : { parameters: pendingLaunch.parameters }),
+        idempotencyKeyHash: pendingLaunch.idempotencyKeyHash,
       },
     }));
     return true;
@@ -983,6 +1020,7 @@ const renderHarnessRun = (observation) => {
   section.dataset.controllerSessionId = run.controllerSessionId ?? "";
   const launchAuditId = run.launchAuditId ?? run.startAuditId;
   const launchSource = run.source ?? "legacy-approved-launch";
+  const snapshot = run.executionSnapshot;
   section.dataset.launchAuditId = launchAuditId;
   section.dataset.launchSource = launchSource;
   section.append(
@@ -992,6 +1030,41 @@ const renderHarnessRun = (observation) => {
     element("p", {}, `Project: ${run.projectId}`),
     element("p", {}, `Harness: ${run.harnessId} @ ${run.harnessPinnedRevision}`),
   );
+  const executionFacts = element("section", {
+    id: "harness-run-execution-snapshot",
+    "data-snapshot-version": snapshot.schemaVersion,
+    "data-snapshot-capture": snapshot.capture,
+    "data-launch-time": snapshot.createdAt,
+    "data-project-registration-revision": snapshot.projectRegistration.revision ?? "",
+    "data-harness-registration-revision": snapshot.harness.revision ?? "",
+    "data-adapter-id": snapshot.adapter.adapterId,
+    "data-adapter-protocol": snapshot.adapter.protocol,
+    "data-adapter-entry-point": snapshot.adapter.entryPoint,
+  });
+  executionFacts.append(
+    element("h3", {}, "Immutable execution facts"),
+    element("p", { "data-execution-launch-time": snapshot.createdAt },
+      `Launched at: ${snapshot.createdAt}`),
+    element("p", { "data-execution-host-id": snapshot.hostId },
+      `Host: ${snapshot.hostId}`),
+    element("p", { "data-execution-project-id": snapshot.projectRegistration.projectId },
+      `Project registration: ${snapshot.projectRegistration.displayName ?? "name not retained"} `
+      + `(${snapshot.projectRegistration.projectId}), revision `
+      + `${snapshot.projectRegistration.revision ?? "not retained"}`),
+    element("p", { "data-execution-harness-id": snapshot.harness.harnessId },
+      `Harness: ${snapshot.harness.name ?? "name not retained"} `
+      + `(${snapshot.harness.harnessId}) @ ${snapshot.harness.pinnedRevision}, revision `
+      + `${snapshot.harness.revision ?? "not retained"}`),
+    element("p", { "data-execution-adapter-id": snapshot.adapter.adapterId },
+      `Adapter: ${snapshot.adapter.adapterId} · protocol ${snapshot.adapter.protocol} · `
+      + `${snapshot.adapter.entryPoint}`),
+    element("pre", { id: "harness-run-launch-parameters" }, snapshot.parameters === null
+      ? "Launch parameters were not retained by this historical schema."
+      : JSON.stringify(snapshot.parameters, null, 2)),
+    element("p", { "data-execution-launch-audit-id": snapshot.launchAuditId },
+      `Launch audit: ${snapshot.launchAuditId}`),
+  );
+  section.append(executionFacts);
   const events = element("ol", {
     id: "harness-run-events",
     "data-event-count": observation.events.length,
@@ -1822,6 +1895,7 @@ socket.addEventListener("message", (event) => {
       return;
     }
     pendingHarnessLaunchRequestId = null;
+    sessionStorage.removeItem(pendingHarnessLaunchStorageKey);
     const launchButton = document.getElementById("launch-harness");
     if (launchButton) {
       launchButton.disabled = hostConnectionStatus !== "connected"
@@ -1980,6 +2054,30 @@ socket.addEventListener("message", (event) => {
   app.append(renderWorkbench(message));
   currentHarnessRunObservation = message.viewModel.harnessRunObservation;
   harnessRunSection = document.getElementById("harness-run-observation");
+  const pendingLaunch = readPendingHarnessLaunch();
+  if (
+    pendingLaunch
+    && hostConnectionStatus === "connected"
+    && pendingLaunch.projectId === message.viewModel.projectPreparation.current?.projectId
+  ) {
+    pendingHarnessLaunchRequestId = `harness-launch-retry-${harnessRequestSequence}`;
+    harnessRequestSequence += 1;
+    if (harnessLaunchFeedback) {
+      harnessLaunchFeedback.textContent = "Reconnecting to the retained Harness launch outcome…";
+    }
+    socket.send(JSON.stringify({
+      channel: "control",
+      message: {
+        type: "browser.harness-run.launch",
+        requestId: pendingHarnessLaunchRequestId,
+        projectId: pendingLaunch.projectId,
+        ...(Object.keys(pendingLaunch.parameters).length === 0
+          ? {}
+          : { parameters: pendingLaunch.parameters }),
+        idempotencyKeyHash: pendingLaunch.idempotencyKeyHash,
+      },
+    }));
+  }
   requestHarnessRunObservation();
 });
 

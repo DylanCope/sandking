@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -259,8 +258,7 @@ if (args.length === 1 && args[0] === "--version") {
                 type: "harness.run.launch.result",
                 code: "harness_run_created",
                 authorizationClass: "harness_run_launch",
-                idempotencyKeyHash: `sha256:${createHash("sha256")
-                  .update(request.input.idempotencyKey).digest("hex")}`,
+                idempotencyKeyHash: request.input.idempotencyKeyHash,
                 run: {
                   harnessRunId: `harness-run-${"5".repeat(24)}`,
                   projectId,
@@ -276,8 +274,7 @@ if (args.length === 1 && args[0] === "--version") {
                 type: "harness.run.launch.result",
                 code: "harness_run_created",
                 authorizationClass: "harness_run_launch",
-                idempotencyKeyHash: `sha256:${createHash("sha256")
-                  .update(request.input.idempotencyKey).digest("hex")}`,
+                idempotencyKeyHash: request.input.idempotencyKeyHash,
                 run: {
                   harnessRunId: `harness-run-${"6".repeat(24)}`,
                   projectId: `project-${"9".repeat(24)}`,
@@ -392,11 +389,28 @@ if (args.length === 1 && args[0] === "--version") {
     assert.equal(operations[8].operation, "harness-run.launch");
     assert.equal("parameters" in operations[1].input, false);
     assert.equal("expectedRevision" in operations[1].input, false);
-    assert.equal(operations[2].input.idempotencyKey, operations[1].input.idempotencyKey);
-    assert.equal(operations[5].input.idempotencyKey, operations[4].input.idempotencyKey);
-    assert.equal(operations[6].input.idempotencyKey, operations[4].input.idempotencyKey);
-    assert.notEqual(operations[4].input.idempotencyKey, operations[1].input.idempotencyKey);
-    assert.notEqual(operations[8].input.idempotencyKey, operations[4].input.idempotencyKey);
+    assert.equal(
+      operations[2].input.idempotencyKeyHash,
+      operations[1].input.idempotencyKeyHash,
+    );
+    assert.equal(
+      operations[5].input.idempotencyKeyHash,
+      operations[4].input.idempotencyKeyHash,
+    );
+    assert.equal(
+      operations[6].input.idempotencyKeyHash,
+      operations[4].input.idempotencyKeyHash,
+    );
+    assert.notEqual(
+      operations[4].input.idempotencyKeyHash,
+      operations[1].input.idempotencyKeyHash,
+    );
+    assert.notEqual(
+      operations[8].input.idempotencyKeyHash,
+      operations[4].input.idempotencyKeyHash,
+    );
+    assert.ok(operations.slice(1).every((operation) =>
+      !("idempotencyKey" in operation.input)));
     assert.doesNotMatch(output.join(""), /--plugin-dir|sandking-controller|approve|prepare/i);
     await enter("exit");
     await waitFor(() => manager.inspect(session.sessionId).terminal.status === "exited");

@@ -35,6 +35,10 @@ const controllerIdSchema = z.string().regex(/^runtime-[a-f0-9]{24}$/);
 const controllerSessionIdSchema = z.string().regex(/^controller-session-[a-f0-9]{24}$/);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const runStatusSchema = z.enum(["starting", "running", "succeeded", "failed", "cancelled"]);
+const credentialCapabilityReferenceSchema = z.enum([
+  "github.issues.read",
+  "project.git.read",
+]);
 const MAX_RETAINED_RUN_EVENTS = 1_024;
 // Creation and readiness consume two lifecycle slots. Always reserve the final
 // slot for the truthful terminal event, including protocol-invalid outcomes.
@@ -119,7 +123,7 @@ const logStreamSchema = z.object({
   insertedIntoControllerConversation: z.literal(false),
 }).strict();
 
-const currentHarnessRunSchema = z.object({
+const previousHarnessRunSchema = z.object({
   harnessRunId: harnessRunIdSchema,
   revision: z.number().int().positive(),
   status: runStatusSchema,
@@ -143,7 +147,7 @@ const currentHarnessRunSchema = z.object({
 // Schema v1 runs are durable execution history. Keep their exact public shape
 // readable after the launch-request command path is retired instead of
 // inventing parameters or an invocation source that v1 did not retain.
-const legacyHarnessRunSchema = z.object({
+const previousLegacyHarnessRunSchema = z.object({
   harnessRunId: harnessRunIdSchema,
   revision: z.number().int().positive(),
   status: runStatusSchema,
@@ -164,9 +168,52 @@ const legacyHarnessRunSchema = z.object({
   startAuditId: auditIdSchema,
 }).strict();
 
+export const harnessRunExecutionSnapshotSchema = z.object({
+  schemaVersion: z.literal(1),
+  capture: z.enum(["launch", "migration"]),
+  hostId: hostIdSchema,
+  projectRegistration: z.object({
+    projectId: projectIdSchema,
+    revision: z.number().int().positive().nullable(),
+    displayName: z.string().min(1).max(255).nullable(),
+  }).strict(),
+  harness: z.object({
+    harnessId: harnessIdSchema,
+    revision: z.number().int().positive().nullable(),
+    name: z.string().min(1).max(120).nullable(),
+    pinnedRevision: commitSchema,
+  }).strict(),
+  adapter: z.object({
+    adapterId: z.literal("conformance-harness-adapter-v1"),
+    protocol: z.literal("1.0.0"),
+    entryPoint: harnessAdapterEntryPointSchema,
+  }).strict(),
+  parameters: launchParametersSchema.nullable(),
+  source: z.enum(["controller-cli", "cockpit"]).nullable(),
+  attribution: z.object({
+    controllerId: controllerIdSchema,
+    controllerSessionId: controllerSessionIdSchema.nullable(),
+  }).strict(),
+  createdAt: z.string().datetime(),
+  credentialCapabilityReferences: z.array(credentialCapabilityReferenceSchema)
+    .max(8).nullable(),
+  launchAuditId: auditIdSchema,
+}).strict();
+
+const currentHarnessRunSchema = previousHarnessRunSchema.extend({
+  executionSnapshot: harnessRunExecutionSnapshotSchema,
+}).strict();
+const legacyHarnessRunSchema = previousLegacyHarnessRunSchema.extend({
+  executionSnapshot: harnessRunExecutionSnapshotSchema,
+}).strict();
+
 export const harnessRunSchema = z.union([
   currentHarnessRunSchema,
   legacyHarnessRunSchema,
+]);
+export const retainedLegacyHarnessRunSchema = z.union([
+  legacyHarnessRunSchema,
+  previousLegacyHarnessRunSchema,
 ]);
 
 const storedRunFields = {
@@ -175,6 +222,13 @@ const storedRunFields = {
   terminalEnvelopeValidation: terminalEnvelopeValidationSchema,
   logStreams: z.tuple([logStreamSchema, logStreamSchema]),
 };
+const previousCurrentStoredRunSchema = previousHarnessRunSchema.extend(storedRunFields).strict();
+const previousLegacyStoredRunSchema = previousLegacyHarnessRunSchema
+  .extend(storedRunFields).strict();
+const previousStoredRunSchema = z.union([
+  previousCurrentStoredRunSchema,
+  previousLegacyStoredRunSchema,
+]);
 const currentStoredRunSchema = currentHarnessRunSchema.extend(storedRunFields).strict();
 const legacyStoredRunSchema = legacyHarnessRunSchema.extend(storedRunFields).strict();
 const storedRunSchema = z.union([currentStoredRunSchema, legacyStoredRunSchema]);
@@ -184,7 +238,7 @@ const retainedOutcomeSchema = z.object({
   response: z.object({}).passthrough(),
 }).strict();
 const stateSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
   // Canonical runs and keyed mutation outcomes cannot be evicted without
   // breaking reconnect and ambiguous-outcome lookup. Retention/cleanup is a
   // later explicit workflow; the records themselves remain schema-bounded.
@@ -192,14 +246,20 @@ const stateSchema = z.object({
   launchOutcomes: z.array(retainedOutcomeSchema),
   legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
 }).strict();
+const previousStateSchema = z.object({
+  schemaVersion: z.literal(2),
+  runs: z.array(previousStoredRunSchema),
+  launchOutcomes: z.array(retainedOutcomeSchema),
+  legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
+}).strict();
 const legacyStateSchema = z.object({
   schemaVersion: z.literal(1),
-  runs: z.array(legacyStoredRunSchema),
+  runs: z.array(previousLegacyStoredRunSchema),
   startOutcomes: z.array(retainedOutcomeSchema),
 }).strict();
 
 const initialState = () => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   runs: [],
   launchOutcomes: [],
   legacyStartOutcomes: [],
@@ -211,8 +271,27 @@ const logPath = (dataDir, harnessRunId, producer) =>
   join(dataDir, "harness-runs", harnessRunId, `${producer}.log`);
 /** @param {string | Buffer} value */
 const digest = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
+/** @param {unknown} value @returns {string} */
+const canonicalJson = (value) => {
+  if (value === undefined) return '"<undefined>"';
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = /** @type {Record<string, unknown>} */ (value);
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+};
 /** @param {unknown} value */
-const fingerprint = (value) => digest(JSON.stringify(value));
+const fingerprint = (value) => digest(canonicalJson(value));
+/** @param {any} request */
+const requestIdempotencyKeyHash = (request) => {
+  const suppliedHash = digestSchema.safeParse(request.idempotencyKeyHash);
+  if (suppliedHash.success) return suppliedHash.data;
+  return typeof request.idempotencyKey === "string"
+    && request.idempotencyKey.length > 0
+    && request.idempotencyKey.length <= 256
+    ? digest(request.idempotencyKey)
+    : null;
+};
 
 /** @param {z.infer<typeof storedRunSchema>} run */
 const publicRun = (run) => {
@@ -232,6 +311,7 @@ const publicRun = (run) => {
     createdAt: run.createdAt,
     adapterReadyAt: run.adapterReadyAt,
     completedAt: run.completedAt,
+    executionSnapshot: structuredClone(run.executionSnapshot),
   };
   return harnessRunSchema.parse("launchRequestId" in run ? {
     ...common,
@@ -243,6 +323,81 @@ const publicRun = (run) => {
     parameters: structuredClone(run.parameters),
     source: run.source,
     launchAuditId: run.launchAuditId,
+  });
+};
+
+/** @param {z.infer<typeof previousStoredRunSchema>} run */
+const migrateExecutionSnapshot = (run) => harnessRunExecutionSnapshotSchema.parse({
+  schemaVersion: 1,
+  capture: "migration",
+  hostId: run.hostId,
+  projectRegistration: {
+    projectId: run.projectId,
+    revision: null,
+    displayName: null,
+  },
+  harness: {
+    harnessId: run.harnessId,
+    revision: null,
+    name: null,
+    pinnedRevision: run.harnessPinnedRevision,
+  },
+  adapter: {
+    adapterId: run.adapterId,
+    protocol: run.adapterProtocol,
+    entryPoint: run.adapterEntryPoint,
+  },
+  parameters: "parameters" in run ? structuredClone(run.parameters) : null,
+  source: "source" in run ? run.source : null,
+  attribution: {
+    controllerId: run.controllerId,
+    controllerSessionId: run.controllerSessionId,
+  },
+  createdAt: run.createdAt,
+  credentialCapabilityReferences: null,
+  launchAuditId: "launchAuditId" in run ? run.launchAuditId : run.startAuditId,
+});
+
+/** @param {z.infer<typeof previousStoredRunSchema>} run */
+const migrateStoredRun = (run) => storedRunSchema.parse({
+  ...structuredClone(run),
+  executionSnapshot: migrateExecutionSnapshot(run),
+});
+
+/**
+ * Retained mutation outcomes are replayed through today's public protocol.
+ * Enrich their copied run projection from the same migrated canonical run
+ * without changing the accepted code, identity, audit, or request fingerprint.
+ * @param {z.infer<typeof retainedOutcomeSchema>} outcome
+ * @param {Array<z.infer<typeof storedRunSchema>>} runs
+ */
+const migrateRetainedOutcome = (outcome, runs) => {
+  const migrated = structuredClone(outcome);
+  const harnessRunId = /** @type {any} */ (migrated.response)?.run?.harnessRunId;
+  const run = typeof harnessRunId === "string"
+    ? runs.find((candidate) => candidate.harnessRunId === harnessRunId)
+    : null;
+  if (run) {
+    migrated.response.run = publicRun(run);
+  }
+  return retainedOutcomeSchema.parse(migrated);
+};
+
+/**
+ * @param {z.infer<typeof previousStateSchema> | z.infer<typeof legacyStateSchema>} previous
+ */
+const migrateState = (previous) => {
+  const runs = previous.runs.map(migrateStoredRun);
+  const launchOutcomes = previous.schemaVersion === 2 ? previous.launchOutcomes : [];
+  const legacyStartOutcomes = previous.schemaVersion === 2
+    ? previous.legacyStartOutcomes
+    : previous.startOutcomes;
+  return stateSchema.parse({
+    schemaVersion: 3,
+    runs,
+    launchOutcomes: launchOutcomes.map((outcome) => migrateRetainedOutcome(outcome, runs)),
+    legacyStartOutcomes: legacyStartOutcomes
+      .map((outcome) => migrateRetainedOutcome(outcome, runs)),
   });
 };
 
@@ -418,6 +573,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
  *   recordAudit: (action: string, outcome: "accepted" | "rejected" | "observed", details?: Record<string, unknown>) => Promise<string>,
  *   loadLaunchContext: (projectId: string) => Promise<any>,
  *   now?: () => Date,
+ *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_commit") => Promise<void> | void,
  * }} options
  */
 export const createHarnessRunManager = async (options) => {
@@ -439,12 +595,18 @@ export const createHarnessRunManager = async (options) => {
       && raw.schemaVersion === 1
     ) {
       const legacy = legacyStateSchema.parse(raw);
-      const migrated = stateSchema.parse({
-        schemaVersion: 2,
-        runs: legacy.runs,
-        launchOutcomes: [],
-        legacyStartOutcomes: legacy.startOutcomes,
-      });
+      const migrated = migrateState(legacy);
+      await writePrivateJson(statePath(options.dataDir), migrated);
+      return migrated;
+    }
+    if (
+      raw
+      && typeof raw === "object"
+      && "schemaVersion" in raw
+      && raw.schemaVersion === 2
+    ) {
+      const previous = previousStateSchema.parse(raw);
+      const migrated = migrateState(previous);
       await writePrivateJson(statePath(options.dataDir), migrated);
       return migrated;
     }
@@ -637,10 +799,7 @@ export const createHarnessRunManager = async (options) => {
   /** @param {any} request */
   const launch = (request) => withMutationLock(async () => {
     const authorizationClass = "harness_run_launch";
-    const keyValid = typeof request.idempotencyKey === "string"
-      && request.idempotencyKey.length > 0
-      && request.idempotencyKey.length <= 256;
-    const idempotencyKeyHash = keyValid ? digest(request.idempotencyKey) : null;
+    const idempotencyKeyHash = requestIdempotencyKeyHash(request);
     const requestFingerprint = fingerprint({
       projectId: request.projectId,
       parameters: request.parameters === undefined ? {} : request.parameters,
@@ -765,6 +924,7 @@ export const createHarnessRunManager = async (options) => {
       return response;
     }
 
+    await options.faultInjector?.("harness_run_launch.before_commit");
     const harnessRunId = `harness-run-${randomBytes(12).toString("hex")}`;
     const createdAt = now().toISOString();
     const auditId = await options.recordAudit("harness.run.launch", "accepted", {
@@ -804,6 +964,36 @@ export const createHarnessRunManager = async (options) => {
       adapterReadyAt: null,
       completedAt: null,
       launchAuditId: auditId,
+      executionSnapshot: {
+        schemaVersion: 1,
+        capture: "launch",
+        hostId: parsedHostId,
+        projectRegistration: {
+          projectId: context.project.projectId,
+          revision: context.project.revision,
+          displayName: context.project.displayName,
+        },
+        harness: {
+          harnessId: context.harness.harnessId,
+          revision: context.harness.revision,
+          name: context.harness.name,
+          pinnedRevision: context.harness.immutableRevision,
+        },
+        adapter: {
+          adapterId: prepared.adapterId,
+          protocol: prepared.adapterProtocol,
+          entryPoint: prepared.adapterEntryPoint,
+        },
+        parameters: parameters.data,
+        source: request.source,
+        attribution: {
+          controllerId: request.controllerId,
+          controllerSessionId: request.controllerSessionId,
+        },
+        createdAt,
+        credentialCapabilityReferences: prepared.suppliedCapabilities,
+        launchAuditId: auditId,
+      },
       events: [],
       outcome: null,
       terminalEnvelopeValidation: {
@@ -857,6 +1047,7 @@ export const createHarnessRunManager = async (options) => {
     };
     retained.launchOutcomes.push({ idempotencyKeyHash, requestFingerprint, response });
     await persist(retained);
+    await options.faultInjector?.("harness_run_launch.after_commit");
     setImmediate(() => {
       supervise(structuredClone(run), {
         ...context,
@@ -975,14 +1166,10 @@ export const createHarnessRunManager = async (options) => {
     };
   };
 
-  /** @param {{requestId: string, idempotencyKey: string}} request */
+  /** @param {{requestId: string, idempotencyKeyHash?: string, idempotencyKey?: string}} request */
   const lookup = async (request) => {
     const retained = await readState();
-    const idempotencyKeyHash = typeof request.idempotencyKey === "string"
-      && request.idempotencyKey.length > 0
-      && request.idempotencyKey.length <= 256
-      ? digest(request.idempotencyKey)
-      : null;
+    const idempotencyKeyHash = requestIdempotencyKeyHash(request);
     const existing = retainedMutationOutcome(retained, idempotencyKeyHash);
     return {
       type: "harness.run.lookup.result",

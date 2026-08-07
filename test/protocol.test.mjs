@@ -73,7 +73,7 @@ test("Host identity acceptance is an explicit revisioned and idempotent mutation
 });
 
 test("Harness launch is one capability-negotiated revision-free Host operation", async () => {
-  assert.ok(hostCapabilities.includes("sandking.harness-run.launch.v1"));
+  assert.ok(hostCapabilities.includes("sandking.harness-run.launch.v2"));
   assert.ok(!hostCapabilities.includes("sandking.launch-request.v1"));
   const stream = new PassThrough();
   const launch = {
@@ -88,7 +88,7 @@ test("Harness launch is one capability-negotiated revision-free Host operation",
     controllerSessionId: `controller-session-${"4".repeat(24)}`,
     source: "controller-cli",
     authorizationClass: "harness_run_launch",
-    idempotencyKey: "launch-harness-run-protocol-request",
+    idempotencyKeyHash: `sha256:${"5".repeat(64)}`,
   };
 
   writeFrame(stream, launch);
@@ -98,6 +98,14 @@ test("Harness launch is one capability-negotiated revision-free Host operation",
   writeFrame(stream, parameterlessLaunch);
   assert.deepEqual(await readFrame(stream), parameterlessLaunch);
   assert.equal("expectedRevision" in launch, false);
+  assert.throws(
+    () => writeFrame(stream, {
+      ...launch,
+      idempotencyKeyHash: undefined,
+      idempotencyKey: "recognizable-raw-launch-retry-key",
+    }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
   assert.throws(
     () => writeFrame(stream, {
       ...launch,
@@ -116,13 +124,13 @@ test("Harness launch is one capability-negotiated revision-free Host operation",
 });
 
 test("Harness-run lookup, cursor observation, and ranged logs are typed Host operations", async () => {
-  assert.ok(hostCapabilities.includes("sandking.harness-run.v1"));
+  assert.ok(hostCapabilities.includes("sandking.harness-run.v2"));
   const stream = new PassThrough();
   const harnessRunId = `harness-run-${"1".repeat(24)}`;
   const lookup = {
     type: "harness.run.lookup",
     requestId: "lookup-harness-run-protocol",
-    idempotencyKey: "launch-harness-run-protocol-key",
+    idempotencyKeyHash: `sha256:${"2".repeat(64)}`,
   };
   const observe = {
     type: "harness.run.observe",

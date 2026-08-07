@@ -316,13 +316,14 @@ const run = async (argv) => {
       const inputDigest = createHash("sha256")
         .update(JSON.stringify(parameters))
         .digest("hex");
-      const idempotencyKey = `provider:${sessionId}:launch:${inputDigest}`;
+      const idempotencyKeyHash = `sha256:${createHash("sha256")
+        .update(`provider:${sessionId}:launch:${inputDigest}`).digest("hex")}`;
       let outcome;
       let recoveredFromAmbiguousResponse = false;
       try {
         outcome = await control.request("harness-run.launch", {
           ...(Object.keys(parameters).length === 0 ? {} : { parameters }),
-          idempotencyKey,
+          idempotencyKeyHash,
         });
       } catch (error) {
         if (!(error instanceof Error) || error.message !== "provider_operation_timeout") {
@@ -331,7 +332,7 @@ const run = async (argv) => {
           );
           return;
         }
-        const lookup = await control.request("harness-run.lookup", { idempotencyKey });
+        const lookup = await control.request("harness-run.lookup", { idempotencyKeyHash });
         outcome = lookup?.found ? lookup.launchOutcome : null;
         recoveredFromAmbiguousResponse = Boolean(lookup?.found);
       }
@@ -344,7 +345,7 @@ const run = async (argv) => {
       process.stdout.write(
         `Harness run ${outcome.run.harnessRunId} ${outcome.code === "harness_run_created" ? "created" : "found"}. `
           + (recoveredFromAmbiguousResponse
-            ? "Recovered the accepted outcome by exact idempotency-key lookup after the launch response timed out. "
+            ? "Recovered the original launch outcome after the launch response timed out. "
             : "")
           + "Terminal observation continues asynchronously in the Cockpit.\r\ncontroller> ",
       );

@@ -10,7 +10,7 @@ import { validateDeclaredLaunchParameters } from "./harness-launch.mjs";
 import { RuntimeStartupError, launchRuntime, stopRuntime } from "./runtime.mjs";
 
 const harnessLaunchHelp = `Usage:
-  sandking launch [<project-id>] [--parameters <json-object>] [<harness-declared-flags>] [--idempotency-key <key>] [--json]
+  sandking launch [<project-id>] [--parameters <json-object>] [<harness-declared-flags>] [--json]
 
 Launches one Harness run immediately. Inside a Controller session, <project-id>
 defaults to the focused Controller Project.

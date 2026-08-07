@@ -35,7 +35,7 @@ const controllerLaunchResultSchema = z.object({
 const CONTROLLER_CLI_TIMEOUT_MS = 17_000;
 
 /**
- * @param {{operation: "describe" | "harness-run.launch", projectId: string, parameters?: unknown, idempotencyKey?: string}} request
+ * @param {{operation: "describe" | "harness-run.launch", projectId: string, parameters?: unknown, idempotencyKeyHash?: string}} request
  * @param {NodeJS.ProcessEnv} environment
  */
 const requestControllerOperation = async (request, environment) => {
@@ -80,7 +80,7 @@ const requestControllerOperation = async (request, environment) => {
         projectId: request.projectId,
         ...(request.operation === "harness-run.launch" ? {
           parameters: request.parameters,
-          idempotencyKey: request.idempotencyKey,
+          idempotencyKeyHash: request.idempotencyKeyHash,
         } : {}),
       })}\n`);
     });
@@ -138,15 +138,13 @@ export const requestControllerDescription = async (environment = process.env) =>
  * A success-shaped response for another Project or Controller session must
  * never be reported to the provider as a successful launch.
  * @param {unknown} outcome
- * @param {{projectId: string, controllerSessionId: string, parameters: import("zod").infer<typeof launchParametersSchema>, idempotencyKey: string}} request
+ * @param {{projectId: string, controllerSessionId: string, parameters: import("zod").infer<typeof launchParametersSchema>, idempotencyKeyHash: string}} request
  */
 export const requireCorrelatedControllerLaunchResult = (outcome, request) => {
   const parsed = controllerLaunchResultSchema.safeParse(outcome);
-  const expectedIdempotencyKeyHash = `sha256:${createHash("sha256")
-    .update(request.idempotencyKey).digest("hex")}`;
   if (
     !parsed.success
-    || parsed.data.idempotencyKeyHash !== expectedIdempotencyKeyHash
+    || parsed.data.idempotencyKeyHash !== request.idempotencyKeyHash
     || parsed.data.run.projectId !== request.projectId
     || parsed.data.run.controllerSessionId !== request.controllerSessionId
     || !isDeepStrictEqual(parsed.data.run.parameters, request.parameters)
@@ -172,16 +170,18 @@ export const requestControllerLaunch = async (request, environment = process.env
   ) {
     throw new Error("controller_cli_contract_invalid");
   }
+  const idempotencyKeyHash = `sha256:${createHash("sha256")
+    .update(request.idempotencyKey).digest("hex")}`;
   const outcome = await requestControllerOperation({
     operation: "harness-run.launch",
     projectId: request.projectId,
     ...(Object.keys(parameters.data).length === 0 ? {} : { parameters: parameters.data }),
-    idempotencyKey: request.idempotencyKey,
+    idempotencyKeyHash,
   }, environment);
   return requireCorrelatedControllerLaunchResult(outcome, {
     projectId: request.projectId,
     controllerSessionId: environment.SANDKING_CONTROLLER_SESSION_ID ?? "",
     parameters: parameters.data,
-    idempotencyKey: request.idempotencyKey,
+    idempotencyKeyHash,
   });
 };
