@@ -21,10 +21,11 @@ const browserProtocol = Object.freeze({
       "cockpit.project-preparation.v1",
       "cockpit.harness-run-launch.v2",
       "cockpit.harness-run-observation.v2",
+      "cockpit.harness-run-cancellation.v1",
     ],
     optional: [],
   },
-  schemaDigest: "sha256:d6f061032fc05d0d8ea720de9ad2372314962c13ed30c353fd343c8b81e9e438",
+  schemaDigest: "sha256:89aa7432ed69f745beb6912c8881b05ae7ddc86a60f6ee5960f2f5c995c86be8",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -45,11 +46,13 @@ let harnessRequestSequence = 0;
 let currentHarnessRunObservation = null;
 let harnessLaunchFeedback;
 let pendingHarnessLaunchRequestId = null;
+let pendingHarnessCancellationRequestId = null;
 let hostConnectionStatus = "connecting";
 let hostFreshness = "stale";
 const harnessRunCursorStorageKey = "sandking.harnessRunCursor";
 const launchConfirmationStorageKey = "sandking.skipLaunchConfirmation";
 const pendingHarnessLaunchStorageKey = "sandking.pendingHarnessLaunch";
+const pendingHarnessCancellationStorageKey = "sandking.pendingHarnessCancellation";
 
 const launchConfirmationSuppressed = () => {
   try {
@@ -533,6 +536,25 @@ const readPendingHarnessLaunch = () => {
   }
 };
 
+const readPendingHarnessCancellation = () => {
+  try {
+    const cancellation = JSON.parse(
+      sessionStorage.getItem(pendingHarnessCancellationStorageKey) ?? "null",
+    );
+    if (
+      !/^harness-run-[a-f0-9]{24}$/.test(cancellation?.harnessRunId ?? "")
+      || !/^sha256:[a-f0-9]{64}$/.test(cancellation?.idempotencyKeyHash ?? "")
+    ) {
+      sessionStorage.removeItem(pendingHarnessCancellationStorageKey);
+      return null;
+    }
+    return cancellation;
+  } catch {
+    sessionStorage.removeItem(pendingHarnessCancellationStorageKey);
+    return null;
+  }
+};
+
 const submitPlanningMutation = async (path, body, expectedRevision, csrfToken) => {
   const response = await fetch(path, {
     method: "POST",
@@ -972,7 +994,7 @@ const renderProjectPreparation = (
   return section;
 };
 
-const requestHarnessRunObservation = () => {
+const requestHarnessRunObservation = (selectedHarnessRunId = null) => {
   if (
     !runtimeNegotiated
     || hostConnectionStatus !== "connected"
@@ -986,11 +1008,47 @@ const requestHarnessRunObservation = () => {
     message: {
       type: "browser.harness-run.observe",
       requestId: `harness-observe-${harnessRequestSequence}`,
-      harnessRunId: cursor?.harnessRunId ?? currentHarnessRunObservation?.run?.harnessRunId ?? null,
-      afterSequence: cursor?.sequence ?? 0,
+      harnessRunId: selectedHarnessRunId
+        ?? cursor?.harnessRunId
+        ?? currentHarnessRunObservation?.run?.harnessRunId
+        ?? null,
+      afterSequence: selectedHarnessRunId === null ? cursor?.sequence ?? 0 : 0,
     },
   }));
   harnessRequestSequence += 1;
+};
+
+const requestHarnessRunCancellation = (run, button, feedback) => {
+  if (
+    !runtimeNegotiated
+    || hostConnectionStatus !== "connected"
+    || socket.readyState !== WebSocket.OPEN
+    || pendingHarnessCancellationRequestId !== null
+    || !["starting", "running"].includes(run.status)
+  ) {
+    feedback.textContent = "Cancellation was not requested: the selected run is not live.";
+    return;
+  }
+  const pendingCancellation = {
+    harnessRunId: run.harnessRunId,
+    idempotencyKeyHash: harnessLaunchRetryHash(),
+  };
+  sessionStorage.setItem(
+    pendingHarnessCancellationStorageKey,
+    JSON.stringify(pendingCancellation),
+  );
+  pendingHarnessCancellationRequestId = `harness-cancel-${harnessRequestSequence}`;
+  harnessRequestSequence += 1;
+  button.disabled = true;
+  feedback.textContent = "Requesting cancellation…";
+  socket.send(JSON.stringify({
+    channel: "control",
+    message: {
+      type: "browser.harness-run.cancel",
+      requestId: pendingHarnessCancellationRequestId,
+      ...pendingCancellation,
+    },
+  }));
 };
 
 const renderHarnessRun = (observation) => {
@@ -1030,6 +1088,30 @@ const renderHarnessRun = (observation) => {
     element("p", {}, `Project: ${run.projectId}`),
     element("p", {}, `Harness: ${run.harnessId} @ ${run.harnessPinnedRevision}`),
   );
+  const cancellationFeedback = element("p", {
+    id: "harness-run-cancellation-feedback",
+    role: "status",
+  }, run.status === "cancelling"
+    ? `Cancellation accepted. Waiting until ${run.cancellation?.cooperativeDeadlineAt} for termination.`
+    : "");
+  if (["starting", "running"].includes(run.status)) {
+    const cancelButton = element("button", {
+      id: "cancel-harness-run",
+      type: "button",
+      disabled: hostConnectionStatus !== "connected"
+        || pendingHarnessCancellationRequestId !== null,
+    }, "Cancel run");
+    cancelButton.addEventListener("click", () =>
+      requestHarnessRunCancellation(run, cancelButton, cancellationFeedback));
+    section.append(cancelButton, cancellationFeedback);
+  } else if (run.status === "cancelling") {
+    section.append(element("p", {
+      id: "harness-run-cancellation-progress",
+      "data-cancellation-accepted": "true",
+      "data-cooperative-deadline": run.cancellation?.cooperativeDeadlineAt ?? "",
+    }, "Cancellation accepted; termination remains asynchronously observable."),
+    cancellationFeedback);
+  }
   const executionFacts = element("section", {
     id: "harness-run-execution-snapshot",
     "data-snapshot-version": snapshot.schemaVersion,
@@ -1817,6 +1899,8 @@ socket.addEventListener("message", (event) => {
     }
     if (harnessRunSection) {
       harnessRunSection.dataset.hostFreshness = message.freshness;
+      const cancelButton = harnessRunSection.querySelector("#cancel-harness-run");
+      if (cancelButton) cancelButton.disabled = true;
     }
     const planning = document.getElementById("planning-spine");
     if (planning) {
@@ -1904,10 +1988,37 @@ socket.addEventListener("message", (event) => {
     if (message.outcome.type === "harness.run.launch.result") {
       harnessLaunchFeedback.textContent =
         `Harness run ${message.outcome.run.harnessRunId} launched.`;
-      requestHarnessRunObservation();
+      requestHarnessRunObservation(message.outcome.run.harnessRunId);
     } else {
       harnessLaunchFeedback.textContent =
         `Harness was not launched: ${message.outcome.code}.`;
+    }
+    return;
+  }
+
+  if (message?.type === "runtime.harness-run.cancel-result") {
+    const pendingCancellation = readPendingHarnessCancellation();
+    const feedback = document.getElementById("harness-run-cancellation-feedback");
+    if (
+      !runtimeNegotiated
+      || !pendingCancellation
+      || message.requestId !== pendingHarnessCancellationRequestId
+      || message.outcome.harnessRunId !== pendingCancellation.harnessRunId
+    ) {
+      requireReload("runtime_harness_cancellation_result_mismatch");
+      return;
+    }
+    pendingHarnessCancellationRequestId = null;
+    sessionStorage.removeItem(pendingHarnessCancellationStorageKey);
+    if (message.outcome.type === "harness.run.cancel.result") {
+      if (feedback) feedback.textContent =
+        "Cancellation accepted; termination remains asynchronously observable.";
+      requestHarnessRunObservation();
+    } else {
+      if (feedback) feedback.textContent =
+        `Cancellation was not accepted: ${message.outcome.code}.`;
+      const cancelButton = document.getElementById("cancel-harness-run");
+      if (cancelButton) cancelButton.disabled = hostConnectionStatus !== "connected";
     }
     return;
   }
@@ -2075,6 +2186,28 @@ socket.addEventListener("message", (event) => {
           ? {}
           : { parameters: pendingLaunch.parameters }),
         idempotencyKeyHash: pendingLaunch.idempotencyKeyHash,
+      },
+    }));
+  }
+  const pendingCancellation = readPendingHarnessCancellation();
+  if (
+    pendingCancellation
+    && hostConnectionStatus === "connected"
+    && pendingCancellation.harnessRunId
+      === message.viewModel.harnessRunObservation.run?.harnessRunId
+  ) {
+    pendingHarnessCancellationRequestId =
+      `harness-cancel-retry-${harnessRequestSequence}`;
+    harnessRequestSequence += 1;
+    const feedback = document.getElementById("harness-run-cancellation-feedback");
+    if (feedback) feedback.textContent =
+      "Reconnecting to the retained cancellation outcome…";
+    socket.send(JSON.stringify({
+      channel: "control",
+      message: {
+        type: "browser.harness-run.cancel",
+        requestId: pendingHarnessCancellationRequestId,
+        ...pendingCancellation,
       },
     }));
   }

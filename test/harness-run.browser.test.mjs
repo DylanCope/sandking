@@ -273,18 +273,78 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       observeFrames(page);
       await page.goto(new URL(runtime.bootstrapUrl).origin, { waitUntil: "domcontentloaded" });
       await page.waitForSelector("#launch-harness:not([disabled])", { timeout: 90_000 });
-      await page.locator("#harness-launch-parameter-issueNumber").fill("152");
+      await page.locator("#harness-launch-parameter-issueNumber").fill("999999993");
       await page.locator("#harness-launch-parameter-targetBranch")
-        .fill("sandcastle/issue-152");
+        .fill("sandcastle/issue-999999993");
       await page.locator("#launch-harness").click();
       assert.equal(await page.locator("#harness-launch-confirmation").isVisible(), false);
       await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} launched\./
         .test(document.querySelector("#harness-launch-feedback")?.textContent ?? ""));
+      const secondLaunchFeedback = await page.locator("#harness-launch-feedback").textContent();
+      const secondHarnessRunId = /Harness run (harness-run-[a-f0-9]{24}) launched\./
+        .exec(secondLaunchFeedback)?.[1];
+      assert.match(secondHarnessRunId, /^harness-run-[a-f0-9]{24}$/);
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForSelector(
+        `#harness-run-observation[data-run-id='${secondHarnessRunId}']`,
+        { timeout: 15_000 },
+      );
+      await page.waitForSelector("#cancel-harness-run:not([disabled])", { timeout: 15_000 });
+      assert.equal(sentFrames.filter((frame) =>
+        frame.includes('"type":"browser.harness-run.cancel"')).length, 0);
+      assert.equal(sentFrames.filter((frame) =>
+        frame.includes('"type":"browser.harness-run.launch"')).length, 3);
+      await page.locator("#cancel-harness-run").click();
+      await page.waitForFunction(() => /Cancellation accepted/
+        .test(document.querySelector("#harness-run-cancellation-feedback")?.textContent ?? ""));
+      const cancellationFrame = sentFrames.find((frame) =>
+        frame.includes('"type":"browser.harness-run.cancel"'));
+      const cancellationMessage = JSON.parse(cancellationFrame).message;
+      assert.equal("idempotencyKey" in cancellationMessage, false);
+      assert.match(cancellationMessage.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+
+      // Closing the tab after durable acceptance is observation-only. A fresh
+      // tab reconnects to the same run and its one truthful terminal outcome.
+      await page.close();
+      page = await context.newPage();
+      observeFrames(page);
+      await page.goto(new URL(runtime.bootstrapUrl).origin, { waitUntil: "domcontentloaded" });
+      await page.waitForSelector(
+        `#harness-run-observation[data-run-id='${cancellationMessage.harnessRunId}'][data-run-status='cancelled']`,
+        { timeout: 15_000 },
+      );
       const retainedRuns = await waitForRetainedRuns(dataDir, 2);
       assert.deepEqual(retainedRuns[1].parameters, {
-        issueNumber: 152,
-        targetBranch: "sandcastle/issue-152",
+        issueNumber: 999_999_993,
+        targetBranch: "sandcastle/issue-999999993",
       });
+      assert.equal(retainedRuns[1].status, "cancelled");
+      assert.equal(retainedRuns[1].events.filter((event) =>
+        event.type === "harness_run_cancellation_accepted").length, 1);
+      assert.equal(retainedRuns[1].events.filter((event) =>
+        event.type === "harness_run_cancelled").length, 1);
+
+      // Restore only the hidden hash/content as if the accepted response were
+      // lost. Reload must replay the original cancellation without another event.
+      await page.evaluate((pending) => {
+        sessionStorage.setItem("sandking.pendingHarnessCancellation", JSON.stringify(pending));
+      }, {
+        harnessRunId: cancellationMessage.harnessRunId,
+        idempotencyKeyHash: cancellationMessage.idempotencyKeyHash,
+      });
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForFunction(() =>
+        sessionStorage.getItem("sandking.pendingHarnessCancellation") === null);
+      const cancellationFrames = sentFrames.filter((frame) =>
+        frame.includes('"type":"browser.harness-run.cancel"')).map((frame) =>
+        JSON.parse(frame).message);
+      assert.equal(cancellationFrames.length, 2);
+      assert.equal(cancellationFrames[1].idempotencyKeyHash,
+        cancellationFrames[0].idempotencyKeyHash);
+      assert.equal(cancellationFrames[1].harnessRunId,
+        cancellationFrames[0].harnessRunId);
+      const replayedRuns = await waitForRetainedRuns(dataDir, 2);
+      assert.equal(replayedRuns[1].events.length, retainedRuns[1].events.length);
 
       const launchFrames = sentFrames.filter((frame) =>
         frame.includes('"type":"browser.harness-run.launch"'));
@@ -303,6 +363,11 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
         && audit.outcome === "accepted");
       assert.equal(launchAudits.length, 2);
       assert.ok(launchAudits.every((audit) => audit.details.source === "cockpit"));
+      const cancellationAudits = audits.filter((audit) =>
+        audit.action === "harness.run.cancel" && audit.outcome === "accepted");
+      assert.equal(cancellationAudits.length, 1);
+      assert.match(cancellationAudits[0].details.idempotencyKeyHash,
+        /^sha256:[a-f0-9]{64}$/);
       assert.equal(audits.some((audit) => /launch\.request|approval/.test(audit.action)), false);
       assert.deepEqual((await readdir(projectPath)).sort(), projectFilesBefore);
       const retainedText = [

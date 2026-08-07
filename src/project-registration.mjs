@@ -464,7 +464,8 @@ const initializeConformanceWorkspace = async (workspacePath) => {
     await mkdir(join(workspacePath, "adapters"), { mode: 0o700 });
     await writeFile(
       join(workspacePath, conformanceAdapterEntryPoint),
-      `import { randomBytes } from "node:crypto";
+      `import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { writeSync } from "node:fs";
 
 const adapterProtocol = "1.0.0";
@@ -559,6 +560,35 @@ if (command === "probe") {
   }
   const normalized = normalizeParameters(execution.parameters);
   const now = () => new Date().toISOString();
+  if (normalized.issueNumber === 999999992) {
+    const descendant = spawn(process.execPath, ["--eval", "process.on('SIGTERM', () => undefined); process.send?.('ready'); setInterval(() => {}, 1000);"], {
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+    await new Promise((resolve, reject) => {
+      descendant.once("message", resolve);
+      descendant.once("error", reject);
+    });
+    descendant.disconnect();
+    descendant.unref();
+  }
+  const handleCancellation = () => {
+    writeFrame({
+      type: "harness.run.terminal",
+      adapterProtocol,
+      adapterId,
+      harnessRunId: execution.harnessRunId,
+      terminalId: \`harness-terminal-\${"4".repeat(24)}\`,
+      status: "cancelled",
+      completedAt: now(),
+      result: { kind: "conformance-cancellation" },
+    });
+    process.exit(0);
+  };
+  if (normalized.issueNumber === 999999994) {
+    process.on("SIGTERM", () => undefined);
+  } else {
+    process.once("SIGTERM", handleCancellation);
+  }
   process.stdout.write(
     normalized.placeholderIdentifier
       ? \`Conformance diagnostic stdout for \${normalized.placeholderIdentifier}.\\n\`
@@ -582,7 +612,10 @@ if (command === "probe") {
   } else {
     const progressRecordCount = normalized.issueNumber === 999999997 ? 1023 : 1;
     if (progressRecordCount === 1) {
-      await new Promise((resolve) => setTimeout(resolve, 40));
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        normalized.issueNumber === 999999993 ? 5000 : 40,
+      ));
     }
     for (let index = 0; index < progressRecordCount; index += 1) {
       writeFrame({

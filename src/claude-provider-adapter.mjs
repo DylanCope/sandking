@@ -28,6 +28,7 @@ const capabilities = Object.freeze([
   "controller.session.interactive",
   "controller.session.terminate",
   "controller.harness-run.launch",
+  "controller.harness-run.cancel",
   "controller.session.stable-identity",
   "controller.session.typed-exit",
 ]);
@@ -252,6 +253,7 @@ const detectClaudeCapabilities = async (executable, version) => {
   if (/(?:^|\s)--session-id(?:[=\s,]|$)/m.test(help)) {
     detected.add("controller.session.stable-identity");
     detected.add("controller.harness-run.launch");
+    detected.add("controller.harness-run.cancel");
   }
   if (
     /(?:^|\s)--settings(?:[=\s,]|$)/m.test(help)
@@ -720,7 +722,7 @@ const openControllerCliServer = async ({
       || !/^sandking-cli-[a-f0-9]{16}$/.test(request.requestId ?? "")
       || request.controllerSessionId !== sessionId
       || request.projectId !== workContextId
-      || !["describe", "harness-run.launch"].includes(request.operation)
+      || !["describe", "harness-run.launch", "harness-run.cancel"].includes(request.operation)
     ) {
       throw new Error("controller_cli_contract_invalid");
     }
@@ -734,6 +736,30 @@ const openControllerCliServer = async ({
     }
     if (request.operation === "describe") {
       return control.request("controller-cli.describe", {});
+    }
+    if (request.operation === "harness-run.cancel") {
+      if (
+        !/^harness-run-[a-f0-9]{24}$/.test(request.harnessRunId ?? "")
+        || !/^sha256:[a-f0-9]{64}$/.test(request.idempotencyKeyHash ?? "")
+      ) {
+        throw new Error("controller_cli_contract_invalid");
+      }
+      const outcome = await control.request("harness-run.cancel", {
+        harnessRunId: request.harnessRunId,
+        idempotencyKeyHash: request.idempotencyKeyHash,
+      });
+      if (
+        outcome?.type !== "harness.run.cancel.result"
+        || outcome.harnessRunId !== request.harnessRunId
+        || outcome.idempotencyKeyHash !== request.idempotencyKeyHash
+      ) {
+        if (outcome?.type === "harness.run.cancel.failure"
+          && /^[a-z0-9_]{1,128}$/.test(outcome.code ?? "")) {
+          throw new Error(outcome.code);
+        }
+        throw new Error("controller_cli_protocol_invalid");
+      }
+      return outcome;
     }
     const parameters = request.parameters ?? {};
     let parametersValid = parameters

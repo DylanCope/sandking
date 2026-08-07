@@ -3,6 +3,7 @@
 import { openBrowser } from "./browser-launch.mjs";
 import {
   requestControllerDescription,
+  requestControllerCancel,
   requestControllerLaunch,
 } from "./controller-cli.mjs";
 import { validateDeclaredLaunchParameters } from "./harness-launch.mjs";
@@ -10,6 +11,7 @@ import { RuntimeStartupError, launchRuntime, stopRuntime } from "./runtime.mjs";
 
 const harnessLaunchHelp = `Usage:
   sandking launch [<project-id>] [--parameters <json-object>] [<harness-declared-flags>] [--json]
+  sandking cancel <harness-run-id> [--json]
 
 Launches one Harness run immediately. Inside a Controller session, <project-id>
 defaults to the focused Controller Project.
@@ -18,7 +20,7 @@ defaults to the focused Controller Project.
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
   const [command = "launch", ...rest] = argv;
-  /** @type {{command: string, help: boolean, noOpen: boolean, json: boolean, projectId?: string, parameters?: Record<string, unknown>, launchArguments: Array<{flag: string, value: string}>, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
+  /** @type {{command: string, help: boolean, noOpen: boolean, json: boolean, projectId?: string, harnessRunId?: string, parameters?: Record<string, unknown>, launchArguments: Array<{flag: string, value: string}>, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
   const options = { command, help: false, noOpen: false, json: false, launchArguments: [] };
 
   if ((command === "--help" || command === "-h") && rest.length === 0) {
@@ -26,7 +28,7 @@ const parseArgs = (argv) => {
     return options;
   }
   if (command === "help") {
-    if (rest.length > 1 || (rest.length === 1 && rest[0] !== "launch")) {
+    if (rest.length > 1 || (rest.length === 1 && !["launch", "cancel"].includes(rest[0]))) {
       throw new Error(`Unsupported help topic: ${rest.join(" ")}`);
     }
     options.help = true;
@@ -93,6 +95,8 @@ const parseArgs = (argv) => {
       index += 1;
     } else if (command === "launch" && !current.startsWith("-") && !options.projectId) {
       options.projectId = current;
+    } else if (command === "cancel" && !current.startsWith("-") && !options.harnessRunId) {
+      options.harnessRunId = current;
     } else if (command === "launch" && current.startsWith("--") && rest[index + 1]) {
       options.launchArguments.push({ flag: current, value: rest[index + 1] });
       index += 1;
@@ -120,7 +124,25 @@ const main = async () => {
       || options.projectId !== undefined
       || options.parameters !== undefined
       || options.launchArguments.length > 0);
-  if (controllerLaunchRequested) {
+  if (options.command === "cancel") {
+    if (options.expectedRevision !== undefined) {
+      throw new Error("Harness cancellation does not accept --expected-revision.");
+    }
+    if (options.idempotencyKey !== undefined) {
+      throw new Error("Harness cancellation generates its own private retry identity.");
+    }
+    if (!process.env.SANDKING_CONTROLLER_ENDPOINT) {
+      throw new Error("Harness cancellation requires a focused Controller Project.");
+    }
+    const projectId = process.env.SANDKING_WORK_CONTEXT_ID;
+    if (!projectId || !options.harnessRunId) {
+      throw new Error("Harness cancellation requires a Harness run ID and focused Controller Project.");
+    }
+    output = await requestControllerCancel({
+      projectId,
+      harnessRunId: options.harnessRunId,
+    });
+  } else if (controllerLaunchRequested) {
     if (options.expectedRevision !== undefined) {
       throw new Error("Harness launch does not accept --expected-revision.");
     }

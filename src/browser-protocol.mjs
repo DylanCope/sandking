@@ -9,6 +9,7 @@ import {
 } from "./harness-runs.mjs";
 import { launchParametersSchema } from "./harness-launch.mjs";
 import {
+  harnessRunCancelOutcomeSchema,
   harnessRunLaunchOutcomeSchema,
   protocolVersion,
   releaseVersion,
@@ -32,6 +33,7 @@ export const browserCapabilities = Object.freeze([
   "cockpit.project-preparation.v1",
   "cockpit.harness-run-launch.v2",
   "cockpit.harness-run-observation.v2",
+  "cockpit.harness-run-cancellation.v1",
 ]);
 export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.structured-control.v1",
@@ -42,12 +44,13 @@ export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.project-preparation.v1",
   "cockpit.harness-run-launch.v2",
   "cockpit.harness-run-observation.v2",
+  "cockpit.harness-run-cancellation.v1",
 ]);
 export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-immutable-execution-snapshots")
+  .update("sandking-browser-runtime-schema-v1-with-harness-run-cancellation")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -196,6 +199,13 @@ const browserHarnessRunLaunchSchema = z.object({
   idempotencyKeyHash: digestSchema,
 }).strict();
 
+const browserHarnessRunCancelSchema = z.object({
+  type: z.literal("browser.harness-run.cancel"),
+  requestId: identifierSchema,
+  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
+  idempotencyKeyHash: digestSchema,
+}).strict();
+
 const browserHarnessRunLogsGetSchema = z.object({
   type: z.literal("browser.harness-run.logs.get"),
   requestId: identifierSchema,
@@ -213,6 +223,7 @@ const browserControlEnvelopeSchema = z.object({
     browserTerminalAttachSchema,
     browserTerminalResizeSchema,
     browserHarnessRunLaunchSchema,
+    browserHarnessRunCancelSchema,
     browserHarnessRunObserveSchema,
     browserHarnessRunLogsGetSchema,
   ]),
@@ -274,7 +285,7 @@ export const runtimeHelloAckSchema = z.object({
         "claude-code-controller-adapter-v1",
       ]),
       adapterProtocol: z.string().regex(/^1\.[0-9]+\.[0-9]+$/),
-      capabilities: z.array(identifierSchema).max(6),
+      capabilities: z.array(identifierSchema).max(8),
       availability: z.object({
         status: z.enum(["available", "unavailable", "unauthenticated"]),
         version: z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+$/).nullable(),
@@ -339,6 +350,12 @@ const runtimeHarnessRunLaunchResultSchema = z.object({
   outcome: harnessRunLaunchOutcomeSchema,
 }).strict();
 
+const runtimeHarnessRunCancelResultSchema = z.object({
+  type: z.literal("runtime.harness-run.cancel-result"),
+  requestId: identifierSchema,
+  outcome: harnessRunCancelOutcomeSchema,
+}).strict();
+
 export const runtimeConnectionStateSchema = z.object({
   type: z.literal("runtime.connection-state"),
   boundary: z.literal("host"),
@@ -384,6 +401,7 @@ export const runtimeControlEnvelopeSchema = z.object({
     runtimeTerminalAttachedSchema,
     runtimeTerminalResizedSchema,
     runtimeHarnessRunLaunchResultSchema,
+    runtimeHarnessRunCancelResultSchema,
     runtimeHarnessRunObservationSchema,
     runtimeHarnessRunLogsResultSchema,
     runtimeConnectionStateSchema,
