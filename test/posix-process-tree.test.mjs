@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import test from "node:test";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import { readFileSync, readlinkSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,6 +113,74 @@ test("POSIX cancellation retains a descendant that creates a new session", {
 
     assert.equal(processCanRun(descendantPid), true);
     assert.equal(await tree.processTreeAlive(), true);
+
+    assert.equal((await tree.signal("SIGKILL")).sent, true);
+    assert.equal(await tree.processTreeAlive(), false);
+    assert.equal(processCanRun(descendantPid), false);
+  } finally {
+    if (descendantPid && processCanRun(descendantPid)) {
+      process.kill(descendantPid, "SIGKILL");
+    }
+    if (tree.child.exitCode === null && tree.child.signalCode === null) {
+      await tree.signal("SIGKILL");
+    }
+    await tree.release();
+  }
+});
+
+test("Linux cancellation terminates an escaped descendant without pidfds", {
+  skip: process.platform !== "linux"
+    ? "the legacy exact-signalling fallback is Linux-specific"
+    : false,
+}, async () => {
+  const adapterSource = String.raw`
+    import { spawn } from "node:child_process";
+    const descendant = spawn(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      "process.on('SIGTERM', () => undefined); process.stdout.write('ready\\n'); setInterval(() => undefined, 1000)",
+    ], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    descendant.stdout.once("data", () => {
+      descendant.stdout.destroy();
+      descendant.unref();
+      process.stdout.write(JSON.stringify({
+        descendantPid: descendant.pid,
+        legacyFaultLeaked: process.env.SANDKING_TEST_PIDFD_UNAVAILABLE ?? null,
+      }));
+    });
+    process.on("SIGTERM", () => process.exit(0));
+    setInterval(() => undefined, 1000);
+  `;
+  const tree = spawnPosixProcessTree(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    adapterSource,
+  ], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      SANDKING_TEST_PIDFD_UNAVAILABLE: "1",
+    },
+  });
+  let descendantPid = null;
+  try {
+    const [chunk] = await once(tree.child.stdout, "data");
+    const ready = JSON.parse(String(chunk));
+    descendantPid = ready.descendantPid;
+    assert.equal(Number.isSafeInteger(descendantPid), true);
+    assert.equal(ready.legacyFaultLeaked, null);
+    assert.equal(processCanRun(descendantPid), true);
+
+    const helperPath = fileURLToPath(new URL(
+      `../src/native/linux-${process.arch}/posix-process-tree-helper`,
+      import.meta.url,
+    ));
+    assert.equal(readlinkSync(`/proc/${tree.child.pid}/exe`), helperPath);
+
+    assert.equal(await tree.prepareCancellation(), true);
+    assert.equal((await tree.signal("SIGTERM")).sent, true);
+    await tree.adapterExit;
+    assert.equal(processCanRun(descendantPid), true);
 
     assert.equal((await tree.signal("SIGKILL")).sent, true);
     assert.equal(await tree.processTreeAlive(), false);

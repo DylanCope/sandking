@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   accessSync,
   closeSync,
@@ -60,7 +60,10 @@ const writeSupervisorStatus = (message) => {
 
 const runSupervisor = () => {
   const [executable, ...args] = process.argv.slice(3);
-  if (!executable) process.exit(1);
+  const processGroupId = process.ppid;
+  if (!executable || !Number.isSafeInteger(processGroupId) || processGroupId <= 0) {
+    process.exit(1);
+  }
 
   let adapterExited = false;
   let releaseRequested = false;
@@ -95,8 +98,9 @@ const runSupervisor = () => {
     }
     if (message.signal === "SIGKILL") {
       // This synchronous status record proves the command reached the live
-      // group leader. The leader then signals its own group, so a stale numeric
-      // pid can never select a replacement process group.
+      // supervisor while its retained native parent still owns the group. The
+      // supervisor then signals that live group, so a stale numeric id can
+      // never select a replacement process group.
       writeSupervisorStatus({
         type: "posix-process-tree.signal-dispatching",
         requestId: message.requestId,
@@ -105,7 +109,7 @@ const runSupervisor = () => {
       });
     }
     try {
-      process.kill(-process.pid, message.signal);
+      process.kill(-processGroupId, message.signal);
       if (message.signal === "SIGTERM") {
         writeSupervisorStatus({
           type: "posix-process-tree.signal-result",
@@ -145,6 +149,7 @@ const runSupervisor = () => {
   writeSupervisorStatus({
     type: "posix-process-tree.adapter-spawned",
     pid: adapter.pid ?? null,
+    supervisorPid: process.pid,
   });
   // Only the adapter retains these pipe writers. Their closure therefore
   // remains the ordinary stdout/stderr/protocol completion boundary even
@@ -315,41 +320,6 @@ const startedNoLaterThan = (left, right) => {
 };
 
 /**
- * Open a Linux pidfd before checking the retained /proc creation identity, then
- * dispatch through that retained kernel handle. A process which exits before
- * or after the identity read cannot retarget the signal to a replacement PID.
- *
- * @param {{pid: number, startedAt: string}} identity
- * @param {"SIGTERM" | "SIGKILL"} signal
- * @returns {Promise<boolean | null>}
- */
-const signalExactLinuxIdentity = (identity, signal) => new Promise((resolve) => {
-  const startTime = /^linux:([0-9]+)$/.exec(identity.startedAt)?.[1];
-  if (!startTime) {
-    resolve(null);
-    return;
-  }
-  execFile(ensureLinuxProcessTreeHelper(), [
-    "signal",
-    String(identity.pid),
-    startTime,
-    signal,
-  ], {
-    timeout: 5_000,
-    windowsHide: true,
-  }, (error) => {
-    if (error === null) {
-      resolve(true);
-      return;
-    }
-    const exitCode = error && typeof error === "object" && "code" in error
-      ? error.code
-      : null;
-    resolve(exitCode === 3 ? false : null);
-  });
-});
-
-/**
  * Spawn a Host-owned POSIX process-group leader which launches the adapter and
  * remains alive until the Host releases it after terminal-state publication.
  * Group signals are requested over the leader's private IPC channel, so the
@@ -389,22 +359,34 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     cwd: options.cwd,
     env: options.env,
     detached: true,
-    stdio: ["ignore", "pipe", "pipe", "pipe", "pipe", "ipc"],
+    stdio: ["ignore", "pipe", "pipe", "pipe", "pipe", "ipc", "pipe", "pipe"],
   });
   const adapterChannel = child.stdio[3];
   const statusChannel = child.stdio[4];
+  const exactSignalCommandChannel = /** @type {import("node:stream").Writable | null} */ (
+    child.stdio.at(6) ?? null
+  );
+  const exactSignalResultChannel = /** @type {import("node:stream").Readable | null} */ (
+    child.stdio.at(7) ?? null
+  );
   if (
     typeof child.pid !== "number"
     || !adapterChannel
     || !("readable" in adapterChannel)
     || !statusChannel
     || !("readable" in statusChannel)
+    || !exactSignalCommandChannel
+    || !("writable" in exactSignalCommandChannel)
+    || !exactSignalResultChannel
+    || !("readable" in exactSignalResultChannel)
   ) {
     throw new Error("harness_adapter_start_failed");
   }
   const wrapperPid = child.pid;
 
   let adapterSpawned = false;
+  /** @type {number | null} */
+  let internalSupervisorPid = null;
   /** @type {number | null} */
   let adapterPid = null;
   /** @type {AdapterExitResult | null} */
@@ -427,6 +409,10 @@ export const spawnPosixProcessTree = (executable, args, options) => {
   /** @type {Map<number, PendingSignal>} */
   const pendingSignals = new Map();
   let statusBuffer = "";
+  let nextExactSignalRequestId = 1;
+  /** @type {Map<number, (result: boolean | null) => void>} */
+  const pendingExactSignals = new Map();
+  let exactSignalResultBuffer = "";
   /** @type {Map<string, {pid: number, startedAt: string, processGroupId: number, parentIdentityKey: string | null}>} */
   const trackedIdentities = new Map();
   /** @type {Map<string, {pid: number, startedAt: string, processGroupId: number, parentIdentityKey: string | null}>} */
@@ -449,6 +435,45 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     pendingSignals.delete(requestId);
     pending.resolve({ sent, sentAt });
   };
+  /** @param {boolean | null} result */
+  const settleAllExactSignals = (result) => {
+    for (const [requestId, resolve] of pendingExactSignals) {
+      pendingExactSignals.delete(requestId);
+      resolve(result);
+    }
+  };
+
+  /**
+   * The retained native ancestor uses pidfds when the kernel provides them. On
+   * Linux 4.18-5.2 it instead seizes the descendant, rechecks its /proc creation
+   * identity while it cannot exit or be replaced, and only then delivers the
+   * signal. Both paths therefore preserve exact identity across PID reuse.
+   *
+   * @param {{pid: number, startedAt: string}} identity
+   * @param {"SIGTERM" | "SIGKILL"} signal
+   * @returns {Promise<boolean | null>}
+   */
+  const signalExactLinuxIdentity = (identity, signal) => new Promise((resolve) => {
+    const startTime = /^linux:([0-9]+)$/.exec(identity.startedAt)?.[1];
+    if (!startTime || exactSignalCommandChannel.destroyed
+        || exactSignalCommandChannel.writableEnded) {
+      resolve(null);
+      return;
+    }
+    const requestId = nextExactSignalRequestId;
+    nextExactSignalRequestId += 1;
+    pendingExactSignals.set(requestId, resolve);
+    exactSignalCommandChannel.write(
+      `signal ${requestId} ${identity.pid} ${startTime} ${signal}\n`,
+      (/** @type {Error | null | undefined} */ error) => {
+        if (!error) return;
+        const pending = pendingExactSignals.get(requestId);
+        if (!pending) return;
+        pendingExactSignals.delete(requestId);
+        pending(null);
+      },
+    );
+  });
 
   /** @param {PosixProcess[]} processes */
   const applyInventory = (processes) => {
@@ -496,6 +521,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     for (const processEntry of processes) {
       if (
         processEntry.pid === wrapperPid
+        || processEntry.pid === internalSupervisorPid
         || processEntry.processGroupId !== wrapperPid
         || ["X", "Z"].includes(processEntry.state[0])
       ) {
@@ -521,6 +547,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
       for (const processEntry of processes) {
         if (
           processEntry.pid === wrapperPid
+          || processEntry.pid === internalSupervisorPid
           || processEntry.parentPid !== wrapperPid
           || ["X", "Z"].includes(processEntry.state[0])
         ) {
@@ -636,10 +663,17 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     if (!message || typeof message !== "object") return;
     if (message.type === "posix-process-tree.adapter-spawned") {
       adapterSpawned = true;
+      internalSupervisorPid = Number.isSafeInteger(message.supervisorPid)
+        && message.supervisorPid > 0
+        && message.supervisorPid !== wrapperPid
+        ? message.supervisorPid
+        : null;
       adapterPid = Number.isSafeInteger(message.pid) && message.pid > 0
         ? message.pid
         : null;
-      if (adapterPid === null) trackingReliable = false;
+      if (internalSupervisorPid === null || adapterPid === null) {
+        trackingReliable = false;
+      }
       return;
     }
     if (message.type === "posix-process-tree.adapter-error") {
@@ -689,8 +723,30 @@ export const spawnPosixProcessTree = (executable, args, options) => {
       }
     }
   });
+  exactSignalResultChannel.setEncoding("utf8");
+  exactSignalResultChannel.on("data", (/** @type {string} */ chunk) => {
+    exactSignalResultBuffer += chunk;
+    while (exactSignalResultBuffer.includes("\n")) {
+      const newline = exactSignalResultBuffer.indexOf("\n");
+      const line = exactSignalResultBuffer.slice(0, newline);
+      exactSignalResultBuffer = exactSignalResultBuffer.slice(newline + 1);
+      const result = /^([0-9]+) ([034])$/.exec(line);
+      const requestId = result ? Number(result[1]) : Number.NaN;
+      const pending = pendingExactSignals.get(requestId);
+      if (!result || !pending) {
+        trackingReliable = false;
+        continue;
+      }
+      pendingExactSignals.delete(requestId);
+      pending(result[2] === "0" ? true : result[2] === "3" ? false : null);
+    }
+  });
+  exactSignalCommandChannel.once("error", () => settleAllExactSignals(null));
+  exactSignalResultChannel.once("error", () => settleAllExactSignals(null));
+  exactSignalResultChannel.once("close", () => settleAllExactSignals(null));
   child.once("error", () => {
     settleAdapterExit({ code: null, signal: null, startFailed: true });
+    settleAllExactSignals(null);
   });
   child.once("exit", (code, signal) => {
     wrapperExitResult = { code, signal };
@@ -710,6 +766,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
         && wrapperExitResult.signal === "SIGKILL";
       settleSignal(requestId, sent, sent ? pending.sentAt : null);
     }
+    settleAllExactSignals(null);
     resolveWrapperClosed(wrapperExitResult);
   });
 

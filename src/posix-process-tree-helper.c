@@ -2,18 +2,26 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/ptrace.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 enum {
   SANDKING_OK = 0,
   SANDKING_IDENTITY_ABSENT = 3,
   SANDKING_UNCERTAIN = 4,
+};
+
+enum {
+  SANDKING_COMMAND_DESCRIPTOR = 6,
+  SANDKING_RESULT_DESCRIPTOR = 7,
 };
 
 static int read_start_time(pid_t pid, char *result, size_t result_size) {
@@ -44,56 +52,253 @@ static int read_start_time(pid_t pid, char *result, size_t result_size) {
   return 1;
 }
 
-static int exact_signal(const char *pid_text, const char *start_time, const char *signal_text) {
-#if !defined(SYS_pidfd_open) || !defined(SYS_pidfd_send_signal)
-  (void)pid_text;
-  (void)start_time;
-  (void)signal_text;
-  return SANDKING_UNCERTAIN;
-#else
+static int parse_signal_request(
+  const char *pid_text,
+  const char *signal_text,
+  pid_t *pid,
+  int *signal_number
+) {
   char *pid_end = NULL;
   long parsed_pid = strtol(pid_text, &pid_end, 10);
-  if (pid_end == pid_text || *pid_end != '\0' || parsed_pid <= 0) {
-    return SANDKING_UNCERTAIN;
+  if (pid_end == pid_text || *pid_end != '\0' || parsed_pid <= 0
+      || (long)(pid_t)parsed_pid != parsed_pid) {
+    return 0;
   }
-  int signal_number = strcmp(signal_text, "SIGTERM") == 0
+  int parsed_signal = strcmp(signal_text, "SIGTERM") == 0
     ? SIGTERM
     : strcmp(signal_text, "SIGKILL") == 0 ? SIGKILL : 0;
-  if (signal_number == 0) return SANDKING_UNCERTAIN;
+  if (parsed_signal == 0) return 0;
+  *pid = (pid_t)parsed_pid;
+  *signal_number = parsed_signal;
+  return 1;
+}
 
-  int pidfd = (int)syscall(SYS_pidfd_open, (pid_t)parsed_pid, 0);
-  if (pidfd < 0) return errno == ESRCH ? SANDKING_IDENTITY_ABSENT : SANDKING_UNCERTAIN;
+static int exact_signal_with_ptrace(
+  pid_t pid,
+  const char *start_time,
+  int signal_number
+) {
+  /*
+   * PTRACE_SEIZE is available on every supported kernel. The retained helper
+   * is an ancestor of the complete supervised tree, so ordinary ptrace access
+   * controls permit this fallback even when a system enables ancestor-only
+   * attachment. Seizing before the identity read prevents exit and PID reuse
+   * until the exact process has either been signalled or safely detached.
+   */
+  if (ptrace(PTRACE_SEIZE, pid, NULL, NULL) != 0) {
+    return errno == ESRCH ? SANDKING_IDENTITY_ABSENT : SANDKING_UNCERTAIN;
+  }
+  if (ptrace(PTRACE_INTERRUPT, pid, NULL, NULL) != 0) {
+    int interrupt_error = errno;
+    (void)ptrace(PTRACE_DETACH, pid, NULL, NULL);
+    return interrupt_error == ESRCH
+      ? SANDKING_IDENTITY_ABSENT
+      : SANDKING_UNCERTAIN;
+  }
+
+  int wait_status = 0;
+  pid_t waited;
+  do {
+    waited = waitpid(pid, &wait_status, __WALL);
+  } while (waited < 0 && errno == EINTR);
+  if (waited != pid || !WIFSTOPPED(wait_status)) {
+    (void)ptrace(PTRACE_DETACH, pid, NULL, NULL);
+    return waited == pid && (WIFEXITED(wait_status) || WIFSIGNALED(wait_status))
+      ? SANDKING_IDENTITY_ABSENT
+      : SANDKING_UNCERTAIN;
+  }
+
   char observed_start_time[64];
-  int identity_status = read_start_time(
-    (pid_t)parsed_pid,
-    observed_start_time,
-    sizeof(observed_start_time)
-  );
+  int identity_status = read_start_time(pid, observed_start_time, sizeof(observed_start_time));
   if (identity_status == 0 || (identity_status == 1
       && strcmp(observed_start_time, start_time) != 0)) {
-    close(pidfd);
+    (void)ptrace(PTRACE_DETACH, pid, NULL, NULL);
     return SANDKING_IDENTITY_ABSENT;
   }
   if (identity_status < 0) {
-    close(pidfd);
+    (void)ptrace(PTRACE_DETACH, pid, NULL, NULL);
     return SANDKING_UNCERTAIN;
   }
-  int sent = (int)syscall(SYS_pidfd_send_signal, pidfd, signal_number, NULL, 0);
-  int signal_error = errno;
-  close(pidfd);
-  if (sent == 0) return SANDKING_OK;
-  return signal_error == ESRCH ? SANDKING_IDENTITY_ABSENT : SANDKING_UNCERTAIN;
+
+  if (kill(pid, signal_number) != 0) {
+    int signal_error = errno;
+    (void)ptrace(PTRACE_DETACH, pid, NULL, NULL);
+    return signal_error == ESRCH
+      ? SANDKING_IDENTITY_ABSENT
+      : SANDKING_UNCERTAIN;
+  }
+  if (ptrace(PTRACE_DETACH, pid, NULL, NULL) == 0 || errno == ESRCH) {
+    return SANDKING_OK;
+  }
+  return SANDKING_UNCERTAIN;
+}
+
+static int exact_signal(
+  const char *pid_text,
+  const char *start_time,
+  const char *signal_text,
+  int force_ptrace
+) {
+  pid_t pid;
+  int signal_number;
+  if (!parse_signal_request(pid_text, signal_text, &pid, &signal_number)
+      || start_time[0] == '\0'
+      || strspn(start_time, "0123456789") != strlen(start_time)) {
+    return SANDKING_UNCERTAIN;
+  }
+
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+  if (!force_ptrace) {
+    int pidfd = (int)syscall(SYS_pidfd_open, pid, 0);
+    if (pidfd < 0 && errno != ENOSYS) {
+      return errno == ESRCH ? SANDKING_IDENTITY_ABSENT : SANDKING_UNCERTAIN;
+    }
+    if (pidfd >= 0) {
+      char observed_start_time[64];
+      int identity_status = read_start_time(pid, observed_start_time, sizeof(observed_start_time));
+      if (identity_status == 0 || (identity_status == 1
+          && strcmp(observed_start_time, start_time) != 0)) {
+        close(pidfd);
+        return SANDKING_IDENTITY_ABSENT;
+      }
+      if (identity_status < 0) {
+        close(pidfd);
+        return SANDKING_UNCERTAIN;
+      }
+      int sent = (int)syscall(SYS_pidfd_send_signal, pidfd, signal_number, NULL, 0);
+      int signal_error = errno;
+      close(pidfd);
+      if (sent == 0) return SANDKING_OK;
+      if (signal_error != ENOSYS) {
+        return signal_error == ESRCH
+          ? SANDKING_IDENTITY_ABSENT
+          : SANDKING_UNCERTAIN;
+      }
+    }
+  }
+#else
+  (void)force_ptrace;
 #endif
+
+  return exact_signal_with_ptrace(pid, start_time, signal_number);
+}
+
+static int write_all(int descriptor, const char *value, size_t length) {
+  size_t written = 0;
+  while (written < length) {
+    ssize_t result = write(descriptor, value + written, length - written);
+    if (result > 0) {
+      written += (size_t)result;
+      continue;
+    }
+    if (result < 0 && errno == EINTR) continue;
+    return 0;
+  }
+  return 1;
+}
+
+static void write_signal_result(const char *request_id, int status) {
+  char result[128];
+  int length = snprintf(result, sizeof(result), "%s %d\n", request_id, status);
+  if (length <= 0 || (size_t)length >= sizeof(result)) return;
+  (void)write_all(SANDKING_RESULT_DESCRIPTOR, result, (size_t)length);
+}
+
+static void handle_signal_command(char *command, int force_ptrace) {
+  char *save = NULL;
+  char *operation = strtok_r(command, " ", &save);
+  char *request_id = strtok_r(NULL, " ", &save);
+  char *pid = strtok_r(NULL, " ", &save);
+  char *start_time = strtok_r(NULL, " ", &save);
+  char *signal_name = strtok_r(NULL, " ", &save);
+  char *extra = strtok_r(NULL, " ", &save);
+  if (!operation || strcmp(operation, "signal") != 0 || !request_id
+      || strspn(request_id, "0123456789") != strlen(request_id)
+      || !pid || !start_time || !signal_name || extra) {
+    if (request_id) write_signal_result(request_id, SANDKING_UNCERTAIN);
+    return;
+  }
+  write_signal_result(
+    request_id,
+    exact_signal(pid, start_time, signal_name, force_ptrace)
+  );
+}
+
+static int supervise(char **supervisor_argv) {
+  if (prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
+    return SANDKING_UNCERTAIN;
+  }
+  const char *forced = getenv("SANDKING_TEST_PIDFD_UNAVAILABLE");
+  int force_ptrace = forced && strcmp(forced, "1") == 0;
+
+  pid_t supervisor_pid = fork();
+  if (supervisor_pid < 0) return SANDKING_UNCERTAIN;
+  if (supervisor_pid == 0) {
+    close(SANDKING_COMMAND_DESCRIPTOR);
+    close(SANDKING_RESULT_DESCRIPTOR);
+    unsetenv("SANDKING_TEST_PIDFD_UNAVAILABLE");
+    execv(supervisor_argv[0], supervisor_argv);
+    _exit(SANDKING_UNCERTAIN);
+  }
+
+  for (int descriptor = 0; descriptor <= 5; descriptor += 1) close(descriptor);
+  signal(SIGTERM, SIG_IGN);
+  signal(SIGPIPE, SIG_IGN);
+  char commands[4096];
+  size_t command_length = 0;
+  int supervisor_status = 0;
+  int supervisor_exited = 0;
+  while (!supervisor_exited) {
+    struct pollfd command_poll = {
+      .fd = SANDKING_COMMAND_DESCRIPTOR,
+      .events = POLLIN,
+      .revents = 0,
+    };
+    int poll_result = poll(&command_poll, 1, 50);
+    if (poll_result > 0 && (command_poll.revents & POLLIN)) {
+      ssize_t read_length = read(
+        SANDKING_COMMAND_DESCRIPTOR,
+        commands + command_length,
+        sizeof(commands) - command_length
+      );
+      if (read_length > 0) {
+        command_length += (size_t)read_length;
+        char *newline;
+        while ((newline = memchr(commands, '\n', command_length)) != NULL) {
+          size_t line_length = (size_t)(newline - commands);
+          *newline = '\0';
+          handle_signal_command(commands, force_ptrace);
+          size_t consumed = line_length + 1;
+          memmove(commands, commands + consumed, command_length - consumed);
+          command_length -= consumed;
+        }
+        if (command_length == sizeof(commands)) command_length = 0;
+      }
+    }
+
+    int status = 0;
+    pid_t reaped;
+    do {
+      reaped = waitpid(-1, &status, WNOHANG);
+      if (reaped == supervisor_pid) {
+        supervisor_status = status;
+        supervisor_exited = 1;
+      }
+    } while (reaped > 0);
+  }
+  close(SANDKING_COMMAND_DESCRIPTOR);
+  close(SANDKING_RESULT_DESCRIPTOR);
+  if (WIFEXITED(supervisor_status)) return WEXITSTATUS(supervisor_status);
+  if (WIFSIGNALED(supervisor_status)) return 128 + WTERMSIG(supervisor_status);
+  return SANDKING_UNCERTAIN;
 }
 
 int main(int argc, char **argv) {
   if (argc >= 4 && strcmp(argv[1], "subreaper") == 0) {
-    if (prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) return SANDKING_UNCERTAIN;
-    execv(argv[2], &argv[2]);
-    return SANDKING_UNCERTAIN;
+    return supervise(&argv[2]);
   }
   if (argc == 5 && strcmp(argv[1], "signal") == 0) {
-    return exact_signal(argv[2], argv[3], argv[4]);
+    return exact_signal(argv[2], argv[3], argv[4], 0);
   }
   return SANDKING_UNCERTAIN;
 }
