@@ -1,4 +1,4 @@
-const MAX_REVIEW_ATTEMPTS = 10;
+const MAX_REVIEW_ATTEMPTS = 15;
 const MAX_CONSECUTIVE_NO_PROGRESS_ATTEMPTS = 3;
 
 function blockingFindingMessages(review) {

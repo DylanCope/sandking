@@ -310,10 +310,10 @@ test("each reviewer receives the complete verdict ledger from earlier attempts",
   assert.deepEqual(ledgers, [[], [firstReview]]);
 });
 
-test("a productive review loop may use all ten review attempts", async () => {
+test("a productive review loop may use all fifteen review attempts", async () => {
   const repository = createFakeRepository("main-long-review-base");
   const github = createFakeGitHub({
-    pullRequestDiffs: Array.from({ length: 10 }, (_, index) => `diff ${index + 1}`),
+    pullRequestDiffs: Array.from({ length: 15 }, (_, index) => `diff ${index + 1}`),
   });
   let reviewAttempt = 0;
 
@@ -332,14 +332,14 @@ test("a productive review loop may use all ten review attempts", async () => {
     reviewer: {
       async evaluatePullRequest() {
         reviewAttempt += 1;
-        return reviewAttempt === 10
+        return reviewAttempt === 15
           ? { approved: true, findings: [] }
           : { approved: false, findings: [`Resolve review ${reviewAttempt}`] };
       },
     },
   });
 
-  assert.equal(reviewAttempt, 10);
+  assert.equal(reviewAttempt, 15);
   assert.equal(result.review.approved, true);
 });
 
@@ -366,7 +366,7 @@ test("a resumed delivery preserves the review-attempt budget from its ledger", a
       head: "sandcastle/issue-120",
       url: "https://github.test/pull/77",
     },
-    reviewLedger: Array.from({ length: 10 }, () => priorReview),
+    reviewLedger: Array.from({ length: 15 }, () => priorReview),
   });
   let reviewerCalls = 0;
 
@@ -383,7 +383,7 @@ test("a resumed delivery preserves the review-attempt budget from its ledger", a
         },
       },
     }),
-    /used all 10 review attempts/,
+    /used all 15 review attempts/,
   );
 
   assert.equal(reviewerCalls, 0);
