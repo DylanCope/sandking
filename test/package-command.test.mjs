@@ -30,6 +30,8 @@ test("the stable sandking command is public, executable, and contains module-rel
     "src/protocol.mjs",
     "src/browser-protocol.mjs",
     "src/cockpit.js",
+    "src/posix-process-tree-helper.c",
+    "src/windows-process-barrier.cjs",
   ]) {
     assert.ok(packagedFiles.includes(required), `${required} must be packaged`);
   }

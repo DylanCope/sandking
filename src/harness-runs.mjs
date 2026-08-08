@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   HarnessAdapterProtocolError,
@@ -24,8 +26,13 @@ import {
 import { spawnPosixProcessTree } from "./posix-process-tree.mjs";
 import {
   captureWindowsProcessTreeSnapshot,
+  createNativeWindowsJobObject,
   createWindowsProcessTreeTracker,
 } from "./windows-process-tree.mjs";
+
+const windowsProcessBarrierPath = fileURLToPath(
+  new URL("./windows-process-barrier.cjs", import.meta.url),
+);
 
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const auditIdSchema = z.string().regex(/^audit-[a-f0-9]{24}$/);
@@ -574,10 +581,17 @@ const superviseConformanceHarness = async (run, context, observer) => {
     harnessRunId: run.harnessRunId,
     parameters: context.parameters,
   }), "utf8").toString("base64url");
+  const windowsBarrierDirectory = process.platform === "win32"
+    ? await mkdtemp(join(tmpdir(), "sandking-harness-job-"))
+    : null;
+  const windowsBarrierMarker = windowsBarrierDirectory
+    ? join(windowsBarrierDirectory, "assigned")
+    : null;
   // Execute the exact bytes read from the immutable Git object. The worktree
   // comparison detects drift, while the inline source removes the check/use
   // window in which different adapter bytes could otherwise be launched.
   const adapterArgs = [
+    ...(windowsBarrierMarker ? ["--require", windowsProcessBarrierPath] : []),
     "--input-type=module",
     "--eval", pinnedAdapter.pinnedEntryPointSource,
     pinnedAdapter.compatibility.entryPoint,
@@ -592,9 +606,19 @@ const superviseConformanceHarness = async (run, context, observer) => {
       });
   const child = posixProcessTree?.child ?? spawn(process.execPath, adapterArgs, {
     cwd: context.harnessWorkspacePath,
-    env: { LANG: "C.UTF-8" },
+    env: {
+      LANG: "C.UTF-8",
+      ...(windowsBarrierMarker
+        ? { SANDKING_WINDOWS_JOB_BARRIER: windowsBarrierMarker }
+        : {}),
+    },
     stdio: ["ignore", "pipe", "pipe", "pipe", "ipc"],
   });
+  if (windowsBarrierDirectory) {
+    child.once("close", () => {
+      void rm(windowsBarrierDirectory, { recursive: true, force: true });
+    });
+  }
   const windowsProcessTreePromise = process.platform === "win32"
     && typeof child.pid === "number"
     ? captureWindowsProcessTreeSnapshot(child.pid, {
@@ -602,8 +626,20 @@ const superviseConformanceHarness = async (run, context, observer) => {
         // the launch-time native query reject a different process that reused
         // the adapter PID before its creation time could be captured.
         expectedCommandLineFragment: encodedExecution,
-      }).then((snapshot) =>
-        createWindowsProcessTreeTracker(snapshot ?? { rootIdentity: null }))
+        jobObject: createNativeWindowsJobObject({
+          name: `Local\\SandKingHarnessRun-${randomBytes(16).toString("hex")}`,
+        }),
+      }).then(async (snapshot) => {
+        if (!snapshot || !windowsBarrierMarker) {
+          child.kill("SIGKILL");
+          return createWindowsProcessTreeTracker({ rootIdentity: null });
+        }
+        await writeFile(windowsBarrierMarker, "assigned\n", { mode: 0o600 });
+        return createWindowsProcessTreeTracker(snapshot);
+      }).catch(() => {
+        child.kill("SIGKILL");
+        return createWindowsProcessTreeTracker({ rootIdentity: null });
+      })
     : null;
   const adapterChannel = posixProcessTree?.adapterChannel ?? child.stdio[3];
   if (!adapterChannel || !child.stdout || !child.stderr || !("readable" in adapterChannel)) {

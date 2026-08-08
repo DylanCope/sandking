@@ -1,9 +1,91 @@
-import { spawn } from "node:child_process";
-import { closeSync, readFileSync, writeSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const supervisorPath = fileURLToPath(import.meta.url);
+const linuxHelperSourcePath = fileURLToPath(
+  new URL("./posix-process-tree-helper.c", import.meta.url),
+);
+/** @type {string | null} */
+let retainedLinuxHelperPath = null;
+
+const ensureLinuxProcessTreeHelper = () => {
+  if (retainedLinuxHelperPath) return retainedLinuxHelperPath;
+  const source = readFileSync(linuxHelperSourcePath);
+  const sourceHash = createHash("sha256").update(source).digest("hex").slice(0, 24);
+  const userId = typeof process.getuid === "function" ? process.getuid() : process.pid;
+  const cacheDirectory = join(tmpdir(), `sandking-process-tree-${userId}`);
+  if (!existsSync(cacheDirectory)) mkdirSync(cacheDirectory, { mode: 0o700 });
+  const cacheStat = lstatSync(cacheDirectory);
+  if (!cacheStat.isDirectory() || cacheStat.isSymbolicLink()
+    || (typeof process.getuid === "function" && cacheStat.uid !== process.getuid())) {
+    throw new Error("posix_process_tree_helper_cache_invalid");
+  }
+  chmodSync(cacheDirectory, 0o700);
+  const helperPath = join(cacheDirectory, `helper-${process.arch}-${sourceHash}`);
+  if (!existsSync(helperPath)) {
+    const candidate = `${helperPath}.${process.pid}.${randomBytes(8).toString("hex")}`;
+    let compiled = false;
+    for (const compiler of ["cc", "clang", "gcc"]) {
+      try {
+        execFileSync(compiler, [
+          linuxHelperSourcePath,
+          "-O2",
+          "-std=c11",
+          "-Wall",
+          "-Wextra",
+          "-o",
+          candidate,
+        ], { stdio: "ignore", timeout: 10_000 });
+        compiled = true;
+        break;
+      } catch {
+        // Try the next conventional system compiler.
+      }
+    }
+    if (!compiled) {
+      try {
+        unlinkSync(candidate);
+      } catch {
+        // A failed compiler may not have created an output file.
+      }
+      throw new Error("posix_process_tree_helper_unavailable");
+    }
+    chmodSync(candidate, 0o700);
+    try {
+      renameSync(candidate, helperPath);
+    } catch (error) {
+      try {
+        unlinkSync(candidate);
+      } catch {
+        // A concurrent Host may already have published the identical helper.
+      }
+      if (!existsSync(helperPath)) throw error;
+    }
+  }
+  const helperStat = lstatSync(helperPath);
+  if (!helperStat.isFile() || helperStat.isSymbolicLink()
+    || (typeof process.getuid === "function" && helperStat.uid !== process.getuid())) {
+    throw new Error("posix_process_tree_helper_invalid");
+  }
+  retainedLinuxHelperPath = helperPath;
+  return helperPath;
+};
 
 /** @typedef {{code: number | null, signal: string | null, startFailed: boolean}} AdapterExitResult */
 /** @typedef {{code: number | null, signal: NodeJS.Signals | null}} WrapperExitResult */
@@ -233,26 +315,35 @@ const readPosixProcesses = async () => {
 
 /** @param {number} rootPid @returns {PosixProcess[] | null} */
 const readLinuxProcessTree = (rootPid) => {
-  /** @type {number[]} */
-  const pending = [rootPid];
+  /** @type {Array<{pid: number, expectedParentPid: number | null}>} */
+  const pending = [{ pid: rootPid, expectedParentPid: null }];
   const seen = new Set();
   /** @type {PosixProcess[]} */
   const processes = [];
   while (pending.length > 0) {
-    const processId = pending.shift();
-    if (!processId || seen.has(processId)) continue;
+    const candidate = pending.shift();
+    if (!candidate || seen.has(candidate.pid)) continue;
+    const processId = candidate.pid;
     seen.add(processId);
     try {
       const stat = readFileSync(`/proc/${processId}/stat`, "utf8");
-      const children = readFileSync(
-        `/proc/${processId}/task/${processId}/children`,
-        "utf8",
-      );
       const processEntry = parseLinuxProcessStat(processId, stat);
-      if (!processEntry) return null;
+      if (!processEntry
+        || (candidate.expectedParentPid !== null
+          && processEntry.parentPid !== candidate.expectedParentPid)) {
+        return null;
+      }
       processes.push(processEntry);
-      pending.push(...children.trim().split(/\s+/).flatMap((value) =>
-        /^[0-9]+$/.test(value) ? [Number(value)] : []));
+      const taskIds = readdirSync(`/proc/${processId}/task`)
+        .filter((value) => /^[0-9]+$/.test(value));
+      const childIds = new Set(taskIds.flatMap((taskId) =>
+        readFileSync(`/proc/${processId}/task/${taskId}/children`, "utf8")
+          .trim().split(/\s+/).flatMap((value) =>
+            /^[0-9]+$/.test(value) ? [Number(value)] : [])));
+      pending.push(...[...childIds].map((pid) => ({
+        pid,
+        expectedParentPid: processId,
+      })));
     } catch {
       // A listed descendant can exit and reparent its own children before it
       // is read. That race loses provable ancestry, so retain uncertainty.
@@ -277,6 +368,41 @@ const startedNoLaterThan = (left, right) => {
 };
 
 /**
+ * Open a Linux pidfd before checking the retained /proc creation identity, then
+ * dispatch through that retained kernel handle. A process which exits before
+ * or after the identity read cannot retarget the signal to a replacement PID.
+ *
+ * @param {{pid: number, startedAt: string}} identity
+ * @param {"SIGTERM" | "SIGKILL"} signal
+ * @returns {Promise<boolean | null>}
+ */
+const signalExactLinuxIdentity = (identity, signal) => new Promise((resolve) => {
+  const startTime = /^linux:([0-9]+)$/.exec(identity.startedAt)?.[1];
+  if (!startTime) {
+    resolve(null);
+    return;
+  }
+  execFile(ensureLinuxProcessTreeHelper(), [
+    "signal",
+    String(identity.pid),
+    startTime,
+    signal,
+  ], {
+    timeout: 5_000,
+    windowsHide: true,
+  }, (error) => {
+    if (error === null) {
+      resolve(true);
+      return;
+    }
+    const exitCode = error && typeof error === "object" && "code" in error
+      ? error.code
+      : null;
+    resolve(exitCode === 3 ? false : null);
+  });
+});
+
+/**
  * Spawn a Host-owned POSIX process-group leader which launches the adapter and
  * remains alive until the Host releases it after terminal-state publication.
  * Group signals are requested over the leader's private IPC channel, so the
@@ -289,12 +415,24 @@ const startedNoLaterThan = (left, right) => {
  * @param {{cwd: string, env: NodeJS.ProcessEnv}} options
  */
 export const spawnPosixProcessTree = (executable, args, options) => {
-  const child = spawn(process.execPath, [
-    supervisorPath,
-    "supervise",
-    executable,
-    ...args,
-  ], {
+  const linuxHelperPath = process.platform === "linux"
+    ? ensureLinuxProcessTreeHelper()
+    : null;
+  const child = spawn(linuxHelperPath ?? process.execPath, linuxHelperPath
+    ? [
+        "subreaper",
+        process.execPath,
+        supervisorPath,
+        "supervise",
+        executable,
+        ...args,
+      ]
+    : [
+        supervisorPath,
+        "supervise",
+        executable,
+        ...args,
+      ], {
     cwd: options.cwd,
     env: options.env,
     detached: true,
@@ -311,6 +449,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
   ) {
     throw new Error("harness_adapter_start_failed");
   }
+  const wrapperPid = child.pid;
 
   let adapterSpawned = false;
   /** @type {number | null} */
@@ -371,6 +510,15 @@ export const spawnPosixProcessTree = (executable, args, options) => {
       processEntry.pid,
       processEntry,
     ]));
+    const wrapper = currentByPid.get(wrapperPid);
+    if (
+      process.platform === "linux"
+      && ((wrapper && wrapper.processGroupId !== wrapperPid)
+        || (!wrapper && wrapperExitResult === null))
+    ) {
+      trackingReliable = false;
+      return false;
+    }
     if (adapterPid !== null) {
       const adapter = currentByPid.get(adapterPid);
       const alreadyTrackedAdapter = [...trackedIdentities.values()].find(
@@ -394,8 +542,8 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     // wrapper remains its leader.
     for (const processEntry of processes) {
       if (
-        processEntry.pid === child.pid
-        || processEntry.processGroupId !== child.pid
+        processEntry.pid === wrapperPid
+        || processEntry.processGroupId !== wrapperPid
         || ["X", "Z"].includes(processEntry.state[0])
       ) {
         continue;
@@ -410,6 +558,32 @@ export const spawnPosixProcessTree = (executable, args, options) => {
         });
       }
       treeInventoryEstablished = true;
+    }
+
+    // On Linux the live wrapper is established as a child subreaper before the
+    // adapter starts. A daemon whose short-lived creator has already exited is
+    // reparented here, preserving kernel-proven ownership even though the
+    // original ancestry chain has disappeared.
+    if (process.platform === "linux") {
+      for (const processEntry of processes) {
+        if (
+          processEntry.pid === wrapperPid
+          || processEntry.parentPid !== wrapperPid
+          || ["X", "Z"].includes(processEntry.state[0])
+        ) {
+          continue;
+        }
+        const processKey = identityKey(processEntry);
+        if (!trackedIdentities.has(processKey)) {
+          trackedIdentities.set(processKey, {
+            pid: processEntry.pid,
+            startedAt: processEntry.startedAt,
+            processGroupId: processEntry.processGroupId,
+            parentIdentityKey: null,
+          });
+        }
+        treeInventoryEstablished = true;
+      }
     }
 
     let discovered = true;
@@ -492,7 +666,10 @@ export const spawnPosixProcessTree = (executable, args, options) => {
   const captureDescendants = async () => {
     if (adapterPid === null) return false;
     if (process.platform !== "linux") return refresh();
-    const processes = readLinuxProcessTree(adapterPid);
+    let processes = null;
+    for (let attempt = 0; processes === null && attempt < 8; attempt += 1) {
+      processes = readLinuxProcessTree(wrapperPid);
+    }
     if (!processes) {
       trackingReliable = false;
       return false;
@@ -608,7 +785,6 @@ export const spawnPosixProcessTree = (executable, args, options) => {
   };
 
   const processTreeAlive = async () => {
-    if (typeof child.pid !== "number") return true;
     if (!adapterSpawned && !adapterExitResult) return true;
     const refreshed = await refresh();
     return !refreshed || !trackingReliable || aliveIdentities.size > 0;
@@ -616,20 +792,21 @@ export const spawnPosixProcessTree = (executable, args, options) => {
 
   /** @param {{pid: number, startedAt: string}} identity @param {"SIGTERM" | "SIGKILL"} signal */
   const signalExactIdentity = async (identity, signal) => {
-    if (!(await refresh()) || !trackingReliable) return null;
+    const refreshed = process.platform === "linux"
+      ? await captureDescendants()
+      : await refresh();
+    if (!refreshed || !trackingReliable) return null;
     if (!aliveIdentities.has(identityKey(identity))) return false;
-    try {
-      process.kill(identity.pid, signal);
-      return true;
-    } catch (error) {
-      if (error && typeof error === "object" && "code" in error
-        && error.code === "ESRCH") {
-        await refresh();
-        return false;
-      }
+    if (process.platform !== "linux") {
+      // POSIX platforms without pidfds cannot close the check/signal PID-reuse
+      // race for a process which left the retained group. Preserve uncertainty
+      // and never send a numeric-PID signal outside the supervised group.
       trackingReliable = false;
       return null;
     }
+    const sent = await signalExactLinuxIdentity(identity, signal);
+    if (sent === null) trackingReliable = false;
+    return sent;
   };
 
   /** @param {"SIGTERM" | "SIGKILL"} signal */
@@ -642,7 +819,11 @@ export const spawnPosixProcessTree = (executable, args, options) => {
       ? signalProcessGroup(signal)
       : null;
     if (signal === "SIGTERM" || adapterExitResult) {
-      await refresh();
+      if (process.platform === "linux") {
+        await captureDescendants();
+      } else {
+        await refresh();
+      }
     } else {
       // The cancellation preparation already retained the system-wide tree.
       // Refresh only the still-live adapter ancestry at the forced deadline so
@@ -653,7 +834,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     /** @type {string | null} */
     let sentAt = null;
     const candidates = () => [...aliveIdentities.values()]
-      .filter((identity) => identity.processGroupId !== child.pid)
+      .filter((identity) => identity.processGroupId !== wrapperPid)
       .sort((left, right) => right.pid - left.pid);
     if (signal === "SIGTERM") {
       for (const identity of candidates()) {
@@ -679,7 +860,11 @@ export const spawnPosixProcessTree = (executable, args, options) => {
           sent = true;
           sentAt ??= new Date().toISOString();
         }
-        await refresh();
+        if (process.platform === "linux") {
+          await captureDescendants();
+        } else {
+          await refresh();
+        }
         if (!identitySignalled && aliveIdentities.has(identityKey(identity))) {
           trackingReliable = false;
           break;
@@ -712,7 +897,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     adapterExit,
     adapterExited: () => adapterExitResult !== null,
     captureDescendants,
-    prepareCancellation: refresh,
+    prepareCancellation: process.platform === "linux" ? captureDescendants : refresh,
     processTreeAlive,
     signal,
     release,

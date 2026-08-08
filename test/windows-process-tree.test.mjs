@@ -1,11 +1,83 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   captureWindowsProcessTreeSnapshot,
+  createNativeWindowsJobObject,
   createNativeWindowsProcessInventory,
   createNativeWindowsProcessTerminator,
   createWindowsProcessTreeTracker,
 } from "../src/windows-process-tree.mjs";
+
+test("the Windows adapter barrier blocks pinned code until Job Object assignment", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-windows-barrier-test-"));
+  const marker = join(directory, "assigned");
+  const child = spawn(process.execPath, [
+    "--require",
+    fileURLToPath(new URL("../src/windows-process-barrier.cjs", import.meta.url)),
+    "--eval",
+    "process.stdout.write('adapter-started')",
+  ], {
+    env: { ...process.env, SANDKING_WINDOWS_JOB_BARRIER: marker },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(stdout, "");
+    await writeFile(marker, "assigned\n", { mode: 0o600 });
+    const exit = await new Promise((resolve) => child.once("close", resolve));
+    assert.equal(exit, 0);
+    assert.equal(stdout, "adapter-started");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("native Windows Job Object binds, observes, and terminates one complete tree", async () => {
+  const commands = [];
+  let activeProcesses = 2;
+  const jobObject = createNativeWindowsJobObject({
+    name: "Local\\SandKingHarnessRun-test",
+    execute: (file, args, options, callback) => {
+      const command = args.at(-1);
+      commands.push(command);
+      if (command.includes("::ActiveProcessCount")) {
+        callback(null, String(activeProcesses), "");
+        return;
+      }
+      if (command.includes("::Terminate")) activeProcesses = 0;
+      callback(null, "", "");
+    },
+  });
+  const snapshot = await captureWindowsProcessTreeSnapshot(100, {
+    expectedCommandLineFragment: "harness-run-original",
+    readProcessIdentity: async () => ({
+      processId: 100,
+      creationTime: "2026-08-07T10:00:00.0001000Z",
+      commandLine: "node adapter.mjs harness-run-original",
+    }),
+    jobObject,
+  });
+  assert.ok(snapshot);
+  const tracker = createWindowsProcessTreeTracker(snapshot);
+
+  assert.equal(await tracker.prepareCancellation(), true);
+  assert.equal(await tracker.processTreeAlive(), true);
+  assert.equal(await tracker.forceTerminate(), true);
+  assert.equal(await tracker.processTreeAlive(), false);
+  assert.ok(commands.some((command) => command.includes("CreateJobObject")));
+  assert.ok(commands.some((command) => command.includes("AssignProcessToJobObject")));
+  assert.ok(commands.some((command) => command.includes("QueryInformationJobObject")));
+  assert.ok(commands.some((command) => command.includes("TerminateJobObject")));
+  assert.ok(commands.every((command) => !/taskkill(?:\.exe)?/i.test(command)));
+});
 
 test("Windows force termination preserves native creation ticks across process inventory", async () => {
   const cimCreationTime = "2026-08-07T10:00:00.0001000Z";
@@ -527,6 +599,35 @@ test("Windows cancellation never confirms a child first observed after its track
   processes = [
     { processId: 200, parentProcessId: 100, creationTime: "2026-08-07T10:00:01.000Z" },
   ];
+  assert.equal(await tracker.processTreeAlive(), true);
+  assert.equal(await tracker.forceTerminate(), false);
+  assert.deepEqual(terminated, []);
+  assert.equal(await tracker.processTreeAlive(), true);
+});
+
+test("Windows cancellation remains uncertain when an unobserved creator already exited", async () => {
+  let processes = [
+    { processId: 100, parentProcessId: 10, creationTime: "2026-08-07T10:00:00.000Z" },
+    { processId: 300, parentProcessId: 200, creationTime: "2026-08-07T10:00:02.000Z" },
+  ];
+  const terminated = [];
+  const tracker = createWindowsProcessTreeTracker({
+    rootIdentity: {
+      processId: 100,
+      creationTime: "2026-08-07T10:00:00.000Z",
+    },
+    initialProcesses: processes,
+    listProcesses: async () => processes,
+    terminateProcessTree: async (processIdentity) => {
+      terminated.push(processIdentity);
+      processes = processes.filter((process) =>
+        process.processId !== processIdentity.processId);
+      return true;
+    },
+  });
+
+  assert.equal(await tracker.prepareCancellation(), false);
+  processes = processes.filter((process) => process.processId !== 100);
   assert.equal(await tracker.processTreeAlive(), true);
   assert.equal(await tracker.forceTerminate(), false);
   assert.deepEqual(terminated, []);

@@ -78,3 +78,84 @@ test("POSIX cancellation retains a descendant that creates a new session", {
     await tree.release();
   }
 });
+
+test("Linux cancellation retains a daemon after its unobserved intermediate exits", {
+  skip: process.platform !== "linux"
+    ? "Linux subreaper ownership is exercised only on Linux"
+    : false,
+}, async () => {
+  const daemonSource = String.raw`
+    process.on("SIGTERM", () => undefined);
+    process.stdout.write("ready\n");
+    setInterval(() => undefined, 1000);
+  `;
+  const intermediateSource = `
+    import { spawn } from "node:child_process";
+    const daemon = spawn(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      ${JSON.stringify(daemonSource)},
+    ], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    daemon.stdout.once("data", () => {
+      daemon.stdout.destroy();
+      daemon.unref();
+      process.stdout.write(String(daemon.pid) + "\\n");
+    });
+  `;
+  const adapterSource = `
+    import { spawn } from "node:child_process";
+    const intermediate = spawn(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      ${JSON.stringify(intermediateSource)},
+    ], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    let daemonPid = "";
+    intermediate.stdout.on("data", (chunk) => { daemonPid += chunk; });
+    intermediate.once("close", () => process.stdout.write(daemonPid));
+    process.on("SIGTERM", () => process.exit(0));
+    setInterval(() => undefined, 1000);
+  `;
+  const tree = spawnPosixProcessTree(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    adapterSource,
+  ], {
+    cwd: process.cwd(),
+    env: { ...process.env },
+  });
+  let daemonPid = null;
+  const nativeKill = process.kill;
+  const directSignals = [];
+  try {
+    const [chunk] = await once(tree.child.stdout, "data");
+    daemonPid = Number(/[0-9]+/.exec(String(chunk))?.[0]);
+    assert.equal(Number.isSafeInteger(daemonPid), true);
+    assert.equal(processCanRun(daemonPid), true);
+
+    process.kill = (processId, signal) => {
+      if (signal === "SIGTERM" || signal === "SIGKILL") {
+        directSignals.push({ processId, signal });
+      }
+      return nativeKill(processId, signal);
+    };
+    assert.equal(await tree.prepareCancellation(), true);
+    assert.equal((await tree.signal("SIGTERM")).sent, true);
+    await tree.adapterExit;
+    assert.equal(processCanRun(daemonPid), true);
+    assert.equal(await tree.processTreeAlive(), true);
+
+    assert.equal((await tree.signal("SIGKILL")).sent, true);
+    assert.equal(await tree.processTreeAlive(), false);
+    assert.equal(processCanRun(daemonPid), false);
+    assert.equal(directSignals.some(({ processId }) => processId > 0), false);
+  } finally {
+    process.kill = nativeKill;
+    if (daemonPid && processCanRun(daemonPid)) {
+      process.kill(daemonPid, "SIGKILL");
+    }
+    if (tree.child.exitCode === null && tree.child.signalCode === null) {
+      await tree.signal("SIGKILL");
+    }
+    await tree.release();
+  }
+});

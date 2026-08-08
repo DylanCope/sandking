@@ -210,6 +210,47 @@ public static class SandKingExactProcess
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr processHandle);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BasicAccountingInformation
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenJobObject(
+        uint desiredAccess,
+        bool inheritHandle,
+        string name
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(
+        IntPtr jobHandle,
+        IntPtr processHandle
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(
+        IntPtr jobHandle,
+        int informationClass,
+        out BasicAccountingInformation information,
+        uint informationLength,
+        IntPtr returnLength
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateJobObject(IntPtr jobHandle, uint exitCode);
+
     public static string ReadCreationTime(uint processId)
     {
         IntPtr processHandle = OpenProcess(
@@ -286,6 +327,94 @@ public static class SandKingExactProcess
             CloseHandle(processHandle);
         }
     }
+
+    public static int AssignExactToJob(
+        uint processId,
+        long expectedCreationFileTime,
+        string jobName
+    )
+    {
+        IntPtr jobHandle = CreateJobObject(IntPtr.Zero, jobName);
+        if (jobHandle == IntPtr.Zero) return 4;
+        if (Marshal.GetLastWin32Error() == 183)
+        {
+            CloseHandle(jobHandle);
+            return 4;
+        }
+        IntPtr processHandle = OpenProcess(
+            ProcessTerminate | ProcessQueryLimitedInformation | 0x0100,
+            false,
+            processId
+        );
+        if (processHandle == IntPtr.Zero)
+        {
+            CloseHandle(jobHandle);
+            return 3;
+        }
+        try
+        {
+            FileTime creationTime;
+            FileTime exitTime;
+            FileTime kernelTime;
+            FileTime userTime;
+            if (!GetProcessTimes(
+                processHandle,
+                out creationTime,
+                out exitTime,
+                out kernelTime,
+                out userTime
+            )) return 4;
+            if (creationTime.ToInt64() != expectedCreationFileTime) return 3;
+            return AssignProcessToJobObject(jobHandle, processHandle) ? 0 : 4;
+        }
+        finally
+        {
+            CloseHandle(processHandle);
+            CloseHandle(jobHandle);
+        }
+    }
+
+    public static long ActiveProcessCount(string jobName)
+    {
+        IntPtr jobHandle = OpenJobObject(0x0004, false, jobName);
+        if (jobHandle == IntPtr.Zero)
+        {
+            return Marshal.GetLastWin32Error() == 2 ? 0 : -1;
+        }
+        try
+        {
+            BasicAccountingInformation information;
+            if (!QueryInformationJobObject(
+                jobHandle,
+                1,
+                out information,
+                (uint)Marshal.SizeOf(typeof(BasicAccountingInformation)),
+                IntPtr.Zero
+            )) return -1;
+            return information.ActiveProcesses;
+        }
+        finally
+        {
+            CloseHandle(jobHandle);
+        }
+    }
+
+    public static int Terminate(string jobName)
+    {
+        IntPtr jobHandle = OpenJobObject(0x0008, false, jobName);
+        if (jobHandle == IntPtr.Zero)
+        {
+            return Marshal.GetLastWin32Error() == 2 ? 3 : 4;
+        }
+        try
+        {
+            return TerminateJobObject(jobHandle, 1) ? 0 : 4;
+        }
+        finally
+        {
+            CloseHandle(jobHandle);
+        }
+    }
 }
 `;
 
@@ -343,6 +472,76 @@ exit [SandKingExactProcess]::TerminateExact([uint32]${processIdentity.processId}
       maxBuffer: 65_536,
     }, (error) => resolve(error === null));
   });
+
+/**
+ * Create a named, non-breakaway Windows Job Object controller. The adapter is
+ * assigned through a creation-time-checked process handle before its pinned
+ * entry point is released; Windows then associates every descendant with the
+ * same job even after intermediate creators exit.
+ *
+ * @param {{name: string, execute?: typeof execFile}} options
+ */
+export const createNativeWindowsJobObject = (options) => {
+  if (!/^Local\\SandKingHarnessRun-[A-Za-z0-9-]{1,96}$/.test(options.name)) {
+    throw new Error("windows_job_object_name_invalid");
+  }
+  const execute = options.execute ?? execFile;
+  const escapedName = options.name.replaceAll("'", "''");
+  /** @param {string} invocation @param {(error: any, stdout: string) => unknown} consume */
+  const invoke = (invocation, consume) => new Promise((resolve) => {
+    const command = `$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @'
+${exactWindowsProcessSource}
+'@
+${invocation}`;
+    execute("powershell.exe", [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      command,
+    ], {
+      windowsHide: true,
+      timeout: 5_000,
+      maxBuffer: 65_536,
+    }, (error, stdout) => resolve(consume(error, stdout)));
+  });
+  return {
+    name: options.name,
+    /** @param {{processId: number, creationTime: string}} identity */
+    assignProcess: (identity) => {
+      const expectedCreationFileTime = normalizeWindowsCreationTime(
+        identity.creationTime,
+      )?.fileTime;
+      if (
+        !Number.isSafeInteger(identity.processId)
+        || identity.processId <= 0
+        || identity.processId > 0xffff_ffff
+        || expectedCreationFileTime === undefined
+      ) {
+        return Promise.resolve(false);
+      }
+      return invoke(
+        `exit [SandKingExactProcess]::AssignExactToJob([uint32]${identity.processId}, [int64]${expectedCreationFileTime}, '${escapedName}')`,
+        (error) => error === null,
+      );
+    },
+    activeProcessCount: () => invoke(
+      `$count = [SandKingExactProcess]::ActiveProcessCount('${escapedName}')
+if ($count -lt 0) { exit 4 }
+Write-Output $count`,
+      (error, stdout) => {
+        if (error) return null;
+        const count = Number(stdout.trim());
+        return Number.isSafeInteger(count) && count >= 0 ? count : null;
+      },
+    ),
+    terminate: () => invoke(
+      `exit [SandKingExactProcess]::Terminate('${escapedName}')`,
+      (error) => error === null,
+    ),
+  };
+};
 
 const terminateNativeWindowsProcessTree = createNativeWindowsProcessTerminator();
 
@@ -403,6 +602,7 @@ const identityKey = (identity) => `${identity.processId}@${identity.creationTime
  *   expectedCommandLineFragment?: string,
  *   readProcessIdentity?: (processId: number) => Promise<{processId: number, creationTime: string, commandLine: string | null} | null>,
  *   listProcesses?: () => Promise<Array<{processId: number, parentProcessId: number, creationTime: string | null}>>,
+ *   jobObject?: {name: string, assignProcess: (identity: {processId: number, creationTime: string}) => Promise<boolean>, activeProcessCount: () => Promise<number | null>, terminate: () => Promise<boolean>},
  * }} [options]
  */
 export const captureWindowsProcessTreeSnapshot = async (rootPid, options = {}) => {
@@ -428,6 +628,18 @@ export const captureWindowsProcessTreeSnapshot = async (rootPid, options = {}) =
   ) {
     return null;
   }
+  const rootIdentity = {
+    processId: normalizedRoot.processId,
+    creationTime: normalizedRoot.creationTime,
+  };
+  if (options.jobObject) {
+    if (!(await options.jobObject.assignProcess(rootIdentity))) return null;
+    return {
+      rootIdentity,
+      initialProcesses: [],
+      jobObject: options.jobObject,
+    };
+  }
   /** @type {Array<{processId: number, parentProcessId: number, creationTime: string | null}>} */
   let listedProcesses;
   try {
@@ -446,10 +658,7 @@ export const captureWindowsProcessTreeSnapshot = async (rootPid, options = {}) =
     processes
   );
   return {
-    rootIdentity: {
-      processId: normalizedRoot.processId,
-      creationTime: normalizedRoot.creationTime,
-    },
+    rootIdentity,
     initialProcesses,
   };
 };
@@ -464,6 +673,7 @@ export const captureWindowsProcessTreeSnapshot = async (rootPid, options = {}) =
  *   initialProcesses?: Array<{processId: number, parentProcessId: number, creationTime: string | null}>,
  *   listProcesses?: () => Promise<Array<{processId: number, parentProcessId: number, creationTime: string}>>,
  *   terminateProcessTree?: (processIdentity: {processId: number, creationTime: string}) => Promise<boolean>,
+ *   jobObject?: {name: string, activeProcessCount: () => Promise<number | null>, terminate: () => Promise<boolean>},
  * }} options
  */
 export const createWindowsProcessTreeTracker = (options) => {
@@ -472,6 +682,35 @@ export const createWindowsProcessTreeTracker = (options) => {
     : normalizeProcess({ ...options.rootIdentity, parentProcessId: 0 });
   if (options.rootIdentity !== null && normalizedRoot === null) {
     throw new Error("windows_process_tree_root_invalid");
+  }
+  if (options.jobObject) {
+    const jobObject = options.jobObject;
+    let jobReliable = normalizedRoot !== null;
+    /** @type {number | null} */
+    let lastActiveProcessCount = null;
+    const refreshJob = async () => {
+      if (!jobReliable) return false;
+      const activeProcessCount = await jobObject.activeProcessCount();
+      if (activeProcessCount === null
+        || !Number.isSafeInteger(activeProcessCount) || activeProcessCount < 0) {
+        jobReliable = false;
+        return false;
+      }
+      lastActiveProcessCount = activeProcessCount;
+      return true;
+    };
+    return {
+      prepareCancellation: refreshJob,
+      processTreeAlive: async () =>
+        !(await refreshJob()) || (lastActiveProcessCount ?? 1) > 0,
+      forceTerminate: async () => {
+        if (!(await refreshJob()) || lastActiveProcessCount === 0) return false;
+        // TerminateJobObject dispatches against the retained job identity. The
+        // caller records that attempt separately and confirms ActiveProcesses
+        // reaches zero through processTreeAlive before committing cancelled.
+        return jobObject.terminate();
+      },
+    };
   }
   const listProcesses = options.listProcesses ?? listNativeWindowsProcesses;
   const terminateProcessTree = options.terminateProcessTree
@@ -517,6 +756,21 @@ export const createWindowsProcessTreeTracker = (options) => {
         === normalizedRoot?.creationTime
     ) {
       treeInventoryEstablished = true;
+    }
+    if (normalizedRoot && normalizedProcesses.some((process) =>
+      process.processId !== normalizedRoot.processId
+      && process.parentProcessId !== 0
+      && !currentByPid.has(process.parentProcessId)
+      && !trackedIdentities.has(identityKey(process))
+      && creationTimeIsNoLaterThan(
+        normalizedRoot.creationTime,
+        process.creationTime,
+      ))) {
+      // A live process created after the supervised root whose creator is
+      // already absent may sit behind a short-lived, never-sampled intermediate.
+      // Sampled ancestry cannot prove either ownership or non-ownership, so a
+      // legacy inventory tracker must never report the tree terminated.
+      trackingReliable = false;
     }
     let discovered = true;
     while (discovered) {
