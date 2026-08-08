@@ -34,9 +34,10 @@ export const hostCapabilities = Object.freeze([
   "sandking.conformance-harness-registration.v1",
   "sandking.harness-run.launch.v2",
   "sandking.harness-run.v2",
+  "sandking.harness-run.cancel.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-immutable-execution-snapshots")
+  .update("sandking-host-control-schema-v1-with-audited-harness-run-cancellation-rejections")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -388,6 +389,65 @@ export const harnessRunLaunchOutcomeSchema = z.union([
   harnessRunLaunchResultSchema,
   harnessRunLaunchFailureSchema,
 ]);
+const harnessRunCancellationAuthorizationClassSchema = z.literal(
+  "harness_run_cancellation",
+);
+const harnessRunCancellationSourceSchema = z.enum(["controller-cli", "cockpit"]);
+// Provider-originated values cross the Host boundary as bounded candidates so
+// the cancellation manager can retain a typed, audited rejection. Semantic
+// identity/hash validation remains part of the mutation contract below this
+// framed transport boundary.
+const harnessRunCancellationCandidateSchema = z.string().max(32_768);
+const harnessRunCancelSchema = z.object({
+  type: z.literal("harness.run.cancel"),
+  requestId: identifierSchema,
+  harnessRunId: harnessRunCancellationCandidateSchema,
+  controllerId: runtimeIdSchema,
+  controllerSessionId: z.string()
+    .regex(/^controller-session-[a-f0-9]{24}$/)
+    .nullable(),
+  source: harnessRunCancellationSourceSchema,
+  authorizationClass: harnessRunCancellationAuthorizationClassSchema,
+  idempotencyKeyHash: harnessRunCancellationCandidateSchema,
+}).strip();
+export const harnessRunCancelResultSchema = z.object({
+  type: z.literal("harness.run.cancel.result"),
+  requestId: identifierSchema,
+  code: z.literal("harness_run_cancellation_accepted"),
+  authorizationClass: harnessRunCancellationAuthorizationClassSchema,
+  idempotencyKeyHash: digestSchema,
+  idempotentReplay: z.boolean(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
+  acceptedAt: z.string().datetime(),
+  cooperativeDeadlineAt: z.string().datetime(),
+}).strip();
+export const harnessRunCancelFailureSchema = z.object({
+  type: z.literal("harness.run.cancel.failure"),
+  requestId: identifierSchema,
+  code: z.enum([
+    "mutation_contract_invalid",
+    "idempotency_key_conflict",
+    "harness_run_not_found",
+    "harness_run_not_cancellable",
+  ]),
+  retryable: z.boolean(),
+  authorizationClass: harnessRunCancellationAuthorizationClassSchema,
+  idempotencyKeyHash: digestSchema.nullable(),
+  idempotentReplay: z.boolean(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/).nullable(),
+  prohibitedSideEffects: z.object({
+    cancellationAccepted: z.literal(false),
+    cooperativeSignalSent: z.literal(false),
+    forcedTerminationSent: z.literal(false),
+    projectWrite: z.literal(false),
+  }).strict(),
+}).strip();
+export const harnessRunCancelOutcomeSchema = z.union([
+  harnessRunCancelResultSchema,
+  harnessRunCancelFailureSchema,
+]);
 // Retained v1 mutation outcomes remain lookup-readable after the command that
 // created them is retired. These schemas are nested historical data only;
 // `harness.run.start` is not restored as an accepted top-level operation.
@@ -490,7 +550,7 @@ const harnessRunObserveResultSchema = z.object({
     canonicalSnapshot: z.literal(true),
   }).strict().nullable(),
   run: harnessRunSchema.nullable(),
-  events: z.array(harnessRunEventSchema).max(1_024),
+  events: z.array(harnessRunEventSchema).max(1_025),
   nextSequence: z.number().int().nonnegative(),
   outcome: harnessRunOutcomeSchema.nullable(),
   logStreams: z.array(harnessLogStreamProjectionSchema).max(2),
@@ -552,6 +612,9 @@ export const controlMessageSchema = z.discriminatedUnion("type", [
   harnessRunLaunchSchema,
   harnessRunLaunchResultSchema,
   harnessRunLaunchFailureSchema,
+  harnessRunCancelSchema,
+  harnessRunCancelResultSchema,
+  harnessRunCancelFailureSchema,
   harnessRunLookupSchema,
   harnessRunLookupResultSchema,
   harnessRunObserveSchema,

@@ -1745,6 +1745,20 @@ const handleProviderOperation = async (request) => {
       authorizationClass: message.authorizationClass,
     });
   }
+  if (request.operation === "harness-run.cancel") {
+    return requestHostOperation({
+      type: "harness.run.cancel",
+      requestId: `harness-run-cancel-${randomBytes(8).toString("hex")}`,
+      harnessRunId: "harnessRunId" in input ? String(input.harnessRunId) : "",
+      controllerId: state.runtimeId,
+      controllerSessionId: request.sessionId,
+      source: "controller-cli",
+      authorizationClass: "harness_run_cancellation",
+      idempotencyKeyHash: "idempotencyKeyHash" in input
+        ? String(input.idempotencyKeyHash)
+        : "",
+    });
+  }
   if (request.operation === "harness-run.lookup") {
     return requestHostOperation({
       type: "harness.run.lookup",
@@ -2400,6 +2414,24 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           });
           socket.send(serializeRuntimeControl({
             type: "runtime.harness-run.launch-result",
+            requestId: control.requestId,
+            outcome,
+          }));
+          return;
+        }
+        if (control.type === "browser.harness-run.cancel") {
+          const outcome = await requestHostOperation({
+            type: "harness.run.cancel",
+            requestId: `harness-run-cancel-${randomBytes(8).toString("hex")}`,
+            harnessRunId: control.harnessRunId,
+            controllerId: state.runtimeId,
+            controllerSessionId: null,
+            source: "cockpit",
+            authorizationClass: "harness_run_cancellation",
+            idempotencyKeyHash: control.idempotencyKeyHash,
+          });
+          socket.send(serializeRuntimeControl({
+            type: "runtime.harness-run.cancel-result",
             requestId: control.requestId,
             outcome,
           }));

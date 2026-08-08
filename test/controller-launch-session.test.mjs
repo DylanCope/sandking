@@ -60,6 +60,14 @@ test("a project-focused conformance Controller launches in one revision-free act
             launchOutcome,
           };
         }
+        if (request.operation === "harness-run.cancel") {
+          return {
+            type: "harness.run.cancel.result",
+            code: "harness_run_cancellation_accepted",
+            idempotencyKeyHash: request.input.idempotencyKeyHash,
+            harnessRunId: request.input.harnessRunId,
+          };
+        }
         throw new Error("unexpected_provider_operation");
       },
     });
@@ -69,6 +77,7 @@ test("a project-focused conformance Controller launches in one revision-free act
       canonicalReference: `sandking:project:${projectId}`,
     });
     assert.ok(session.provider.capabilities.includes("controller.harness-run.launch"));
+    assert.ok(session.provider.capabilities.includes("controller.harness-run.cancel"));
     assert.equal(session.provider.capabilities.some((capability) =>
       /launch-request|approve|skill/.test(capability)), false);
 
@@ -117,6 +126,34 @@ test("a project-focused conformance Controller launches in one revision-free act
     assert.equal("idempotencyKey" in operations[0].input, false);
     assert.equal("idempotencyKey" in operations[1].input, false);
 
+    // Disconnecting the Cockpit attachment from its Controller is observation-
+    // only: it neither cancels the live run nor emits another provider action.
+    manager.detach(socket);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(operations.map((operation) => operation.operation), [
+      "harness-run.launch",
+      "harness-run.lookup",
+    ]);
+    const reattached = await manager.attach({
+      socket,
+      sessionId: session.sessionId,
+      streamId: session.terminal.streamId,
+      attachmentId: session.terminal.writableAttachment.attachmentId,
+      mode: "read-write",
+      outputCursor: 0,
+      onOutput: (_socket, frame) => output.push(frame.data.toString("utf8")),
+    });
+    assert.equal(reattached.activate(), true);
+
+    await enter(`cancel ${harnessRunId}`);
+    await waitFor(() => output.join("").includes(
+      `Cancellation accepted for ${harnessRunId}`,
+    ));
+    assert.equal(operations[2].operation, "harness-run.cancel");
+    assert.equal(operations[2].input.harnessRunId, harnessRunId);
+    assert.match(operations[2].input.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    assert.equal("idempotencyKey" in operations[2].input, false);
+
     await enter("launch");
     await waitFor(() => output.join("").includes(
       `Harness run ${secondHarnessRunId} created`,
@@ -125,13 +162,14 @@ test("a project-focused conformance Controller launches in one revision-free act
     assert.deepEqual(operations.map((operation) => operation.operation), [
       "harness-run.launch",
       "harness-run.lookup",
+      "harness-run.cancel",
       "harness-run.launch",
     ]);
     assert.notEqual(
-      operations[2].input.idempotencyKeyHash,
+      operations[3].input.idempotencyKeyHash,
       operations[0].input.idempotencyKeyHash,
     );
-    assert.equal("idempotencyKey" in operations[2].input, false);
+    assert.equal("idempotencyKey" in operations[3].input, false);
     assert.doesNotMatch(output.join(""), /Launch request|approve|reject|--plugin-dir/i);
     assert.ok(audits.some((audit) => audit.action === "controller.provider.operation"
       && audit.details.operation === "harness-run.launch"));

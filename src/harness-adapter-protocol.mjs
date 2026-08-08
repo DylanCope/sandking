@@ -176,6 +176,14 @@ export const harnessReadyEnvelopeSchema = z.object({
   readyAt: z.string().datetime(),
 }).strict();
 
+export const harnessCancellationRequestSchema = z.object({
+  type: z.literal("harness.run.cancel"),
+  adapterProtocol: adapterProtocolSchema,
+  adapterId: adapterIdSchema,
+  harnessRunId: harnessRunIdSchema,
+  cooperativeDeadlineAt: z.string().datetime(),
+}).strict();
+
 export const harnessProgressEnvelopeSchema = z.object({
   type: z.literal("harness.run.progress"),
   adapterProtocol: adapterProtocolSchema,

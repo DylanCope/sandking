@@ -23,6 +23,7 @@ const capabilities = Object.freeze([
   "controller.session.terminate",
   "controller.work-context.inspect",
   "controller.harness-run.launch",
+  "controller.harness-run.cancel",
 ]);
 const identifierPattern = /^[a-zA-Z0-9._:-]{1,160}$/;
 const providerSessionPattern = /^conformance-provider-session-[a-f0-9]{24}$/;
@@ -269,6 +270,8 @@ const run = async (argv) => {
   let processing = Promise.resolve();
   /** @type {Map<string, string>} */
   const pendingLaunchRetryHashes = new Map();
+  /** @type {Map<string, string>} */
+  const pendingCancellationRetryHashes = new Map();
   /** @param {string} line */
   const handleLine = async (line) => {
     if (line === "dimensions") {
@@ -357,6 +360,37 @@ const run = async (argv) => {
             : "")
           + "Terminal observation continues asynchronously in the Cockpit.\r\ncontroller> ",
       );
+      return;
+    }
+    const cancelMatch = /^cancel (harness-run-[a-f0-9]{24})$/.exec(line);
+    if (cancelMatch) {
+      const harnessRunId = cancelMatch[1];
+      let idempotencyKeyHash = pendingCancellationRetryHashes.get(harnessRunId);
+      if (!idempotencyKeyHash) {
+        idempotencyKeyHash = `sha256:${createHash("sha256")
+          .update(randomBytes(32)).digest("hex")}`;
+        pendingCancellationRetryHashes.set(harnessRunId, idempotencyKeyHash);
+      }
+      try {
+        const outcome = await control.request("harness-run.cancel", {
+          harnessRunId,
+          idempotencyKeyHash,
+        });
+        if (outcome?.type !== "harness.run.cancel.result") {
+          process.stdout.write(
+            `Harness run cancellation was not accepted: ${outcome?.code ?? "harness_run_cancellation_indeterminate"}.\r\ncontroller> `,
+          );
+          return;
+        }
+        pendingCancellationRetryHashes.delete(harnessRunId);
+        process.stdout.write(
+          `Cancellation accepted for ${harnessRunId}. Terminal observation continues asynchronously in the Cockpit.\r\ncontroller> `,
+        );
+      } catch (error) {
+        process.stdout.write(
+          `Harness run cancellation is indeterminate: ${error instanceof Error ? error.message : "provider_operation_failed"}. Retry the same command safely.\r\ncontroller> `,
+        );
+      }
       return;
     }
     if (line === "exit") {

@@ -132,6 +132,51 @@ const nextControl = async (socket) => {
   return parsed.message;
 };
 
+test("Cockpit Harness-run cancellation is capability-negotiated and hash-only", () => {
+  assert.ok(browserCapabilities.includes("cockpit.harness-run-cancellation.v1"));
+  const harnessRunId = `harness-run-${"1".repeat(24)}`;
+  const idempotencyKeyHash = `sha256:${"2".repeat(64)}`;
+  const request = {
+    channel: "control",
+    message: {
+      type: "browser.harness-run.cancel",
+      requestId: "browser-cancel-harness-run",
+      harnessRunId,
+      idempotencyKeyHash,
+    },
+  };
+  assert.deepEqual(parseBrowserControl(request), request.message);
+  const outcome = {
+    type: "runtime.harness-run.cancel-result",
+    requestId: request.message.requestId,
+    outcome: {
+      type: "harness.run.cancel.result",
+      requestId: "host-cancel-harness-run",
+      code: "harness_run_cancellation_accepted",
+      authorizationClass: "harness_run_cancellation",
+      idempotencyKeyHash,
+      idempotentReplay: false,
+      auditId: `audit-${"3".repeat(24)}`,
+      harnessRunId,
+      acceptedAt: "2026-08-07T10:00:00.000Z",
+      cooperativeDeadlineAt: "2026-08-07T10:00:01.000Z",
+    },
+  };
+  assert.deepEqual(
+    runtimeControlEnvelopeSchema.parse(JSON.parse(serializeRuntimeControl(outcome))).message,
+    outcome,
+  );
+  assert.throws(() => parseBrowserControl({
+    ...request,
+    message: {
+      ...request.message,
+      idempotencyKeyHash: undefined,
+      idempotencyKey: "recognizable-browser-cancellation-key",
+    },
+  }), (error) => error instanceof BrowserProtocolError
+    && error.code === "browser_control_schema_invalid");
+});
+
 test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and resynchronizable", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-browser-protocol-"));
   const secret = "recognizable-controller-secret-fixture";
