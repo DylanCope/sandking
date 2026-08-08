@@ -628,10 +628,7 @@ if (command === "probe") {
   } else {
     const progressRecordCount = normalized.issueNumber === 999999997 ? 1023 : 1;
     if (progressRecordCount === 1) {
-      await new Promise((resolve) => setTimeout(
-        resolve,
-        normalized.issueNumber === 999999993 ? 5000 : 40,
-      ));
+      await new Promise((resolve) => setTimeout(resolve, 40));
     }
     for (let index = 0; index < progressRecordCount; index += 1) {
       writeFrame({
@@ -661,32 +658,39 @@ if (command === "probe") {
     if (progressRecordCount === 1) {
       await new Promise((resolve) => setTimeout(resolve, 140));
     }
-    const terminal = {
-      type: "harness.run.terminal",
-      adapterProtocol,
-      adapterId,
-      harnessRunId: execution.harnessRunId,
-      terminalId: \`harness-terminal-\${"2".repeat(24)}\`,
-      status: "succeeded",
-      completedAt: now(),
-      result: normalized.placeholderIdentifier ? {
-        kind: "conformance-result",
-        placeholderIdentifier: normalized.placeholderIdentifier,
-      } : {
-        kind: "conformance-result",
-        issueNumber: normalized.issueNumber,
-        targetBranch: normalized.targetBranch,
-      },
-    };
-    if (normalized.issueNumber === 999999995) {
-      writeFrame({ ...terminal, terminalId: "invalid-terminal-id" });
+    if (normalized.issueNumber === 999999993) {
+      // This reserved packaged-Cockpit fixture remains live until the selected
+      // run is cancelled. Wall-clock completion made the public Cancel control
+      // depend on launch, reload, and browser scheduling speed.
+      setInterval(() => undefined, 1000);
     } else {
-      writeFrame(terminal);
-      if (normalized.issueNumber === 999999996) {
-        writeFrame({
-          ...terminal,
-          terminalId: \`harness-terminal-\${"3".repeat(24)}\`,
-        });
+      const terminal = {
+        type: "harness.run.terminal",
+        adapterProtocol,
+        adapterId,
+        harnessRunId: execution.harnessRunId,
+        terminalId: \`harness-terminal-\${"2".repeat(24)}\`,
+        status: "succeeded",
+        completedAt: now(),
+        result: normalized.placeholderIdentifier ? {
+          kind: "conformance-result",
+          placeholderIdentifier: normalized.placeholderIdentifier,
+        } : {
+          kind: "conformance-result",
+          issueNumber: normalized.issueNumber,
+          targetBranch: normalized.targetBranch,
+        },
+      };
+      if (normalized.issueNumber === 999999995) {
+        writeFrame({ ...terminal, terminalId: "invalid-terminal-id" });
+      } else {
+        writeFrame(terminal);
+        if (normalized.issueNumber === 999999996) {
+          writeFrame({
+            ...terminal,
+            terminalId: \`harness-terminal-\${"3".repeat(24)}\`,
+          });
+        }
       }
     }
   }

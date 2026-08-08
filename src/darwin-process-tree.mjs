@@ -15,7 +15,11 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 const supervisorPath = fileURLToPath(import.meta.url);
+const containmentPreloadPath = fileURLToPath(
+  new URL("./darwin-process-containment.cjs", import.meta.url),
+);
 const launchctlPath = "/bin/launchctl";
+const psPath = "/bin/ps";
 
 /** @typedef {{code: number | null, signal: string | null, startFailed: boolean}} AdapterExitResult */
 /** @typedef {{sent: boolean, sentAt: string | null}} SignalResult */
@@ -33,6 +37,34 @@ const connect = (path) => new Promise((resolve, reject) => {
   const socket = createConnection(path);
   socket.once("connect", () => resolve(socket));
   socket.once("error", reject);
+});
+
+/** @param {NodeJS.ProcessEnv} env */
+const darwinContainedEnvironment = (env) => {
+  const preloadOption = `--require=${JSON.stringify(containmentPreloadPath)}`;
+  const existingNodeOptions = typeof env.NODE_OPTIONS === "string"
+    ? env.NODE_OPTIONS.trim()
+    : "";
+  return {
+    ...env,
+    NODE_OPTIONS: existingNodeOptions
+      ? `${existingNodeOptions} ${preloadOption}`
+      : preloadOption,
+  };
+};
+
+/**
+ * The launchd job's process group is the Darwin containment boundary. The
+ * adapter must inherit that group; creating a detached session here would put
+ * the entire Harness tree outside the group which bootout terminates.
+ *
+ * @param {{cwd: string, env: NodeJS.ProcessEnv, stdio: import("node:child_process").StdioOptions}} options
+ */
+export const darwinAdapterSpawnOptions = (options) => ({
+  cwd: options.cwd,
+  env: options.env,
+  detached: false,
+  stdio: options.stdio,
 });
 
 const runDarwinSupervisor = async () => {
@@ -63,12 +95,12 @@ const runDarwinSupervisor = async () => {
   };
   let adapter;
   try {
-    adapter = spawn(configuration.executable, configuration.args, {
-      cwd: configuration.cwd,
-      env: configuration.env,
-      detached: true,
-      stdio: ["ignore", stdoutSocket, stderrSocket, adapterSocket],
-    });
+    adapter = spawn(configuration.executable, configuration.args,
+      darwinAdapterSpawnOptions({
+        cwd: configuration.cwd,
+        env: configuration.env,
+        stdio: ["ignore", stdoutSocket, stderrSocket, adapterSocket],
+      }));
   } catch {
     report({ type: "darwin-process-tree.adapter-error" });
     process.exit(1);
@@ -83,6 +115,10 @@ const runDarwinSupervisor = async () => {
   });
 
   let controlBuffer = "";
+  // The wrapper is the live launchd process-group leader. It survives the
+  // cooperative group signal so it can retain that non-reusable identity
+  // through either clean tree exit or launchd escalation.
+  process.on("SIGTERM", () => undefined);
   controlSocket.setEncoding("utf8");
   controlSocket.on("data", (/** @type {string} */ chunk) => {
     controlBuffer += chunk;
@@ -106,7 +142,7 @@ const runDarwinSupervisor = async () => {
       }
       let sent = false;
       try {
-        process.kill(-adapter.pid, request.signal);
+        process.kill(-process.pid, request.signal);
         sent = true;
       } catch {
         // The process group may already have exited cooperatively.
@@ -139,10 +175,11 @@ const createOutputServer = (path, output) => {
 };
 
 /**
- * Launch one Harness adapter as a launchd job. With AbandonProcessGroup false,
- * launchd retains every descendant even if it creates a new session and its
- * intermediate parent exits. Removing the job is therefore the Darwin force
- * boundary; a missing job is the confirmation boundary.
+ * Launch one Harness adapter in a launchd-owned process group. The wrapper is
+ * the retained group leader, and the adapter deliberately inherits its group.
+ * Removing the job is the Darwin force boundary; job removal plus direct
+ * confirmation that neither the group nor adapter remains is the termination
+ * boundary.
  *
  * @param {string} executable
  * @param {string[]} args
@@ -180,7 +217,7 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
     executable,
     args,
     cwd: options.cwd,
-    env: options.env,
+    env: darwinContainedEnvironment(options.env),
     channels,
   })}\n`, { mode: 0o600 });
   const plistPath = join(directory, "job.plist");
@@ -210,6 +247,10 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
   child.connected = true;
 
   let adapterSpawned = false;
+  /** @type {number | null} */
+  let wrapperPid = null;
+  /** @type {number | null} */
+  let adapterPid = null;
   /** @type {AdapterExitResult | null} */
   let adapterExitResult = null;
   /** @type {(result: AdapterExitResult) => void} */
@@ -256,11 +297,14 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
         }
         if (message.type === "darwin-process-tree.adapter-spawned") {
           adapterSpawned = true;
-          child.pid = Number.isSafeInteger(message.wrapperPid) && message.wrapperPid > 0
+          wrapperPid = Number.isSafeInteger(message.wrapperPid) && message.wrapperPid > 0
             ? message.wrapperPid
-            : undefined;
+            : null;
+          child.pid = wrapperPid ?? undefined;
           if (!Number.isSafeInteger(message.adapterPid) || message.adapterPid <= 0) {
             failLaunch();
+          } else {
+            adapterPid = message.adapterPid;
           }
           continue;
         }
@@ -325,6 +369,65 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
       windowsHide: true,
     }, (error) => resolve(error === null));
   });
+
+  /** @returns {Promise<Array<{pid: number, processGroupId: number, state: string}> | null>} */
+  const readProcessGroups = () => new Promise((resolve) => {
+    execFile(psPath, ["-axo", "pid=,pgid=,stat="], {
+      timeout: 5_000,
+      windowsHide: true,
+    }, (error, stdout) => {
+      if (error) {
+        resolve(null);
+        return;
+      }
+      const processes = [];
+      for (const line of stdout.split("\n")) {
+        if (line.trim() === "") continue;
+        const match = /^\s*([0-9]+)\s+([0-9]+)\s+(\S+)\s*$/.exec(line);
+        if (!match) {
+          resolve(null);
+          return;
+        }
+        processes.push({
+          pid: Number(match[1]),
+          processGroupId: Number(match[2]),
+          state: match[3],
+        });
+      }
+      resolve(processes);
+    });
+  });
+  /** @param {number} processId */
+  const processExists = (processId) => {
+    try {
+      process.kill(processId, 0);
+      return true;
+    } catch (error) {
+      return !(error && typeof error === "object" && "code" in error
+        && error.code === "ESRCH");
+    }
+  };
+  const supervisedTreeAlive = async () => {
+    if (wrapperPid === null || adapterPid === null) return true;
+    const processes = await readProcessGroups();
+    if (!processes) return true;
+    const groupMemberAlive = processes.some((processEntry) =>
+      processEntry.pid !== wrapperPid
+      && processEntry.processGroupId === wrapperPid
+      && !["X", "Z"].includes(processEntry.state[0]));
+    // Adapter PID reuse can only cause a safe false-positive here. An ESRCH
+    // observation cannot hide the original adapter, while a replacement keeps
+    // cancellation unconfirmed and is never signalled by numeric PID.
+    return groupMemberAlive || processExists(adapterPid);
+  };
+  const waitForSupervisedTreeExit = async () => {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      if (!(await supervisedTreeAlive())) return true;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return false;
+  };
   const removeContainment = () => new Promise((resolve) => {
     if (containmentRemoved) {
       resolve(false);
@@ -342,9 +445,12 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
         return;
       }
       containmentRemoved = true;
-      // The job was present when this controller was created and is now absent;
-      // even if launchctl reports an interrupted response, the force boundary
-      // was dispatched and launchd no longer owns a live descendant coalition.
+      if (!(await waitForSupervisedTreeExit())) {
+        containmentAvailable = false;
+      }
+      // The job was present when this controller was created, is now absent,
+      // so retain the dispatch time even if subsequent tree confirmation stays
+      // uncertain. processTreeAlive remains the separate terminal-state gate.
       resolve(sentAt);
     });
   });
@@ -400,10 +506,7 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
     adapterExited: () => adapterExitResult !== null,
     captureDescendants: async () => containmentAvailable && !containmentRemoved,
     prepareCancellation: async () => containmentAvailable && !containmentRemoved,
-    // Before removal the live launchd job is deliberately treated as possibly
-    // containing a daemon. This prevents a cooperative-exit sample from
-    // publishing cancelled while an escaped descendant continues running.
-    processTreeAlive: async () => !released && !containmentRemoved,
+    processTreeAlive: async () => !released && await supervisedTreeAlive(),
     signal,
     release,
   };

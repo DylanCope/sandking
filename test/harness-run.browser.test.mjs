@@ -290,6 +290,10 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
         `#harness-run-observation[data-run-id='${secondHarnessRunId}']`,
         { timeout: 15_000 },
       );
+      // The packaged cancellation seam must stay live independently of launch,
+      // reload, and browser scheduling latency. The former five-second fixture
+      // could finish truthfully before this public control was rendered.
+      await page.waitForTimeout(5_250);
       await page.waitForSelector("#cancel-harness-run:not([disabled])", { timeout: 15_000 });
       assert.equal(sentFrames.filter((frame) =>
         frame.includes('"type":"browser.harness-run.cancel"')).length, 0);

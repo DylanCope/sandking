@@ -32,6 +32,7 @@ test("the stable sandking command is public, executable, and contains module-rel
     "src/protocol.mjs",
     "src/browser-protocol.mjs",
     "src/cockpit.js",
+    "src/darwin-process-containment.cjs",
     "src/darwin-process-tree.mjs",
     "src/posix-process-tree-helper.c",
     "src/native/linux-arm64/posix-process-tree-helper",
