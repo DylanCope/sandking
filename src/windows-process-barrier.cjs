@@ -1,4 +1,4 @@
-const { existsSync } = require("node:fs");
+const { existsSync, readFileSync } = require("node:fs");
 
 const markerPath = process.env.SANDKING_WINDOWS_JOB_BARRIER;
 delete process.env.SANDKING_WINDOWS_JOB_BARRIER;
@@ -12,4 +12,7 @@ while (!existsSync(markerPath)) {
     throw new Error("windows_process_tree_barrier_timeout");
   }
   Atomics.wait(waitBuffer, 0, 0, 10);
+}
+if (readFileSync(markerPath, "utf8") !== "assigned\n") {
+  throw new Error("windows_process_tree_barrier_aborted");
 }

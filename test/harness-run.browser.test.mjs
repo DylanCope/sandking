@@ -199,6 +199,7 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       await page.unroute("**/projects/open");
       const firstRuns = await waitForRetainedRuns(dataDir, 1);
       const firstRun = firstRuns[0];
+      assert.equal(firstRun.status, "succeeded", JSON.stringify(firstRun));
       assert.equal(firstRun.projectId, projectId);
       assert.equal(firstRun.source, "cockpit");
       assert.equal(firstRun.controllerSessionId, null);
@@ -506,7 +507,7 @@ test("Cockpit Launch renders no fields for a focused Harness that declares none"
     const [run] = await waitForRetainedRuns(dataDir, 1);
     assert.equal(run.projectId, projectId);
     assert.equal(run.harnessPinnedRevision, noneRevision);
-    assert.equal(run.status, "succeeded");
+    assert.equal(run.status, "succeeded", JSON.stringify(run));
     assert.equal(run.source, "cockpit");
     assert.deepEqual(run.parameters, {});
     await context.close();

@@ -169,7 +169,7 @@ fi
     assert.equal(retained.providerId, "claude-code");
     assert.equal(retained.terminal.runtimeOwned, true);
     assert.equal(retained.terminal.status, "running");
-    assert.equal(publicCliRun.status, "succeeded");
+    assert.equal(publicCliRun.status, "succeeded", JSON.stringify(publicCliRun));
     assert.equal(publicCliRun.source, "controller-cli");
     assert.equal(publicCliRun.controllerSessionId, controllerSessionId);
     assert.deepEqual(publicCliRun.parameters, {});

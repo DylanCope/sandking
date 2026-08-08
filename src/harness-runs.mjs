@@ -1,6 +1,13 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +40,13 @@ import {
 const windowsProcessBarrierPath = fileURLToPath(
   new URL("./windows-process-barrier.cjs", import.meta.url),
 );
+
+/** @param {string} markerPath @param {"assigned" | "aborted"} decision */
+const publishWindowsProcessBarrierDecision = async (markerPath, decision) => {
+  const candidatePath = `${markerPath}.${decision}`;
+  await writeFile(candidatePath, `${decision}\n`, { mode: 0o600 });
+  await rename(candidatePath, markerPath);
+};
 
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const auditIdSchema = z.string().regex(/^audit-[a-f0-9]{24}$/);
@@ -587,6 +601,11 @@ const superviseConformanceHarness = async (run, context, observer) => {
   const windowsBarrierMarker = windowsBarrierDirectory
     ? join(windowsBarrierDirectory, "assigned")
     : null;
+  const windowsJobObject = windowsBarrierMarker
+    ? createNativeWindowsJobObject({
+        name: `Local\\SandKingHarnessRun-${randomBytes(16).toString("hex")}`,
+      })
+    : null;
   // Execute the exact bytes read from the immutable Git object. The worktree
   // comparison detects drift, while the inline source removes the check/use
   // window in which different adapter bytes could otherwise be launched.
@@ -620,34 +639,59 @@ const superviseConformanceHarness = async (run, context, observer) => {
     });
   }
   const windowsProcessTreePromise = process.platform === "win32"
-    && typeof child.pid === "number"
+    && typeof child.pid === "number" && windowsJobObject
     ? captureWindowsProcessTreeSnapshot(child.pid, {
         // The encoded invocation contains this run's unique identity. It lets
         // the launch-time native query reject a different process that reused
         // the adapter PID before its creation time could be captured.
         expectedCommandLineFragment: encodedExecution,
-        jobObject: createNativeWindowsJobObject({
-          name: `Local\\SandKingHarnessRun-${randomBytes(16).toString("hex")}`,
-        }),
+        jobObject: windowsJobObject,
       }).then(async (snapshot) => {
         if (!snapshot || !windowsBarrierMarker) {
-          child.kill("SIGKILL");
+          // The adapter is still blocked in the preloaded barrier. Abort that
+          // already-bound launch channel rather than signalling a numeric PID
+          // which may now identify an unrelated replacement process.
+          await windowsJobObject.terminate().catch(() => false);
+          if (windowsBarrierMarker) {
+            await publishWindowsProcessBarrierDecision(
+              windowsBarrierMarker,
+              "aborted",
+            ).catch(() => undefined);
+          }
           return createWindowsProcessTreeTracker({ rootIdentity: null });
         }
-        await writeFile(windowsBarrierMarker, "assigned\n", { mode: 0o600 });
+        await publishWindowsProcessBarrierDecision(
+          windowsBarrierMarker,
+          "assigned",
+        );
         return createWindowsProcessTreeTracker(snapshot);
-      }).catch(() => {
-        child.kill("SIGKILL");
+      }).catch(async () => {
+        // Assignment may have completed before a native query or publication
+        // failure became observable. Terminating the unguessable Job identity
+        // is safe in either case; the abort marker handles an unassigned child.
+        await windowsJobObject.terminate().catch(() => false);
+        if (windowsBarrierMarker) {
+          await publishWindowsProcessBarrierDecision(
+            windowsBarrierMarker,
+            "aborted",
+          ).catch(() => undefined);
+        }
         return createWindowsProcessTreeTracker({ rootIdentity: null });
       })
     : null;
-  const adapterChannel = posixProcessTree?.adapterChannel ?? child.stdio[3];
-  if (!adapterChannel || !child.stdout || !child.stderr || !("readable" in adapterChannel)) {
+  const terminateContainedAdapter = () => {
     if (posixProcessTree) {
       void posixProcessTree.signal("SIGKILL");
-    } else {
-      child.kill("SIGKILL");
+      return;
     }
+    if (windowsProcessTreePromise) {
+      void windowsProcessTreePromise.then((processTree) =>
+        processTree.forceTerminate()).catch(() => undefined);
+    }
+  };
+  const adapterChannel = posixProcessTree?.adapterChannel ?? child.stdio[3];
+  if (!adapterChannel || !child.stdout || !child.stderr || !("readable" in adapterChannel)) {
+    terminateContainedAdapter();
     throw new Error("harness_adapter_start_failed");
   }
   let diagnosticQueue = Promise.resolve();
@@ -666,11 +710,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
   });
   const terminateProtocolInvalidAdapter = () => {
     protocolInvalid = true;
-    if (posixProcessTree) {
-      void posixProcessTree.signal("SIGKILL");
-    } else if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGKILL");
-    }
+    terminateContainedAdapter();
     adapterChannel.destroy();
   };
   const publishedProgressRecordIds = new Set();

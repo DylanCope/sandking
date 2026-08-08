@@ -40,6 +40,31 @@ test("the Windows adapter barrier blocks pinned code until Job Object assignment
   }
 });
 
+test("the Windows adapter barrier exits without running pinned code when containment fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-windows-barrier-abort-test-"));
+  const marker = join(directory, "assigned");
+  await writeFile(marker, "aborted\n", { mode: 0o600 });
+  const child = spawn(process.execPath, [
+    "--require",
+    fileURLToPath(new URL("../src/windows-process-barrier.cjs", import.meta.url)),
+    "--eval",
+    "process.stdout.write('adapter-started')",
+  ], {
+    env: { ...process.env, SANDKING_WINDOWS_JOB_BARRIER: marker },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  try {
+    const exit = await new Promise((resolve) => child.once("close", resolve));
+    assert.notEqual(exit, 0);
+    assert.equal(stdout, "");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("native Windows Job Object binds, observes, and terminates one complete tree", async () => {
   const commands = [];
   let activeProcesses = 2;
