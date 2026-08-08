@@ -8,8 +8,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
+  createDarwinSupervisorSignalController,
   darwinAdapterSpawnOptions,
-  dispatchDarwinAdapterGroupSignal,
+  darwinSupervisorSpawnOptions,
   spawnDarwinProcessTree,
 } from "../src/darwin-process-tree.mjs";
 
@@ -46,7 +47,11 @@ const readJsonLine = async (stream) => {
   return JSON.parse(buffered.slice(0, buffered.indexOf("\n")));
 };
 
-test("the Darwin adapter leads the cooperative process group inside its coalition", () => {
+test("the Darwin adapter inherits the retained supervisor process group", () => {
+  assert.deepEqual(darwinSupervisorSpawnOptions(), {
+    detached: true,
+    stdio: "ignore",
+  });
   const stdio = ["ignore", "pipe", "pipe", "pipe"];
   assert.deepEqual(darwinAdapterSpawnOptions({
     cwd: "/private/tmp/project",
@@ -55,26 +60,63 @@ test("the Darwin adapter leads the cooperative process group inside its coalitio
   }), {
     cwd: "/private/tmp/project",
     env: { LANG: "C.UTF-8" },
-    detached: true,
+    detached: false,
     stdio,
   });
 });
 
-test("a queued Darwin cooperative signal cannot target a group after adapter exit", () => {
+test("the Darwin supervisor revokes queued cooperative signals after adapter exit", () => {
   const dispatchedSignals = [];
-  const result = dispatchDarwinAdapterGroupSignal({
-    adapterPid: 8_051,
-    adapterExited: true,
-    signal: "SIGTERM",
+  let adapterExited = false;
+  const controller = createDarwinSupervisorSignalController({
+    groupLeaderPid: 8_051,
     kill: (processId, signal) => {
-      dispatchedSignals.push({ processId, signal });
+      dispatchedSignals.push({ processId, signal, adapterExited });
       return true;
     },
     now: () => new Date("2026-08-08T15:00:00.000Z"),
   });
+  const activeResult = controller.handleRequest({
+    type: "darwin-process-tree.signal",
+    requestId: 40,
+    signal: "SIGTERM",
+  });
+  assert.deepEqual(activeResult, {
+    type: "darwin-process-tree.signal-result",
+    requestId: 40,
+    sent: true,
+    sentAt: "2026-08-08T15:00:00.000Z",
+  });
+  assert.deepEqual(dispatchedSignals, [{
+    processId: -8_051,
+    signal: "SIGTERM",
+    adapterExited: false,
+  }]);
 
-  assert.deepEqual(result, { sent: false, sentAt: null });
-  assert.deepEqual(dispatchedSignals, []);
+  controller.recordAdapterExit();
+  adapterExited = true;
+  const result = controller.handleRequest({
+    type: "darwin-process-tree.signal",
+    requestId: 41,
+    signal: "SIGTERM",
+  });
+
+  assert.deepEqual(result, {
+    type: "darwin-process-tree.signal-result",
+    requestId: 41,
+    sent: false,
+    sentAt: null,
+  });
+  assert.deepEqual(dispatchedSignals, [{
+    processId: -8_051,
+    signal: "SIGTERM",
+    adapterExited: false,
+  }]);
+  assert.equal(controller.handleRequest({
+    type: "darwin-process-tree.signal",
+    requestId: 42,
+    signal: "SIGKILL",
+  }), null);
 });
 
 test("the Darwin Node preload keeps detached Workers in the inherited group", async () => {

@@ -25,33 +25,54 @@ const lsappinfoPath = "/usr/bin/lsappinfo";
 /** @typedef {{sent: boolean, sentAt: string | null}} SignalResult */
 
 /**
- * Dispatch is authorized only while the adapter still owns its process-group
- * identity. Once adapter exit is observed, that numeric group id may already
- * identify unrelated work and must never be used again.
+ * The detached supervisor, not the adapter, owns the cooperative process-group
+ * identity. It remains a live member until the Host releases the containment,
+ * so the kernel cannot reassign this numeric group id between adapter exit and
+ * a queued request. Recording adapter exit also erases the only signal target.
  *
  * @param {{
- *   adapterPid: number,
- *   adapterExited: boolean,
- *   signal: "SIGTERM" | "SIGKILL",
+ *   groupLeaderPid: number,
  *   kill?: (processId: number, signal: NodeJS.Signals) => boolean,
  *   now?: () => Date,
  * }} options
- * @returns {SignalResult}
  */
-export const dispatchDarwinAdapterGroupSignal = (options) => {
-  if (options.adapterExited || !Number.isSafeInteger(options.adapterPid)
-    || options.adapterPid <= 0) {
-    return { sent: false, sentAt: null };
-  }
-  try {
-    (options.kill ?? process.kill)(-options.adapterPid, options.signal);
-    return {
-      sent: true,
-      sentAt: (options.now ?? (() => new Date()))().toISOString(),
-    };
-  } catch {
-    return { sent: false, sentAt: null };
-  }
+export const createDarwinSupervisorSignalController = (options) => {
+  let cooperativeGroupId = Number.isSafeInteger(options.groupLeaderPid)
+    && options.groupLeaderPid > 0
+    ? options.groupLeaderPid
+    : null;
+  return {
+    recordAdapterExit: () => {
+      cooperativeGroupId = null;
+    },
+    /** @param {any} request */
+    handleRequest: (request) => {
+      if (
+        request?.type !== "darwin-process-tree.signal"
+        || !Number.isSafeInteger(request.requestId)
+        || request.signal !== "SIGTERM"
+      ) {
+        return null;
+      }
+      let sent = false;
+      let sentAt = null;
+      if (cooperativeGroupId !== null) {
+        try {
+          (options.kill ?? process.kill)(-cooperativeGroupId, "SIGTERM");
+          sent = true;
+          sentAt = (options.now ?? (() => new Date()))().toISOString();
+        } catch {
+          // The retained group may already contain only the supervisor.
+        }
+      }
+      return {
+        type: "darwin-process-tree.signal-result",
+        requestId: request.requestId,
+        sent,
+        sentAt,
+      };
+    },
+  };
 };
 
 /** @param {string} value */
@@ -88,17 +109,41 @@ const darwinContainedEnvironment = (env) => {
 
 /**
  * The application coalition is the Darwin force-containment boundary. The
- * adapter leads its own cooperative process group, while the wrapper stays
- * outside that group to retain the coalition control identity.
+ * adapter inherits the detached supervisor's retained cooperative process
+ * group instead of creating a reusable adapter-PID group.
  *
  * @param {{cwd: string, env: NodeJS.ProcessEnv, stdio: import("node:child_process").StdioOptions}} options
  */
 export const darwinAdapterSpawnOptions = (options) => ({
   cwd: options.cwd,
   env: options.env,
-  detached: true,
+  detached: false,
   stdio: options.stdio,
 });
+
+export const darwinSupervisorSpawnOptions = () => ({
+  detached: true,
+  stdio: /** @type {const} */ ("ignore"),
+});
+
+const runDarwinLauncher = async () => {
+  const configurationPath = process.argv[3];
+  if (!configurationPath) process.exit(1);
+  try {
+    const supervisor = spawn(process.execPath, [
+      supervisorPath,
+      "darwin-supervise",
+      configurationPath,
+    ], darwinSupervisorSpawnOptions());
+    await new Promise((resolve, reject) => {
+      supervisor.once("spawn", resolve);
+      supervisor.once("error", reject);
+    });
+    supervisor.unref();
+  } catch {
+    process.exit(1);
+  }
+};
 
 const runDarwinSupervisor = async () => {
   const configurationPath = process.argv[3];
@@ -126,7 +171,6 @@ const runDarwinSupervisor = async () => {
       // terminate the still-identifiable application coalition.
     }
   };
-  let adapterExited = false;
   const terminateCoalition = () => {
     try {
       const termination = spawn(lsappinfoPath, [
@@ -163,9 +207,12 @@ const runDarwinSupervisor = async () => {
   });
 
   let controlBuffer = "";
-  // The wrapper stays outside the adapter-led cooperative group so it can
-  // retain the non-reused application identity through coalition escalation.
+  // This detached supervisor retains the process-group identity and survives
+  // cooperative signalling until the Host commits the terminal outcome.
   process.on("SIGTERM", () => undefined);
+  const signalController = createDarwinSupervisorSignalController({
+    groupLeaderPid: process.pid,
+  });
   controlSocket.setEncoding("utf8");
   controlSocket.on("data", (/** @type {string} */ chunk) => {
     controlBuffer += chunk;
@@ -179,38 +226,31 @@ const runDarwinSupervisor = async () => {
       } catch {
         continue;
       }
-      if (
-        request?.type !== "darwin-process-tree.signal"
-        || !Number.isSafeInteger(request.requestId)
-        || !["SIGTERM", "SIGKILL"].includes(request.signal)
-        || typeof adapter.pid !== "number"
-      ) {
-        continue;
-      }
-      const signalResult = dispatchDarwinAdapterGroupSignal({
-        adapterPid: adapter.pid,
-        adapterExited,
-        signal: request.signal,
-      });
-      report({
-        type: "darwin-process-tree.signal-result",
-        requestId: request.requestId,
-        ...signalResult,
-      });
+      const signalResult = signalController.handleRequest(request);
+      if (signalResult) report(signalResult);
     }
   });
   controlSocket.once("close", () => {
-    if (!adapterExited) terminateCoalition();
+    terminateCoalition();
     process.exit(0);
   });
-  adapter.once("error", () => report({ type: "darwin-process-tree.adapter-error" }));
+  let adapterExitReported = false;
+  /** @param {Record<string, unknown>} message */
+  const finishAdapter = (message) => {
+    if (adapterExitReported) return;
+    adapterExitReported = true;
+    signalController.recordAdapterExit();
+    report(message);
+  };
+  adapter.once("error", () => finishAdapter({
+    type: "darwin-process-tree.adapter-error",
+  }));
   adapter.once("exit", (code, signal) => {
-    adapterExited = true;
-    controlSocket.end(`${JSON.stringify({
+    finishAdapter({
       type: "darwin-process-tree.adapter-exit",
       code,
       signal,
-    })}\n`);
+    });
   });
 };
 
@@ -225,10 +265,12 @@ const createOutputServer = (path, output) => {
 };
 
 /**
- * Launch one Harness adapter in a LaunchServices application coalition. The
- * adapter leads the ordinary cooperative process group, while the wrapper
- * retains the immutable application identity. Every native descendant remains
- * in that coalition across fork, exec, posix_spawn, setsid, and parent exit.
+ * Launch one Harness adapter in a LaunchServices application coalition. A
+ * detached Host-owned supervisor leads the ordinary cooperative process
+ * group and the adapter inherits it. The supervisor remains alive through the
+ * terminal commit, so its process-group id cannot be reused. Every native
+ * descendant remains in the application coalition across fork, exec,
+ * posix_spawn, setsid, and parent exit.
  * Coalition termination is the Darwin force boundary and removal of its
  * LaunchServices record is the complete-tree confirmation boundary.
  *
@@ -254,7 +296,7 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
     applicationExecutableName,
   );
   writeFileSync(applicationExecutablePath, `#!/bin/sh
-exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath)} darwin-supervise ${quoteShellArgument(join(directory, "configuration.json"))}
+exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath)} darwin-launch ${quoteShellArgument(join(directory, "configuration.json"))}
 `, { mode: 0o700 });
   writeFileSync(join(applicationContentsPath, "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -587,8 +629,7 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
   };
 };
 
-if (process.platform === "darwin"
-  && process.argv[1] === supervisorPath
-  && process.argv[2] === "darwin-supervise") {
-  await runDarwinSupervisor();
+if (process.platform === "darwin" && process.argv[1] === supervisorPath) {
+  if (process.argv[2] === "darwin-launch") await runDarwinLauncher();
+  if (process.argv[2] === "darwin-supervise") await runDarwinSupervisor();
 }
