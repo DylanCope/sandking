@@ -127,6 +127,22 @@ static int exact_signal_with_ptrace(
       ? SANDKING_IDENTITY_ABSENT
       : SANDKING_UNCERTAIN;
   }
+  if (signal_number == SIGKILL) {
+    /*
+     * SIGKILL is irrevocable while the revalidated tracee remains pinned. Wait
+     * for its terminal ptrace status instead of racing a cleanup detach against
+     * process death. The caller can then preserve reliable inventory and still
+     * performs whole-tree confirmation before publishing cancelled.
+     */
+    int termination_status = 0;
+    do {
+      waited = waitpid(pid, &termination_status, __WALL);
+    } while (waited < 0 && errno == EINTR);
+    return waited == pid
+        && (WIFEXITED(termination_status) || WIFSIGNALED(termination_status))
+      ? SANDKING_OK
+      : SANDKING_UNCERTAIN;
+  }
   if (ptrace(PTRACE_DETACH, pid, NULL, NULL) == 0 || errno == ESRCH) {
     return SANDKING_OK;
   }

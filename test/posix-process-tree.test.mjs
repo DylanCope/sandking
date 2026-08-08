@@ -196,6 +196,74 @@ test("Linux cancellation terminates an escaped descendant without pidfds", {
   }
 });
 
+test("legacy Linux confirms every forced descendant exit across ptrace detach races", {
+  skip: process.platform !== "linux"
+    ? "the legacy exact-signalling fallback is Linux-specific"
+    : false,
+}, async () => {
+  const adapterSource = String.raw`
+    import { spawn } from "node:child_process";
+    import { once } from "node:events";
+    const descendants = Array.from({ length: 16 }, () => spawn(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      "process.on('SIGTERM', () => undefined); process.stdout.write('ready\\n'); setInterval(() => undefined, 1000)",
+    ], { detached: true, stdio: ["ignore", "pipe", "ignore"] }));
+    await Promise.all(descendants.map((descendant) => once(descendant.stdout, "data")));
+    for (const descendant of descendants) {
+      descendant.stdout.destroy();
+      descendant.unref();
+    }
+    process.stdout.write(JSON.stringify(descendants.map(({ pid }) => pid)));
+    process.on("SIGTERM", () => process.exit(0));
+    setInterval(() => undefined, 1000);
+  `;
+  const tree = spawnPosixProcessTree(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    adapterSource,
+  ], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      SANDKING_TEST_PIDFD_UNAVAILABLE: "1",
+    },
+  });
+  let descendantPids = [];
+  try {
+    const [chunk] = await once(tree.child.stdout, "data");
+    descendantPids = JSON.parse(String(chunk));
+    assert.equal(descendantPids.length, 16);
+    assert.equal(descendantPids.every(processCanRun), true);
+
+    assert.equal(await tree.prepareCancellation(), true);
+    assert.equal((await tree.signal("SIGTERM")).sent, true);
+    await tree.adapterExit;
+    assert.equal(descendantPids.every(processCanRun), true);
+
+    const forced = await tree.signal("SIGKILL");
+    const descendantAlive = descendantPids.filter(processCanRun);
+    const treeAlive = await tree.processTreeAlive();
+    assert.deepEqual({
+      forcedSignalSent: forced.sent,
+      descendantAlive,
+      treeAlive,
+    }, {
+      forcedSignalSent: true,
+      descendantAlive: [],
+      treeAlive: false,
+    });
+  } finally {
+    for (const descendantPid of descendantPids.filter(processCanRun)) {
+      process.kill(descendantPid, "SIGKILL");
+    }
+    if (tree.child.exitCode === null && tree.child.signalCode === null) {
+      await tree.signal("SIGKILL");
+    }
+    await tree.release();
+  }
+});
+
 test("POSIX cancellation retains a daemon after its unobserved intermediate exits", {
   skip: process.platform === "win32"
     ? "native Windows process trees use Job Object containment"
