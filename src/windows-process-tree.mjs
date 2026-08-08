@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 
 const WINDOWS_EPOCH_FILE_TIME = 116_444_736_000_000_000n;
 const WINDOWS_CREATION_TIME_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,7}))?Z$/;
@@ -223,6 +223,42 @@ public static class SandKingExactProcess
         public uint TotalTerminatedProcesses;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BasicLimitInformation
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IoCounters
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ExtendedLimitInformation
+    {
+        public BasicLimitInformation BasicLimitInformation;
+        public IoCounters IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
 
@@ -246,6 +282,14 @@ public static class SandKingExactProcess
         out BasicAccountingInformation information,
         uint informationLength,
         IntPtr returnLength
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(
+        IntPtr jobHandle,
+        int informationClass,
+        ref ExtendedLimitInformation information,
+        uint informationLength
     );
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -374,6 +418,90 @@ public static class SandKingExactProcess
         }
     }
 
+    public static IntPtr CreateOwnedJob(string jobName)
+    {
+        IntPtr jobHandle = CreateJobObject(IntPtr.Zero, jobName);
+        if (jobHandle == IntPtr.Zero) return IntPtr.Zero;
+        if (Marshal.GetLastWin32Error() == 183)
+        {
+            CloseHandle(jobHandle);
+            return IntPtr.Zero;
+        }
+        ExtendedLimitInformation information = new ExtendedLimitInformation();
+        information.BasicLimitInformation.LimitFlags = 0x00002000;
+        if (!SetInformationJobObject(
+            jobHandle,
+            9,
+            ref information,
+            (uint)Marshal.SizeOf(typeof(ExtendedLimitInformation))
+        ))
+        {
+            CloseHandle(jobHandle);
+            return IntPtr.Zero;
+        }
+        return jobHandle;
+    }
+
+    public static int AssignExactToOwnedJob(
+        IntPtr jobHandle,
+        uint processId,
+        long expectedCreationFileTime
+    )
+    {
+        if (jobHandle == IntPtr.Zero) return 4;
+        IntPtr processHandle = OpenProcess(
+            ProcessTerminate | ProcessQueryLimitedInformation | 0x0100,
+            false,
+            processId
+        );
+        if (processHandle == IntPtr.Zero) return 3;
+        try
+        {
+            FileTime creationTime;
+            FileTime exitTime;
+            FileTime kernelTime;
+            FileTime userTime;
+            if (!GetProcessTimes(
+                processHandle,
+                out creationTime,
+                out exitTime,
+                out kernelTime,
+                out userTime
+            )) return 4;
+            if (creationTime.ToInt64() != expectedCreationFileTime) return 3;
+            return AssignProcessToJobObject(jobHandle, processHandle) ? 0 : 4;
+        }
+        finally
+        {
+            CloseHandle(processHandle);
+        }
+    }
+
+    public static long ActiveOwnedProcessCount(IntPtr jobHandle)
+    {
+        if (jobHandle == IntPtr.Zero) return -1;
+        BasicAccountingInformation information;
+        if (!QueryInformationJobObject(
+            jobHandle,
+            1,
+            out information,
+            (uint)Marshal.SizeOf(typeof(BasicAccountingInformation)),
+            IntPtr.Zero
+        )) return -1;
+        return information.ActiveProcesses;
+    }
+
+    public static int TerminateOwnedJob(IntPtr jobHandle)
+    {
+        if (jobHandle == IntPtr.Zero) return 4;
+        return TerminateJobObject(jobHandle, 1) ? 0 : 4;
+    }
+
+    public static void CloseOwnedJob(IntPtr jobHandle)
+    {
+        if (jobHandle != IntPtr.Zero) CloseHandle(jobHandle);
+    }
+
     public static long ActiveProcessCount(string jobName)
     {
         IntPtr jobHandle = OpenJobObject(0x0004, false, jobName);
@@ -485,27 +613,187 @@ export const createNativeWindowsJobObject = (options) => {
   if (!/^Local\\SandKingHarnessRun-[A-Za-z0-9-]{1,96}$/.test(options.name)) {
     throw new Error("windows_job_object_name_invalid");
   }
-  const execute = options.execute ?? execFile;
   const escapedName = options.name.replaceAll("'", "''");
-  /** @param {string} invocation @param {(error: any, stdout: string) => unknown} consume */
-  const invoke = (invocation, consume) => new Promise((resolve) => {
-    const command = `$ErrorActionPreference='Stop'
+  if (options.execute) {
+    const execute = options.execute;
+    /** @param {string} invocation @param {(error: any, stdout: string) => unknown} consume */
+    const invoke = (invocation, consume) => new Promise((resolve) => {
+      const command = `$ErrorActionPreference='Stop'
 Add-Type -TypeDefinition @'
 ${exactWindowsProcessSource}
 '@
 ${invocation}`;
-    execute("powershell.exe", [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      command,
-    ], {
-      windowsHide: true,
-      timeout: 5_000,
-      maxBuffer: 65_536,
-    }, (error, stdout) => resolve(consume(error, stdout)));
+      execute("powershell.exe", [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        command,
+      ], {
+        windowsHide: true,
+        timeout: 5_000,
+        maxBuffer: 65_536,
+      }, (error, stdout) => resolve(consume(error, stdout)));
+    });
+    return {
+      name: options.name,
+      /** @param {{processId: number, creationTime: string}} identity */
+      assignProcess: (identity) => {
+        const expectedCreationFileTime = normalizeWindowsCreationTime(
+          identity.creationTime,
+        )?.fileTime;
+        if (
+          !Number.isSafeInteger(identity.processId)
+          || identity.processId <= 0
+          || identity.processId > 0xffff_ffff
+          || expectedCreationFileTime === undefined
+        ) {
+          return Promise.resolve(false);
+        }
+        return invoke(
+          `exit [SandKingExactProcess]::AssignExactToJob([uint32]${identity.processId}, [int64]${expectedCreationFileTime}, '${escapedName}')`,
+          (error) => error === null,
+        );
+      },
+      activeProcessCount: () => invoke(
+        `$count = [SandKingExactProcess]::ActiveProcessCount('${escapedName}')
+if ($count -lt 0) { exit 4 }
+Write-Output $count`,
+        (error, stdout) => {
+          if (error) return null;
+          const count = Number(stdout.trim());
+          return Number.isSafeInteger(count) && count >= 0 ? count : null;
+        },
+      ),
+      terminate: () => invoke(
+        `exit [SandKingExactProcess]::Terminate('${escapedName}')`,
+        (error) => error === null,
+      ),
+      close: async () => undefined,
+    };
+  }
+
+  const brokerCommand = `$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @'
+${exactWindowsProcessSource}
+'@
+$jobHandle = [SandKingExactProcess]::CreateOwnedJob('${escapedName}')
+if ($jobHandle -eq [IntPtr]::Zero) { exit 4 }
+try {
+  [Console]::Out.WriteLine('{"type":"ready"}')
+  while (($line = [Console]::In.ReadLine()) -ne $null) {
+    $request = $line | ConvertFrom-Json
+    $closing = $false
+    if ($request.operation -eq 'assign') {
+      $result = [SandKingExactProcess]::AssignExactToOwnedJob(
+        $jobHandle,
+        [uint32]$request.processId,
+        [int64]$request.expectedCreationFileTime
+      ) -eq 0
+    } elseif ($request.operation -eq 'count') {
+      $result = [SandKingExactProcess]::ActiveOwnedProcessCount($jobHandle)
+    } elseif ($request.operation -eq 'terminate') {
+      $result = [SandKingExactProcess]::TerminateOwnedJob($jobHandle) -eq 0
+    } elseif ($request.operation -eq 'close') {
+      $result = $true
+      $closing = $true
+    } else {
+      $result = $null
+    }
+    [Console]::Out.WriteLine((@{ id = $request.id; result = $result } | ConvertTo-Json -Compress))
+    if ($closing) { break }
+  }
+} finally {
+  [SandKingExactProcess]::CloseOwnedJob($jobHandle)
+}`;
+  const broker = spawn("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    brokerCommand,
+  ], {
+    stdio: ["pipe", "pipe", "ignore"],
+    windowsHide: true,
   });
+  let brokerReady = false;
+  let brokerFailed = false;
+  /** @type {(value: boolean) => void} */
+  let resolveReady = () => {};
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  /** @type {() => void} */
+  let resolveClosed = () => {};
+  const closed = new Promise((resolve) => { resolveClosed = () => resolve(undefined); });
+  let nextRequestId = 1;
+  /** @type {Map<number, {resolve: (value: any) => void, fallback: any, timer: ReturnType<typeof setTimeout>}>} */
+  const pending = new Map();
+  let output = "";
+  broker.stdout?.setEncoding("utf8");
+  broker.stdout?.on("data", (chunk) => {
+    output += chunk;
+    while (output.includes("\n")) {
+      const newline = output.indexOf("\n");
+      const line = output.slice(0, newline).trim();
+      output = output.slice(newline + 1);
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        brokerFailed = true;
+        resolveReady(false);
+        continue;
+      }
+      if (message.type === "ready") {
+        brokerReady = true;
+        resolveReady(true);
+        continue;
+      }
+      const request = pending.get(message.id);
+      if (!request) continue;
+      pending.delete(message.id);
+      clearTimeout(request.timer);
+      request.resolve(message.result);
+    }
+  });
+  const failBroker = () => {
+    brokerFailed = true;
+    resolveReady(false);
+    for (const request of pending.values()) {
+      clearTimeout(request.timer);
+      request.resolve(request.fallback);
+    }
+    pending.clear();
+  };
+  broker.once("error", failBroker);
+  broker.once("close", () => {
+    failBroker();
+    resolveClosed();
+  });
+
+  /** @param {string} operation @param {Record<string, unknown>} payload @param {any} fallback */
+  const invoke = async (operation, payload, fallback) => {
+    if (!(await ready) || !brokerReady || brokerFailed || !broker.stdin) return fallback;
+    const id = nextRequestId;
+    nextRequestId += 1;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        const request = pending.get(id);
+        pending.delete(id);
+        request?.resolve(fallback);
+      }, 5_000);
+      timer.unref();
+      pending.set(id, { resolve, fallback, timer });
+      broker.stdin.write(`${JSON.stringify({ id, operation, ...payload })}\n`, (error) => {
+        if (!error) return;
+        const request = pending.get(id);
+        pending.delete(id);
+        clearTimeout(request?.timer);
+        request?.resolve(fallback);
+      });
+    });
+  };
+  /** @type {Promise<void> | null} */
+  let closeOperation = null;
   return {
     name: options.name,
     /** @param {{processId: number, creationTime: string}} identity */
@@ -521,25 +809,23 @@ ${invocation}`;
       ) {
         return Promise.resolve(false);
       }
-      return invoke(
-        `exit [SandKingExactProcess]::AssignExactToJob([uint32]${identity.processId}, [int64]${expectedCreationFileTime}, '${escapedName}')`,
-        (error) => error === null,
-      );
+      return invoke("assign", {
+        processId: identity.processId,
+        expectedCreationFileTime: String(expectedCreationFileTime),
+      }, false).then((result) => result === true);
     },
-    activeProcessCount: () => invoke(
-      `$count = [SandKingExactProcess]::ActiveProcessCount('${escapedName}')
-if ($count -lt 0) { exit 4 }
-Write-Output $count`,
-      (error, stdout) => {
-        if (error) return null;
-        const count = Number(stdout.trim());
-        return Number.isSafeInteger(count) && count >= 0 ? count : null;
-      },
-    ),
-    terminate: () => invoke(
-      `exit [SandKingExactProcess]::Terminate('${escapedName}')`,
-      (error) => error === null,
-    ),
+    activeProcessCount: () => invoke("count", {}, null).then((result) =>
+      Number.isSafeInteger(result) && result >= 0 ? result : null),
+    terminate: () => invoke("terminate", {}, false).then((result) => result === true),
+    close: () => {
+      if (closeOperation) return closeOperation;
+      closeOperation = (async () => {
+        await invoke("close", {}, false);
+        broker.stdin?.end();
+        await closed;
+      })();
+      return closeOperation;
+    },
   };
 };
 
@@ -602,7 +888,7 @@ const identityKey = (identity) => `${identity.processId}@${identity.creationTime
  *   expectedCommandLineFragment?: string,
  *   readProcessIdentity?: (processId: number) => Promise<{processId: number, creationTime: string, commandLine: string | null} | null>,
  *   listProcesses?: () => Promise<Array<{processId: number, parentProcessId: number, creationTime: string | null}>>,
- *   jobObject?: {name: string, assignProcess: (identity: {processId: number, creationTime: string}) => Promise<boolean>, activeProcessCount: () => Promise<number | null>, terminate: () => Promise<boolean>},
+ *   jobObject?: {name: string, assignProcess: (identity: {processId: number, creationTime: string}) => Promise<boolean>, activeProcessCount: () => Promise<number | null>, terminate: () => Promise<boolean>, close?: () => Promise<void>},
  * }} [options]
  */
 export const captureWindowsProcessTreeSnapshot = async (rootPid, options = {}) => {
@@ -673,7 +959,7 @@ export const captureWindowsProcessTreeSnapshot = async (rootPid, options = {}) =
  *   initialProcesses?: Array<{processId: number, parentProcessId: number, creationTime: string | null}>,
  *   listProcesses?: () => Promise<Array<{processId: number, parentProcessId: number, creationTime: string}>>,
  *   terminateProcessTree?: (processIdentity: {processId: number, creationTime: string}) => Promise<boolean>,
- *   jobObject?: {name: string, activeProcessCount: () => Promise<number | null>, terminate: () => Promise<boolean>},
+ *   jobObject?: {name: string, activeProcessCount: () => Promise<number | null>, terminate: () => Promise<boolean>, close?: () => Promise<void>},
  * }} options
  */
 export const createWindowsProcessTreeTracker = (options) => {

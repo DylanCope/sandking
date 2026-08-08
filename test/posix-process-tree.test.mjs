@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import test from "node:test";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { spawnPosixProcessTree } from "../src/posix-process-tree.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const processCanRun = (processId) => {
   if (process.platform === "linux") {
@@ -22,6 +30,47 @@ const processCanRun = (processId) => {
       && error.code === "ESRCH");
   }
 };
+
+test("a cold Linux process-tree launch needs no compiler or warmed cache", {
+  skip: process.platform !== "linux"
+    ? "the packaged Linux helper is selected only on Linux"
+    : false,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-cold-process-tree-"));
+  const modulePath = fileURLToPath(new URL("../src/posix-process-tree.mjs", import.meta.url));
+  const source = `
+    import { spawnPosixProcessTree } from ${JSON.stringify(modulePath)};
+    const tree = spawnPosixProcessTree(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      "process.exit(0)",
+    ], { cwd: process.cwd(), env: { LANG: "C.UTF-8" } });
+    const exit = await tree.adapterExit;
+    await tree.release();
+    process.stdout.write(JSON.stringify(exit));
+  `;
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      source,
+    ], {
+      cwd: process.cwd(),
+      env: {
+        LANG: "C.UTF-8",
+        PATH: directory,
+        TMPDIR: directory,
+      },
+    });
+    assert.deepEqual(JSON.parse(stdout), {
+      code: 0,
+      signal: null,
+      startFailed: false,
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("POSIX cancellation retains a descendant that creates a new session", {
   skip: process.platform === "win32"
@@ -79,9 +128,9 @@ test("POSIX cancellation retains a descendant that creates a new session", {
   }
 });
 
-test("Linux cancellation retains a daemon after its unobserved intermediate exits", {
-  skip: process.platform !== "linux"
-    ? "Linux subreaper ownership is exercised only on Linux"
+test("POSIX cancellation retains a daemon after its unobserved intermediate exits", {
+  skip: process.platform === "win32"
+    ? "native Windows process trees use Job Object containment"
     : false,
 }, async () => {
   const daemonSource = String.raw`

@@ -692,6 +692,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
   const adapterChannel = posixProcessTree?.adapterChannel ?? child.stdio[3];
   if (!adapterChannel || !child.stdout || !child.stderr || !("readable" in adapterChannel)) {
     terminateContainedAdapter();
+    await windowsJobObject?.close();
     throw new Error("harness_adapter_start_failed");
   }
   let diagnosticQueue = Promise.resolve();
@@ -941,7 +942,10 @@ const superviseConformanceHarness = async (run, context, observer) => {
   observer.onSupervisorAvailable({
     prepareCancellation,
     requestCancellation,
-    releaseProcessTree: posixProcessTree?.release ?? (async () => undefined),
+    releaseProcessTree: posixProcessTree?.release ?? (async () => {
+      await windowsProcessTreePromise?.catch(() => undefined);
+      await windowsJobObject?.close();
+    }),
   });
   const [exitResult] = await completion;
   const cancellation = cancellationOperation ? await cancellationOperation : null;

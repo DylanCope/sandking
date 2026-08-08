@@ -1,88 +1,35 @@
-import { execFile, execFileSync, spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { execFile, spawn } from "node:child_process";
 import {
-  chmodSync,
+  accessSync,
   closeSync,
-  existsSync,
+  constants,
   lstatSync,
-  mkdirSync,
   readFileSync,
   readdirSync,
-  renameSync,
-  unlinkSync,
   writeSync,
 } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnDarwinProcessTree } from "./darwin-process-tree.mjs";
 
 const supervisorPath = fileURLToPath(import.meta.url);
-const linuxHelperSourcePath = fileURLToPath(
-  new URL("./posix-process-tree-helper.c", import.meta.url),
-);
+/** @type {Record<string, string>} */
+const packagedLinuxHelpers = {
+  x64: fileURLToPath(new URL("./native/linux-x64/posix-process-tree-helper", import.meta.url)),
+  arm64: fileURLToPath(new URL("./native/linux-arm64/posix-process-tree-helper", import.meta.url)),
+};
 /** @type {string | null} */
 let retainedLinuxHelperPath = null;
 
 const ensureLinuxProcessTreeHelper = () => {
   if (retainedLinuxHelperPath) return retainedLinuxHelperPath;
-  const source = readFileSync(linuxHelperSourcePath);
-  const sourceHash = createHash("sha256").update(source).digest("hex").slice(0, 24);
-  const userId = typeof process.getuid === "function" ? process.getuid() : process.pid;
-  const cacheDirectory = join(tmpdir(), `sandking-process-tree-${userId}`);
-  if (!existsSync(cacheDirectory)) mkdirSync(cacheDirectory, { mode: 0o700 });
-  const cacheStat = lstatSync(cacheDirectory);
-  if (!cacheStat.isDirectory() || cacheStat.isSymbolicLink()
-    || (typeof process.getuid === "function" && cacheStat.uid !== process.getuid())) {
-    throw new Error("posix_process_tree_helper_cache_invalid");
-  }
-  chmodSync(cacheDirectory, 0o700);
-  const helperPath = join(cacheDirectory, `helper-${process.arch}-${sourceHash}`);
-  if (!existsSync(helperPath)) {
-    const candidate = `${helperPath}.${process.pid}.${randomBytes(8).toString("hex")}`;
-    let compiled = false;
-    for (const compiler of ["cc", "clang", "gcc"]) {
-      try {
-        execFileSync(compiler, [
-          linuxHelperSourcePath,
-          "-O2",
-          "-std=c11",
-          "-Wall",
-          "-Wextra",
-          "-o",
-          candidate,
-        ], { stdio: "ignore", timeout: 10_000 });
-        compiled = true;
-        break;
-      } catch {
-        // Try the next conventional system compiler.
-      }
-    }
-    if (!compiled) {
-      try {
-        unlinkSync(candidate);
-      } catch {
-        // A failed compiler may not have created an output file.
-      }
-      throw new Error("posix_process_tree_helper_unavailable");
-    }
-    chmodSync(candidate, 0o700);
-    try {
-      renameSync(candidate, helperPath);
-    } catch (error) {
-      try {
-        unlinkSync(candidate);
-      } catch {
-        // A concurrent Host may already have published the identical helper.
-      }
-      if (!existsSync(helperPath)) throw error;
-    }
-  }
+  const helperPath = packagedLinuxHelpers[process.arch];
+  if (!helperPath) throw new Error("posix_process_tree_helper_unsupported_architecture");
   const helperStat = lstatSync(helperPath);
-  if (!helperStat.isFile() || helperStat.isSymbolicLink()
-    || (typeof process.getuid === "function" && helperStat.uid !== process.getuid())) {
+  if (!helperStat.isFile() || helperStat.isSymbolicLink()) {
     throw new Error("posix_process_tree_helper_invalid");
   }
+  accessSync(helperPath, constants.X_OK);
   retainedLinuxHelperPath = helperPath;
   return helperPath;
 };
@@ -415,6 +362,12 @@ const signalExactLinuxIdentity = (identity, signal) => new Promise((resolve) => 
  * @param {{cwd: string, env: NodeJS.ProcessEnv}} options
  */
 export const spawnPosixProcessTree = (executable, args, options) => {
+  if (process.platform === "darwin") {
+    return spawnDarwinProcessTree(executable, args, options);
+  }
+  if (process.platform !== "linux") {
+    throw new Error("posix_process_tree_platform_unsupported");
+  }
   const linuxHelperPath = process.platform === "linux"
     ? ensureLinuxProcessTreeHelper()
     : null;

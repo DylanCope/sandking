@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,7 +66,7 @@ test("the Windows adapter barrier exits without running pinned code when contain
   }
 });
 
-test("native Windows Job Object binds, observes, and terminates one complete tree", async () => {
+test("Windows Job Object command adapter preserves containment operations", async () => {
   const commands = [];
   let activeProcesses = 2;
   const jobObject = createNativeWindowsJobObject({
@@ -102,6 +103,95 @@ test("native Windows Job Object binds, observes, and terminates one complete tre
   assert.ok(commands.some((command) => command.includes("QueryInformationJobObject")));
   assert.ok(commands.some((command) => command.includes("TerminateJobObject")));
   assert.ok(commands.every((command) => !/taskkill(?:\.exe)?/i.test(command)));
+});
+
+test("native Windows Job Object contains and terminates a real detached process tree", {
+  skip: process.platform !== "win32"
+    ? "requires native Windows Job Object and PowerShell boundaries"
+    : false,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-real-windows-job-"));
+  const marker = join(directory, "assigned");
+  const token = `sandking-real-job-${randomBytes(12).toString("hex")}`;
+  const jobObject = createNativeWindowsJobObject({
+    name: `Local\\SandKingHarnessRun-${randomBytes(16).toString("hex")}`,
+  });
+  const daemonSource = "setInterval(() => undefined, 1000)";
+  const intermediateSource = `
+    const { spawn } = require("node:child_process");
+    const daemon = spawn(process.execPath, [
+      "--eval",
+      ${JSON.stringify(daemonSource)},
+    ], { detached: true, stdio: "ignore" });
+    daemon.unref();
+    process.stdout.write(String(daemon.pid) + "\\n");
+  `;
+  const rootSource = `
+    const { spawn } = require("node:child_process");
+    const intermediate = spawn(process.execPath, [
+      "--eval",
+      ${JSON.stringify(intermediateSource)},
+    ], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    let daemonPid = "";
+    intermediate.stdout.on("data", (chunk) => { daemonPid += chunk; });
+    intermediate.once("close", () => process.stdout.write(daemonPid));
+    setInterval(() => undefined, 1000);
+  `;
+  const root = spawn(process.execPath, [
+    "--require",
+    fileURLToPath(new URL("../src/windows-process-barrier.cjs", import.meta.url)),
+    "--eval",
+    rootSource,
+    token,
+  ], {
+    env: { ...process.env, SANDKING_WINDOWS_JOB_BARRIER: marker },
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let descendantPid = null;
+  const processExists = (processId) => {
+    try {
+      process.kill(processId, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    assert.equal(typeof root.pid, "number");
+    const snapshot = await captureWindowsProcessTreeSnapshot(root.pid, {
+      expectedCommandLineFragment: token,
+      jobObject,
+    });
+    assert.ok(snapshot);
+    await writeFile(marker, "assigned\n", { mode: 0o600 });
+    const [chunk] = await new Promise((resolve, reject) => {
+      root.stdout.once("data", (...args) => resolve(args));
+      root.once("error", reject);
+    });
+    descendantPid = Number(String(chunk).trim());
+    assert.equal(Number.isSafeInteger(descendantPid), true);
+    assert.equal(processExists(descendantPid), true);
+
+    const tracker = createWindowsProcessTreeTracker(snapshot);
+    assert.equal(await tracker.prepareCancellation(), true);
+    assert.equal(await tracker.processTreeAlive(), true);
+    assert.equal(await tracker.forceTerminate(), true);
+    for (let attempt = 0; attempt < 100
+      && await tracker.processTreeAlive(); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(await tracker.processTreeAlive(), false);
+    assert.equal(processExists(root.pid), false);
+    assert.equal(processExists(descendantPid), false);
+  } finally {
+    await jobObject.terminate().catch(() => false);
+    await jobObject.close();
+    await writeFile(marker, "aborted\n", { mode: 0o600 }).catch(() => undefined);
+    if (root.exitCode === null && root.signalCode === null) root.kill("SIGKILL");
+    if (descendantPid && processExists(descendantPid)) process.kill(descendantPid, "SIGKILL");
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("Windows force termination preserves native creation ticks across process inventory", async () => {
