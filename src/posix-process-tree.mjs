@@ -730,7 +730,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
       const newline = exactSignalResultBuffer.indexOf("\n");
       const line = exactSignalResultBuffer.slice(0, newline);
       exactSignalResultBuffer = exactSignalResultBuffer.slice(newline + 1);
-      const result = /^([0-9]+) ([034])$/.exec(line);
+      const result = /^([0-9]+) ([0345])$/.exec(line);
       const requestId = result ? Number(result[1]) : Number.NaN;
       const pending = pendingExactSignals.get(requestId);
       if (!result || !pending) {
@@ -738,7 +738,13 @@ export const spawnPosixProcessTree = (executable, args, options) => {
         continue;
       }
       pendingExactSignals.delete(requestId);
-      pending(result[2] === "0" ? true : result[2] === "3" ? false : null);
+      // Status 5 means the identity-pinned signal was delivered while the
+      // helper's later cleanup/exit observation remains separate from complete
+      // tree confirmation. Delivery remains certain; processTreeAlive()
+      // independently confirms the tree before the run can become cancelled.
+      pending(["0", "5"].includes(result[2])
+        ? true
+        : result[2] === "3" ? false : null);
     }
   });
   exactSignalCommandChannel.once("error", () => settleAllExactSignals(null));

@@ -17,6 +17,7 @@ enum {
   SANDKING_OK = 0,
   SANDKING_IDENTITY_ABSENT = 3,
   SANDKING_UNCERTAIN = 4,
+  SANDKING_SIGNAL_DELIVERED = 5,
 };
 
 enum {
@@ -129,19 +130,17 @@ static int exact_signal_with_ptrace(
   }
   if (signal_number == SIGKILL) {
     /*
-     * SIGKILL is irrevocable while the revalidated tracee remains pinned. Wait
-     * for its terminal ptrace status instead of racing a cleanup detach against
-     * process death. The caller can then preserve reliable inventory and still
-     * performs whole-tree confirmation before publishing cancelled.
+     * SIGKILL is irrevocable while the revalidated tracee remains pinned. Try
+     * to reap its terminal ptrace status, but keep dispatch truth independent
+     * from that cleanup: a later wait error cannot unsend this exact signal.
+     * The caller still confirms the complete tree from a fresh inventory before
+     * publishing cancelled.
      */
     int termination_status = 0;
     do {
       waited = waitpid(pid, &termination_status, __WALL);
     } while (waited < 0 && errno == EINTR);
-    return waited == pid
-        && (WIFEXITED(termination_status) || WIFSIGNALED(termination_status))
-      ? SANDKING_OK
-      : SANDKING_UNCERTAIN;
+    return SANDKING_SIGNAL_DELIVERED;
   }
   if (ptrace(PTRACE_DETACH, pid, NULL, NULL) == 0 || errno == ESRCH) {
     return SANDKING_OK;

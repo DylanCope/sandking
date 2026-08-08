@@ -196,7 +196,7 @@ test("Linux cancellation terminates an escaped descendant without pidfds", {
   }
 });
 
-test("legacy Linux confirms every forced descendant exit across ptrace detach races", {
+test("legacy Linux keeps exact force delivery reliable until tree exit is confirmed", {
   skip: process.platform !== "linux"
     ? "the legacy exact-signalling fallback is Linux-specific"
     : false,
