@@ -61,9 +61,10 @@ const reportedCapabilitiesSchema = z.array(z.enum([
   "controller.session.terminate",
   "controller.work-context.inspect",
   "controller.harness-run.launch",
+  "controller.harness-run.cancel",
   "controller.session.stable-identity",
   "controller.session.typed-exit",
-])).max(7).refine((capabilities) => new Set(capabilities).size === capabilities.length);
+])).max(8).refine((capabilities) => new Set(capabilities).size === capabilities.length);
 const operationalCapabilitiesSchema = reportedCapabilitiesSchema.refine((capabilities) =>
   capabilities.includes("controller.session.start")
   && capabilities.includes("controller.session.interactive")
@@ -129,7 +130,7 @@ const probeSchema = z.object({
   }
   if (
     probe.availability?.status === "available"
-    && probe.capabilities.length !== 6
+    && probe.capabilities.length !== 7
   ) {
     context.addIssue({ code: "custom", message: "available provider capabilities incomplete" });
   }
@@ -255,6 +256,7 @@ const providerOperationRequestSchema = z.object({
     "work-context.inspect",
     "controller-cli.describe",
     "harness-run.launch",
+    "harness-run.cancel",
     "harness-run.lookup",
   ]),
   input: z.unknown(),

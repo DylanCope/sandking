@@ -136,6 +136,101 @@ test("the local Host replays the first identity mutation outcome for the same id
   }
 });
 
+test("malformed cancellation input is audited without disconnecting a healthy Host", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-host-cancellation-rejection-"));
+  const hostId = `host-${"3".repeat(24)}`;
+  const controllerId = `runtime-${"4".repeat(24)}`;
+  const child = spawn(process.execPath, [
+    localHostPath,
+    "--data-dir",
+    dataDir,
+    "--allow-host-identity-create",
+  ], { stdio: ["pipe", "pipe", "pipe"], env: { LANG: "C.UTF-8" } });
+
+  try {
+    writeFrame(child.stdin, {
+      type: "hello",
+      protocol: protocolVersion,
+      release: releaseVersion,
+      identity: "controller-runtime",
+      controllerId,
+      expectedPeerIdentity: "local-host",
+      expectedHostId: hostId,
+      capabilities: { required: [...hostCapabilities], optional: [] },
+      schemaDigest: HOST_SCHEMA_DIGEST,
+      framing: {
+        maxFrameBytes: MAX_FRAME_BYTES,
+        maxBulkChunkBytes: MAX_BULK_CHUNK_BYTES,
+      },
+      observationCursor: null,
+    });
+    assert.equal((await readFrame(child.stdout)).type, "hello-ack");
+    writeFrame(child.stdin, {
+      type: "host.identity.accept",
+      requestId: "host-identity-for-cancellation-rejection",
+      hostId,
+      authorizationClass: "controller_host_identity_binding",
+      idempotencyKey: "host-identity-for-cancellation-rejection",
+      expectedRevision: 0,
+    });
+    assert.equal((await readFrame(child.stdout)).type, "host.identity.result");
+
+    writeFrame(child.stdin, {
+      type: "harness.run.cancel",
+      requestId: "malformed-provider-cancellation",
+      harnessRunId: "",
+      controllerId,
+      controllerSessionId: `controller-session-${"5".repeat(24)}`,
+      source: "controller-cli",
+      authorizationClass: "harness_run_cancellation",
+      idempotencyKeyHash: "",
+    });
+    const rejected = await readFrame(child.stdout);
+    assert.deepEqual(rejected, {
+      type: "harness.run.cancel.failure",
+      requestId: "malformed-provider-cancellation",
+      code: "mutation_contract_invalid",
+      retryable: false,
+      authorizationClass: "harness_run_cancellation",
+      idempotencyKeyHash: null,
+      idempotentReplay: false,
+      auditId: rejected.auditId,
+      harnessRunId: null,
+      prohibitedSideEffects: {
+        cancellationAccepted: false,
+        cooperativeSignalSent: false,
+        forcedTerminationSent: false,
+        projectWrite: false,
+      },
+    });
+    assert.match(rejected.auditId, /^audit-[a-f0-9]{24}$/);
+
+    writeFrame(child.stdin, { type: "ping", requestId: "host-still-connected" });
+    assert.deepEqual(await readFrame(child.stdout), {
+      type: "pong",
+      requestId: "host-still-connected",
+    });
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line));
+    const rejectionAudit = audits.find((entry) => entry.auditId === rejected.auditId);
+    assert.equal(rejectionAudit.action, "harness.run.cancel");
+    assert.equal(rejectionAudit.outcome, "rejected");
+    assert.equal(rejectionAudit.details.code, "mutation_contract_invalid");
+    assert.deepEqual({
+      cancellationAccepted: rejectionAudit.details.cancellationAccepted,
+      cooperativeSignalSent: rejectionAudit.details.cooperativeSignalSent,
+      forcedTerminationSent: rejectionAudit.details.forcedTerminationSent,
+      projectWrite: rejectionAudit.details.projectWrite,
+    }, rejected.prohibitedSideEffects);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 /** @param {string[]} args */
 const runFailingCli = async (args) => {
   const boundedArgs = args[0] === "launch" && !args.includes("--startup-timeout-ms")

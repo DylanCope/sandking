@@ -123,6 +123,65 @@ test("Harness launch is one capability-negotiated revision-free Host operation",
   );
 });
 
+test("Harness cancellation is a capability-negotiated revision-free Host operation", async () => {
+  assert.ok(hostCapabilities.includes("sandking.harness-run.cancel.v1"));
+  const stream = new PassThrough();
+  const harnessRunId = `harness-run-${"6".repeat(24)}`;
+  const cancellation = {
+    type: "harness.run.cancel",
+    requestId: "cancel-harness-run-protocol-request",
+    harnessRunId,
+    controllerId: `runtime-${"3".repeat(24)}`,
+    controllerSessionId: `controller-session-${"4".repeat(24)}`,
+    source: "controller-cli",
+    authorizationClass: "harness_run_cancellation",
+    idempotencyKeyHash: `sha256:${"5".repeat(64)}`,
+  };
+  const accepted = {
+    type: "harness.run.cancel.result",
+    requestId: cancellation.requestId,
+    code: "harness_run_cancellation_accepted",
+    authorizationClass: cancellation.authorizationClass,
+    idempotencyKeyHash: cancellation.idempotencyKeyHash,
+    idempotentReplay: false,
+    auditId: `audit-${"7".repeat(24)}`,
+    harnessRunId,
+    acceptedAt: "2026-08-07T10:00:00.000Z",
+    cooperativeDeadlineAt: "2026-08-07T10:00:01.000Z",
+  };
+  const rejected = {
+    type: "harness.run.cancel.failure",
+    requestId: "cancel-harness-run-terminal",
+    code: "harness_run_not_cancellable",
+    retryable: false,
+    authorizationClass: cancellation.authorizationClass,
+    idempotencyKeyHash: `sha256:${"8".repeat(64)}`,
+    idempotentReplay: false,
+    auditId: `audit-${"9".repeat(24)}`,
+    harnessRunId,
+    prohibitedSideEffects: {
+      cancellationAccepted: false,
+      cooperativeSignalSent: false,
+      forcedTerminationSent: false,
+      projectWrite: false,
+    },
+  };
+
+  for (const message of [cancellation, accepted, rejected]) {
+    writeFrame(stream, message);
+    assert.deepEqual(await readFrame(stream), message);
+  }
+  assert.equal("expectedRevision" in cancellation, false);
+  assert.throws(
+    () => writeFrame(stream, {
+      ...cancellation,
+      idempotencyKeyHash: undefined,
+      idempotencyKey: "recognizable-raw-cancellation-retry-key",
+    }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+});
+
 test("Harness-run lookup, cursor observation, and ranged logs are typed Host operations", async () => {
   assert.ok(hostCapabilities.includes("sandking.harness-run.v2"));
   const stream = new PassThrough();

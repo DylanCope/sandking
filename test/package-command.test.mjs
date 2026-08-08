@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -11,6 +11,8 @@ const packageJson = JSON.parse(await readFile(new URL("../package.json", import.
 
 test("the stable sandking command is public, executable, and contains module-relative runtime assets", async () => {
   assert.equal(packageJson.private, false);
+  assert.deepEqual(packageJson.os, ["darwin", "linux", "win32"]);
+  assert.deepEqual(packageJson.cpu, ["arm64", "x64"]);
   assert.equal(packageJson.bin.sandking, "./src/cli.mjs");
   assert.equal(packageJson.bin["sandking-host"], "./src/local-host.mjs");
   const cliPath = new URL("../src/cli.mjs", import.meta.url);
@@ -30,8 +32,24 @@ test("the stable sandking command is public, executable, and contains module-rel
     "src/protocol.mjs",
     "src/browser-protocol.mjs",
     "src/cockpit.js",
+    "src/darwin-process-containment.cjs",
+    "src/darwin-process-tree.mjs",
+    "src/posix-process-tree-helper.c",
+    "src/native/linux-arm64/posix-process-tree-helper",
+    "src/native/linux-x64/posix-process-tree-helper",
+    "src/windows-process-barrier.cjs",
   ]) {
     assert.ok(packagedFiles.includes(required), `${required} must be packaged`);
+  }
+  for (const [relativePath, expectedMachine] of [
+    ["../src/native/linux-arm64/posix-process-tree-helper", 0xb7],
+    ["../src/native/linux-x64/posix-process-tree-helper", 0x3e],
+  ]) {
+    const helperUrl = new URL(relativePath, import.meta.url);
+    const helper = await readFile(helperUrl);
+    assert.deepEqual([...helper.subarray(0, 4)], [0x7f, 0x45, 0x4c, 0x46]);
+    assert.equal(helper.readUInt16LE(18), expectedMachine);
+    assert.notEqual((await stat(helperUrl)).mode & 0o111, 0);
   }
 });
 
@@ -49,6 +67,40 @@ test("an installed production package launches outside the source checkout", asy
     await execFileAsync("npm", [
       "install", "--ignore-scripts", "--omit=dev", "--prefix", installDirectory, tarball,
     ], { cwd: root });
+
+    if (process.platform === "linux") {
+      const coldDirectory = join(root, "cold-runtime");
+      await mkdir(coldDirectory, { mode: 0o700 });
+      const installedProcessTree = join(
+        installDirectory,
+        "node_modules",
+        "sandking",
+        "src",
+        "posix-process-tree.mjs",
+      );
+      const source = `
+        import { spawnPosixProcessTree } from ${JSON.stringify(installedProcessTree)};
+        const tree = spawnPosixProcessTree(process.execPath, [
+          "--input-type=module", "--eval", "process.exit(0)",
+        ], { cwd: process.cwd(), env: { LANG: "C.UTF-8" } });
+        const result = await tree.adapterExit;
+        await tree.release();
+        process.stdout.write(JSON.stringify(result));
+      `;
+      const { stdout: processTreeOutput } = await execFileAsync(process.execPath, [
+        "--input-type=module",
+        "--eval",
+        source,
+      ], {
+        cwd: root,
+        env: { LANG: "C.UTF-8", PATH: coldDirectory, TMPDIR: coldDirectory },
+      });
+      assert.deepEqual(JSON.parse(processTreeOutput), {
+        code: 0,
+        signal: null,
+        startFailed: false,
+      });
+    }
 
     const command = join(installDirectory, "node_modules", ".bin", "sandking");
     const { stdout: help } = await execFileAsync(command, ["launch", "--help"], {

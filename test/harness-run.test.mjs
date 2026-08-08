@@ -7,7 +7,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
-import { createHarnessRunManager } from "../src/harness-runs.mjs";
+import {
+  createHarnessRunManager,
+  scheduleCancellationEscalation,
+} from "../src/harness-runs.mjs";
 import { createProjectRegistry } from "../src/project-registration.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -17,18 +20,52 @@ const controllerSessionId = `controller-session-${"3".repeat(24)}`;
 
 const waitForTerminal = async (manager, harnessRunId) => {
   const deadline = Date.now() + 60_000;
+  let lastObservation = null;
   while (Date.now() < deadline) {
     const observation = await manager.observe({
       requestId: "observe-run",
       harnessRunId,
       afterSequence: 0,
     });
+    lastObservation = observation;
     if (["succeeded", "failed", "cancelled"].includes(observation.run?.status)) {
       return observation;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error("harness_run_terminal_timeout");
+  throw new Error(`harness_run_terminal_timeout: ${JSON.stringify(lastObservation)}`);
+};
+
+const waitForRunStatus = async (manager, harnessRunId, expectedStatus) => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const observation = await manager.observe({
+      requestId: `observe-${expectedStatus}`,
+      harnessRunId,
+      afterSequence: 0,
+    });
+    if (observation.run?.status === expectedStatus) {
+      return observation;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`harness_run_${expectedStatus}_timeout`);
+};
+
+const waitForDiagnosticCommits = async (manager, harnessRunId) => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const observation = await manager.observe({
+      requestId: "observe-diagnostic-commits",
+      harnessRunId,
+      afterSequence: 0,
+    });
+    if (observation.logStreams.every((stream) => stream.availableEnd > 0)) {
+      return observation;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("harness_run_diagnostic_commit_timeout");
 };
 
 const createFixture = async (prefix) => {
@@ -123,6 +160,672 @@ const hashedLaunchRequest = (request) => {
     idempotencyKeyHash: `sha256:${createHash("sha256").update(idempotencyKey).digest("hex")}`,
   };
 };
+
+const cancellationRequest = (harnessRunId, overrides = {}) => ({
+  requestId: "cancel-harness-run",
+  harnessRunId,
+  controllerId,
+  controllerSessionId,
+  source: "controller-cli",
+  authorizationClass: "harness_run_cancellation",
+  idempotencyKey: "cancel-harness-run-once",
+  ...overrides,
+});
+
+test("accepted cancellation terminates once and replays without another lifecycle transition", async () => {
+  const fixture = await createFixture("sandking-harness-run-cancellation-");
+  const projectFilesBefore = (await readdir(fixture.projectPath)).sort();
+  const rawRetryKey = "recognizable-raw-cancellation-retry-key";
+  try {
+    const launched = await fixture.manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      161,
+    ));
+    await waitForRunStatus(fixture.manager, launched.run.harnessRunId, "running");
+
+    const request = cancellationRequest(launched.run.harnessRunId, {
+      idempotencyKey: rawRetryKey,
+    });
+    const accepted = await fixture.manager.cancel(request);
+    assert.equal(accepted.type, "harness.run.cancel.result");
+    assert.equal(accepted.code, "harness_run_cancellation_accepted");
+    assert.equal(accepted.idempotentReplay, false);
+    assert.equal(accepted.harnessRunId, launched.run.harnessRunId);
+    assert.match(accepted.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    assert.equal("expectedRevision" in accepted, false);
+
+    const terminal = await waitForTerminal(fixture.manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "cancelled");
+    assert.equal(terminal.outcome.status, "cancelled");
+    assert.equal(terminal.outcome.code, "conformance_run_cancelled");
+    assert.equal(terminal.outcome.incompleteResult, false, JSON.stringify({
+      outcome: terminal.outcome,
+      validation: terminal.terminalEnvelopeValidation,
+      cancellation: terminal.run.cancellation,
+    }));
+    assert.equal(terminal.terminalEnvelopeValidation.exactlyOne, true);
+    assert.equal(terminal.terminalEnvelopeValidation.processExitObserved, true);
+    assert.deepEqual(terminal.events.map((event) => event.type), [
+      "harness_run_created",
+      "harness_adapter_ready",
+      "harness_run_cancellation_accepted",
+      "harness_run_cancelled",
+    ]);
+
+    const replay = await fixture.manager.cancel({
+      ...request,
+      requestId: "cancel-harness-run-replay",
+    });
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.auditId, accepted.auditId);
+    const afterReplay = await fixture.manager.observe({
+      requestId: "observe-after-cancel-replay",
+      harnessRunId: launched.run.harnessRunId,
+      afterSequence: 0,
+    });
+    assert.equal(afterReplay.events.length, terminal.events.length);
+
+    const conflict = await fixture.manager.cancel({
+      ...request,
+      requestId: "cancel-harness-run-conflict",
+      source: "cockpit",
+      controllerSessionId: null,
+    });
+    assert.equal(conflict.type, "harness.run.cancel.failure");
+    assert.equal(conflict.code, "idempotency_key_conflict");
+    assert.deepEqual(conflict.prohibitedSideEffects, {
+      cancellationAccepted: false,
+      cooperativeSignalSent: false,
+      forcedTerminationSent: false,
+      projectWrite: false,
+    });
+    assert.deepEqual((await readdir(fixture.projectPath)).sort(), projectFilesBefore);
+
+    const retained = JSON.stringify({
+      state: JSON.parse(await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8")),
+      audits: fixture.audits,
+    });
+    assert.doesNotMatch(retained, new RegExp(rawRetryKey));
+    const acceptedCancellationAudit = fixture.audits.find((audit) =>
+      audit.action === "harness.run.cancel"
+      && audit.outcome === "accepted"
+      && audit.details.harnessRunId === launched.run.harnessRunId);
+    assert.ok(acceptedCancellationAudit);
+    assert.equal(Object.keys(acceptedCancellationAudit.details).some((key) =>
+      /(?:credential|environment|processId|pid|rawRetryKey)/i.test(key)), false);
+    assert.ok(fixture.audits.some((audit) =>
+      audit.action === "harness.run.cancel"
+      && audit.outcome === "rejected"
+      && audit.details.code === "idempotency_key_conflict"));
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("cancellation forces an uncooperative supervised process after the bounded deadline", async () => {
+  const fixture = await createFixture("sandking-harness-run-forced-cancellation-");
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      cancellationGraceMs: 50,
+    });
+    const launched = await manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      999_999_994,
+    ));
+    await waitForRunStatus(manager, launched.run.harnessRunId, "running");
+    await manager.cancel(cancellationRequest(launched.run.harnessRunId, {
+      idempotencyKey: "force-uncooperative-adapter-once",
+    }));
+
+    const terminal = await waitForTerminal(manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "cancelled");
+    assert.equal(terminal.outcome.code, "conformance_run_cancelled");
+    assert.equal(terminal.outcome.incompleteResult, true);
+    assert.equal(terminal.outcome.terminalEnvelope, null);
+    assert.equal(terminal.outcome.diagnosticReferences.length, 2);
+    assert.ok(terminal.outcome.diagnosticReferences.every((reference) =>
+      reference.explicitRetrievalRequired
+      && reference.insertedIntoControllerConversation === false));
+    assert.equal(terminal.terminalEnvelopeValidation.validTerminalEnvelopeCount, 0);
+    assert.equal(terminal.terminalEnvelopeValidation.exactlyOne, false);
+    assert.equal(terminal.terminalEnvelopeValidation.processExitObserved, true);
+    assert.match(terminal.run.cancellation.cooperativeSignalSentAt,
+      /^2026-|^20[0-9]{2}-/);
+    assert.match(terminal.run.cancellation.forcedTerminationSentAt,
+      /^2026-|^20[0-9]{2}-/);
+    assert.match(terminal.run.cancellation.terminationConfirmedAt,
+      /^2026-|^20[0-9]{2}-/);
+    assert.equal(terminal.events.filter((event) =>
+      event.type === "harness_run_cancelled").length, 1);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("forced termination remains anchored to the durably accepted cooperative deadline", async () => {
+  const fixture = await createFixture("sandking-harness-run-retained-deadline-");
+  const cancellationGraceMs = 50;
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      cancellationGraceMs,
+      faultInjector: async (point) => {
+        if (point === "harness_run_cancellation.after_state_commit") {
+          await new Promise((resolve) => setTimeout(resolve, 75));
+        }
+      },
+    });
+    const launched = await manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      999_999_994,
+    ));
+    await waitForRunStatus(manager, launched.run.harnessRunId, "running");
+    const accepted = await manager.cancel(cancellationRequest(launched.run.harnessRunId, {
+      idempotencyKey: "retained-cooperative-deadline",
+    }));
+
+    const terminal = await waitForTerminal(manager, launched.run.harnessRunId);
+    const cooperativeSignalAt = Date.parse(
+      terminal.run.cancellation.cooperativeSignalSentAt,
+    );
+    const forcedTerminationAt = Date.parse(
+      terminal.run.cancellation.forcedTerminationSentAt,
+    );
+    assert.ok(cooperativeSignalAt >= Date.parse(accepted.cooperativeDeadlineAt));
+    assert.ok(
+      forcedTerminationAt - cooperativeSignalAt < cancellationGraceMs / 2,
+      JSON.stringify({
+        cooperativeDeadlineAt: accepted.cooperativeDeadlineAt,
+        cooperativeSignalSentAt: terminal.run.cancellation.cooperativeSignalSentAt,
+        forcedTerminationSentAt: terminal.run.cancellation.forcedTerminationSentAt,
+      }),
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("cancellation escalation is due at the absolute deadline while preparation is pending", async () => {
+  const acceptedAt = Date.parse("2026-08-07T10:00:00.000Z");
+  const cooperativeDeadlineAt = new Date(acceptedAt + 250).toISOString();
+  let releasePreparation;
+  const preparation = new Promise((resolve) => {
+    releasePreparation = resolve;
+  });
+  let escalationDue = false;
+  let scheduledDelay = null;
+  let runScheduledEscalation;
+  let currentTime = acceptedAt;
+  const scheduled = scheduleCancellationEscalation(
+    cooperativeDeadlineAt,
+    async () => {
+      escalationDue = true;
+      await preparation;
+    },
+    {
+      now: () => currentTime,
+      setTimer: (callback, delay) => {
+        scheduledDelay = delay;
+        runScheduledEscalation = callback;
+        return /** @type {any} */ ({});
+      },
+    },
+  );
+
+  try {
+    assert.equal(scheduledDelay, 250);
+    assert.equal(escalationDue, false);
+    currentTime = Date.parse(cooperativeDeadlineAt);
+    runScheduledEscalation?.();
+    await scheduled.deadlineReached;
+    assert.equal(escalationDue, true);
+  } finally {
+    releasePreparation?.();
+    await scheduled.operation;
+  }
+});
+
+test("cancellation forces an uncooperative descendant and marks the result incomplete", async () => {
+  const fixture = await createFixture("sandking-harness-run-tree-cancellation-");
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      cancellationGraceMs: 50,
+    });
+    const launched = await manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      999_999_992,
+    ));
+    await waitForRunStatus(manager, launched.run.harnessRunId, "running");
+    await manager.cancel(cancellationRequest(launched.run.harnessRunId, {
+      idempotencyKey: "force-uncooperative-descendant-once",
+    }));
+
+    const terminal = await waitForTerminal(manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "cancelled");
+    assert.equal(terminal.outcome.code, "conformance_run_cancelled");
+    assert.equal(terminal.outcome.incompleteResult, true);
+    if (terminal.outcome.terminalEnvelope !== null) {
+      assert.equal(terminal.outcome.terminalEnvelope.status, "cancelled");
+    }
+    assert.ok(terminal.terminalEnvelopeValidation.validTerminalEnvelopeCount <= 1);
+    assert.equal(terminal.terminalEnvelopeValidation.processExitObserved, true);
+    assert.match(terminal.run.cancellation.forcedTerminationSentAt,
+      /^2026-|^20[0-9]{2}-/);
+    assert.match(terminal.run.cancellation.terminationConfirmedAt,
+      /^2026-|^20[0-9]{2}-/);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("a durable cancellation replay resumes signalling after an ambiguous response", async () => {
+  const fixture = await createFixture("sandking-harness-run-cancel-replay-");
+  let interruptOnce = true;
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      faultInjector: (point) => {
+        if (point === "harness_run_cancellation.after_state_commit" && interruptOnce) {
+          interruptOnce = false;
+          throw new Error("simulated_ambiguous_cancellation_response");
+        }
+      },
+    });
+    const launched = await manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      999_999_993,
+    ));
+    await waitForRunStatus(manager, launched.run.harnessRunId, "running");
+    const request = cancellationRequest(launched.run.harnessRunId, {
+      idempotencyKey: "ambiguous-cancellation-retry-key",
+    });
+    await assert.rejects(manager.cancel(request), /simulated_ambiguous_cancellation_response/);
+    const acceptedState = await waitForRunStatus(
+      manager,
+      launched.run.harnessRunId,
+      "cancelling",
+    );
+    assert.equal(acceptedState.run.cancellation.cooperativeSignalSentAt, null);
+
+    const replay = await manager.cancel({
+      ...request,
+      requestId: "cancel-after-ambiguous-response",
+    });
+    assert.equal(replay.idempotentReplay, true);
+    const terminal = await waitForTerminal(manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "cancelled");
+    assert.equal(terminal.events.filter((event) =>
+      event.type === "harness_run_cancellation_accepted").length, 1);
+    assert.equal(terminal.events.filter((event) =>
+      event.type === "harness_run_cancelled").length, 1);
+    assert.equal(fixture.audits.filter((audit) =>
+      audit.action === "harness.run.cancel" && audit.outcome === "accepted").length, 1);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("uncertain termination confirmation never invents a cancelled outcome", async () => {
+  const fixture = await createFixture("sandking-harness-run-cancel-uncertain-");
+  let reportConfirmationAttempt;
+  const confirmationAttempted = new Promise((resolve) => {
+    reportConfirmationAttempt = resolve;
+  });
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      faultInjector: (point) => {
+        if (point === "harness_run_cancellation.before_termination_confirmation_commit") {
+          reportConfirmationAttempt();
+          throw new Error("simulated_termination_confirmation_uncertainty");
+        }
+      },
+    });
+    const launched = await manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      999_999_993,
+    ));
+    await waitForRunStatus(manager, launched.run.harnessRunId, "running");
+    await manager.cancel(cancellationRequest(launched.run.harnessRunId, {
+      idempotencyKey: "uncertain-termination-confirmation-key",
+    }));
+    await confirmationAttempted;
+
+    const observation = await manager.observe({
+      requestId: "observe-uncertain-cancellation",
+      harnessRunId: launched.run.harnessRunId,
+      afterSequence: 0,
+    });
+    assert.equal(observation.run.status, "cancelling");
+    assert.equal(observation.run.completedAt, null);
+    assert.equal(observation.run.cancellation.terminationConfirmedAt, null);
+    assert.equal(observation.outcome, null);
+    assert.equal(observation.events.some((event) =>
+      ["harness_run_succeeded", "harness_run_failed", "harness_run_cancelled"]
+        .includes(event.type)), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("a valid terminal outcome committed before cancellation remains the one outcome", async () => {
+  const fixture = await createFixture("sandking-harness-run-completion-wins-");
+  try {
+    const launched = await fixture.manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      161,
+    ));
+    const completed = await waitForTerminal(fixture.manager, launched.run.harnessRunId);
+    assert.equal(completed.run.status, "succeeded");
+    assert.equal(completed.outcome.code, "conformance_run_succeeded");
+
+    const request = cancellationRequest(launched.run.harnessRunId, {
+      idempotencyKey: "completion-wins-cancellation-key",
+    });
+    const rejected = await fixture.manager.cancel(request);
+    assert.equal(rejected.type, "harness.run.cancel.failure");
+    assert.equal(rejected.code, "harness_run_not_cancellable");
+    const replay = await fixture.manager.cancel({
+      ...request,
+      requestId: "completion-wins-cancellation-replay",
+    });
+    assert.equal(replay.code, "harness_run_not_cancellable");
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.auditId, rejected.auditId);
+
+    const after = await fixture.manager.observe({
+      requestId: "observe-completion-wins",
+      harnessRunId: launched.run.harnessRunId,
+      afterSequence: 0,
+    });
+    assert.equal(after.run.status, "succeeded");
+    assert.deepEqual(after.outcome, completed.outcome);
+    assert.equal(after.events.filter((event) =>
+      ["harness_run_succeeded", "harness_run_failed", "harness_run_cancelled"]
+        .includes(event.type)).length, 1);
+    assert.equal(after.events.some((event) =>
+      event.type === "harness_run_cancellation_accepted"), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("cancellation accepted before terminal commit wins the serialized race", async () => {
+  const fixture = await createFixture("sandking-harness-run-cancel-wins-race-");
+  let releaseOutcomeCommit;
+  let reportOutcomeCommit;
+  let pauseOutcome = true;
+  const outcomeCommitReached = new Promise((resolve) => {
+    reportOutcomeCommit = resolve;
+  });
+  const outcomeCommitRelease = new Promise((resolve) => {
+    releaseOutcomeCommit = resolve;
+  });
+  const originalProcessKill = process.kill;
+  const staleGroupSignals = [];
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      faultInjector: async (point) => {
+        if (point === "harness_run_outcome.before_commit" && pauseOutcome) {
+          pauseOutcome = false;
+          reportOutcomeCommit();
+          await outcomeCommitRelease;
+        }
+      },
+    });
+    const launched = await manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      161,
+    ));
+    await outcomeCommitReached;
+    process.kill = (pid, signal) => {
+      if (pid < 0 && signal !== 0) staleGroupSignals.push({ pid, signal });
+      return originalProcessKill(pid, signal);
+    };
+    const accepted = await manager.cancel(cancellationRequest(
+      launched.run.harnessRunId,
+      { idempotencyKey: "cancel-before-terminal-commit" },
+    ));
+    assert.equal(accepted.code, "harness_run_cancellation_accepted");
+    releaseOutcomeCommit();
+
+    const terminal = await waitForTerminal(manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "cancelled");
+    assert.equal(terminal.outcome.status, "cancelled");
+    assert.equal(terminal.outcome.incompleteResult, true);
+    assert.equal(terminal.outcome.terminalEnvelope, null);
+    assert.equal(terminal.terminalEnvelopeValidation.exactlyOne, true);
+    assert.equal(terminal.run.cancellation.cooperativeSignalSentAt, null);
+    assert.equal(terminal.run.cancellation.forcedTerminationSentAt, null);
+    assert.match(terminal.run.cancellation.terminationConfirmedAt,
+      /^2026-|^20[0-9]{2}-/);
+    assert.equal(terminal.events.filter((event) =>
+      ["harness_run_succeeded", "harness_run_failed", "harness_run_cancelled"]
+        .includes(event.type)).length, 1);
+    assert.deepEqual(staleGroupSignals, []);
+  } finally {
+    process.kill = originalProcessKill;
+    releaseOutcomeCommit?.();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("late cancellation confirms the complete process tree before recording cancelled", {
+  skip: process.platform === "win32"
+    ? "native Windows process-tree races are covered by the tracker contract"
+    : false,
+}, async () => {
+  const fixture = await createFixture("sandking-harness-run-late-tree-cancellation-");
+  let releaseOutcomeCommit;
+  let reportOutcomeCommit;
+  let pauseOutcome = true;
+  const outcomeCommitReached = new Promise((resolve) => {
+    reportOutcomeCommit = resolve;
+  });
+  const outcomeCommitRelease = new Promise((resolve) => {
+    releaseOutcomeCommit = resolve;
+  });
+  const originalProcessKill = process.kill;
+  const unboundGroupSignals = [];
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      cancellationGraceMs: 50,
+      faultInjector: async (point) => {
+        if (point === "harness_run_outcome.before_commit" && pauseOutcome) {
+          pauseOutcome = false;
+          reportOutcomeCommit();
+          await outcomeCommitRelease;
+        }
+      },
+    });
+    const launched = await manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      999_999_992,
+    ));
+    await outcomeCommitReached;
+    process.kill = (pid, signal) => {
+      if (pid < 0 && signal !== 0) {
+        unboundGroupSignals.push({ pid, signal });
+      }
+      return originalProcessKill(pid, signal);
+    };
+    const accepted = await manager.cancel(cancellationRequest(
+      launched.run.harnessRunId,
+      { idempotencyKey: "cancel-after-adapter-exit-with-live-descendant" },
+    ));
+    releaseOutcomeCommit();
+
+    const terminal = await waitForTerminal(manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "cancelled");
+    assert.equal(terminal.outcome.status, "cancelled");
+    assert.equal(terminal.outcome.incompleteResult, true);
+    assert.equal(terminal.outcome.terminalEnvelope, null);
+    assert.match(terminal.run.cancellation.forcedTerminationSentAt,
+      /^2026-|^20[0-9]{2}-/);
+    assert.match(terminal.run.cancellation.terminationConfirmedAt,
+      /^2026-|^20[0-9]{2}-/);
+    assert.ok(Date.parse(terminal.run.cancellation.forcedTerminationSentAt)
+      >= Date.parse(accepted.cooperativeDeadlineAt));
+    assert.ok(Date.parse(terminal.run.completedAt)
+      >= Date.parse(terminal.run.cancellation.terminationConfirmedAt));
+    assert.deepEqual(unboundGroupSignals, []);
+  } finally {
+    process.kill = originalProcessKill;
+    releaseOutcomeCommit?.();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("cancellation acceptance commits before the cooperative signal is dispatched", async () => {
+  const fixture = await createFixture("sandking-harness-run-cancel-commit-order-");
+  let releaseStateCommit;
+  let reportStateCommit;
+  const stateCommitReached = new Promise((resolve) => {
+    reportStateCommit = resolve;
+  });
+  const stateCommitRelease = new Promise((resolve) => {
+    releaseStateCommit = resolve;
+  });
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      faultInjector: async (point) => {
+        if (point === "harness_run_cancellation.after_state_commit") {
+          reportStateCommit();
+          await stateCommitRelease;
+        }
+      },
+    });
+    const launched = await manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      999_999_993,
+    ));
+    await waitForRunStatus(manager, launched.run.harnessRunId, "running");
+    const cancellation = manager.cancel(cancellationRequest(
+      launched.run.harnessRunId,
+      { idempotencyKey: "cancel-commit-order-key" },
+    ));
+    await stateCommitReached;
+
+    const committed = JSON.parse(
+      await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.equal(committed.schemaVersion, 4);
+    assert.equal(committed.runs[0].status, "cancelling");
+    assert.match(committed.runs[0].cancellation.auditId, /^audit-[a-f0-9]{24}$/);
+    assert.equal(committed.runs[0].cancellation.cooperativeSignalSentAt, null);
+    assert.equal(committed.runs[0].cancellation.forcedTerminationSentAt, null);
+    assert.equal(committed.runs[0].cancellation.terminationConfirmedAt, null);
+    assert.equal(committed.cancellationOutcomes.length, 1);
+    assert.equal(fixture.audits.some((audit) =>
+      audit.action === "harness.run.cancel" && audit.outcome === "accepted"), false);
+
+    releaseStateCommit();
+    const accepted = await cancellation;
+    assert.equal(accepted.code, "harness_run_cancellation_accepted");
+    const terminal = await waitForTerminal(manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "cancelled");
+    assert.equal(terminal.outcome.incompleteResult, false);
+  } finally {
+    releaseStateCommit?.();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("cancellation acceptance remains in canonical history at progress capacity", async () => {
+  const fixture = await createFixture("sandking-harness-run-cancel-event-capacity-");
+  try {
+    const launched = await fixture.manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      999_999_993,
+    ));
+    await waitForRunStatus(fixture.manager, launched.run.harnessRunId, "running");
+    // The fixture publishes diagnostics on separate streams before readiness,
+    // but their Host-private writes can commit just after the ready event. Wait
+    // for both so this direct capacity fixture cannot race a queued log update.
+    await waitForDiagnosticCommits(fixture.manager, launched.run.harnessRunId);
+    const statePath = join(fixture.dataDir, "harness-runs.json");
+    const retained = JSON.parse(await readFile(statePath, "utf8"));
+    const run = retained.runs[0];
+    const recordedAt = new Date().toISOString();
+    for (let index = 0; index < 1_021; index += 1) {
+      const suffix = (index + 100).toString(16).padStart(24, "0");
+      run.events.push({
+        eventId: `harness-event-${suffix}`,
+        harnessRunId: run.harnessRunId,
+        sequence: run.events.length + 1,
+        type: "harness_progress_published",
+        recordedAt,
+        progressRecord: {
+          recordId: `progress-${suffix}`,
+          schemaVersion: "1.0.0",
+          type: "conformance.capacity",
+          parentRecordId: null,
+          label: "Exercise retained event capacity",
+          summary: "Retain every accepted lifecycle transition at the bounded capacity.",
+          status: "complete",
+          timestamp: recordedAt,
+          payload: { index },
+        },
+        outcomeReference: null,
+      });
+    }
+    await writeFile(statePath, `${JSON.stringify(retained, null, 2)}\n`);
+
+    await fixture.manager.cancel(cancellationRequest(run.harnessRunId, {
+      idempotencyKey: "cancel-at-retained-event-capacity",
+    }));
+    const terminal = await waitForTerminal(fixture.manager, run.harnessRunId);
+    assert.equal(terminal.run.status, "cancelled");
+    assert.equal(terminal.events.filter((event) =>
+      event.type === "harness_run_cancellation_accepted").length, 1);
+    assert.equal(terminal.events.at(-2).type, "harness_run_cancellation_accepted");
+    assert.equal(terminal.events.at(-1).type, "harness_run_cancelled");
+    assert.equal(terminal.events.at(-1).sequence, terminal.events.length);
+    const incremental = await fixture.manager.observe({
+      requestId: "observe-capacity-cancellation-tail",
+      harnessRunId: run.harnessRunId,
+      afterSequence: 1_023,
+    });
+    assert.deepEqual(incremental.events.map((event) => event.type), [
+      "harness_run_cancellation_accepted",
+      "harness_run_cancelled",
+    ]);
+    assert.equal(incremental.nextSequence, 1_025);
+    assert.equal(incremental.run.status, "cancelled");
+    assert.equal(incremental.outcome.status, "cancelled");
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
 
 test("one revision-free action launches a fresh Project's Harness run", async () => {
   const fixture = await createFixture("sandking-harness-run-");
@@ -757,8 +1460,9 @@ test("distinct launch outcomes remain durable and lookup-safe past 256 keys", as
       assert.equal(outcome.code, "project_not_found");
     }
     const retained = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
-    assert.equal(retained.schemaVersion, 3);
+    assert.equal(retained.schemaVersion, 4);
     assert.equal(retained.launchOutcomes.length, 257);
+    assert.deepEqual(retained.cancellationOutcomes, []);
     const reloaded = await createHarnessRunManager(options);
     const first = await reloaded.lookup({
       requestId: "lookup-first",
@@ -788,14 +1492,21 @@ test("schema-v2 execution history migrates deterministically without losing acce
     const terminal = await waitForTerminal(fixture.manager, launched.run.harnessRunId);
     assert.equal(terminal.run.status, "succeeded");
 
-    const v3 = JSON.parse(await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"));
-    const v2 = structuredClone(v3);
+    const v4 = JSON.parse(await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"));
+    const acceptedLaunchOutcome = structuredClone(v4.launchOutcomes[0].response);
+    const v2 = structuredClone(v4);
     v2.schemaVersion = 2;
-    for (const run of v2.runs) delete run.executionSnapshot;
-    for (const outcome of [...v2.launchOutcomes, ...v2.legacyStartOutcomes]) {
-      if (outcome.response?.run) delete outcome.response.run.executionSnapshot;
+    delete v2.cancellationOutcomes;
+    for (const run of v2.runs) {
+      delete run.executionSnapshot;
+      delete run.cancellation;
     }
-    const acceptedLaunchOutcome = structuredClone(v2.launchOutcomes[0].response);
+    for (const outcome of [...v2.launchOutcomes, ...v2.legacyStartOutcomes]) {
+      if (outcome.response?.run) {
+        delete outcome.response.run.executionSnapshot;
+        delete outcome.response.run.cancellation;
+      }
+    }
     assert.equal(acceptedLaunchOutcome.run.revision, 1);
     assert.equal(acceptedLaunchOutcome.run.status, "starting");
     assert.ok(v2.runs[0].revision > acceptedLaunchOutcome.run.revision);
@@ -816,9 +1527,9 @@ test("schema-v2 execution history migrates deterministically without losing acce
     const migrated = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
     );
-    assert.equal(migrated.schemaVersion, 3);
+    assert.equal(migrated.schemaVersion, 4);
     const { executionSnapshot: migratedSnapshot, ...migratedHistory } = migrated.runs[0];
-    const { executionSnapshot: originalSnapshot, ...originalHistory } = v3.runs[0];
+    const { executionSnapshot: originalSnapshot, ...originalHistory } = v4.runs[0];
     void originalSnapshot;
     assert.deepEqual(migratedHistory, originalHistory);
     assert.deepEqual(migratedSnapshot, {
@@ -851,13 +1562,17 @@ test("schema-v2 execution history migrates deterministically without losing acce
       credentialCapabilityReferences: null,
       launchAuditId: originalHistory.launchAuditId,
     });
-    assert.deepEqual(migrated.runs[0].events, v3.runs[0].events);
-    assert.deepEqual(migrated.runs[0].outcome, v3.runs[0].outcome);
-    assert.deepEqual(migrated.runs[0].logStreams, v3.runs[0].logStreams);
+    assert.deepEqual(migrated.runs[0].events, v4.runs[0].events);
+    assert.deepEqual(migrated.runs[0].outcome, v4.runs[0].outcome);
+    assert.deepEqual(migrated.runs[0].logStreams, v4.runs[0].logStreams);
+    assert.deepEqual(migrated.cancellationOutcomes, []);
     const migratedLaunchOutcome = migrated.launchOutcomes[0].response;
     const { executionSnapshot: retainedOutcomeSnapshot, ...retainedOutcomeRun } =
       migratedLaunchOutcome.run;
-    assert.deepEqual(retainedOutcomeRun, acceptedLaunchOutcome.run);
+    const { executionSnapshot: acceptedOutcomeSnapshot, ...acceptedOutcomeRun } =
+      acceptedLaunchOutcome.run;
+    void acceptedOutcomeSnapshot;
+    assert.deepEqual(retainedOutcomeRun, acceptedOutcomeRun);
     assert.deepEqual({
       ...migratedLaunchOutcome,
       run: acceptedLaunchOutcome.run,
@@ -886,6 +1601,52 @@ test("schema-v2 execution history migrates deterministically without losing acce
       JSON.parse(await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8")),
       migrated,
     );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("schema-v3 immutable execution history gains cancellation state without rewriting history", async () => {
+  const fixture = await createFixture("sandking-harness-v3-upgrade-");
+  try {
+    const request = launchRequest(fixture.registered.project.projectId, 159);
+    const launched = await fixture.manager.launch(request);
+    await waitForTerminal(fixture.manager, launched.run.harnessRunId);
+    const current = JSON.parse(
+      await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+    );
+    const v3 = structuredClone(current);
+    v3.schemaVersion = 3;
+    delete v3.cancellationOutcomes;
+    for (const run of v3.runs) delete run.cancellation;
+    for (const outcome of [...v3.launchOutcomes, ...v3.legacyStartOutcomes]) {
+      if (outcome.response?.run) delete outcome.response.run.cancellation;
+    }
+    await writeFile(join(fixture.dataDir, "harness-runs.json"), `${JSON.stringify(v3)}\n`);
+
+    const manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+    });
+    const migrated = JSON.parse(
+      await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.equal(migrated.schemaVersion, 4);
+    assert.deepEqual(migrated.cancellationOutcomes, []);
+    assert.equal(migrated.runs[0].cancellation, null);
+    const { cancellation, ...migratedHistory } = migrated.runs[0];
+    void cancellation;
+    assert.deepEqual(migratedHistory, v3.runs[0]);
+    assert.equal(migrated.launchOutcomes[0].response.run.cancellation, null);
+    const observation = await manager.observe({
+      requestId: "observe-migrated-v3-run",
+      harnessRunId: launched.run.harnessRunId,
+      afterSequence: 0,
+    });
+    assert.equal(observation.run.cancellation, null);
+    assert.deepEqual(observation.outcome, current.runs[0].outcome);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -972,9 +1733,10 @@ test("main-era Harness-run history remains observable after the launch-schema up
       join(dataDir, "harness-runs.json"),
       "utf8",
     ));
-    assert.equal(initialized.schemaVersion, 3);
-    const [{ executionSnapshot, ...migratedLegacyRun }] = initialized.runs;
+    assert.equal(initialized.schemaVersion, 4);
+    const [{ executionSnapshot, cancellation, ...migratedLegacyRun }] = initialized.runs;
     assert.deepEqual(migratedLegacyRun, legacyRun);
+    assert.equal(cancellation, null);
     assert.deepEqual(executionSnapshot, {
       schemaVersion: 1,
       capture: "migration",
@@ -1006,6 +1768,7 @@ test("main-era Harness-run history remains observable after the launch-schema up
       launchAuditId: legacyRun.startAuditId,
     });
     assert.deepEqual(initialized.launchOutcomes, []);
+    assert.deepEqual(initialized.cancellationOutcomes, []);
     assert.deepEqual({
       ...initialized.legacyStartOutcomes[0],
       response: {
@@ -1043,6 +1806,7 @@ test("main-era Harness-run history remains observable after the launch-schema up
       completedAt: legacyRun.completedAt,
       startAuditId: legacyRun.startAuditId,
       executionSnapshot,
+      cancellation: null,
     });
     const lookup = await manager.lookup({
       requestId: "lookup-legacy-start",
@@ -1071,9 +1835,10 @@ test("main-era Harness-run history remains observable after the launch-schema up
     assert.equal(conflictingLaunch.code, "idempotency_key_conflict");
     assert.equal(conflictingLaunch.prohibitedSideEffects.harnessRunCreated, false);
     const migrated = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
-    assert.equal(migrated.schemaVersion, 3);
+    assert.equal(migrated.schemaVersion, 4);
     assert.deepEqual(migrated.runs, initialized.runs);
     assert.deepEqual(migrated.launchOutcomes, []);
+    assert.deepEqual(migrated.cancellationOutcomes, []);
     assert.deepEqual(migrated.legacyStartOutcomes, initialized.legacyStartOutcomes);
   } finally {
     await rm(dataDir, { recursive: true, force: true });

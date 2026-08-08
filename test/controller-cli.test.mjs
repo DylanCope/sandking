@@ -179,6 +179,255 @@ test("sandking self-description and launch use the ordinary Controller CLI chann
   }
 });
 
+test("sandking cancel uses the ordinary Controller CLI channel without exposing a retry key", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-controller-cancel-cli-"));
+  const endpoint = join(directory, "controller.sock");
+  const harnessRunId = `harness-run-${"6".repeat(24)}`;
+  const requests = [];
+  const server = createServer((socket) => {
+    let input = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      input += chunk;
+      if (!input.includes("\n")) return;
+      const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+      requests.push(request);
+      socket.end(`${JSON.stringify({
+        type: "sandking.cli.result",
+        protocol: "1.0.0",
+        requestId: request.requestId,
+        ok: true,
+        outcome: {
+          type: "harness.run.cancel.result",
+          code: "harness_run_cancellation_accepted",
+          authorizationClass: "harness_run_cancellation",
+          idempotencyKeyHash: request.idempotencyKeyHash,
+          idempotentReplay: false,
+          auditId: `audit-${"7".repeat(24)}`,
+          harnessRunId: request.harnessRunId,
+          acceptedAt: "2026-08-07T10:00:00.000Z",
+          cooperativeDeadlineAt: "2026-08-07T10:00:01.000Z",
+        },
+      })}\n`);
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(endpoint, resolve);
+  });
+  try {
+    const projectId = `project-${"1".repeat(24)}`;
+    const { stdout } = await execFileAsync(process.execPath, [
+      cliPath,
+      "cancel",
+      harnessRunId,
+      "--json",
+    ], {
+      env: {
+        LANG: "C.UTF-8",
+        PATH: process.env.PATH,
+        SANDKING_CONTROLLER_ENDPOINT: endpoint,
+        SANDKING_CONTROLLER_RETRY_DIRECTORY: join(directory, "retry-state"),
+        SANDKING_CONTROLLER_SESSION_ID: `controller-session-${"2".repeat(24)}`,
+        SANDKING_WORK_CONTEXT_ID: projectId,
+      },
+    });
+    const outcome = JSON.parse(stdout);
+    assert.equal(outcome.type, "harness.run.cancel.result");
+    assert.equal(outcome.harnessRunId, harnessRunId);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].operation, "harness-run.cancel");
+    assert.equal(requests[0].projectId, projectId);
+    assert.equal(requests[0].harnessRunId, harnessRunId);
+    assert.match(requests[0].idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+    assert.equal("idempotencyKey" in requests[0], false);
+    assert.equal("expectedRevision" in requests[0], false);
+    await assert.rejects(execFileAsync(process.execPath, [
+      cliPath,
+      "cancel",
+      harnessRunId,
+      "--idempotency-key", "recognizable-user-cancellation-key",
+      "--json",
+    ], {
+      env: {
+        LANG: "C.UTF-8",
+        PATH: process.env.PATH,
+        SANDKING_CONTROLLER_ENDPOINT: endpoint,
+        SANDKING_CONTROLLER_RETRY_DIRECTORY: join(directory, "retry-state"),
+        SANDKING_CONTROLLER_SESSION_ID: `controller-session-${"2".repeat(24)}`,
+        SANDKING_WORK_CONTEXT_ID: projectId,
+      },
+    }), (error) => {
+      assert.match(error.stderr, /generates its own private retry identity/);
+      return true;
+    });
+    assert.equal(requests.length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("sandking cancel reuses its private hash after an ambiguous response", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-controller-cancel-retry-"));
+  const endpoint = join(directory, "controller.sock");
+  const retryDirectory = join(directory, "retry-state");
+  const projectId = `project-${"a".repeat(24)}`;
+  const harnessRunId = `harness-run-${"b".repeat(24)}`;
+  const requests = [];
+  const server = createServer((socket) => {
+    let input = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      input += chunk;
+      if (!input.includes("\n")) return;
+      const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+      requests.push(request);
+      if (requests.length === 1) {
+        socket.destroy();
+        return;
+      }
+      socket.end(`${JSON.stringify({
+        type: "sandking.cli.result",
+        protocol: "1.0.0",
+        requestId: request.requestId,
+        ok: true,
+        outcome: {
+          type: "harness.run.cancel.result",
+          code: "harness_run_cancellation_accepted",
+          authorizationClass: "harness_run_cancellation",
+          idempotencyKeyHash: request.idempotencyKeyHash,
+          idempotentReplay: true,
+          auditId: `audit-${"c".repeat(24)}`,
+          harnessRunId,
+          acceptedAt: "2026-08-07T10:00:00.000Z",
+          cooperativeDeadlineAt: "2026-08-07T10:00:01.000Z",
+        },
+      })}\n`);
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(endpoint, resolve);
+  });
+  const environment = {
+    LANG: "C.UTF-8",
+    PATH: process.env.PATH,
+    SANDKING_CONTROLLER_ENDPOINT: endpoint,
+    SANDKING_CONTROLLER_RETRY_DIRECTORY: retryDirectory,
+    SANDKING_CONTROLLER_SESSION_ID: `controller-session-${"d".repeat(24)}`,
+    SANDKING_WORK_CONTEXT_ID: projectId,
+  };
+  const invocation = [cliPath, "cancel", harnessRunId, "--json"];
+  try {
+    await assert.rejects(execFileAsync(process.execPath, invocation, { env: environment }),
+      (error) => {
+        assert.match(error.stderr, /controller_cli_unavailable/);
+        return true;
+      });
+    const pending = await readFile(
+      join(retryDirectory, "harness-cancellation-retries.json"),
+      "utf8",
+    );
+    assert.match(pending, /sha256:[a-f0-9]{64}/);
+    assert.doesNotMatch(pending, /idempotencyKey|recognizable/);
+
+    const { stdout } = await execFileAsync(process.execPath, invocation, { env: environment });
+    assert.equal(JSON.parse(stdout).harnessRunId, harnessRunId);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].idempotencyKeyHash, requests[0].idempotencyKeyHash);
+    await assert.rejects(readFile(
+      join(retryDirectory, "harness-cancellation-retries.json"),
+      "utf8",
+    ));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("sandking cancel retains its private hash across indeterminate Host and provider failures", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-controller-cancel-failure-retry-"));
+  const endpoint = join(directory, "controller.sock");
+  const retryDirectory = join(directory, "retry-state");
+  const projectId = `project-${"e".repeat(24)}`;
+  const harnessRunId = `harness-run-${"f".repeat(24)}`;
+  const requests = [];
+  const failures = ["host_disconnected", "provider_operation_timeout"];
+  const server = createServer((socket) => {
+    let input = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      input += chunk;
+      if (!input.includes("\n")) return;
+      const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+      requests.push(request);
+      const failure = failures[requests.length - 1];
+      socket.end(`${JSON.stringify({
+        type: "sandking.cli.result",
+        protocol: "1.0.0",
+        requestId: request.requestId,
+        ...(failure ? {
+          ok: false,
+          failure: { code: failure },
+        } : {
+          ok: true,
+          outcome: {
+            type: "harness.run.cancel.result",
+            code: "harness_run_cancellation_accepted",
+            authorizationClass: "harness_run_cancellation",
+            idempotencyKeyHash: request.idempotencyKeyHash,
+            idempotentReplay: true,
+            auditId: `audit-${"1".repeat(24)}`,
+            harnessRunId,
+            acceptedAt: "2026-08-07T10:00:00.000Z",
+            cooperativeDeadlineAt: "2026-08-07T10:00:01.000Z",
+          },
+        }),
+      })}\n`);
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(endpoint, resolve);
+  });
+  const environment = {
+    LANG: "C.UTF-8",
+    PATH: process.env.PATH,
+    SANDKING_CONTROLLER_ENDPOINT: endpoint,
+    SANDKING_CONTROLLER_RETRY_DIRECTORY: retryDirectory,
+    SANDKING_CONTROLLER_SESSION_ID: `controller-session-${"2".repeat(24)}`,
+    SANDKING_WORK_CONTEXT_ID: projectId,
+  };
+  const invocation = [cliPath, "cancel", harnessRunId, "--json"];
+  try {
+    for (const failure of failures) {
+      await assert.rejects(execFileAsync(process.execPath, invocation, { env: environment }),
+        (error) => {
+          assert.match(error.stderr, new RegExp(failure));
+          return true;
+        });
+      const pending = await readFile(
+        join(retryDirectory, "harness-cancellation-retries.json"),
+        "utf8",
+      );
+      assert.match(pending, /sha256:[a-f0-9]{64}/);
+    }
+
+    const { stdout } = await execFileAsync(process.execPath, invocation, { env: environment });
+    assert.equal(JSON.parse(stdout).harnessRunId, harnessRunId);
+    assert.equal(requests.length, 3);
+    assert.equal(new Set(requests.map((request) => request.idempotencyKeyHash)).size, 1);
+    await assert.rejects(readFile(
+      join(retryDirectory, "harness-cancellation-retries.json"),
+      "utf8",
+    ));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("an ordinary Controller CLI retry reuses its pending launch identity after a lost response", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sandking-controller-cli-retry-"));
   const endpoint = join(directory, "controller.sock");

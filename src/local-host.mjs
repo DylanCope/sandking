@@ -459,6 +459,10 @@ const main = async () => {
       writeFrame(process.stdout, outcome);
       continue;
     }
+    if (frame.message.type === "harness.run.cancel") {
+      writeFrame(process.stdout, await harnessRuns.cancel(frame.message));
+      continue;
+    }
     if (frame.message.type === "harness.run.lookup") {
       writeFrame(process.stdout, await harnessRuns.lookup(frame.message));
       continue;
