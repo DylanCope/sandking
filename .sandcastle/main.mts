@@ -130,6 +130,8 @@ if (runScope && scopeOptions) {
 const runIssueWorker = async (
   issue: z.infer<typeof planSchema>["issues"][number],
   findings: string[] = [],
+  defectHistory: string[] = [],
+  roundContext = "",
 ) =>
   retryOperation({
     label: `Issue #${issue.id} implementer`,
@@ -161,6 +163,17 @@ const runIssueWorker = async (
               findings.length > 0
                 ? findings.map((finding) => `- ${finding}`).join("\n")
                 : "- None; this is the initial implementation pass.",
+            // Short headline history, not full transcripts — helps a fresh
+            // sandbox notice a recurring defect family instead of only ever
+            // seeing the single most recent instance of it.
+            DEFECT_HISTORY:
+              defectHistory.length > 0
+                ? defectHistory.map((summary) => `- ${summary}`).join("\n")
+                : "- None yet.",
+            ROUND_CONTEXT:
+              roundContext
+                || "This is the initial implementation pass; no review has occurred yet.",
+            SIZE_WARNING: issue.sizeWarning ?? "None noted by the planner.",
           },
         });
       } finally {
@@ -278,10 +291,14 @@ const main = async () => {
           implement: ({
             branch,
             findings = [],
+            defectHistory = [],
+            roundContext = "",
           }: {
             branch: string;
             findings?: string[];
-          }) => runIssueWorker({ ...issue, branch }, findings),
+            defectHistory?: string[];
+            roundContext?: string;
+          }) => runIssueWorker({ ...issue, branch }, findings, defectHistory, roundContext),
         },
         reviewer: {
           evaluatePullRequest: ({

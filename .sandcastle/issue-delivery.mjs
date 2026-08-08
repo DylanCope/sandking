@@ -14,6 +14,30 @@ function blockingFindingMessages(review) {
   return review?.findings ?? [];
 }
 
+// A short, deduplicated headline list of every distinct blocking-finding
+// summary seen across all review rounds so far — not the full evidence text.
+// Lets a fresh implementer sandbox recognize a recurring defect family (e.g.
+// "this is the third PID-reuse finding") without re-reading full transcripts.
+function defectHistorySummaries(reviewLedger) {
+  const seen = new Set();
+  const summaries = [];
+  for (const entry of reviewLedger) {
+    for (const finding of entry?.blockingFindings ?? []) {
+      if (finding?.summary && !seen.has(finding.summary)) {
+        seen.add(finding.summary);
+        summaries.push(finding.summary);
+      }
+    }
+  }
+  return summaries;
+}
+
+function roundContextMessage(reviewAttempt) {
+  return reviewAttempt > 0
+    ? `This is review round ${reviewAttempt} of ${MAX_REVIEW_ATTEMPTS}.`
+    : "";
+}
+
 export async function produceIssueBranch({ issue, repository, worker }) {
   const branch = `sandcastle/issue-${issue.id}`;
   const baseCommit = await repository.synchronizeMain();
@@ -68,6 +92,8 @@ export async function deliverIssueThroughPullRequest({
         findings: [
           "The pull request has no code changes. Implement the issue before requesting another review.",
         ],
+        defectHistory: defectHistorySummaries(reviewLedger),
+        roundContext: roundContextMessage(reviewAttempt),
         issue,
         pullRequest,
       });
@@ -89,6 +115,8 @@ export async function deliverIssueThroughPullRequest({
           ...blockingFindingMessages(review),
           "The pull request diff is unchanged. Make a substantive code change that addresses the review findings.",
         ],
+        defectHistory: defectHistorySummaries(reviewLedger),
+        roundContext: roundContextMessage(reviewAttempt),
         issue,
         pullRequest,
       });
@@ -116,6 +144,8 @@ export async function deliverIssueThroughPullRequest({
     await worker.implement({
       branch: branchResult.branch,
       findings: blockingFindingMessages(review),
+      defectHistory: defectHistorySummaries(reviewLedger),
+      roundContext: roundContextMessage(reviewAttempt),
       issue,
       pullRequest,
     });

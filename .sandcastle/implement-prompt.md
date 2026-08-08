@@ -8,11 +8,23 @@ Only work on the issue specified.
 
 Work on branch {{BRANCH}}. Make commits and run tests.
 
+{{ROUND_CONTEXT}}
+
+Planner's own size assessment of this ticket: {{SIZE_WARNING}} If this flags the ticket as spanning several independently reviewable concerns, treat that as a cue to look for shared root causes across those concerns rather than fixing each reported instance in isolation.
+
 # PULL REQUEST REVIEW FINDINGS
 
 {{REVIEW_FINDINGS}}
 
 On a change-request pass, address every finding without weakening the issue requirements or tests. Commit the corrections to the same issue branch; the harness will push the revised head for independent re-review.
+
+# DEFECT HISTORY
+
+This is a short, deduplicated list of every distinct defect summary raised against this ticket across all review rounds so far, including ones already fixed. It is not new work — the current findings above are the only things you need to act on. It exists purely so you can recognize a pattern: if the current findings share a root cause, code shape, or invariant with something in this history, fix the general case now instead of only the newly reported instance.
+
+{{DEFECT_HISTORY}}
+
+A concrete example of the failure mode this is meant to prevent: fixing a process-identity/PID-reuse bug on one platform's code path, then leaving the identical bug in an equivalent code path (a different platform, a different mode, a duplicated branch) for a later review round to separately rediscover. If a finding you're fixing now looks like an instance of a pattern that already appears above, audit sibling code paths for the same defect class before committing, rather than waiting for it to be reported again.
 
 # ACCEPTANCE MATRIX
 
@@ -47,7 +59,7 @@ If applicable, use RGR to complete the task.
 
 # FEEDBACK LOOPS
 
-Before committing, run `npm run typecheck` and `npm run test` to ensure the tests pass.
+Before every commit, including your final one, run the full `npm run typecheck` and `npm test` (not a filtered subset) and confirm there are zero failures. Do not commit while any test is failing, including a test that checks retained acceptance-evidence freshness against the current commit. If your change makes any `acceptance/evidence/issue-*.json` file stale, regenerate it with its corresponding `acceptance:issue-<N>:update-evidence` script and commit that update as part of the same change — do not treat evidence refresh as a separate step you might do later.
 
 # COMMIT
 
