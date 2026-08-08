@@ -269,6 +269,33 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
 
       // A new page in the same browser session retains the explicit preference
       // and launches immediately without presenting another dialog.
+      await context.addInitScript(() => {
+        const nativeSend = WebSocket.prototype.send;
+        WebSocket.prototype.send = function send(data) {
+          if (
+            typeof data === "string"
+            && sessionStorage.getItem("sandking.test.deferSelectedHarnessObservation") === "true"
+          ) {
+            try {
+              const message = JSON.parse(data)?.message;
+              if (
+                message?.type === "browser.harness-run.observe"
+                && /^harness-run-[a-f0-9]{24}$/.test(message.harnessRunId ?? "")
+              ) {
+                sessionStorage.removeItem("sandking.test.deferSelectedHarnessObservation");
+                sessionStorage.setItem(
+                  "sandking.test.deferredHarnessRunId",
+                  message.harnessRunId,
+                );
+                return;
+              }
+            } catch {
+              // Production validates malformed frames; this hook only delays one valid observation.
+            }
+          }
+          return Reflect.apply(nativeSend, this, [data]);
+        };
+      });
       await page.close();
       page = await context.newPage();
       observeFrames(page);
@@ -277,6 +304,10 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       await page.locator("#harness-launch-parameter-issueNumber").fill("999999993");
       await page.locator("#harness-launch-parameter-targetBranch")
         .fill("sandcastle/issue-999999993");
+      await page.evaluate(() => sessionStorage.setItem(
+        "sandking.test.deferSelectedHarnessObservation",
+        "true",
+      ));
       await page.locator("#launch-harness").click();
       assert.equal(await page.locator("#harness-launch-confirmation").isVisible(), false);
       await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} launched\./
@@ -285,6 +316,14 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       const secondHarnessRunId = /Harness run (harness-run-[a-f0-9]{24}) launched\./
         .exec(secondLaunchFeedback)?.[1];
       assert.match(secondHarnessRunId, /^harness-run-[a-f0-9]{24}$/);
+      assert.equal(await page.evaluate(() =>
+        sessionStorage.getItem("sandking.test.deferredHarnessRunId")), secondHarnessRunId);
+      assert.deepEqual(await page.evaluate(() => JSON.parse(
+        sessionStorage.getItem("sandking.harnessRunCursor") ?? "null",
+      )), {
+        harnessRunId: secondHarnessRunId,
+        sequence: 0,
+      });
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.waitForSelector(
         `#harness-run-observation[data-run-id='${secondHarnessRunId}']`,

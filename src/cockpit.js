@@ -50,6 +50,7 @@ let pendingHarnessCancellationRequestId = null;
 let hostConnectionStatus = "connecting";
 let hostFreshness = "stale";
 const harnessRunCursorStorageKey = "sandking.harnessRunCursor";
+const pendingHarnessRunSelectionStorageKey = "sandking.pendingHarnessRunSelection";
 const launchConfirmationStorageKey = "sandking.skipLaunchConfirmation";
 const pendingHarnessLaunchStorageKey = "sandking.pendingHarnessLaunch";
 const pendingHarnessCancellationStorageKey = "sandking.pendingHarnessCancellation";
@@ -84,6 +85,28 @@ const retainedHarnessRunCursor = () => {
   } catch {
     return null;
   }
+};
+
+const readPendingHarnessRunSelection = () => {
+  try {
+    const harnessRunId = sessionStorage.getItem(pendingHarnessRunSelectionStorageKey);
+    if (!/^harness-run-[a-f0-9]{24}$/.test(harnessRunId ?? "")) {
+      sessionStorage.removeItem(pendingHarnessRunSelectionStorageKey);
+      return null;
+    }
+    return harnessRunId;
+  } catch {
+    sessionStorage.removeItem(pendingHarnessRunSelectionStorageKey);
+    return null;
+  }
+};
+
+const retainPendingHarnessRunSelection = (harnessRunId) => {
+  sessionStorage.setItem(pendingHarnessRunSelectionStorageKey, harnessRunId);
+  sessionStorage.setItem(harnessRunCursorStorageKey, JSON.stringify({
+    harnessRunId,
+    sequence: 0,
+  }));
 };
 
 const encodeOpaqueFrame = (streamId, sequence, data) => {
@@ -1003,16 +1026,23 @@ const requestHarnessRunObservation = (selectedHarnessRunId = null) => {
     return;
   }
   const cursor = retainedHarnessRunCursor();
+  const pendingSelection = readPendingHarnessRunSelection();
+  const harnessRunId = selectedHarnessRunId
+    ?? pendingSelection
+    ?? cursor?.harnessRunId
+    ?? currentHarnessRunObservation?.run?.harnessRunId
+    ?? null;
   socket.send(JSON.stringify({
     channel: "control",
     message: {
       type: "browser.harness-run.observe",
       requestId: `harness-observe-${harnessRequestSequence}`,
-      harnessRunId: selectedHarnessRunId
-        ?? cursor?.harnessRunId
-        ?? currentHarnessRunObservation?.run?.harnessRunId
-        ?? null,
-      afterSequence: selectedHarnessRunId === null ? cursor?.sequence ?? 0 : 0,
+      harnessRunId,
+      afterSequence: selectedHarnessRunId === null
+        && pendingSelection === null
+        && harnessRunId === cursor?.harnessRunId
+        ? cursor.sequence
+        : 0,
     },
   }));
   harnessRequestSequence += 1;
@@ -1219,6 +1249,11 @@ const renderHarnessRun = (observation) => {
 };
 
 const applyHarnessRunObservation = (observation) => {
+  const pendingSelection = readPendingHarnessRunSelection();
+  if (pendingSelection && observation.run?.harnessRunId !== pendingSelection) {
+    requestHarnessRunObservation(pendingSelection);
+    return;
+  }
   const sameRun = currentHarnessRunObservation?.run?.harnessRunId
     === observation.run?.harnessRunId;
   const visibleObservation = observation.mode === "resume" && sameRun
@@ -1234,6 +1269,9 @@ const applyHarnessRunObservation = (observation) => {
   currentHarnessRunObservation = visibleObservation;
   updateWorkbenchChrome({ harnessRunObservation: visibleObservation });
   if (visibleObservation.run) {
+    if (visibleObservation.run.harnessRunId === pendingSelection) {
+      sessionStorage.removeItem(pendingHarnessRunSelectionStorageKey);
+    }
     sessionStorage.setItem(harnessRunCursorStorageKey, JSON.stringify({
       harnessRunId: visibleObservation.run.harnessRunId,
       sequence: visibleObservation.nextSequence,
@@ -1984,6 +2022,12 @@ socket.addEventListener("message", (event) => {
     ) {
       requireReload("runtime_harness_launch_result_mismatch");
       return;
+    }
+    if (message.outcome.type === "harness.run.launch.result") {
+      // Transfer the durable mutation outcome to equally durable observation
+      // selection before clearing the launch retry record. A reload in this
+      // interval must resume the acknowledged run, never the prior cursor.
+      retainPendingHarnessRunSelection(message.outcome.run.harnessRunId);
     }
     pendingHarnessLaunchRequestId = null;
     sessionStorage.removeItem(pendingHarnessLaunchStorageKey);

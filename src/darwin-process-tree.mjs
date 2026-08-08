@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -18,8 +19,7 @@ const supervisorPath = fileURLToPath(import.meta.url);
 const containmentPreloadPath = fileURLToPath(
   new URL("./darwin-process-containment.cjs", import.meta.url),
 );
-const launchctlPath = "/bin/launchctl";
-const psPath = "/bin/ps";
+const lsappinfoPath = "/usr/bin/lsappinfo";
 
 /** @typedef {{code: number | null, signal: string | null, startFailed: boolean}} AdapterExitResult */
 /** @typedef {{sent: boolean, sentAt: string | null}} SignalResult */
@@ -31,6 +31,9 @@ const escapeXml = (value) => value
   .replaceAll(">", "&gt;")
   .replaceAll('"', "&quot;")
   .replaceAll("'", "&apos;");
+
+/** @param {string} value */
+const quoteShellArgument = (value) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
 /** @param {string} path */
 const connect = (path) => new Promise((resolve, reject) => {
@@ -54,16 +57,16 @@ const darwinContainedEnvironment = (env) => {
 };
 
 /**
- * The launchd job's process group is the Darwin containment boundary. The
- * adapter must inherit that group; creating a detached session here would put
- * the entire Harness tree outside the group which bootout terminates.
+ * The application coalition is the Darwin force-containment boundary. The
+ * adapter leads its own cooperative process group, while the wrapper stays
+ * outside that group to retain the coalition control identity.
  *
  * @param {{cwd: string, env: NodeJS.ProcessEnv, stdio: import("node:child_process").StdioOptions}} options
  */
 export const darwinAdapterSpawnOptions = (options) => ({
   cwd: options.cwd,
   env: options.env,
-  detached: false,
+  detached: true,
   stdio: options.stdio,
 });
 
@@ -89,8 +92,23 @@ const runDarwinSupervisor = async () => {
     try {
       controlSocket.write(`${JSON.stringify(message)}\n`);
     } catch {
-      // The Host disappeared. launchd retains ownership of this job and kills
-      // the remaining descendants when its controlling process exits.
+      // The Host disappeared. The control-close path asks LaunchServices to
+      // terminate the still-identifiable application coalition.
+    }
+  };
+  let adapterExited = false;
+  const terminateCoalition = () => {
+    try {
+      const termination = spawn(lsappinfoPath, [
+        "kill",
+        "-coalition",
+        "-launchdjobs",
+        "-hard",
+        configuration.applicationSpecifier,
+      ], { stdio: "ignore" });
+      termination.unref();
+    } catch {
+      // Host restart reconciliation retains uncertainty if launchservicesd is unavailable.
     }
   };
   let adapter;
@@ -115,9 +133,8 @@ const runDarwinSupervisor = async () => {
   });
 
   let controlBuffer = "";
-  // The wrapper is the live launchd process-group leader. It survives the
-  // cooperative group signal so it can retain that non-reusable identity
-  // through either clean tree exit or launchd escalation.
+  // The wrapper stays outside the adapter-led cooperative group so it can
+  // retain the non-reused application identity through coalition escalation.
   process.on("SIGTERM", () => undefined);
   controlSocket.setEncoding("utf8");
   controlSocket.on("data", (/** @type {string} */ chunk) => {
@@ -142,7 +159,7 @@ const runDarwinSupervisor = async () => {
       }
       let sent = false;
       try {
-        process.kill(-process.pid, request.signal);
+        process.kill(-adapter.pid, request.signal);
         sent = true;
       } catch {
         // The process group may already have exited cooperatively.
@@ -155,13 +172,19 @@ const runDarwinSupervisor = async () => {
       });
     }
   });
-  controlSocket.once("close", () => process.exit(0));
+  controlSocket.once("close", () => {
+    if (!adapterExited) terminateCoalition();
+    process.exit(0);
+  });
   adapter.once("error", () => report({ type: "darwin-process-tree.adapter-error" }));
-  adapter.once("exit", (code, signal) => report({
-    type: "darwin-process-tree.adapter-exit",
-    code,
-    signal,
-  }));
+  adapter.once("exit", (code, signal) => {
+    adapterExited = true;
+    controlSocket.end(`${JSON.stringify({
+      type: "darwin-process-tree.adapter-exit",
+      code,
+      signal,
+    })}\n`);
+  });
 };
 
 /** @param {string} path @param {PassThrough} output */
@@ -175,11 +198,12 @@ const createOutputServer = (path, output) => {
 };
 
 /**
- * Launch one Harness adapter in a launchd-owned process group. The wrapper is
- * the retained group leader, and the adapter deliberately inherits its group.
- * Removing the job is the Darwin force boundary; job removal plus direct
- * confirmation that neither the group nor adapter remains is the termination
- * boundary.
+ * Launch one Harness adapter in a LaunchServices application coalition. The
+ * adapter leads the ordinary cooperative process group, while the wrapper
+ * retains the immutable application identity. Every native descendant remains
+ * in that coalition across fork, exec, posix_spawn, setsid, and parent exit.
+ * Coalition termination is the Darwin force boundary and removal of its
+ * LaunchServices record is the complete-tree confirmation boundary.
  *
  * @param {string} executable
  * @param {string[]} args
@@ -192,9 +216,30 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
   }
   const directory = mkdtempSync(join(tmpdir(), "sandking-darwin-tree-"));
   chmodSync(directory, 0o700);
-  const label = `dev.sandking.harness.${randomBytes(16).toString("hex")}`;
-  const domain = `user/${process.getuid()}`;
-  const serviceTarget = `${domain}/${label}`;
+  const applicationSpecifier = `dev.sandking.harness.${randomBytes(16).toString("hex")}`;
+  const applicationPath = join(directory, "SandKingHarness.app");
+  const applicationContentsPath = join(applicationPath, "Contents");
+  const applicationExecutablesPath = join(applicationContentsPath, "MacOS");
+  const applicationExecutableName = "sandking-darwin-supervisor";
+  mkdirSync(applicationExecutablesPath, { recursive: true, mode: 0o700 });
+  const applicationExecutablePath = join(
+    applicationExecutablesPath,
+    applicationExecutableName,
+  );
+  writeFileSync(applicationExecutablePath, `#!/bin/sh
+exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath)} darwin-supervise ${quoteShellArgument(join(directory, "configuration.json"))}
+`, { mode: 0o700 });
+  writeFileSync(join(applicationContentsPath, "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>${escapeXml(applicationSpecifier)}</string>
+<key>CFBundleExecutable</key><string>${applicationExecutableName}</string>
+<key>CFBundleName</key><string>Sand-King Harness supervision</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSBackgroundOnly</key><true/>
+</dict></plist>
+`, { mode: 0o600 });
   const channels = {
     stdout: join(directory, "stdout.sock"),
     stderr: join(directory, "stderr.sock"),
@@ -219,23 +264,8 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
     cwd: options.cwd,
     env: darwinContainedEnvironment(options.env),
     channels,
+    applicationSpecifier,
   })}\n`, { mode: 0o600 });
-  const plistPath = join(directory, "job.plist");
-  writeFileSync(plistPath, `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>Label</key><string>${escapeXml(label)}</string>
-<key>ProgramArguments</key><array>
-<string>${escapeXml(process.execPath)}</string>
-<string>${escapeXml(supervisorPath)}</string>
-<string>darwin-supervise</string>
-<string>${escapeXml(configurationPath)}</string>
-</array>
-<key>RunAtLoad</key><true/>
-<key>AbandonProcessGroup</key><false/>
-<key>ProcessType</key><string>Background</string>
-</dict></plist>
-`, { mode: 0o600 });
 
   const child = /** @type {any} */ (new EventEmitter());
   child.pid = undefined;
@@ -263,8 +293,11 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
   /** @type {Map<number, (result: SignalResult) => void>} */
   const pendingSignals = new Map();
   let containmentAvailable = false;
+  let coalitionIdentityEstablished = false;
   let containmentRemoved = false;
   let released = false;
+  /** @type {Promise<string | false> | null} */
+  let removalOperation = null;
   /** @type {Promise<void> | null} */
   let releaseOperation = null;
 
@@ -297,6 +330,7 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
         }
         if (message.type === "darwin-process-tree.adapter-spawned") {
           adapterSpawned = true;
+          containmentAvailable = true;
           wrapperPid = Number.isSafeInteger(message.wrapperPid) && message.wrapperPid > 0
             ? message.wrapperPid
             : null;
@@ -352,27 +386,36 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
   });
   controlServer.once("error", failLaunch);
 
-  execFile(launchctlPath, ["bootstrap", domain, plistPath], {
+  execFile(lsappinfoPath, [
+    "launch",
+    "nofront=true",
+    "async=true",
+    applicationPath,
+  ], {
     timeout: 10_000,
     windowsHide: true,
   }, (error) => {
-    if (error) {
+    if (error && !adapterSpawned) {
       failLaunch();
       return;
     }
     containmentAvailable = true;
   });
 
-  const jobExists = () => new Promise((resolve) => {
-    execFile(launchctlPath, ["print", serviceTarget], {
-      timeout: 5_000,
-      windowsHide: true,
-    }, (error) => resolve(error === null));
-  });
-
-  /** @returns {Promise<Array<{pid: number, processGroupId: number, state: string}> | null>} */
-  const readProcessGroups = () => new Promise((resolve) => {
-    execFile(psPath, ["-axo", "pid=,pgid=,stat="], {
+  /**
+   * LaunchServices preserves an exited application record while its coalition
+   * still contains processes. The random bundle identifier is a stable,
+   * non-reused control identity, so this query neither samples nor signals a
+   * numeric PID.
+   *
+   * @returns {Promise<boolean | null>}
+   */
+  const coalitionHasProcesses = () => new Promise((resolve) => {
+    execFile(lsappinfoPath, [
+      "find",
+      "--includeExitedApplications",
+      `bundleid=${applicationSpecifier}`,
+    ], {
       timeout: 5_000,
       windowsHide: true,
     }, (error, stdout) => {
@@ -380,45 +423,30 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
         resolve(null);
         return;
       }
-      const processes = [];
-      for (const line of stdout.split("\n")) {
-        if (line.trim() === "") continue;
-        const match = /^\s*([0-9]+)\s+([0-9]+)\s+(\S+)\s*$/.exec(line);
-        if (!match) {
-          resolve(null);
-          return;
-        }
-        processes.push({
-          pid: Number(match[1]),
-          processGroupId: Number(match[2]),
-          state: match[3],
-        });
-      }
-      resolve(processes);
+      resolve(/ASN:0x[0-9a-f]+[-:]0x[0-9a-f]+:/i.test(stdout));
     });
   });
-  /** @param {number} processId */
-  const processExists = (processId) => {
-    try {
-      process.kill(processId, 0);
-      return true;
-    } catch (error) {
-      return !(error && typeof error === "object" && "code" in error
-        && error.code === "ESRCH");
+
+  const establishCoalitionIdentity = async () => {
+    if (coalitionIdentityEstablished) return true;
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const containsProcesses = await coalitionHasProcesses();
+      if (containsProcesses === true) {
+        coalitionIdentityEstablished = true;
+        return true;
+      }
+      if (adapterExitResult && containsProcesses === false) return false;
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    containmentAvailable = false;
+    return false;
   };
+
   const supervisedTreeAlive = async () => {
-    if (wrapperPid === null || adapterPid === null) return true;
-    const processes = await readProcessGroups();
-    if (!processes) return true;
-    const groupMemberAlive = processes.some((processEntry) =>
-      processEntry.pid !== wrapperPid
-      && processEntry.processGroupId === wrapperPid
-      && !["X", "Z"].includes(processEntry.state[0]));
-    // Adapter PID reuse can only cause a safe false-positive here. An ESRCH
-    // observation cannot hide the original adapter, while a replacement keeps
-    // cancellation unconfirmed and is never signalled by numeric PID.
-    return groupMemberAlive || processExists(adapterPid);
+    if (!adapterSpawned && !adapterExitResult) return true;
+    if (!coalitionIdentityEstablished) return true;
+    return await coalitionHasProcesses() !== false;
   };
   const waitForSupervisedTreeExit = async () => {
     const deadline = Date.now() + 10_000;
@@ -428,32 +456,42 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
     }
     return false;
   };
-  const removeContainment = () => new Promise((resolve) => {
+  const removeContainment = () => {
     if (containmentRemoved) {
-      resolve(false);
-      return;
+      return Promise.resolve(false);
     }
-    const sentAt = new Date().toISOString();
-    execFile(launchctlPath, ["bootout", serviceTarget], {
-      timeout: 10_000,
-      windowsHide: true,
-    }, async (_error) => {
-      const exists = await jobExists();
-      if (exists) {
+    if (removalOperation) return removalOperation;
+    removalOperation = new Promise((resolve) => {
+      const sentAt = new Date().toISOString();
+      execFile(lsappinfoPath, [
+        "kill",
+        "-coalition",
+        "-launchdjobs",
+        "-hard",
+        applicationSpecifier,
+      ], {
+        timeout: 10_000,
+        windowsHide: true,
+      }, async (error) => {
+        const exited = await waitForSupervisedTreeExit();
+        if (!exited) {
+          containmentAvailable = false;
+          resolve(error ? false : sentAt);
+          return;
+        }
+        containmentRemoved = true;
         containmentAvailable = false;
-        resolve(false);
-        return;
-      }
-      containmentRemoved = true;
-      if (!(await waitForSupervisedTreeExit())) {
-        containmentAvailable = false;
-      }
-      // The job was present when this controller was created, is now absent,
-      // so retain the dispatch time even if subsequent tree confirmation stays
-      // uncertain. processTreeAlive remains the separate terminal-state gate.
-      resolve(sentAt);
+        resolve(error ? false : sentAt);
+      });
     });
-  });
+    void removalOperation.then(() => {
+      if (!containmentRemoved) removalOperation = null;
+    }, () => {
+      containmentAvailable = false;
+      removalOperation = null;
+    });
+    return removalOperation;
+  };
   /** @param {"SIGTERM" | "SIGKILL"} signalName */
   const signal = (signalName) => {
     if (signalName === "SIGKILL") {
@@ -504,8 +542,12 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
     adapterChannel,
     adapterExit,
     adapterExited: () => adapterExitResult !== null,
-    captureDescendants: async () => containmentAvailable && !containmentRemoved,
-    prepareCancellation: async () => containmentAvailable && !containmentRemoved,
+    captureDescendants: async () => containmentAvailable
+      && !containmentRemoved
+      && await establishCoalitionIdentity(),
+    prepareCancellation: async () => containmentAvailable
+      && !containmentRemoved
+      && await establishCoalitionIdentity(),
     processTreeAlive: async () => !released && await supervisedTreeAlive(),
     signal,
     release,

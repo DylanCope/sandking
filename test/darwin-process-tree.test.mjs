@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { once } from "node:events";
 import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -42,7 +45,7 @@ const readJsonLine = async (stream) => {
   return JSON.parse(buffered.slice(0, buffered.indexOf("\n")));
 };
 
-test("the Darwin adapter stays in the launchd-owned process group", () => {
+test("the Darwin adapter leads the cooperative process group inside its coalition", () => {
   const stdio = ["ignore", "pipe", "pipe", "pipe"];
   assert.deepEqual(darwinAdapterSpawnOptions({
     cwd: "/private/tmp/project",
@@ -51,7 +54,7 @@ test("the Darwin adapter stays in the launchd-owned process group", () => {
   }), {
     cwd: "/private/tmp/project",
     env: { LANG: "C.UTF-8" },
-    detached: false,
+    detached: true,
     stdio,
   });
 });
@@ -97,7 +100,7 @@ test("the Darwin Node preload keeps detached Workers in the inherited group", as
 test("Darwin force cancellation terminates the real adapter process group", {
   skip: process.platform === "darwin"
     ? false
-    : "launchd process containment is available only on Darwin",
+    : "LaunchServices process-coalition containment is available only on Darwin",
 }, async () => {
   const adapterSource = String.raw`
     import { spawn } from "node:child_process";
@@ -145,5 +148,76 @@ test("Darwin force cancellation terminates the real adapter process group", {
       }
     }
     await tree.release();
+  }
+});
+
+test("Darwin force cancellation terminates a native descendant that creates a new session", {
+  skip: process.platform === "darwin"
+    ? false
+    : "LaunchServices process-coalition containment is available only on Darwin",
+}, async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "sandking-darwin-native-session-"));
+  const sourcePath = join(fixture, "native-session-adapter.c");
+  const executablePath = join(fixture, "native-session-adapter");
+  await writeFile(sourcePath, String.raw`
+#include <signal.h>
+#include <stdio.h>
+#include <unistd.h>
+
+int main(void) {
+  if (setsid() < 0) return 2;
+  signal(SIGTERM, SIG_IGN);
+  printf("{\"nativePid\":%d}\n", getpid());
+  fflush(stdout);
+  for (;;) pause();
+}
+`);
+  await execFileAsync("cc", ["-O2", "-o", executablePath, sourcePath]);
+
+  const adapterSource = String.raw`
+    import { spawn } from "node:child_process";
+    const native = spawn(${JSON.stringify(executablePath)}, [], {
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    let output = "";
+    native.stdout.setEncoding("utf8");
+    native.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (!output.includes("\\n")) return;
+      const { nativePid } = JSON.parse(output.slice(0, output.indexOf("\\n")));
+      process.stdout.write(JSON.stringify({ adapterPid: process.pid, nativePid }) + "\\n");
+    });
+    process.on("SIGTERM", () => undefined);
+    setInterval(() => undefined, 1000);
+  `;
+  const tree = spawnDarwinProcessTree(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    adapterSource,
+  ], {
+    cwd: process.cwd(),
+    env: { ...process.env },
+  });
+  let adapterPid = null;
+  let nativePid = null;
+  try {
+    ({ adapterPid, nativePid } = await readJsonLine(tree.child.stdout));
+    assert.equal(processCanRun(adapterPid), true);
+    assert.equal(processCanRun(nativePid), true);
+    await waitUntil(() => tree.prepareCancellation());
+
+    assert.equal((await tree.signal("SIGTERM")).sent, true);
+    assert.equal(processCanRun(adapterPid), true);
+    assert.equal(processCanRun(nativePid), true);
+
+    assert.equal((await tree.signal("SIGKILL")).sent, true);
+    await waitUntil(async () => !(await tree.processTreeAlive()), 15_000);
+    await waitUntil(() => !processCanRun(adapterPid) && !processCanRun(nativePid));
+  } finally {
+    for (const processId of [nativePid, adapterPid]) {
+      if (processId && processCanRun(processId)) process.kill(processId, "SIGKILL");
+    }
+    await tree.release();
+    await rm(fixture, { recursive: true, force: true });
   }
 });
