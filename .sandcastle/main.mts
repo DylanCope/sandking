@@ -10,8 +10,14 @@
 //
 // Usage:
 //   npx tsx .sandcastle/main.mts
+//   npx tsx .sandcastle/main.mts --parent 165 --max-review-attempts 20
 // Or add to package.json:
 //   "scripts": { "sandcastle": "npx tsx .sandcastle/main.mts" }
+//
+// --max-review-attempts overrides how many review rounds a single pull
+// request may use before delivery gives up on it (default: see
+// DEFAULT_MAX_REVIEW_ATTEMPTS in issue-delivery.mjs). Applies per issue, not
+// per run — a resumed PR's existing review ledger still counts toward it.
 
 import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
@@ -21,7 +27,10 @@ import {
   createGitHubDelivery,
   createGitRepository,
 } from "./delivery-adapters.mjs";
-import { completeIssueThroughPullRequest } from "./issue-delivery.mjs";
+import {
+  completeIssueThroughPullRequest,
+  DEFAULT_MAX_REVIEW_ATTEMPTS,
+} from "./issue-delivery.mjs";
 import { runPullRequestReview } from "./pr-review-runner.mjs";
 import {
   createCodexSandboxSettings,
@@ -32,6 +41,7 @@ import { retryOperation } from "./resilience.mjs";
 import {
   createIssueScope,
   createParentScope,
+  parseMaxReviewAttempts,
   parseRunScope,
   selectScopedIssues,
 } from "./run-scope.mjs";
@@ -110,6 +120,8 @@ if (targetBranch !== "main") {
 const repository = createGitRepository();
 const github = createGitHubDelivery();
 const scopeOptions = parseRunScope(process.argv.slice(2));
+const maxReviewAttempts =
+  parseMaxReviewAttempts(process.argv.slice(2)) ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
 const runScope = scopeOptions
   ? "issueId" in scopeOptions
     ? await createIssueScope({ issueId: scopeOptions.issueId, github })
@@ -126,6 +138,7 @@ if (runScope && scopeOptions) {
       : `Harness run scoped to ${runScope.issueIds.size} descendant issue(s) of #${scopeOptions.parentIssueId}.`,
   );
 }
+console.log(`Review-attempt budget per issue: ${maxReviewAttempts}.`);
 
 const runIssueWorker = async (
   issue: z.infer<typeof planSchema>["issues"][number],
@@ -287,6 +300,7 @@ const main = async () => {
         issue,
         repository,
         github,
+        maxReviewAttempts,
         worker: {
           implement: ({
             branch,

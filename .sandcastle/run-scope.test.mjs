@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   createIssueScope,
   createParentScope,
+  parseMaxReviewAttempts,
   parseRunScope,
   selectScopedIssues,
 } from "./run-scope.mjs";
@@ -21,6 +22,44 @@ test("invalid or incomplete parent options fail before a Harness run starts", ()
   assert.throws(() => parseRunScope(["--parent"]), /issue number/);
   assert.throws(() => parseRunScope(["--parent", "twenty-five"]), /issue number/);
   assert.throws(() => parseRunScope(["--unknown", "25"]), /Unknown option/);
+});
+
+test("parseRunScope tolerates --max-review-attempts without folding it into the scope", () => {
+  assert.deepEqual(
+    parseRunScope(["--parent", "165", "--max-review-attempts", "20"]),
+    { parentIssueId: "165" },
+  );
+  assert.deepEqual(
+    parseRunScope(["--max-review-attempts=20", "--issue", "152"]),
+    { issueId: "152" },
+  );
+  assert.equal(parseRunScope(["--max-review-attempts", "20"]), null);
+});
+
+test("--max-review-attempts accepts a positive integer in either flag form", () => {
+  assert.equal(parseMaxReviewAttempts(["--max-review-attempts", "20"]), 20);
+  assert.equal(parseMaxReviewAttempts(["--max-review-attempts=20"]), 20);
+  assert.equal(
+    parseMaxReviewAttempts(["--parent", "165", "--max-review-attempts", "20"]),
+    20,
+  );
+  assert.equal(parseMaxReviewAttempts([]), undefined);
+  assert.equal(parseMaxReviewAttempts(["--parent", "165"]), undefined);
+});
+
+test("invalid --max-review-attempts values fail before a Harness run starts", () => {
+  assert.throws(
+    () => parseMaxReviewAttempts(["--max-review-attempts", "0"]),
+    /positive integer/,
+  );
+  assert.throws(
+    () => parseMaxReviewAttempts(["--max-review-attempts", "not-a-number"]),
+    /positive integer/,
+  );
+  assert.throws(
+    () => parseMaxReviewAttempts(["--max-review-attempts", "-5"]),
+    /positive integer/,
+  );
 });
 
 test("a parent scope recursively includes descendants and excludes other trees", async () => {

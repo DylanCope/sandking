@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   completeIssueThroughPullRequest,
+  DEFAULT_MAX_REVIEW_ATTEMPTS,
   deliverIssueThroughPullRequest,
   produceIssueBranch,
 } from "./issue-delivery.mjs";
@@ -310,10 +311,47 @@ test("each reviewer receives the complete verdict ledger from earlier attempts",
   assert.deepEqual(ledgers, [[], [firstReview]]);
 });
 
-test("a productive review loop may use all fifteen review attempts", async () => {
+test("a productive review loop may use its full custom review-attempt budget", async () => {
   const repository = createFakeRepository("main-long-review-base");
   const github = createFakeGitHub({
-    pullRequestDiffs: Array.from({ length: 15 }, (_, index) => `diff ${index + 1}`),
+    pullRequestDiffs: Array.from({ length: 4 }, (_, index) => `diff ${index + 1}`),
+  });
+  let reviewAttempt = 0;
+
+  const result = await deliverIssueThroughPullRequest({
+    issue: { id: "117", title: "Build the runtime skeleton" },
+    repository,
+    github,
+    maxReviewAttempts: 4,
+    worker: {
+      async implement({ branch, findings, issue }) {
+        repository.commit(
+          branch,
+          findings?.[0] ?? `initial implementation for ${issue.id}`,
+        );
+      },
+    },
+    reviewer: {
+      async evaluatePullRequest() {
+        reviewAttempt += 1;
+        return reviewAttempt === 4
+          ? { approved: true, findings: [] }
+          : { approved: false, findings: [`Resolve review ${reviewAttempt}`] };
+      },
+    },
+  });
+
+  assert.equal(reviewAttempt, 4);
+  assert.equal(result.review.approved, true);
+});
+
+test("maxReviewAttempts defaults to DEFAULT_MAX_REVIEW_ATTEMPTS when not supplied", async () => {
+  const repository = createFakeRepository("main-default-budget-base");
+  const github = createFakeGitHub({
+    pullRequestDiffs: Array.from(
+      { length: DEFAULT_MAX_REVIEW_ATTEMPTS },
+      (_, index) => `diff ${index + 1}`,
+    ),
   });
   let reviewAttempt = 0;
 
@@ -332,18 +370,18 @@ test("a productive review loop may use all fifteen review attempts", async () =>
     reviewer: {
       async evaluatePullRequest() {
         reviewAttempt += 1;
-        return reviewAttempt === 15
+        return reviewAttempt === DEFAULT_MAX_REVIEW_ATTEMPTS
           ? { approved: true, findings: [] }
           : { approved: false, findings: [`Resolve review ${reviewAttempt}`] };
       },
     },
   });
 
-  assert.equal(reviewAttempt, 15);
+  assert.equal(reviewAttempt, DEFAULT_MAX_REVIEW_ATTEMPTS);
   assert.equal(result.review.approved, true);
 });
 
-test("a resumed delivery preserves the review-attempt budget from its ledger", async () => {
+test("a resumed delivery preserves a custom review-attempt budget from its ledger", async () => {
   const repository = createFakeRepository("main-budget-base", {
     "sandcastle/issue-120": ["existing implementation"],
   });
@@ -366,7 +404,7 @@ test("a resumed delivery preserves the review-attempt budget from its ledger", a
       head: "sandcastle/issue-120",
       url: "https://github.test/pull/77",
     },
-    reviewLedger: Array.from({ length: 15 }, () => priorReview),
+    reviewLedger: Array.from({ length: 4 }, () => priorReview),
   });
   let reviewerCalls = 0;
 
@@ -375,6 +413,7 @@ test("a resumed delivery preserves the review-attempt budget from its ledger", a
       issue: { id: "120", title: "Exhausted review budget" },
       repository,
       github,
+      maxReviewAttempts: 4,
       worker: { async implement() {} },
       reviewer: {
         async evaluatePullRequest() {
@@ -383,7 +422,7 @@ test("a resumed delivery preserves the review-attempt budget from its ledger", a
         },
       },
     }),
-    /used all 15 review attempts/,
+    /used all 4 review attempts/,
   );
 
   assert.equal(reviewerCalls, 0);

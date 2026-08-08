@@ -1,4 +1,4 @@
-const MAX_REVIEW_ATTEMPTS = 15;
+export const DEFAULT_MAX_REVIEW_ATTEMPTS = 15;
 const MAX_CONSECUTIVE_NO_PROGRESS_ATTEMPTS = 3;
 
 function blockingFindingMessages(review) {
@@ -32,9 +32,9 @@ function defectHistorySummaries(reviewLedger) {
   return summaries;
 }
 
-function roundContextMessage(reviewAttempt) {
+function roundContextMessage(reviewAttempt, maxReviewAttempts) {
   return reviewAttempt > 0
-    ? `This is review round ${reviewAttempt} of ${MAX_REVIEW_ATTEMPTS}.`
+    ? `This is review round ${reviewAttempt} of ${maxReviewAttempts}.`
     : "";
 }
 
@@ -54,6 +54,7 @@ export async function deliverIssueThroughPullRequest({
   worker,
   github,
   reviewer,
+  maxReviewAttempts = DEFAULT_MAX_REVIEW_ATTEMPTS,
 }) {
   const existingPullRequest = await github.findOpenPullRequest({ issue });
   const branchResult = existingPullRequest
@@ -70,15 +71,15 @@ export async function deliverIssueThroughPullRequest({
   const reviewLedger = await github.getReviewLedger?.({ pullRequest }) ?? [];
   let review = reviewLedger.at(-1);
   let reviewAttempt = reviewLedger.length;
-  if (reviewAttempt >= MAX_REVIEW_ATTEMPTS) {
+  if (reviewAttempt >= maxReviewAttempts) {
     throw new Error(
-      `Pull request for issue #${issue.id} has used all ${MAX_REVIEW_ATTEMPTS} review attempts.`,
+      `Pull request for issue #${issue.id} has used all ${maxReviewAttempts} review attempts.`,
     );
   }
   let consecutiveEmptyDiffs = 0;
   let consecutiveUnchangedDiffs = 0;
   let lastReviewedDiff;
-  while (reviewAttempt < MAX_REVIEW_ATTEMPTS) {
+  while (reviewAttempt < maxReviewAttempts) {
     const diff = await github.getPullRequestDiff({ pullRequest });
     if (diff.trim().length === 0) {
       consecutiveEmptyDiffs += 1;
@@ -93,7 +94,7 @@ export async function deliverIssueThroughPullRequest({
           "The pull request has no code changes. Implement the issue before requesting another review.",
         ],
         defectHistory: defectHistorySummaries(reviewLedger),
-        roundContext: roundContextMessage(reviewAttempt),
+        roundContext: roundContextMessage(reviewAttempt, maxReviewAttempts),
         issue,
         pullRequest,
       });
@@ -116,7 +117,7 @@ export async function deliverIssueThroughPullRequest({
           "The pull request diff is unchanged. Make a substantive code change that addresses the review findings.",
         ],
         defectHistory: defectHistorySummaries(reviewLedger),
-        roundContext: roundContextMessage(reviewAttempt),
+        roundContext: roundContextMessage(reviewAttempt, maxReviewAttempts),
         issue,
         pullRequest,
       });
@@ -137,7 +138,7 @@ export async function deliverIssueThroughPullRequest({
     if (review.approved) {
       break;
     }
-    if (reviewAttempt === MAX_REVIEW_ATTEMPTS) {
+    if (reviewAttempt === maxReviewAttempts) {
       throw new Error(`Pull request for issue #${issue.id} was not approved.`);
     }
 
@@ -145,7 +146,7 @@ export async function deliverIssueThroughPullRequest({
       branch: branchResult.branch,
       findings: blockingFindingMessages(review),
       defectHistory: defectHistorySummaries(reviewLedger),
-      roundContext: roundContextMessage(reviewAttempt),
+      roundContext: roundContextMessage(reviewAttempt, maxReviewAttempts),
       issue,
       pullRequest,
     });
