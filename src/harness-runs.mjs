@@ -885,7 +885,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
         ? await windowsProcessTreePromise
         : null;
       const posixTreeRequiresCooperativeSignal = posixProcessTree
-        ? !posixProcessTree.adapterExited() || await processTreeAlive()
+        ? !posixProcessTree.adapterExited()
         : false;
       if (windowsProcessTree) {
         const cooperativeRequestSent = sendHarnessCancellationRequest(child, {

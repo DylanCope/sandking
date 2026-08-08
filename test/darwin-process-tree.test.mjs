@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   darwinAdapterSpawnOptions,
+  dispatchDarwinAdapterGroupSignal,
   spawnDarwinProcessTree,
 } from "../src/darwin-process-tree.mjs";
 
@@ -57,6 +58,23 @@ test("the Darwin adapter leads the cooperative process group inside its coalitio
     detached: true,
     stdio,
   });
+});
+
+test("a queued Darwin cooperative signal cannot target a group after adapter exit", () => {
+  const dispatchedSignals = [];
+  const result = dispatchDarwinAdapterGroupSignal({
+    adapterPid: 8_051,
+    adapterExited: true,
+    signal: "SIGTERM",
+    kill: (processId, signal) => {
+      dispatchedSignals.push({ processId, signal });
+      return true;
+    },
+    now: () => new Date("2026-08-08T15:00:00.000Z"),
+  });
+
+  assert.deepEqual(result, { sent: false, sentAt: null });
+  assert.deepEqual(dispatchedSignals, []);
 });
 
 test("the Darwin Node preload keeps detached Workers in the inherited group", async () => {

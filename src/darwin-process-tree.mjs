@@ -24,6 +24,36 @@ const lsappinfoPath = "/usr/bin/lsappinfo";
 /** @typedef {{code: number | null, signal: string | null, startFailed: boolean}} AdapterExitResult */
 /** @typedef {{sent: boolean, sentAt: string | null}} SignalResult */
 
+/**
+ * Dispatch is authorized only while the adapter still owns its process-group
+ * identity. Once adapter exit is observed, that numeric group id may already
+ * identify unrelated work and must never be used again.
+ *
+ * @param {{
+ *   adapterPid: number,
+ *   adapterExited: boolean,
+ *   signal: "SIGTERM" | "SIGKILL",
+ *   kill?: (processId: number, signal: NodeJS.Signals) => boolean,
+ *   now?: () => Date,
+ * }} options
+ * @returns {SignalResult}
+ */
+export const dispatchDarwinAdapterGroupSignal = (options) => {
+  if (options.adapterExited || !Number.isSafeInteger(options.adapterPid)
+    || options.adapterPid <= 0) {
+    return { sent: false, sentAt: null };
+  }
+  try {
+    (options.kill ?? process.kill)(-options.adapterPid, options.signal);
+    return {
+      sent: true,
+      sentAt: (options.now ?? (() => new Date()))().toISOString(),
+    };
+  } catch {
+    return { sent: false, sentAt: null };
+  }
+};
+
 /** @param {string} value */
 const escapeXml = (value) => value
   .replaceAll("&", "&amp;")
@@ -157,18 +187,15 @@ const runDarwinSupervisor = async () => {
       ) {
         continue;
       }
-      let sent = false;
-      try {
-        process.kill(-adapter.pid, request.signal);
-        sent = true;
-      } catch {
-        // The process group may already have exited cooperatively.
-      }
+      const signalResult = dispatchDarwinAdapterGroupSignal({
+        adapterPid: adapter.pid,
+        adapterExited,
+        signal: request.signal,
+      });
       report({
         type: "darwin-process-tree.signal-result",
         requestId: request.requestId,
-        sent,
-        sentAt: sent ? new Date().toISOString() : null,
+        ...signalResult,
       });
     }
   });
@@ -501,6 +528,12 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
       }));
     }
     if (!controlSocket || !containmentAvailable || containmentRemoved) {
+      return Promise.resolve({ sent: false, sentAt: null });
+    }
+    // The wrapper independently enforces the same boundary for requests that
+    // were already queued when exit arrived. This Host-side check also avoids
+    // creating any new cooperative request after the exit record is observed.
+    if (adapterExitResult) {
       return Promise.resolve({ sent: false, sentAt: null });
     }
     const activeControlSocket = controlSocket;
