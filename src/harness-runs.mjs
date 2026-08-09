@@ -505,6 +505,31 @@ const migrateRetainedOutcome = (outcome, runs) => {
 };
 
 /**
+ * Derive the current launch fingerprint only from facts that were durably
+ * accepted with the run. Outcomes without a canonical current-style run are
+ * left byte-for-byte compatible with their original request fingerprint.
+ * @param {z.infer<typeof retainedOutcomeSchema>} outcome
+ * @param {Array<z.infer<typeof storedRunSchema>>} runs
+ */
+const normalizeRetainedLaunchOutcomeFingerprint = (outcome, runs) => {
+  const normalized = structuredClone(outcome);
+  const harnessRunId = /** @type {any} */ (normalized.response)?.run?.harnessRunId;
+  const run = typeof harnessRunId === "string"
+    ? runs.find((candidate) => candidate.harnessRunId === harnessRunId)
+    : null;
+  if (run && "parameters" in run && "source" in run) {
+    normalized.requestFingerprint = launchRequestFingerprint({
+      projectId: run.projectId,
+      parameters: run.parameters,
+      controllerSessionId: run.controllerSessionId,
+      source: run.source,
+      authorizationClass: "harness_run_launch",
+    });
+  }
+  return retainedOutcomeSchema.parse(normalized);
+};
+
+/**
  * Successful launch outcomes can be upgraded to the current fingerprint from
  * their immutable run facts. This lets the Cockpit reconnect after its
  * ephemeral Controller runtime is replaced. Rejected launches have no run
@@ -513,23 +538,8 @@ const migrateRetainedOutcome = (outcome, runs) => {
  * @param {z.infer<typeof retainedOutcomeSchema>} outcome
  * @param {Array<z.infer<typeof storedRunSchema>>} runs
  */
-const migrateRetainedLaunchOutcome = (outcome, runs) => {
-  const migrated = migrateRetainedOutcome(outcome, runs);
-  const harnessRunId = /** @type {any} */ (migrated.response)?.run?.harnessRunId;
-  const run = typeof harnessRunId === "string"
-    ? runs.find((candidate) => candidate.harnessRunId === harnessRunId)
-    : null;
-  if (run && "parameters" in run && "source" in run) {
-    migrated.requestFingerprint = launchRequestFingerprint({
-      projectId: run.projectId,
-      parameters: run.parameters,
-      controllerSessionId: run.controllerSessionId,
-      source: run.source,
-      authorizationClass: "harness_run_launch",
-    });
-  }
-  return retainedOutcomeSchema.parse(migrated);
-};
+const migrateRetainedLaunchOutcome = (outcome, runs) =>
+  normalizeRetainedLaunchOutcomeFingerprint(migrateRetainedOutcome(outcome, runs), runs);
 
 /**
  * @param {z.infer<typeof previousStateWithCancellationSchema> | z.infer<typeof previousStateWithSnapshotsSchema> | z.infer<typeof previousStateSchema> | z.infer<typeof legacyStateSchema>} previous
@@ -1262,6 +1272,16 @@ export const createHarnessRunManager = async (options) => {
       return migrated;
     }
     const retained = stateSchema.parse(raw);
+    const normalizedLaunchOutcomes = retained.launchOutcomes.map((outcome) =>
+      normalizeRetainedLaunchOutcomeFingerprint(outcome, retained.runs));
+    if (normalizedLaunchOutcomes.some((outcome, index) =>
+      outcome.requestFingerprint !== retained.launchOutcomes[index].requestFingerprint)) {
+      retained.launchOutcomes = normalizedLaunchOutcomes;
+      // Repair schema-v5 snapshots written by the initial reconciliation
+      // implementation before exposing lookup or lifecycle operations. The
+      // atomic rewrite is deterministic, so interruption simply retries it.
+      await writePrivateJson(statePath(options.dataDir), retained);
+    }
     await ensureAcceptedLaunchAudits(retained);
     await ensureAcceptedCancellationAudits(retained);
     await ensureOutcomeAudits(retained);

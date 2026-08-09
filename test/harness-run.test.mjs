@@ -2158,6 +2158,79 @@ test("schema-v4 terminal history gains reconciliation metadata without changing 
   }
 });
 
+test("startup repairs launch fingerprints retained by the initial schema-v5 migration", async () => {
+  const fixture = await createFixture("sandking-harness-v5-launch-fingerprint-repair-");
+  try {
+    const request = hashedLaunchRequest(launchRequest(
+      fixture.registered.project.projectId,
+      160,
+      {
+        source: "cockpit",
+        controllerSessionId: null,
+        idempotencyKey: "initial-schema-v5-cockpit-launch",
+      },
+    ));
+    const launched = await fixture.manager.launch(request);
+    await waitForTerminal(fixture.manager, launched.run.harnessRunId);
+
+    const staleV5 = JSON.parse(
+      await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+    );
+    const staleFingerprint = schemaV4LaunchRequestFingerprint(request);
+    staleV5.launchOutcomes[0].requestFingerprint = staleFingerprint;
+    await writeFile(
+      join(fixture.dataDir, "harness-runs.json"),
+      `${JSON.stringify(staleV5)}\n`,
+    );
+
+    const repairedManager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: async () => {
+        throw new Error("retained_launch_repair_must_not_resolve_mutable_launch_context");
+      },
+    });
+    const repaired = JSON.parse(
+      await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.notEqual(repaired.launchOutcomes[0].requestFingerprint, staleFingerprint);
+
+    const replay = await repairedManager.launch({
+      ...request,
+      requestId: "reconnect-initial-schema-v5-cockpit-launch",
+      controllerId: `runtime-${"8".repeat(24)}`,
+    });
+    assert.equal(replay.type, "harness.run.launch.result");
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.run.harnessRunId, launched.run.harnessRunId);
+
+    const conflict = await repairedManager.launch({
+      ...request,
+      requestId: "conflict-initial-schema-v5-cockpit-launch",
+      controllerId: `runtime-${"8".repeat(24)}`,
+      parameters: { issueNumber: 161, targetBranch: "sandcastle/issue-161" },
+    });
+    assert.equal(conflict.code, "idempotency_key_conflict");
+    assert.equal(conflict.prohibitedSideEffects.harnessRunCreated, false);
+
+    await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: async () => {
+        throw new Error("retained_launch_restart_must_not_resolve_mutable_launch_context");
+      },
+    });
+    assert.deepEqual(
+      JSON.parse(await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8")),
+      repaired,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("schema-v4 rejected launch outcomes replay under their original fingerprint", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-harness-v4-rejection-upgrade-"));
   let auditSequence = 0;
