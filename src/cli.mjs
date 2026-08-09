@@ -5,6 +5,7 @@ import {
   requestControllerDescription,
   requestControllerCancel,
   requestControllerLaunch,
+  requestControllerRecover,
 } from "./controller-cli.mjs";
 import { validateDeclaredLaunchParameters } from "./harness-launch.mjs";
 import { RuntimeStartupError, launchRuntime, stopRuntime } from "./runtime.mjs";
@@ -12,6 +13,7 @@ import { RuntimeStartupError, launchRuntime, stopRuntime } from "./runtime.mjs";
 const harnessLaunchHelp = `Usage:
   sandking launch [<project-id>] [--parameters <json-object>] [<harness-declared-flags>] [--json]
   sandking cancel <harness-run-id> [--json]
+  sandking recover <harness-run-id> <recheck|terminate_confirmed_tree|finalize> [--json]
 
 Launches one Harness run immediately. Inside a Controller session, <project-id>
 defaults to the focused Controller Project.
@@ -20,7 +22,7 @@ defaults to the focused Controller Project.
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
   const [command = "launch", ...rest] = argv;
-  /** @type {{command: string, help: boolean, noOpen: boolean, json: boolean, projectId?: string, harnessRunId?: string, parameters?: Record<string, unknown>, launchArguments: Array<{flag: string, value: string}>, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
+  /** @type {{command: string, help: boolean, noOpen: boolean, json: boolean, projectId?: string, harnessRunId?: string, recoveryAction?: string, parameters?: Record<string, unknown>, launchArguments: Array<{flag: string, value: string}>, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
   const options = { command, help: false, noOpen: false, json: false, launchArguments: [] };
 
   if ((command === "--help" || command === "-h") && rest.length === 0) {
@@ -28,7 +30,7 @@ const parseArgs = (argv) => {
     return options;
   }
   if (command === "help") {
-    if (rest.length > 1 || (rest.length === 1 && !["launch", "cancel"].includes(rest[0]))) {
+    if (rest.length > 1 || (rest.length === 1 && !["launch", "cancel", "recover"].includes(rest[0]))) {
       throw new Error(`Unsupported help topic: ${rest.join(" ")}`);
     }
     options.help = true;
@@ -97,6 +99,10 @@ const parseArgs = (argv) => {
       options.projectId = current;
     } else if (command === "cancel" && !current.startsWith("-") && !options.harnessRunId) {
       options.harnessRunId = current;
+    } else if (command === "recover" && !current.startsWith("-") && !options.harnessRunId) {
+      options.harnessRunId = current;
+    } else if (command === "recover" && !current.startsWith("-") && !options.recoveryAction) {
+      options.recoveryAction = current;
     } else if (command === "launch" && current.startsWith("--") && rest[index + 1]) {
       options.launchArguments.push({ flag: current, value: rest[index + 1] });
       index += 1;
@@ -141,6 +147,27 @@ const main = async () => {
     output = await requestControllerCancel({
       projectId,
       harnessRunId: options.harnessRunId,
+    });
+  } else if (options.command === "recover") {
+    if (options.expectedRevision !== undefined) {
+      throw new Error("Harness recovery does not accept --expected-revision.");
+    }
+    if (options.idempotencyKey !== undefined) {
+      throw new Error("Harness recovery generates its own private retry identity.");
+    }
+    if (!process.env.SANDKING_CONTROLLER_ENDPOINT) {
+      throw new Error("Harness recovery requires a focused Controller Project.");
+    }
+    const projectId = process.env.SANDKING_WORK_CONTEXT_ID;
+    if (!projectId || !options.harnessRunId || !options.recoveryAction) {
+      throw new Error(
+        "Harness recovery requires a Harness run ID, bounded action, and focused Controller Project.",
+      );
+    }
+    output = await requestControllerRecover({
+      projectId,
+      harnessRunId: options.harnessRunId,
+      action: options.recoveryAction,
     });
   } else if (controllerLaunchRequested) {
     if (options.expectedRevision !== undefined) {

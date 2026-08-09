@@ -76,6 +76,7 @@ if (args.length === 1 && args[0] === "--version") {
         "controller.session.terminate",
         "controller.harness-run.launch",
         "controller.harness-run.cancel",
+        "controller.harness-run.recovery",
         "controller.session.stable-identity",
         "controller.session.typed-exit",
       ],
@@ -195,6 +196,7 @@ if (args.length === 1 && args[0] === "--version") {
       "controller.session.terminate",
       "controller.harness-run.launch",
       "controller.harness-run.cancel",
+      "controller.harness-run.recovery",
       "controller.session.stable-identity",
     ]);
   } finally {
@@ -237,6 +239,7 @@ if (args.length === 1 && args[0] === "--version") {
       "controller.session.terminate",
       "controller.harness-run.launch",
       "controller.harness-run.cancel",
+      "controller.harness-run.recovery",
       "controller.session.stable-identity",
     ]);
   } finally {
@@ -284,6 +287,7 @@ if (args.length === 1 && args[0] === "--version") {
       "controller.session.terminate",
       "controller.harness-run.launch",
       "controller.harness-run.cancel",
+      "controller.harness-run.recovery",
       "controller.session.stable-identity",
       "controller.session.typed-exit",
     ]);
@@ -330,6 +334,7 @@ if (args.length === 1 && args[0] === "--version") {
       "controller.session.terminate",
       "controller.harness-run.launch",
       "controller.harness-run.cancel",
+      "controller.harness-run.recovery",
       "controller.session.stable-identity",
       "controller.session.typed-exit",
     ]);
@@ -495,7 +500,7 @@ else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list 
       authentication: { status: "missing", source: "destination-local" },
       failure: { code: "provider_authentication_missing", retryable: false },
     });
-    assert.equal(unauthenticated.capabilities.length, 7);
+    assert.equal(unauthenticated.capabilities.length, 8);
   } finally {
     await rm(fixtureDirectory, { recursive: true, force: true });
   }
@@ -541,7 +546,7 @@ else if (args[0] === "--plugin-dir" && args.slice(2).join(" ") === "plugin list 
         authentication: { status: "unknown", source: "destination-local" },
         failure: { code: "provider_adapter_failed", retryable: true },
       }, mode);
-      assert.equal(probe.capabilities.length, 7, mode);
+      assert.equal(probe.capabilities.length, 8, mode);
     }
   } finally {
     await rm(fixtureDirectory, { recursive: true, force: true });

@@ -178,6 +178,64 @@ test("Cockpit Harness-run cancellation is capability-negotiated and hash-only", 
     && error.code === "browser_control_schema_invalid");
 });
 
+test("Cockpit Harness recovery is capability-negotiated, bounded, and hash-only", () => {
+  assert.ok(browserCapabilities.includes("cockpit.harness-run-recovery.v1"));
+  const harnessRunId = `harness-run-${"8".repeat(24)}`;
+  const idempotencyKeyHash = `sha256:${"9".repeat(64)}`;
+  const request = {
+    channel: "control",
+    message: {
+      type: "browser.harness-run.recover",
+      requestId: "browser-recover-harness-run",
+      harnessRunId,
+      action: "recheck",
+      idempotencyKeyHash,
+    },
+  };
+  assert.deepEqual(parseBrowserControl(request), request.message);
+  const outcome = {
+    type: "runtime.harness-run.recover-result",
+    requestId: request.message.requestId,
+    outcome: {
+      type: "harness.run.recover.failure",
+      requestId: "host-recover-harness-run",
+      code: "harness_recovery_action_not_available",
+      retryable: false,
+      authorizationClass: "harness_run_recovery",
+      idempotencyKeyHash,
+      idempotentReplay: false,
+      auditId: `audit-${"a".repeat(24)}`,
+      harnessRunId,
+      action: "recheck",
+      prohibitedSideEffects: {
+        recoveryChanged: false,
+        processSignalRequested: false,
+        terminalOutcomeCreated: false,
+        replacementRunStarted: false,
+        projectWrite: false,
+      },
+    },
+  };
+  assert.deepEqual(
+    runtimeControlEnvelopeSchema.parse(JSON.parse(serializeRuntimeControl(outcome))).message,
+    outcome,
+  );
+  assert.throws(() => parseBrowserControl({
+    ...request,
+    message: {
+      ...request.message,
+      idempotencyKeyHash: undefined,
+      idempotencyKey: "recognizable-browser-recovery-key",
+    },
+  }), (error) => error instanceof BrowserProtocolError
+    && error.code === "browser_control_schema_invalid");
+  assert.throws(() => parseBrowserControl({
+    ...request,
+    message: { ...request.message, action: "signal-pid" },
+  }), (error) => error instanceof BrowserProtocolError
+    && error.code === "browser_control_schema_invalid");
+});
+
 test("Cockpit reconnect identifies the retained launch without supplying its attribution", () => {
   const harnessRunId = `harness-run-${"4".repeat(24)}`;
   const request = {

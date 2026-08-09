@@ -181,6 +181,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         "cockpit.harness-run-observation.v2",
         "cockpit.harness-run-reconciliation.v1",
         "cockpit.harness-run-cancellation.v1",
+        "cockpit.harness-run-recovery.v1",
       ]);
       assert.deepEqual(hello.message.framing, {
         maxControlMessageBytes: 32_768,
@@ -204,6 +205,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         "sandking.harness-run.v2",
         "sandking.harness-run-reconciliation.v1",
         "sandking.harness-run.cancel.v1",
+        "sandking.harness-run.recovery.v1",
       ]);
 
       const sessionCookie = (await browserContext.cookies()).find(

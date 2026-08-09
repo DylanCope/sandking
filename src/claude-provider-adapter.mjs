@@ -29,6 +29,7 @@ const capabilities = Object.freeze([
   "controller.session.terminate",
   "controller.harness-run.launch",
   "controller.harness-run.cancel",
+  "controller.harness-run.recovery",
   "controller.session.stable-identity",
   "controller.session.typed-exit",
 ]);
@@ -254,6 +255,7 @@ const detectClaudeCapabilities = async (executable, version) => {
     detected.add("controller.session.stable-identity");
     detected.add("controller.harness-run.launch");
     detected.add("controller.harness-run.cancel");
+    detected.add("controller.harness-run.recovery");
   }
   if (
     /(?:^|\s)--settings(?:[=\s,]|$)/m.test(help)
@@ -722,7 +724,12 @@ const openControllerCliServer = async ({
       || !/^sandking-cli-[a-f0-9]{16}$/.test(request.requestId ?? "")
       || request.controllerSessionId !== sessionId
       || request.projectId !== workContextId
-      || !["describe", "harness-run.launch", "harness-run.cancel"].includes(request.operation)
+      || ![
+        "describe",
+        "harness-run.launch",
+        "harness-run.cancel",
+        "harness-run.recover",
+      ].includes(request.operation)
     ) {
       throw new Error("controller_cli_contract_invalid");
     }
@@ -754,6 +761,33 @@ const openControllerCliServer = async ({
         || outcome.idempotencyKeyHash !== request.idempotencyKeyHash
       ) {
         if (outcome?.type === "harness.run.cancel.failure"
+          && /^[a-z0-9_]{1,128}$/.test(outcome.code ?? "")) {
+          throw new Error(outcome.code);
+        }
+        throw new Error("controller_cli_protocol_invalid");
+      }
+      return outcome;
+    }
+    if (request.operation === "harness-run.recover") {
+      if (
+        !/^harness-run-[a-f0-9]{24}$/.test(request.harnessRunId ?? "")
+        || !["recheck", "terminate_confirmed_tree", "finalize"].includes(request.action)
+        || !/^sha256:[a-f0-9]{64}$/.test(request.idempotencyKeyHash ?? "")
+      ) {
+        throw new Error("controller_cli_contract_invalid");
+      }
+      const outcome = await control.request("harness-run.recover", {
+        harnessRunId: request.harnessRunId,
+        action: request.action,
+        idempotencyKeyHash: request.idempotencyKeyHash,
+      });
+      if (
+        outcome?.type !== "harness.run.recover.result"
+        || outcome.harnessRunId !== request.harnessRunId
+        || outcome.action !== request.action
+        || outcome.idempotencyKeyHash !== request.idempotencyKeyHash
+      ) {
+        if (outcome?.type === "harness.run.recover.failure"
           && /^[a-z0-9_]{1,128}$/.test(outcome.code ?? "")) {
           throw new Error(outcome.code);
         }

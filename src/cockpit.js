@@ -23,10 +23,11 @@ const browserProtocol = Object.freeze({
       "cockpit.harness-run-observation.v2",
       "cockpit.harness-run-reconciliation.v1",
       "cockpit.harness-run-cancellation.v1",
+      "cockpit.harness-run-recovery.v1",
     ],
     optional: [],
   },
-  schemaDigest: "sha256:68117940278afbedc2f02099bf4c738c1dc1b9284cea0adb3162b89f8fc51ae3",
+  schemaDigest: "sha256:1b3f3bfdc31ac25da8bfd278b79882207b908e69ab3a31a7aece5d360501310f",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -48,6 +49,7 @@ let currentHarnessRunObservation = null;
 let harnessLaunchFeedback;
 let pendingHarnessLaunchRequestId = null;
 let pendingHarnessCancellationRequestId = null;
+let pendingHarnessRecoveryRequestId = null;
 let hostConnectionStatus = "connecting";
 let hostFreshness = "stale";
 const harnessRunCursorStorageKey = "sandking.harnessRunCursor";
@@ -55,6 +57,7 @@ const pendingHarnessRunSelectionStorageKey = "sandking.pendingHarnessRunSelectio
 const launchConfirmationStorageKey = "sandking.skipLaunchConfirmation";
 const pendingHarnessLaunchStorageKey = "sandking.pendingHarnessLaunch";
 const pendingHarnessCancellationStorageKey = "sandking.pendingHarnessCancellation";
+const pendingHarnessRecoveryStorageKey = "sandking.pendingHarnessRecovery";
 
 const launchConfirmationSuppressed = () => {
   try {
@@ -74,18 +77,7 @@ const suppressLaunchConfirmation = () => {
 
 const selectedProjectLaunchReady = () => {
   const selectedProject = document.getElementById("project-readiness");
-  return selectedProject?.dataset.harnessLaunchReady === "true"
-    && !(
-      currentHarnessRunObservation?.run?.status === "recovery_required"
-      && currentHarnessRunObservation.run.projectId === selectedProject.dataset.projectId
-    );
-};
-
-const blockLaunchForRetainedRecovery = () => {
-  if (!selectedProjectLaunchReady()) {
-    const launchButton = document.getElementById("launch-harness");
-    if (launchButton) launchButton.disabled = true;
-  }
+  return selectedProject?.dataset.harnessLaunchReady === "true";
 };
 
 const retainedHarnessRunCursor = () => {
@@ -594,6 +586,26 @@ const readPendingHarnessCancellation = () => {
   }
 };
 
+const readPendingHarnessRecovery = () => {
+  try {
+    const recovery = JSON.parse(
+      sessionStorage.getItem(pendingHarnessRecoveryStorageKey) ?? "null",
+    );
+    if (
+      !/^harness-run-[a-f0-9]{24}$/.test(recovery?.harnessRunId ?? "")
+      || !["recheck", "terminate_confirmed_tree", "finalize"].includes(recovery?.action)
+      || !/^sha256:[a-f0-9]{64}$/.test(recovery?.idempotencyKeyHash ?? "")
+    ) {
+      sessionStorage.removeItem(pendingHarnessRecoveryStorageKey);
+      return null;
+    }
+    return recovery;
+  } catch {
+    sessionStorage.removeItem(pendingHarnessRecoveryStorageKey);
+    return null;
+  }
+};
+
 const submitPlanningMutation = async (path, body, expectedRevision, csrfToken) => {
   const response = await fetch(path, {
     method: "POST",
@@ -1097,6 +1109,48 @@ const requestHarnessRunCancellation = (run, button, feedback) => {
   }));
 };
 
+const requestHarnessRunRecovery = (run, action, button, feedback) => {
+  if (
+    !runtimeNegotiated
+    || hostConnectionStatus !== "connected"
+    || socket.readyState !== WebSocket.OPEN
+    || pendingHarnessRecoveryRequestId !== null
+    || run.status !== "recovery_required"
+    || !run.recovery?.availableActions.includes(action)
+  ) {
+    feedback.textContent = "Recovery was not requested: that bounded action is unavailable.";
+    return;
+  }
+  const pendingRecovery = {
+    harnessRunId: run.harnessRunId,
+    action,
+    idempotencyKeyHash: harnessLaunchRetryHash(),
+  };
+  sessionStorage.setItem(
+    pendingHarnessRecoveryStorageKey,
+    JSON.stringify(pendingRecovery),
+  );
+  pendingHarnessRecoveryRequestId = `harness-recover-${harnessRequestSequence}`;
+  harnessRequestSequence += 1;
+  for (const recoveryButton of document.querySelectorAll("[data-harness-recovery-action]")) {
+    recoveryButton.disabled = true;
+  }
+  button.disabled = true;
+  feedback.textContent = action === "terminate_confirmed_tree"
+    ? "Requesting termination of the retained, identity-confirmed process tree…"
+    : action === "finalize"
+      ? "Finalizing the interrupted run from confirmed termination evidence…"
+      : "Rechecking retained process supervision evidence…";
+  socket.send(JSON.stringify({
+    channel: "control",
+    message: {
+      type: "browser.harness-run.recover",
+      requestId: pendingHarnessRecoveryRequestId,
+      ...pendingRecovery,
+    },
+  }));
+};
+
 const renderHarnessRun = (observation) => {
   const section = element("section", {
     id: "harness-run-observation",
@@ -1240,23 +1294,70 @@ const renderHarnessRun = (observation) => {
     section.append(interruptionPanel);
   }
   if (run.status === "recovery_required" && run.recovery) {
-    section.append(element("section", {
+    const recovery = run.recovery;
+    const processObservation = recovery.processObservation;
+    const recoveryPanel = element("section", {
       id: "harness-run-recovery-required",
       role: "alert",
-      "data-recovery-code": run.recovery.code,
-      "data-termination-evidence": run.recovery.terminationEvidence,
-      "data-reconciliation-audit-id": run.recovery.reconciliationAuditId,
+      "data-recovery-code": recovery.code,
+      "data-termination-evidence": recovery.terminationEvidence,
+      "data-related-process-state": processObservation.relatedProcessState,
+      "data-identity-proof": processObservation.identityProof,
+      "data-safe-to-terminate": processObservation.safeToTerminate,
+      "data-process-count": processObservation.processCount ?? "",
+      "data-process-identifiers-exposed": processObservation.processIdentifiersExposed,
+      "data-unrestricted-process-handle-exposed":
+        processObservation.unrestrictedProcessHandleExposed,
+      "data-reconciliation-audit-id": recovery.reconciliationAuditId,
       "data-next-action": "recovery-required",
-    },
-    element("h3", {}, "Run requires recovery"),
-    element("p", { id: "harness-run-recovery-reason" },
-      "The Host could not prove that the retained Harness process coalition terminated. "
-      + "This run has no terminal outcome and replacement work is blocked."),
-    element("p", { id: "harness-run-recovery-history" },
+    });
+    const processExplanation = processObservation.relatedProcessState === "running_confirmed"
+      ? `The Host retained exact supervision identity for ${processObservation.processCount} `
+        + "related process(es). Only that complete process tree can be terminated."
+      : processObservation.relatedProcessState === "terminated_confirmed"
+        ? "The Host proved that the retained complete process tree is empty."
+        : "The Host cannot currently prove whether a related Harness process tree remains.";
+    const recoveryFeedback = element("p", {
+      id: "harness-run-recovery-feedback",
+      role: "status",
+    });
+    recoveryPanel.append(
+      element("h3", {}, "Run requires recovery"),
+      element("p", { id: "harness-run-recovery-reason" },
+        "The Host restarted without proof that supervision of this Harness run ended. "
+        + "No terminal outcome has been invented."),
+      element("p", { id: "harness-run-recovery-process-facts" },
+        `${processExplanation} Process identifiers and unrestricted process handles are not exposed.`),
+      element("p", { id: "harness-run-recovery-history" },
       "Earlier ordered events, immutable execution facts, and bounded diagnostic ranges remain "
-      + "available below."),
-    element("p", { id: "harness-run-recovery-guidance" },
-      "Do not launch the work again while related process state may still exist.")));
+        + "available below."),
+      element("p", { id: "harness-run-recovery-guidance" },
+        "You may deliberately launch a new run; this recovery record remains unchanged, and new "
+        + "work could overlap if related process state is still unknown."),
+    );
+    const recoveryActions = element("div", {
+      id: "harness-run-recovery-actions",
+      "data-available-actions": recovery.availableActions.join(","),
+    });
+    const actionLabels = {
+      recheck: "Recheck process evidence",
+      terminate_confirmed_tree: "Terminate confirmed process tree",
+      finalize: "Finalize interrupted run",
+    };
+    for (const action of recovery.availableActions) {
+      const button = element("button", {
+        id: `harness-recovery-${action.replaceAll("_", "-")}`,
+        type: "button",
+        "data-harness-recovery-action": action,
+        disabled: hostConnectionStatus !== "connected"
+          || pendingHarnessRecoveryRequestId !== null,
+      }, actionLabels[action]);
+      button.addEventListener("click", () =>
+        requestHarnessRunRecovery(run, action, button, recoveryFeedback));
+      recoveryActions.append(button);
+    }
+    recoveryPanel.append(recoveryActions, recoveryFeedback);
+    section.append(recoveryPanel);
   }
   const executionFacts = element("section", {
     id: "harness-run-execution-snapshot",
@@ -1376,7 +1477,6 @@ const applyHarnessRunObservation = (observation) => {
       }
     : observation;
   currentHarnessRunObservation = visibleObservation;
-  blockLaunchForRetainedRecovery();
   updateWorkbenchChrome({ harnessRunObservation: visibleObservation });
   if (visibleObservation.run) {
     if (visibleObservation.run.harnessRunId === pendingSelection) {
@@ -2057,6 +2157,11 @@ socket.addEventListener("message", (event) => {
       harnessRunSection.dataset.hostFreshness = message.freshness;
       const cancelButton = harnessRunSection.querySelector("#cancel-harness-run");
       if (cancelButton) cancelButton.disabled = true;
+      for (const recoveryButton of harnessRunSection.querySelectorAll(
+        "[data-harness-recovery-action]",
+      )) {
+        recoveryButton.disabled = true;
+      }
     }
     const planning = document.getElementById("planning-spine");
     if (planning) {
@@ -2181,6 +2286,38 @@ socket.addEventListener("message", (event) => {
         `Cancellation was not accepted: ${message.outcome.code}.`;
       const cancelButton = document.getElementById("cancel-harness-run");
       if (cancelButton) cancelButton.disabled = hostConnectionStatus !== "connected";
+    }
+    return;
+  }
+
+  if (message?.type === "runtime.harness-run.recover-result") {
+    const pendingRecovery = readPendingHarnessRecovery();
+    const feedback = document.getElementById("harness-run-recovery-feedback");
+    if (
+      !runtimeNegotiated
+      || !pendingRecovery
+      || message.requestId !== pendingHarnessRecoveryRequestId
+      || message.outcome.harnessRunId !== pendingRecovery.harnessRunId
+      || message.outcome.action !== pendingRecovery.action
+    ) {
+      requireReload("runtime_harness_recovery_result_mismatch");
+      return;
+    }
+    pendingHarnessRecoveryRequestId = null;
+    sessionStorage.removeItem(pendingHarnessRecoveryStorageKey);
+    if (message.outcome.type === "harness.run.recover.result") {
+      if (feedback) feedback.textContent = message.outcome.action === "finalize"
+        ? "The interrupted run was finalized from confirmed termination evidence."
+        : "Recovery evidence was updated; refreshing the retained run.";
+      requestHarnessRunObservation(pendingRecovery.harnessRunId);
+    } else {
+      if (feedback) feedback.textContent =
+        `Recovery was not changed: ${message.outcome.code}.`;
+      for (const recoveryButton of document.querySelectorAll(
+        "[data-harness-recovery-action]",
+      )) {
+        recoveryButton.disabled = hostConnectionStatus !== "connected";
+      }
     }
     return;
   }
@@ -2323,7 +2460,6 @@ socket.addEventListener("message", (event) => {
   currentHarnessRunObservation = message.viewModel.harnessRunObservation;
   app.textContent = "";
   app.append(renderWorkbench(message));
-  blockLaunchForRetainedRecovery();
   harnessRunSection = document.getElementById("harness-run-observation");
   const pendingLaunch = readPendingHarnessLaunch();
   if (
@@ -2374,6 +2510,28 @@ socket.addEventListener("message", (event) => {
         type: "browser.harness-run.cancel",
         requestId: pendingHarnessCancellationRequestId,
         ...pendingCancellation,
+      },
+    }));
+  }
+  const pendingRecovery = readPendingHarnessRecovery();
+  if (
+    pendingRecovery
+    && hostConnectionStatus === "connected"
+    && pendingRecovery.harnessRunId
+      === message.viewModel.harnessRunObservation.run?.harnessRunId
+  ) {
+    pendingHarnessRecoveryRequestId =
+      `harness-recover-retry-${harnessRequestSequence}`;
+    harnessRequestSequence += 1;
+    const feedback = document.getElementById("harness-run-recovery-feedback");
+    if (feedback) feedback.textContent =
+      "Reconnecting to the retained recovery outcome…";
+    socket.send(JSON.stringify({
+      channel: "control",
+      message: {
+        type: "browser.harness-run.recover",
+        requestId: pendingHarnessRecoveryRequestId,
+        ...pendingRecovery,
       },
     }));
   }

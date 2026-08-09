@@ -475,6 +475,14 @@ const main = async () => {
       writeFrame(process.stdout, await harnessRuns.cancel(frame.message));
       continue;
     }
+    if (frame.message.type === "harness.run.recover") {
+      writeFrame(process.stdout, await harnessRuns.recover(frame.message));
+      continue;
+    }
+    if (frame.message.type === "harness.run.recovery.lookup") {
+      writeFrame(process.stdout, await harnessRuns.lookupRecovery(frame.message));
+      continue;
+    }
     if (frame.message.type === "harness.run.lookup") {
       writeFrame(process.stdout, await harnessRuns.lookup(frame.message));
       continue;

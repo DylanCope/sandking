@@ -182,6 +182,77 @@ test("Harness cancellation is a capability-negotiated revision-free Host operati
   );
 });
 
+test("Harness recovery is capability-negotiated, bounded, keyed, and revision-free", async () => {
+  assert.ok(hostCapabilities.includes("sandking.harness-run.recovery.v1"));
+  const stream = new PassThrough();
+  const harnessRunId = `harness-run-${"6".repeat(24)}`;
+  const recovery = {
+    type: "harness.run.recover",
+    requestId: "recover-harness-run-protocol-request",
+    harnessRunId,
+    action: "recheck",
+    controllerId: `runtime-${"3".repeat(24)}`,
+    controllerSessionId: `controller-session-${"4".repeat(24)}`,
+    source: "controller-cli",
+    authorizationClass: "harness_run_recovery",
+    idempotencyKeyHash: `sha256:${"5".repeat(64)}`,
+  };
+  const rejected = {
+    type: "harness.run.recover.failure",
+    requestId: "recover-harness-run-unavailable-action",
+    code: "harness_recovery_action_not_available",
+    retryable: false,
+    authorizationClass: recovery.authorizationClass,
+    idempotencyKeyHash: recovery.idempotencyKeyHash,
+    idempotentReplay: false,
+    auditId: `audit-${"7".repeat(24)}`,
+    harnessRunId,
+    action: "terminate_confirmed_tree",
+    prohibitedSideEffects: {
+      recoveryChanged: false,
+      processSignalRequested: false,
+      terminalOutcomeCreated: false,
+      replacementRunStarted: false,
+      projectWrite: false,
+    },
+  };
+  const lookup = {
+    type: "harness.run.recovery.lookup",
+    requestId: "lookup-harness-run-recovery-protocol",
+    idempotencyKeyHash: recovery.idempotencyKeyHash,
+  };
+  const absent = {
+    type: "harness.run.recovery.lookup.result",
+    requestId: lookup.requestId,
+    code: "harness_recovery_outcome_absent",
+    idempotencyKeyHash: lookup.idempotencyKeyHash,
+    found: false,
+    pending: false,
+    recoveryOutcome: null,
+  };
+
+  for (const message of [recovery, rejected, lookup, absent]) {
+    writeFrame(stream, message);
+    assert.deepEqual(await readFrame(stream), message);
+  }
+  assert.equal("expectedRevision" in recovery, false);
+  assert.throws(
+    () => writeFrame(stream, {
+      ...recovery,
+      action: "signal-pid",
+    }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+  assert.throws(
+    () => writeFrame(stream, {
+      ...recovery,
+      idempotencyKeyHash: undefined,
+      idempotencyKey: "recognizable-raw-recovery-key",
+    }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+});
+
 test("Harness-run lookup, cursor observation, and ranged logs are typed Host operations", async () => {
   assert.ok(hostCapabilities.includes("sandking.harness-run.v2"));
   assert.ok(hostCapabilities.includes("sandking.harness-run-reconciliation.v1"));

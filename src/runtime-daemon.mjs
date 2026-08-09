@@ -1759,6 +1759,21 @@ const handleProviderOperation = async (request) => {
         : "",
     });
   }
+  if (request.operation === "harness-run.recover") {
+    return requestHostOperation({
+      type: "harness.run.recover",
+      requestId: `harness-run-recover-${randomBytes(8).toString("hex")}`,
+      harnessRunId: "harnessRunId" in input ? String(input.harnessRunId) : "",
+      action: "action" in input ? String(input.action) : "",
+      controllerId: state.runtimeId,
+      controllerSessionId: request.sessionId,
+      source: "controller-cli",
+      authorizationClass: "harness_run_recovery",
+      idempotencyKeyHash: "idempotencyKeyHash" in input
+        ? String(input.idempotencyKeyHash)
+        : "",
+    });
+  }
   if (request.operation === "harness-run.lookup") {
     return requestHostOperation({
       type: "harness.run.lookup",
@@ -2466,6 +2481,25 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           });
           socket.send(serializeRuntimeControl({
             type: "runtime.harness-run.cancel-result",
+            requestId: control.requestId,
+            outcome,
+          }));
+          return;
+        }
+        if (control.type === "browser.harness-run.recover") {
+          const outcome = await requestHostOperation({
+            type: "harness.run.recover",
+            requestId: `harness-run-recover-${randomBytes(8).toString("hex")}`,
+            harnessRunId: control.harnessRunId,
+            action: control.action,
+            controllerId: state.runtimeId,
+            controllerSessionId: null,
+            source: "cockpit",
+            authorizationClass: "harness_run_recovery",
+            idempotencyKeyHash: control.idempotencyKeyHash,
+          });
+          socket.send(serializeRuntimeControl({
+            type: "runtime.harness-run.recover-result",
             requestId: control.requestId,
             outcome,
           }));
