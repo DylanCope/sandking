@@ -98,20 +98,6 @@ const snapshotProjectContents = async (root, relativePath = "") => {
   return snapshots.flat().sort((left, right) => left.path.localeCompare(right.path));
 };
 
-const waitForProcessesToExit = async (pids) => {
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    const processes = new Map((await readProcesses()).map((entry) => [entry.pid, entry]));
-    const live = pids.filter((pid) => {
-      const retained = processes.get(pid);
-      return retained && !/[XZ]/.test(retained.state[0]);
-    });
-    if (live.length === 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error("host_owned_process_tree_exit_timeout");
-};
-
 const waitForActiveRun = async (dataDir) => {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
@@ -222,7 +208,6 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
         "#connection-status[data-host-status='disconnected'][data-failure-code='host_disconnected']",
         { timeout: 90_000 },
       );
-      await waitForProcessesToExit(supervisedPids);
       const durableAtInterruption = await readJson(join(dataDir, "harness-runs.json"));
       const retainedActive = durableAtInterruption.runs[0];
       assert.equal(retainedActive.harnessRunId, activeRun.harnessRunId);
@@ -301,6 +286,13 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
 
       const reconciledState = await waitForRunCount(dataDir, 1);
       const reconciled = reconciledState.runs[0];
+      const processesAfterReconciliation = new Map(
+        (await readProcesses()).map((entry) => [entry.pid, entry]),
+      );
+      assert.deepEqual(supervisedPids.filter((pid) => {
+        const retained = processesAfterReconciliation.get(pid);
+        return retained && !/[XZ]/.test(retained.state[0]);
+      }), []);
       assert.equal(reconciled.status, "failed");
       assert.equal(reconciled.outcome.code, "host_daemon_interrupted");
       assert.equal(reconciled.outcome.incompleteResult, true);

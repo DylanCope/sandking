@@ -1037,6 +1037,10 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
       loadLaunchContext: async () => {
         throw new Error("mutable_launch_context_must_not_be_resolved_for_replay");
       },
+      inspectInterruptedRunTermination: async () => ({
+        platform: process.platform,
+        status: "confirmed",
+      }),
     });
     const lookup = await restarted.lookup({
       requestId: "lookup-post-commit-launch",
@@ -1119,6 +1123,10 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
       loadLaunchContext: async () => {
         throw new Error("mutable_launch_context_must_not_be_resolved_for_replay");
       },
+      inspectInterruptedRunTermination: async () => ({
+        platform: process.platform,
+        status: "confirmed",
+      }),
     });
     const postReplay = await postRestarted.launch({
       ...postRequest,
@@ -1281,13 +1289,31 @@ test("startup reconciles a durably launched run before exposing manager operatio
       },
     });
     await new Promise((resolve) => setTimeout(resolve, 25));
-    assert.equal(reachedReconciliationCommit, true);
+    assert.equal(reachedReconciliationCommit, false);
     let startupResolved = false;
     void startup.then(() => {
       startupResolved = true;
     });
     await new Promise((resolve) => setTimeout(resolve, 25));
     assert.equal(startupResolved, false);
+    await writeFile(join(
+      fixture.dataDir,
+      "harness-runs",
+      interruptedRun.harnessRunId,
+      "host-loss-termination.json",
+    ), `${JSON.stringify({
+      schemaVersion: 2,
+      platform: process.platform,
+      status: "termination_confirmed",
+      terminationScope: "complete_process_tree",
+      launchSettled: true,
+      treeEmpty: true,
+      observedAt: "2026-08-09T16:00:00.000Z",
+    })}\n`);
+    for (let attempt = 0; !reachedReconciliationCommit && attempt < 100; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(reachedReconciliationCommit, true);
     releaseReconciliation?.();
     const restarted = await startup;
 
@@ -1421,7 +1447,7 @@ test("startup retains recovery-required truth when Host-loss termination is unco
       now: () => new Date("2026-08-09T17:00:00.000Z"),
       inspectInterruptedRunTermination: async (run) => {
         assert.equal(run.harnessRunId, interruptedRun.harnessRunId);
-        return { platform: "darwin", status: "unconfirmed" };
+        return { platform: process.platform, status: "unconfirmed" };
       },
     });
     const observation = await restarted.observe({
@@ -1436,7 +1462,7 @@ test("startup retains recovery-required truth when Host-loss termination is unco
       code: "harness_process_termination_unconfirmed",
       previousStatus: "starting",
       detectedAt: "2026-08-09T17:00:00.000Z",
-      platform: "darwin",
+      platform: process.platform,
       terminationEvidence: "unconfirmed",
       reconciliationAuditId: observation.run.recovery.reconciliationAuditId,
     });
@@ -1517,6 +1543,10 @@ test("reconciliation commit boundaries converge idempotently after repeated star
     loadLaunchContext: async () => {
       throw new Error("startup_reconciliation_must_not_launch_an_adapter");
     },
+    inspectInterruptedRunTermination: async () => ({
+      platform: process.platform,
+      status: "confirmed",
+    }),
     ...(faultInjector ? { faultInjector } : {}),
   });
   try {
@@ -2481,6 +2511,10 @@ test("reconciliation retains adapter readiness from durable running history", as
       loadLaunchContext: async () => {
         throw new Error("running_reconciliation_must_not_resolve_launch_context");
       },
+      inspectInterruptedRunTermination: async () => ({
+        platform: process.platform,
+        status: "confirmed",
+      }),
     });
     const observation = await restarted.observe({
       requestId: "observe-reconciled-running-readiness",

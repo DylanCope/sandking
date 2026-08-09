@@ -31,7 +31,9 @@ import {
   writePrivateJson,
 } from "./private-state.mjs";
 import { spawnPosixProcessTree } from "./posix-process-tree.mjs";
-import { waitForDarwinHostLossTerminationEvidence } from "./darwin-process-tree.mjs";
+import {
+  waitForHostLossTerminationEvidence,
+} from "./host-loss-termination-evidence.mjs";
 import {
   captureWindowsProcessTreeSnapshot,
   createNativeWindowsJobObject,
@@ -184,7 +186,7 @@ export const harnessRunRecoverySchema = z.object({
   code: z.literal("harness_process_termination_unconfirmed"),
   previousStatus: z.enum(["starting", "running"]),
   detectedAt: z.string().datetime(),
-  platform: z.literal("darwin"),
+  platform: z.enum(["linux", "win32", "darwin"]),
   terminationEvidence: z.literal("unconfirmed"),
   reconciliationAuditId: auditIdSchema,
 }).strict();
@@ -778,6 +780,8 @@ const superviseConformanceHarness = async (run, context, observer) => {
   const windowsJobObject = windowsBarrierMarker
     ? createNativeWindowsJobObject({
         name: `Local\\SandKingHarnessRun-${randomBytes(16).toString("hex")}`,
+        hostLossTerminationEvidencePath: context.hostLossTerminationEvidencePath,
+        launchBarrierMarkerPath: windowsBarrierMarker,
       })
     : null;
   // Execute the exact bytes read from the immutable Git object. The worktree
@@ -803,7 +807,11 @@ const superviseConformanceHarness = async (run, context, observer) => {
     env: {
       LANG: "C.UTF-8",
       ...(windowsBarrierMarker
-        ? { SANDKING_WINDOWS_JOB_BARRIER: windowsBarrierMarker }
+        ? {
+            SANDKING_WINDOWS_JOB_BARRIER: windowsBarrierMarker,
+            SANDKING_HOST_LOSS_TERMINATION_EVIDENCE:
+              context.hostLossTerminationEvidencePath,
+          }
         : {}),
     },
     stdio: ["ignore", "pipe", "pipe", "pipe", "ipc"],
@@ -1151,7 +1159,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
  *   now?: () => Date,
  *   cancellationGraceMs?: number,
  *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_state_commit" | "harness_run_launch.after_commit" | "harness_run_cancellation.before_commit" | "harness_run_cancellation.after_state_commit" | "harness_run_cancellation.after_commit" | "harness_run_cancellation.before_termination_confirmation_commit" | "harness_run_outcome.before_commit" | "harness_run_reconciliation.before_commit" | "harness_run_reconciliation.after_state_commit" | "harness_run_reconciliation.after_commit") => Promise<void> | void,
- *   inspectInterruptedRunTermination?: (run: z.infer<typeof harnessRunSchema>) => Promise<{platform: "darwin", status: "confirmed" | "unconfirmed"}>,
+ *   inspectInterruptedRunTermination?: (run: z.infer<typeof harnessRunSchema>) => Promise<{platform: "linux" | "win32" | "darwin", status: "confirmed" | "unconfirmed"}>,
  * }} options
  */
 export const createHarnessRunManager = async (options) => {
@@ -1466,20 +1474,29 @@ export const createHarnessRunManager = async (options) => {
       const reconciledAt = now().toISOString();
       const termination = options.inspectInterruptedRunTermination
         ? await options.inspectInterruptedRunTermination(publicRun(run))
-        : process.platform === "darwin"
-          ? {
-              platform: "darwin",
-              status: await waitForDarwinHostLossTerminationEvidence(
-                join(
-                  options.dataDir,
-                  "harness-runs",
-                  run.harnessRunId,
-                  "host-loss-termination.json",
-                ),
-                { timeoutMs: 20_000 },
-              ) === "termination_confirmed" ? "confirmed" : "unconfirmed",
+        : await (async () => {
+            if (!["linux", "win32", "darwin"].includes(process.platform)) {
+              throw new Error("harness_run_reconciliation_platform_unsupported");
             }
-          : { platform: process.platform, status: "confirmed" };
+            const platform = /** @type {"linux" | "win32" | "darwin"} */ (
+              process.platform
+            );
+            const evidence = await waitForHostLossTerminationEvidence(
+              join(
+                options.dataDir,
+                "harness-runs",
+                run.harnessRunId,
+                "host-loss-termination.json",
+              ),
+              { expectedPlatform: platform, timeoutMs: 20_000 },
+            );
+            return {
+              platform,
+              status: evidence?.status === "termination_confirmed"
+                ? "confirmed"
+                : "unconfirmed",
+            };
+          })();
       if (termination.status !== "confirmed") {
         run.status = "recovery_required";
         run.revision += 1;

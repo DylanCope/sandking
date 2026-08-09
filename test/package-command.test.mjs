@@ -29,6 +29,7 @@ test("the stable sandking command is public, executable, and contains module-rel
     "src/runtime-daemon.mjs",
     "src/local-host.mjs",
     "src/host-identity.mjs",
+    "src/host-loss-termination-evidence.mjs",
     "src/protocol.mjs",
     "src/browser-protocol.mjs",
     "src/cockpit.js",
@@ -38,6 +39,7 @@ test("the stable sandking command is public, executable, and contains module-rel
     "src/native/linux-arm64/posix-process-tree-helper",
     "src/native/linux-x64/posix-process-tree-helper",
     "src/windows-process-barrier.cjs",
+    "src/windows-host-loss-witness.cjs",
   ]) {
     assert.ok(packagedFiles.includes(required), `${required} must be packaged`);
   }

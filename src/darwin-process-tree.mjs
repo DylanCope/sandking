@@ -4,21 +4,25 @@ import { EventEmitter } from "node:events";
 import {
   chmodSync,
   closeSync,
+  constants,
   fsyncSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
+import {
+  parseHostLossTerminationEvidence,
+  prepareHostLossTerminationEvidence,
+} from "./host-loss-termination-evidence.mjs";
 
 const supervisorPath = fileURLToPath(import.meta.url);
 const containmentPreloadPath = fileURLToPath(
@@ -29,7 +33,7 @@ const applicationSpecifierPattern = /^dev\.sandking\.harness\.[a-f0-9]{16,64}$/;
 
 /** @typedef {{code: number | null, signal: string | null, startFailed: boolean}} AdapterExitResult */
 /** @typedef {{sent: boolean, sentAt: string | null}} SignalResult */
-/** @typedef {{schemaVersion: 1, platform: "darwin", applicationSpecifier: string, status: "termination_confirmed" | "termination_unconfirmed", killAccepted: boolean, coalitionAbsent: boolean, observedAt: string}} DarwinHostLossTerminationEvidence */
+/** @typedef {{schemaVersion: 2, platform: "darwin", applicationSpecifier: string, status: "termination_confirmed" | "termination_unconfirmed", terminationScope: "complete_process_tree", launchSettled: boolean, treeEmpty: boolean, killAccepted: boolean, coalitionAbsent: boolean, observedAt: string}} DarwinHostLossTerminationEvidence */
 
 /**
  * The detached supervisor, not the adapter, owns the cooperative process-group
@@ -135,30 +139,24 @@ export const darwinSupervisorSpawnOptions = () => ({
 
 /** @param {string} evidencePath @param {Record<string, unknown>} evidence */
 const publishDarwinHostLossTerminationEvidence = (evidencePath, evidence) => {
-  const temporaryPath = `${evidencePath}.${randomBytes(8).toString("hex")}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(evidence)}\n`, {
-    mode: 0o600,
-    flag: "wx",
-  });
-  const file = openSync(temporaryPath, "r");
+  const file = openSync(
+    evidencePath,
+    constants.O_WRONLY | constants.O_TRUNC | constants.O_NOFOLLOW,
+  );
   try {
+    writeFileSync(file, `${JSON.stringify(evidence)}\n`);
     fsyncSync(file);
   } finally {
     closeSync(file);
-  }
-  renameSync(temporaryPath, evidencePath);
-  const directory = openSync(dirname(evidencePath), "r");
-  try {
-    fsyncSync(directory);
-  } finally {
-    closeSync(directory);
   }
 };
 
 /** @param {string[]} arguments_ */
 const runLsappinfo = (arguments_) => new Promise((resolve) => {
   execFile(lsappinfoPath, arguments_, {
-    timeout: arguments_[0] === "kill" ? 4_000 : 500,
+    timeout: arguments_[0] === "launch"
+      ? 10_000
+      : arguments_[0] === "kill" ? 4_000 : 500,
     windowsHide: true,
   }, (error, stdout) => resolve({ ok: !error, stdout: String(stdout ?? "") }));
 });
@@ -166,18 +164,16 @@ const runLsappinfo = (arguments_) => new Promise((resolve) => {
 /** @param {unknown} value @returns {DarwinHostLossTerminationEvidence | null} */
 const parseDarwinHostLossTerminationEvidence = (value) => {
   const record = /** @type {Record<string, any>} */ (value);
+  const common = parseHostLossTerminationEvidence(value);
   if (
-    !value
-    || typeof value !== "object"
-    || record.schemaVersion !== 1
-    || record.platform !== "darwin"
+    common?.platform !== "darwin"
     || !applicationSpecifierPattern.test(record.applicationSpecifier ?? "")
-    || !["termination_confirmed", "termination_unconfirmed"].includes(record.status)
     || typeof record.killAccepted !== "boolean"
     || typeof record.coalitionAbsent !== "boolean"
-    || Number.isNaN(Date.parse(record.observedAt ?? ""))
+    || record.treeEmpty !== record.coalitionAbsent
     || (record.status === "termination_confirmed" && record.coalitionAbsent !== true)
-    || (record.status === "termination_unconfirmed" && record.coalitionAbsent !== false)
+    || (record.status === "termination_unconfirmed"
+      && record.launchSettled === true && record.coalitionAbsent === true)
   ) {
     return null;
   }
@@ -190,7 +186,7 @@ const parseDarwinHostLossTerminationEvidence = (value) => {
  * A failed kill invocation can still converge to confirmed absence; an
  * unreadable or live coalition always remains explicitly unconfirmed.
  *
- * @param {{applicationSpecifier: string, terminationEvidencePath: string}} configuration
+ * @param {{applicationSpecifier: string, terminationEvidencePath: string, launchSettled: boolean}} configuration
  * @param {{runLsappinfo?: (arguments_: string[]) => Promise<{ok: boolean, stdout: string}>, now?: () => Date, delay?: (milliseconds: number) => Promise<void>, maxObservationAttempts?: number}} [options]
  */
 export const terminateDarwinCoalitionAfterHostLoss = async (configuration, options = {}) => {
@@ -198,6 +194,7 @@ export const terminateDarwinCoalitionAfterHostLoss = async (configuration, optio
     !applicationSpecifierPattern.test(configuration.applicationSpecifier)
     || typeof configuration.terminationEvidencePath !== "string"
     || configuration.terminationEvidencePath.length === 0
+    || typeof configuration.launchSettled !== "boolean"
   ) {
     throw new Error("darwin_host_loss_termination_configuration_invalid");
   }
@@ -227,16 +224,36 @@ export const terminateDarwinCoalitionAfterHostLoss = async (configuration, optio
     if (attempt + 1 < maxObservationAttempts) await delay(100);
   }
   const evidence = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     platform: "darwin",
     applicationSpecifier: configuration.applicationSpecifier,
-    status: coalitionAbsent ? "termination_confirmed" : "termination_unconfirmed",
+    status: configuration.launchSettled && coalitionAbsent
+      ? "termination_confirmed"
+      : "termination_unconfirmed",
+    terminationScope: "complete_process_tree",
+    launchSettled: configuration.launchSettled,
+    treeEmpty: coalitionAbsent,
     killAccepted: termination.ok,
     coalitionAbsent,
     observedAt: (options.now ?? (() => new Date()))().toISOString(),
   };
   publishDarwinHostLossTerminationEvidence(configuration.terminationEvidencePath, evidence);
   return evidence;
+};
+
+/**
+ * The launch operation and Host-loss observation are independent. Termination
+ * cannot classify an absent coalition until the already-issued LaunchServices
+ * operation has settled and can no longer materialize new related work.
+ *
+ * @template LaunchResult, T
+ * @param {{launch: () => Promise<LaunchResult>, waitForHostLoss: () => Promise<unknown>, terminate: (launchResult: LaunchResult) => Promise<T>}} operations
+ * @returns {Promise<T>}
+ */
+export const coordinateDarwinHostLossTermination = async (operations) => {
+  const launchResult = await operations.launch();
+  await operations.waitForHostLoss();
+  return operations.terminate(launchResult);
 };
 
 /** @param {string} evidencePath */
@@ -300,24 +317,45 @@ const runDarwinTerminationWitness = async () => {
   if (
     !applicationSpecifierPattern.test(configuration.applicationSpecifier ?? "")
     || typeof configuration.hostLossTerminationEvidencePath !== "string"
+    || typeof configuration.applicationPath !== "string"
+    || configuration.applicationPath.length === 0
   ) {
     process.exit(1);
   }
-  await new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      resolve(undefined);
-    };
-    process.stdin.once("end", finish);
-    process.stdin.once("close", finish);
-    process.stdin.once("error", finish);
-    process.stdin.resume();
-  });
-  const evidence = await terminateDarwinCoalitionAfterHostLoss({
-    applicationSpecifier: configuration.applicationSpecifier,
-    terminationEvidencePath: configuration.hostLossTerminationEvidencePath,
+  process.stdout.on("error", () => undefined);
+  const evidence = await coordinateDarwinHostLossTermination({
+    launch: async () => {
+      const launch = await runLsappinfo([
+        "launch",
+        "nofront=true",
+        // The witness must own a completion boundary, not merely an accepted
+        // asynchronous request which could materialize after an absent query.
+        "async=false",
+        configuration.applicationPath,
+      ]);
+      process.stdout.write(`${JSON.stringify({
+        type: "darwin-process-tree.launch-settled",
+        ok: launch.ok,
+      })}\n`);
+      return launch.ok;
+    },
+    waitForHostLoss: () => new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve(undefined);
+      };
+      process.stdin.once("end", finish);
+      process.stdin.once("close", finish);
+      process.stdin.once("error", finish);
+      process.stdin.resume();
+    }),
+    terminate: (launchSettled) => terminateDarwinCoalitionAfterHostLoss({
+      applicationSpecifier: configuration.applicationSpecifier,
+      terminationEvidencePath: configuration.hostLossTerminationEvidencePath,
+      launchSettled,
+    }),
   }).catch(() => null);
   process.exit(evidence?.status === "termination_confirmed" ? 0 : 2);
 };
@@ -445,6 +483,9 @@ export const spawnDarwinProcessTree = (executable, args, options) => {
   if (typeof process.getuid !== "function") {
     throw new Error("darwin_process_tree_user_unavailable");
   }
+  if (typeof options.hostLossTerminationEvidencePath === "string") {
+    prepareHostLossTerminationEvidence(options.hostLossTerminationEvidencePath);
+  }
   const directory = mkdtempSync(join(tmpdir(), "sandking-darwin-tree-"));
   chmodSync(directory, 0o700);
   const applicationSpecifier = `dev.sandking.harness.${randomBytes(16).toString("hex")}`;
@@ -496,6 +537,7 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
     env: darwinContainedEnvironment(options.env),
     channels,
     applicationSpecifier,
+    applicationPath,
     hostLossTerminationEvidencePath: options.hostLossTerminationEvidencePath ?? null,
   })}\n`, { mode: 0o600 });
 
@@ -567,14 +609,35 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
       configurationPath,
     ], {
       detached: true,
-      stdio: ["pipe", "ignore", "ignore"],
+      stdio: ["pipe", "pipe", "ignore"],
     });
     terminationWitnessClosed = new Promise((resolve) => {
-      terminationWitness?.once("exit", () => resolve(undefined));
+      terminationWitness?.once("exit", (code) => {
+        if (!adapterSpawned && code !== 0) failLaunch();
+        resolve(undefined);
+      });
       terminationWitness?.once("error", () => {
         failLaunch();
         resolve(undefined);
       });
+    });
+    let witnessOutput = "";
+    terminationWitness.stdout?.setEncoding("utf8");
+    terminationWitness.stdout?.on("data", (chunk) => {
+      witnessOutput += chunk;
+      while (witnessOutput.includes("\n")) {
+        const newline = witnessOutput.indexOf("\n");
+        const line = witnessOutput.slice(0, newline);
+        witnessOutput = witnessOutput.slice(newline + 1);
+        try {
+          const message = JSON.parse(line);
+          if (message.type === "darwin-process-tree.launch-settled" && !message.ok) {
+            failLaunch();
+          }
+        } catch {
+          failLaunch();
+        }
+      }
     });
     terminationWitness.unref();
   }
@@ -655,21 +718,23 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
   });
   controlServer.once("error", failLaunch);
 
-  execFile(lsappinfoPath, [
-    "launch",
-    "nofront=true",
-    "async=true",
-    applicationPath,
-  ], {
-    timeout: 10_000,
-    windowsHide: true,
-  }, (error) => {
-    if (error && !adapterSpawned) {
-      failLaunch();
-      return;
-    }
-    containmentAvailable = true;
-  });
+  if (!terminationWitness) {
+    execFile(lsappinfoPath, [
+      "launch",
+      "nofront=true",
+      "async=true",
+      applicationPath,
+    ], {
+      timeout: 10_000,
+      windowsHide: true,
+    }, (error) => {
+      if (error && !adapterSpawned) {
+        failLaunch();
+        return;
+      }
+      containmentAvailable = true;
+    });
+  }
 
   /**
    * LaunchServices preserves an exited application record while its coalition

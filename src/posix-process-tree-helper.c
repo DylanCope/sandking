@@ -334,7 +334,46 @@ static void terminate_retained_descendants(void) {
   }
 }
 
-static int supervise(char **supervisor_argv) {
+static void publish_host_loss_termination_evidence(const char *evidence_path) {
+  if (!evidence_path || strcmp(evidence_path, "-") == 0) return;
+  struct timespec observed_time;
+  struct tm observed_utc;
+  char observed_at[32];
+  if (clock_gettime(CLOCK_REALTIME, &observed_time) != 0
+      || !gmtime_r(&observed_time.tv_sec, &observed_utc)
+      || strftime(
+        observed_at,
+        sizeof(observed_at),
+        "%Y-%m-%dT%H:%M:%SZ",
+        &observed_utc
+      ) == 0) {
+    return;
+  }
+  char evidence[512];
+  int evidence_length = snprintf(
+    evidence,
+    sizeof(evidence),
+    "{\"schemaVersion\":2,\"platform\":\"linux\","
+    "\"status\":\"termination_confirmed\","
+    "\"terminationScope\":\"complete_process_tree\","
+    "\"launchSettled\":true,\"treeEmpty\":true,"
+    "\"descendantsReaped\":true,\"observedAt\":\"%s\"}\n",
+    observed_at
+  );
+  if (evidence_length <= 0 || (size_t)evidence_length >= sizeof(evidence)) return;
+
+  int descriptor = open(
+    evidence_path,
+    O_WRONLY | O_TRUNC | O_NOFOLLOW | O_CLOEXEC
+  );
+  if (descriptor < 0) return;
+  int published = write_all(descriptor, evidence, (size_t)evidence_length)
+    && fsync(descriptor) == 0;
+  if (close(descriptor) != 0) published = 0;
+  (void)published;
+}
+
+static int supervise(const char *evidence_path, char **supervisor_argv) {
   if (prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
     return SANDKING_UNCERTAIN;
   }
@@ -432,6 +471,7 @@ static int supervise(char **supervisor_argv) {
   if (host_lost || WIFSIGNALED(supervisor_status)) {
     terminate_retained_descendants();
   }
+  if (host_lost) publish_host_loss_termination_evidence(evidence_path);
   close(SANDKING_COMMAND_DESCRIPTOR);
   close(SANDKING_RESULT_DESCRIPTOR);
   if (host_lost) return 128 + SIGKILL;
@@ -441,8 +481,8 @@ static int supervise(char **supervisor_argv) {
 }
 
 int main(int argc, char **argv) {
-  if (argc >= 4 && strcmp(argv[1], "subreaper") == 0) {
-    return supervise(&argv[2]);
+  if (argc >= 5 && strcmp(argv[1], "subreaper") == 0) {
+    return supervise(argv[2], &argv[3]);
   }
   if (argc == 5 && strcmp(argv[1], "signal") == 0) {
     return exact_signal(argv[2], argv[3], argv[4], 0);

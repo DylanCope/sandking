@@ -11,6 +11,9 @@ import {
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { spawnDarwinProcessTree } from "./darwin-process-tree.mjs";
+import {
+  prepareHostLossTerminationEvidence,
+} from "./host-loss-termination-evidence.mjs";
 
 const supervisorPath = fileURLToPath(import.meta.url);
 /** @type {Record<string, string>} */
@@ -335,6 +338,9 @@ const startedNoLaterThan = (left, right) => {
  * @param {{cwd: string, env: NodeJS.ProcessEnv, hostLossTerminationEvidencePath?: string}} options
  */
 export const spawnPosixProcessTree = (executable, args, options) => {
+  if (typeof options.hostLossTerminationEvidencePath === "string") {
+    prepareHostLossTerminationEvidence(options.hostLossTerminationEvidencePath);
+  }
   if (process.platform === "darwin") {
     return spawnDarwinProcessTree(executable, args, options);
   }
@@ -347,6 +353,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
   const child = spawn(linuxHelperPath ?? process.execPath, linuxHelperPath
     ? [
         "subreaper",
+        options.hostLossTerminationEvidencePath ?? "-",
         process.execPath,
         supervisorPath,
         "supervise",

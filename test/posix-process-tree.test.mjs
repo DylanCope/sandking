@@ -8,6 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import {
+  waitForHostLossTerminationEvidence,
+} from "../src/host-loss-termination-evidence.mjs";
 import { spawnPosixProcessTree } from "../src/posix-process-tree.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -45,6 +48,8 @@ test("a Linux Host death closes its complete supervised process tree", {
     ? "the packaged Linux supervisor owns this Host-death boundary"
     : false,
 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-linux-host-loss-proof-"));
+  const evidencePath = join(directory, "termination.json");
   const modulePath = fileURLToPath(new URL("../src/posix-process-tree.mjs", import.meta.url));
   const adapterSource = String.raw`
     import { spawn } from "node:child_process";
@@ -70,7 +75,11 @@ test("a Linux Host death closes its complete supervised process tree", {
       "--input-type=module",
       "--eval",
       ${JSON.stringify(adapterSource)},
-    ], { cwd: process.cwd(), env: process.env });
+    ], {
+      cwd: process.cwd(),
+      env: process.env,
+      hostLossTerminationEvidencePath: ${JSON.stringify(evidencePath)},
+    });
     const [chunk] = await once(tree.child.stdout, "data");
     process.stdout.write(JSON.stringify({ wrapperPid: tree.child.pid, ...JSON.parse(String(chunk)) }) + "\\n");
     setInterval(() => undefined, 1000);
@@ -95,7 +104,16 @@ test("a Linux Host death closes its complete supervised process tree", {
 
     host.kill("SIGKILL");
     await once(host, "exit");
-    await waitForProcessesToExit([wrapperPid, adapterPid, escapedDescendantPid]);
+    const evidence = await waitForHostLossTerminationEvidence(evidencePath, {
+      expectedPlatform: "linux",
+      timeoutMs: 10_000,
+    });
+    assert.equal(evidence?.status, "termination_confirmed");
+    assert.equal(evidence?.launchSettled, true);
+    assert.equal(evidence?.treeEmpty, true);
+    assert.equal(processCanRun(wrapperPid), false);
+    assert.equal(processCanRun(adapterPid), false);
+    assert.equal(processCanRun(escapedDescendantPid), false);
   } finally {
     if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL");
     if (wrapperPid && processCanRun(wrapperPid)) {
@@ -104,6 +122,7 @@ test("a Linux Host death closes its complete supervised process tree", {
     if (escapedDescendantPid && processCanRun(escapedDescendantPid)) {
       process.kill(escapedDescendantPid, "SIGKILL");
     }
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

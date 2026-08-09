@@ -2,19 +2,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { once } from "node:events";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
   createDarwinSupervisorSignalController,
+  coordinateDarwinHostLossTermination,
   darwinAdapterSpawnOptions,
   darwinSupervisorSpawnOptions,
   readDarwinHostLossTerminationEvidence,
   spawnDarwinProcessTree,
   terminateDarwinCoalitionAfterHostLoss,
 } from "../src/darwin-process-tree.mjs";
+import {
+  prepareHostLossTerminationEvidence,
+} from "../src/host-loss-termination-evidence.mjs";
 
 const execFileAsync = promisify(execFile);
 const containmentPreloadPath = fileURLToPath(
@@ -124,11 +128,13 @@ test("the Darwin supervisor revokes queued cooperative signals after adapter exi
 test("Darwin Host-loss termination is durable only after coalition absence is observed", async () => {
   const fixture = await mkdtemp(join(tmpdir(), "sandking-darwin-host-loss-evidence-"));
   const evidencePath = join(fixture, "termination.json");
+  prepareHostLossTerminationEvidence(evidencePath);
   const calls = [];
   try {
     const evidence = await terminateDarwinCoalitionAfterHostLoss({
       applicationSpecifier: "dev.sandking.harness.1234567890abcdef",
       terminationEvidencePath: evidencePath,
+      launchSettled: true,
     }, {
       now: () => new Date("2026-08-09T18:00:00.000Z"),
       maxObservationAttempts: 2,
@@ -143,6 +149,9 @@ test("Darwin Host-loss termination is durable only after coalition absence is ob
     });
 
     assert.equal(evidence.status, "termination_confirmed");
+    assert.equal(evidence.schemaVersion, 2);
+    assert.equal(evidence.launchSettled, true);
+    assert.equal(evidence.treeEmpty, true);
     assert.equal(evidence.killAccepted, false);
     assert.equal(evidence.coalitionAbsent, true);
     assert.deepEqual(await readDarwinHostLossTerminationEvidence(evidencePath), evidence);
@@ -155,10 +164,12 @@ test("Darwin Host-loss termination is durable only after coalition absence is ob
 test("Darwin Host-loss termination retains uncertainty when LaunchServices cannot prove absence", async () => {
   const fixture = await mkdtemp(join(tmpdir(), "sandking-darwin-host-loss-uncertain-"));
   const evidencePath = join(fixture, "termination.json");
+  prepareHostLossTerminationEvidence(evidencePath);
   try {
     const evidence = await terminateDarwinCoalitionAfterHostLoss({
       applicationSpecifier: "dev.sandking.harness.fedcba0987654321",
       terminationEvidencePath: evidencePath,
+      launchSettled: true,
     }, {
       now: () => new Date("2026-08-09T18:05:00.000Z"),
       maxObservationAttempts: 2,
@@ -172,6 +183,41 @@ test("Darwin Host-loss termination retains uncertainty when LaunchServices canno
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
+});
+
+test("Darwin Host-loss termination cannot observe absence before launch settles", async () => {
+  let releaseLaunch;
+  const launch = new Promise((resolve) => { releaseLaunch = resolve; });
+  let terminationCalls = 0;
+  const operation = coordinateDarwinHostLossTermination({
+    launch: async () => {
+      await launch;
+    },
+    waitForHostLoss: async () => undefined,
+    terminate: async () => {
+      terminationCalls += 1;
+      return "terminated";
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(terminationCalls, 0);
+  releaseLaunch?.();
+  assert.equal(await operation, "terminated");
+  assert.equal(terminationCalls, 1);
+});
+
+test("Darwin Host-loss coordination preserves an unproven launch boundary", async () => {
+  let terminationLaunchSettled;
+  const result = await coordinateDarwinHostLossTermination({
+    launch: async () => false,
+    waitForHostLoss: async () => undefined,
+    terminate: async (launchSettled) => {
+      terminationLaunchSettled = launchSettled;
+      return "termination_unconfirmed";
+    },
+  });
+  assert.equal(terminationLaunchSettled, false);
+  assert.equal(result, "termination_unconfirmed");
 });
 
 test("the Darwin Node preload keeps detached Workers in the inherited group", async () => {
@@ -391,6 +437,66 @@ test("Darwin Host death terminates the real adapter coalition before retaining p
   } finally {
     if (processCanRun(host.pid)) process.kill(host.pid, "SIGKILL");
     for (const processId of [workerPid, adapterPid]) {
+      if (processId && processCanRun(processId)) process.kill(processId, "SIGKILL");
+    }
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("Darwin Host death during LaunchServices launch cannot precede termination proof", {
+  skip: process.platform === "darwin"
+    ? false
+    : "LaunchServices process-coalition containment is available only on Darwin",
+}, async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "sandking-darwin-launch-host-loss-"));
+  const evidencePath = join(fixture, "termination.json");
+  const pidPath = join(fixture, "adapter-pids.json");
+  const modulePath = fileURLToPath(new URL("../src/darwin-process-tree.mjs", import.meta.url));
+  const hostSource = String.raw`
+    import { spawnDarwinProcessTree } from ${JSON.stringify(pathToFileURL(modulePath).href)};
+    const adapterSource = String.raw\`
+      import { spawn } from "node:child_process";
+      import { writeFileSync } from "node:fs";
+      const worker = spawn(process.execPath, [
+        "--input-type=module", "--eval", "setInterval(() => undefined, 1000)",
+      ], { detached: true, stdio: "ignore" });
+      writeFileSync(${JSON.stringify(pidPath)}, JSON.stringify({
+        adapterPid: process.pid,
+        workerPid: worker.pid,
+      }));
+      setInterval(() => undefined, 1000);
+    \`;
+    spawnDarwinProcessTree(process.execPath, [
+      "--input-type=module", "--eval", adapterSource,
+    ], {
+      cwd: process.cwd(),
+      env: { ...process.env },
+      hostLossTerminationEvidencePath: ${JSON.stringify(evidencePath)},
+    });
+    process.stdout.write("launch-requested\\n");
+    setInterval(() => undefined, 1000);
+  `;
+  const host = spawn(process.execPath, ["--input-type=module", "--eval", hostSource], {
+    cwd: process.cwd(),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  try {
+    await once(host.stdout, "data");
+    process.kill(host.pid, "SIGKILL");
+    await once(host, "exit");
+    await waitUntil(async () =>
+      (await readDarwinHostLossTerminationEvidence(evidencePath))?.status
+        === "termination_confirmed", 20_000);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const launchedPids = await readFile(pidPath, "utf8").then(JSON.parse).catch(() => null);
+    if (launchedPids) {
+      assert.equal(processCanRun(launchedPids.adapterPid), false);
+      assert.equal(processCanRun(launchedPids.workerPid), false);
+    }
+  } finally {
+    if (processCanRun(host.pid)) process.kill(host.pid, "SIGKILL");
+    const launchedPids = await readFile(pidPath, "utf8").then(JSON.parse).catch(() => null);
+    for (const processId of [launchedPids?.workerPid, launchedPids?.adapterPid]) {
       if (processId && processCanRun(processId)) process.kill(processId, "SIGKILL");
     }
     await rm(fixture, { recursive: true, force: true });

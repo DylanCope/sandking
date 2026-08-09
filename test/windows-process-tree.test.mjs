@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import {
+  prepareHostLossTerminationEvidence,
+  waitForHostLossTerminationEvidence,
+} from "../src/host-loss-termination-evidence.mjs";
 import {
   captureWindowsProcessTreeSnapshot,
   createNativeWindowsJobObject,
@@ -60,6 +64,50 @@ test("the Windows adapter barrier exits without running pinned code when contain
     const exit = await new Promise((resolve) => child.once("close", resolve));
     assert.notEqual(exit, 0);
     assert.equal(stdout, "");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the Windows launch barrier retains proof when pinned code is aborted", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-windows-barrier-proof-test-"));
+  const marker = join(directory, "assigned");
+  const evidencePath = join(directory, "termination.json");
+  prepareHostLossTerminationEvidence(evidencePath);
+  await writeFile(marker, "aborted\n", { mode: 0o600 });
+  const child = spawn(process.execPath, [
+    "--require",
+    fileURLToPath(new URL("../src/windows-process-barrier.cjs", import.meta.url)),
+    "--eval",
+    "process.stdout.write('adapter-started')",
+  ], {
+    env: {
+      ...process.env,
+      SANDKING_WINDOWS_JOB_BARRIER: marker,
+      SANDKING_HOST_LOSS_TERMINATION_EVIDENCE: evidencePath,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  try {
+    assert.notEqual(await new Promise((resolve) => child.once("close", resolve)), 0);
+    assert.equal(stdout, "");
+    const evidence = await waitForHostLossTerminationEvidence(evidencePath, {
+      expectedPlatform: "win32",
+      timeoutMs: 5_000,
+    });
+    assert.deepEqual(evidence, {
+      schemaVersion: 2,
+      platform: "win32",
+      status: "termination_confirmed",
+      terminationScope: "complete_process_tree",
+      launchSettled: true,
+      treeEmpty: true,
+      terminationBoundary: "launch_barrier_exit",
+      observedAt: evidence?.observedAt,
+    });
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await rm(directory, { recursive: true, force: true });
@@ -190,6 +238,164 @@ test("native Windows Job Object contains and terminates a real detached process 
     await writeFile(marker, "aborted\n", { mode: 0o600 }).catch(() => undefined);
     if (root.exitCode === null && root.signalCode === null) root.kill("SIGKILL");
     if (descendantPid && processExists(descendantPid)) process.kill(descendantPid, "SIGKILL");
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("native Windows Host death proves the assigned Job is empty", {
+  skip: process.platform !== "win32"
+    ? "requires native Windows Job Object and PowerShell boundaries"
+    : false,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-windows-host-loss-job-"));
+  const marker = join(directory, "assigned");
+  const evidencePath = join(directory, "termination.json");
+  const modulePath = fileURLToPath(new URL("../src/windows-process-tree.mjs", import.meta.url));
+  const barrierPath = fileURLToPath(new URL(
+    "../src/windows-process-barrier.cjs",
+    import.meta.url,
+  ));
+  const token = `sandking-host-loss-job-${randomBytes(12).toString("hex")}`;
+  const adapterSource = `
+    const { spawn } = require("node:child_process");
+    const worker = spawn(process.execPath, [
+      "--eval", "setInterval(() => undefined, 1000)",
+    ], { detached: true, stdio: "ignore" });
+    process.stdout.write(JSON.stringify({ adapterPid: process.pid, workerPid: worker.pid }) + "\\n");
+    setInterval(() => undefined, 1000);
+  `;
+  const hostSource = `
+    import { spawn } from "node:child_process";
+    import { writeFile } from "node:fs/promises";
+    import {
+      captureWindowsProcessTreeSnapshot,
+      createNativeWindowsJobObject,
+    } from ${JSON.stringify(pathToFileURL(modulePath).href)};
+    const jobObject = createNativeWindowsJobObject({
+      name: ${JSON.stringify(`Local\\SandKingHarnessRun-${randomBytes(16).toString("hex")}`)},
+      hostLossTerminationEvidencePath: ${JSON.stringify(evidencePath)},
+      launchBarrierMarkerPath: ${JSON.stringify(marker)},
+    });
+    const child = spawn(process.execPath, [
+      "--require", ${JSON.stringify(barrierPath)},
+      "--eval", ${JSON.stringify(adapterSource)},
+      ${JSON.stringify(token)},
+    ], {
+      env: {
+        ...process.env,
+        SANDKING_WINDOWS_JOB_BARRIER: ${JSON.stringify(marker)},
+        SANDKING_HOST_LOSS_TERMINATION_EVIDENCE: ${JSON.stringify(evidencePath)},
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const snapshot = await captureWindowsProcessTreeSnapshot(child.pid, {
+      expectedCommandLineFragment: ${JSON.stringify(token)},
+      jobObject,
+    });
+    if (!snapshot) throw new Error("windows_job_assignment_failed");
+    await writeFile(${JSON.stringify(marker)}, "assigned\\n", { mode: 0o600 });
+    child.stdout.once("data", (chunk) => process.stdout.write(chunk));
+    setInterval(() => undefined, 1000);
+  `;
+  const host = spawn(process.execPath, ["--input-type=module", "--eval", hostSource], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  const processExists = (processId) => {
+    try {
+      process.kill(processId, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let adapterPid = null;
+  let workerPid = null;
+  try {
+    const [chunk] = await new Promise((resolve, reject) => {
+      host.stdout.once("data", (...args) => resolve(args));
+      host.once("error", reject);
+    });
+    ({ adapterPid, workerPid } = JSON.parse(String(chunk).trim()));
+    assert.equal(processExists(adapterPid), true);
+    assert.equal(processExists(workerPid), true);
+    process.kill(host.pid, "SIGKILL");
+    await new Promise((resolve) => host.once("exit", resolve));
+    const evidence = await waitForHostLossTerminationEvidence(evidencePath, {
+      expectedPlatform: "win32",
+      timeoutMs: 20_000,
+    });
+    assert.equal(evidence?.status, "termination_confirmed");
+    assert.equal(evidence?.terminationBoundary, "job_active_processes_zero");
+    assert.equal(processExists(adapterPid), false);
+    assert.equal(processExists(workerPid), false);
+  } finally {
+    if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL");
+    for (const processId of [workerPid, adapterPid]) {
+      if (processId && processExists(processId)) process.kill(processId, "SIGKILL");
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("native Windows Host death during the launch barrier cannot start pinned code", {
+  skip: process.platform !== "win32"
+    ? "requires the native Windows process launch boundary"
+    : false,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-windows-host-loss-barrier-"));
+  const marker = join(directory, "assigned");
+  const evidencePath = join(directory, "termination.json");
+  const sideEffectPath = join(directory, "adapter-started");
+  const barrierPath = fileURLToPath(new URL(
+    "../src/windows-process-barrier.cjs",
+    import.meta.url,
+  ));
+  const hostSource = `
+    const { spawn } = require("node:child_process");
+    require("node:fs").writeFileSync(${JSON.stringify(evidencePath)}, "", {
+      flag: "wx", mode: 0o600,
+    });
+    const child = spawn(process.execPath, [
+      "--require", ${JSON.stringify(barrierPath)},
+      "--eval", ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(sideEffectPath)}, "started")`)},
+    ], {
+      env: {
+        ...process.env,
+        SANDKING_WINDOWS_JOB_BARRIER: ${JSON.stringify(marker)},
+        SANDKING_HOST_LOSS_TERMINATION_EVIDENCE: ${JSON.stringify(evidencePath)},
+      },
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    process.stdout.write(String(child.pid) + "\\n");
+    setInterval(() => undefined, 1000);
+  `;
+  const host = spawn(process.execPath, ["--eval", hostSource], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let adapterPid = null;
+  try {
+    const [chunk] = await new Promise((resolve, reject) => {
+      host.stdout.once("data", (...args) => resolve(args));
+      host.once("error", reject);
+    });
+    adapterPid = Number(String(chunk).trim());
+    process.kill(host.pid, "SIGKILL");
+    await new Promise((resolve) => host.once("exit", resolve));
+    const evidence = await waitForHostLossTerminationEvidence(evidencePath, {
+      expectedPlatform: "win32",
+      timeoutMs: 15_000,
+    });
+    assert.equal(evidence?.terminationBoundary, "launch_barrier_exit");
+    await assert.rejects(readFile(sideEffectPath), (error) =>
+      error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+    assert.throws(() => process.kill(adapterPid, 0));
+  } finally {
+    if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL");
+    try { if (adapterPid) process.kill(adapterPid, "SIGKILL"); } catch { /* exited */ }
     await rm(directory, { recursive: true, force: true });
   }
 });
