@@ -317,7 +317,7 @@ static int signal_direct_children(void) {
   return 1;
 }
 
-static void terminate_descendants_after_host_loss(void) {
+static void terminate_retained_descendants(void) {
   const struct timespec retry_delay = {
     .tv_sec = 0,
     .tv_nsec = 1000000,
@@ -404,7 +404,34 @@ static int supervise(char **supervisor_argv) {
       }
     } while (reaped > 0);
   }
-  if (host_lost) terminate_descendants_after_host_loss();
+  if (!host_lost && supervisor_exited) {
+    /*
+     * The Host pipe can close in the same scheduler turn in which the
+     * supervisor becomes waitable. Check once more before classifying that
+     * exit as an ordinary Host-owned release.
+     */
+    struct pollfd host_poll = {
+      .fd = SANDKING_COMMAND_DESCRIPTOR,
+      .events = POLLIN,
+      .revents = 0,
+    };
+    int poll_result;
+    do {
+      poll_result = poll(&host_poll, 1, 50);
+    } while (poll_result < 0 && errno == EINTR);
+    if (poll_result > 0
+        && (host_poll.revents & (POLLHUP | POLLERR | POLLNVAL))) {
+      host_lost = 1;
+    }
+  }
+  /*
+   * An abnormal supervisor exit also revokes safe ownership of any remaining
+   * Harness work. Draining the still-retained subreaper tree is correct both
+   * for Host-loss SIGKILL and for a Host-requested forced termination.
+   */
+  if (host_lost || WIFSIGNALED(supervisor_status)) {
+    terminate_retained_descendants();
+  }
   close(SANDKING_COMMAND_DESCRIPTOR);
   close(SANDKING_RESULT_DESCRIPTOR);
   if (host_lost) return 128 + SIGKILL;

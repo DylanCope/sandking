@@ -132,16 +132,10 @@ const runSupervisor = () => {
   process.on("message", handleSupervisorMessage);
   process.on("disconnect", () => {
     if (adapterExited) process.exit(0);
-    // The Host owns this private IPC endpoint. Losing it while the adapter is
-    // active means no process remains that can truthfully commit its terminal
-    // result, so close the still-retained group immediately. The wrapper is
-    // the live group leader, which prevents a stale numeric group id from
-    // selecting an unrelated replacement.
-    try {
-      process.kill(-processGroupId, "SIGKILL");
-    } catch {
-      process.exit(1);
-    }
+    // The retained native parent watches a separate Host-owned pipe. It must
+    // drain the complete subreaper tree when that pipe closes; killing this
+    // process group here would also kill that guardian before a setsid
+    // descendant could be reparented and terminated.
   });
 
   let adapter;
