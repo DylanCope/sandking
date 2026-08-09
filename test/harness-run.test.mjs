@@ -1333,6 +1333,7 @@ test("uncertain termination confirmation never invents a cancelled outcome", asy
       ["harness_run_succeeded", "harness_run_failed", "harness_run_cancelled"]
         .includes(event.type)), false);
   } finally {
+    await new Promise((resolve) => setTimeout(resolve, 250));
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
