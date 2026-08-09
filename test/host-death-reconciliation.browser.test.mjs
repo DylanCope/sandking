@@ -122,6 +122,19 @@ const waitForRunCount = async (dataDir, count) => {
   throw new Error(`harness_run_count_timeout:${count}`);
 };
 
+const waitForAcceptedCancellation = async (dataDir) => {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const state = await readJson(join(dataDir, "harness-runs.json")).catch(() => null);
+    const run = state?.runs?.[0];
+    if (run?.status === "cancelling" && run.cancellation) {
+      return { state, run };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("accepted_harness_cancellation_timeout");
+};
+
 const readAudits = (dataDir) => readFile(join(dataDir, "audit.jsonl"), "utf8")
   .then((source) => source.trim().split("\n").filter(Boolean).map(JSON.parse));
 
@@ -355,6 +368,202 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
         && audit.details.harnessRunId === activeRun.harnessRunId).length, 1);
       assert.doesNotMatch(JSON.stringify({ reconciled, finalAudits }),
         /host-death-reconciliation-secret/);
+      assert.doesNotMatch(await page.locator("body").textContent(),
+        /sha256:[a-f0-9]{64}|idempotencyKey/);
+      await context.close();
+    } finally {
+      await browser.close();
+    }
+  } finally {
+    await execFileAsync(installed.command, ["stop", "--data-dir", dataDir, "--json"], {
+      cwd: executionDirectory,
+      env: productEnvironment,
+    }).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("packaged Cockpit continues accepted cancellation after real Host death", {
+  skip: process.platform !== "linux"
+    ? "the deterministic real-process identity assertions use Linux process inventory"
+    : false,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-cancellation-host-restart-"));
+  const dataDir = join(root, "host-state");
+  const executionDirectory = join(root, "outside-checkout");
+  const userHome = join(root, "user-home");
+  const projectPath = join(root, "selected-project");
+  await Promise.all([
+    mkdir(dataDir, { recursive: true }),
+    mkdir(executionDirectory, { recursive: true }),
+    mkdir(userHome, { recursive: true }),
+    execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]),
+  ]);
+  await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
+  const projectContentsBefore = await snapshotProjectContents(projectPath);
+  const installed = await installCurrentPackage(root);
+  const productEnvironment = {
+    ...process.env,
+    HOME: userHome,
+    SANDKING_CONTROLLER_SECRET: "cancellation-host-restart-secret",
+  };
+
+  try {
+    const firstLaunch = JSON.parse((await execFileAsync(installed.command, [
+      "launch", "--data-dir", dataDir, "--startup-timeout-ms", "60000",
+      "--host-mode", "pause-after-harness-run-cancellation-acceptance",
+      "--idempotency-key", "cancellation-restart-runtime-first",
+      "--expected-revision", "0", "--json", "--no-open",
+    ], { cwd: executionDirectory, env: productEnvironment })).stdout);
+    const browser = await launchBrowser({ niceAdjustment: 10 });
+    try {
+      const context = await browser.newContext();
+      let page = await context.newPage();
+      const firstSentFrames = [];
+      page.on("websocket", (websocket) => {
+        websocket.on("framesent", (event) => firstSentFrames.push(String(event.payload)));
+      });
+      await page.goto(firstLaunch.bootstrapUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
+        timeout: 90_000,
+      });
+      await page.locator("#project-path").fill(projectPath);
+      await page.locator("#open-project").click();
+      await page.waitForSelector("#launch-harness:not([disabled])", { timeout: 90_000 });
+      await page.locator("#harness-launch-parameter-issueNumber").fill("999999993");
+      await page.locator("#harness-launch-parameter-targetBranch")
+        .fill("sandcastle/issue-999999993");
+      await page.locator("#launch-harness").click();
+      await page.locator("#harness-launch-confirmation-yes").click();
+      await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} launched\./
+        .test(document.querySelector("#harness-launch-feedback")?.textContent ?? ""));
+
+      const { run: activeRun } = await waitForActiveRun(dataDir);
+      await page.waitForSelector(
+        `#harness-run-observation[data-run-id='${activeRun.harnessRunId}'] `
+          + "#cancel-harness-run:not([disabled])",
+        { timeout: 15_000 },
+      );
+      const runtimeState = await readJson(join(dataDir, "runtime-state.json"));
+      const hostPid = await findLocalHostPid(runtimeState.pid);
+      const initialProcessTree = await inspectHostProcessTree(hostPid);
+      const supervisedPids = initialProcessTree.descendants.map(({ pid }) => pid);
+      assert.ok(supervisedPids.length >= 3, JSON.stringify({ hostPid, supervisedPids }));
+      assert.equal(initialProcessTree.adapters.length, 1, JSON.stringify(initialProcessTree));
+
+      await page.locator("#cancel-harness-run").click();
+      const { run: acceptedRun } = await waitForAcceptedCancellation(dataDir);
+      const cancellationFrame = firstSentFrames
+        .map((frame) => {
+          try {
+            return JSON.parse(frame)?.message;
+          } catch {
+            return null;
+          }
+        })
+        .find((message) => message?.type === "browser.harness-run.cancel");
+      assert.equal(cancellationFrame.harnessRunId, activeRun.harnessRunId);
+      assert.match(cancellationFrame.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+      assert.equal(acceptedRun.cancellation.cooperativeSignalSentAt, null);
+      assert.equal(acceptedRun.cancellation.forcedTerminationSentAt, null);
+      assert.equal(acceptedRun.cancellation.terminationConfirmedAt, null);
+      assert.equal(acceptedRun.events.filter((event) =>
+        event.type === "harness_run_cancellation_accepted").length, 1);
+
+      process.kill(hostPid, "SIGKILL");
+      await page.waitForSelector(
+        "#connection-status[data-host-status='disconnected']"
+          + "[data-failure-code='host_disconnected']",
+        { timeout: 90_000 },
+      );
+      await execFileAsync(installed.command, ["stop", "--data-dir", dataDir, "--json"], {
+        cwd: executionDirectory,
+        env: productEnvironment,
+      });
+      const secondLaunch = JSON.parse((await execFileAsync(installed.command, [
+        "launch", "--data-dir", dataDir, "--startup-timeout-ms", "60000",
+        "--idempotency-key", "cancellation-restart-runtime-second",
+        "--json", "--no-open",
+      ], { cwd: executionDirectory, env: productEnvironment })).stdout);
+      assert.notEqual(secondLaunch.runtime.runtimeId, firstLaunch.runtime.runtimeId);
+      assert.equal(secondLaunch.host.hostId, firstLaunch.host.hostId);
+
+      await page.close();
+      page = await context.newPage();
+      const secondSentFrames = [];
+      page.on("websocket", (websocket) => {
+        websocket.on("framesent", (event) => secondSentFrames.push(String(event.payload)));
+      });
+      await page.goto(secondLaunch.bootstrapUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForSelector(
+        `#harness-run-observation[data-run-id='${activeRun.harnessRunId}']`
+          + "[data-run-status='cancelled']",
+        { timeout: 90_000 },
+      );
+      const progress = page.locator(
+        "#harness-run-cancellation-progress[data-cancellation-accepted='true']"
+          + "[data-termination-confirmed='true'][data-reconciled-result='cancelled']",
+      );
+      await progress.waitFor({ state: "visible" });
+      assert.match(await progress.textContent(), /truthful terminal outcome: cancelled/i);
+      assert.doesNotMatch(await page.locator("#harness-run-cancellation-feedback").textContent(),
+        /null|recovery/i);
+      assert.equal(await page.locator("#harness-run-structured-outcome")
+        .getAttribute("data-outcome-status"), "cancelled");
+
+      await page.evaluate((pending) => {
+        sessionStorage.setItem("sandking.pendingHarnessCancellation", JSON.stringify(pending));
+      }, {
+        harnessRunId: cancellationFrame.harnessRunId,
+        idempotencyKeyHash: cancellationFrame.idempotencyKeyHash,
+      });
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForFunction(() =>
+        sessionStorage.getItem("sandking.pendingHarnessCancellation") === null);
+      const replayFrame = secondSentFrames
+        .map((frame) => JSON.parse(frame)?.message)
+        .find((message) => message?.type === "browser.harness-run.cancel");
+      assert.equal(replayFrame.harnessRunId, cancellationFrame.harnessRunId);
+      assert.equal(replayFrame.idempotencyKeyHash, cancellationFrame.idempotencyKeyHash);
+
+      const reconciledState = await waitForRunCount(dataDir, 1);
+      const reconciled = reconciledState.runs[0];
+      assert.equal(reconciled.status, "cancelled");
+      assert.equal(reconciled.outcome.status, "cancelled");
+      assert.equal(reconciled.outcome.incompleteResult, true);
+      assert.equal(reconciled.events.filter((event) =>
+        event.type === "harness_run_cancellation_accepted").length, 1);
+      assert.equal(reconciled.events.filter((event) =>
+        event.type === "harness_run_cancelled").length, 1);
+      assert.deepEqual(reconciled.executionSnapshot, acceptedRun.executionSnapshot);
+      assert.deepEqual(reconciled.logStreams, acceptedRun.logStreams);
+      const processesAfterReconciliation = new Map(
+        (await readProcesses()).map((entry) => [entry.pid, entry]),
+      );
+      assert.deepEqual(supervisedPids.filter((pid) => {
+        const retained = processesAfterReconciliation.get(pid);
+        return retained && !/[XZ]/.test(retained.state[0]);
+      }), []);
+      assert.deepEqual(await snapshotProjectContents(projectPath), projectContentsBefore);
+
+      const audits = await readAudits(dataDir);
+      assert.equal(audits.filter((audit) =>
+        audit.action === "harness.adapter.start"
+        && audit.details.harnessRunId === activeRun.harnessRunId).length, 1);
+      assert.equal(audits.filter((audit) =>
+        audit.action === "harness.run.cancel"
+        && audit.outcome === "accepted"
+        && audit.details.harnessRunId === activeRun.harnessRunId).length, 1);
+      const reconciliationAudits = audits.filter((audit) =>
+        audit.action === "harness.run.reconcile"
+        && audit.details.harnessRunId === activeRun.harnessRunId);
+      assert.equal(reconciliationAudits.length, 1);
+      assert.equal(reconciliationAudits[0].details.cancellationAccepted, true);
+      assert.equal(reconciliationAudits[0].details.cooperativeSignalSent, false);
+      assert.equal(reconciliationAudits[0].details.forcedTerminationSent, false);
+      assert.equal(reconciliationAudits[0].details.terminationConfirmed, true);
+      assert.doesNotMatch(JSON.stringify({ reconciled, audits }),
+        /cancellation-host-restart-secret/);
       assert.doesNotMatch(await page.locator("body").textContent(),
         /sha256:[a-f0-9]{64}|idempotencyKey/);
       await context.close();

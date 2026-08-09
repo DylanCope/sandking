@@ -388,11 +388,22 @@ const main = async () => {
     dataDir,
     recordAudit: recordProjectAudit,
   });
+  let pausedAtCancellationAcceptance = false;
   const harnessRuns = await createHarnessRunManager({
     dataDir,
     hostId: negotiatedHostId,
     recordAudit: recordProjectAudit,
     loadLaunchContext: projectRegistry.loadLaunchContext,
+    faultInjector: (point) => {
+      if (
+        mode === "pause-after-harness-run-cancellation-acceptance"
+        && point === "harness_run_cancellation.after_state_commit"
+        && !pausedAtCancellationAcceptance
+      ) {
+        pausedAtCancellationAcceptance = true;
+        process.kill(process.pid, "SIGSTOP");
+      }
+    },
   });
   let delayedHarnessRunLaunchResponse = false;
   let pausedAfterProjectRegistration = false;

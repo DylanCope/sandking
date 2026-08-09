@@ -38,7 +38,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.cancel.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-host-death-recovery")
+  .update("sandking-host-control-schema-v1-with-cancellation-restart")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
