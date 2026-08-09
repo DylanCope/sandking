@@ -367,6 +367,28 @@ const canonicalJson = (value) => {
 /** @param {unknown} value */
 const fingerprint = (value) => digest(canonicalJson(value));
 /** @param {any} request */
+const launchRequestFingerprint = (request) => fingerprint({
+  projectId: request.projectId,
+  parameters: request.parameters === undefined ? {} : request.parameters,
+  controllerSessionId: request.controllerSessionId,
+  source: request.source,
+  authorizationClass: request.authorizationClass,
+});
+/**
+ * Schemas v2-v4 treated the ephemeral Controller runtime as material launch
+ * content. Retain this comparison only for outcomes, such as rejected
+ * launches, that do not carry enough immutable request facts to normalize.
+ * @param {any} request
+ */
+const legacyLaunchRequestFingerprint = (request) => fingerprint({
+  projectId: request.projectId,
+  parameters: request.parameters === undefined ? {} : request.parameters,
+  controllerId: request.controllerId,
+  controllerSessionId: request.controllerSessionId,
+  source: request.source,
+  authorizationClass: request.authorizationClass,
+});
+/** @param {any} request */
 const requestIdempotencyKeyHash = (request) => {
   const suppliedHash = digestSchema.safeParse(request.idempotencyKeyHash);
   if (suppliedHash.success) return suppliedHash.data;
@@ -483,6 +505,33 @@ const migrateRetainedOutcome = (outcome, runs) => {
 };
 
 /**
+ * Successful launch outcomes can be upgraded to the current fingerprint from
+ * their immutable run facts. This lets the Cockpit reconnect after its
+ * ephemeral Controller runtime is replaced. Rejected launches have no run
+ * snapshot, so their original fingerprint is retained and matched through the
+ * legacy comparison in launch().
+ * @param {z.infer<typeof retainedOutcomeSchema>} outcome
+ * @param {Array<z.infer<typeof storedRunSchema>>} runs
+ */
+const migrateRetainedLaunchOutcome = (outcome, runs) => {
+  const migrated = migrateRetainedOutcome(outcome, runs);
+  const harnessRunId = /** @type {any} */ (migrated.response)?.run?.harnessRunId;
+  const run = typeof harnessRunId === "string"
+    ? runs.find((candidate) => candidate.harnessRunId === harnessRunId)
+    : null;
+  if (run && "parameters" in run && "source" in run) {
+    migrated.requestFingerprint = launchRequestFingerprint({
+      projectId: run.projectId,
+      parameters: run.parameters,
+      controllerSessionId: run.controllerSessionId,
+      source: run.source,
+      authorizationClass: "harness_run_launch",
+    });
+  }
+  return retainedOutcomeSchema.parse(migrated);
+};
+
+/**
  * @param {z.infer<typeof previousStateWithCancellationSchema> | z.infer<typeof previousStateWithSnapshotsSchema> | z.infer<typeof previousStateSchema> | z.infer<typeof legacyStateSchema>} previous
  */
 const migrateState = (previous) => {
@@ -505,7 +554,8 @@ const migrateState = (previous) => {
   return stateSchema.parse({
     schemaVersion: 5,
     runs,
-    launchOutcomes: launchOutcomes.map((outcome) => migrateRetainedOutcome(outcome, runs)),
+    launchOutcomes: launchOutcomes.map((outcome) =>
+      migrateRetainedLaunchOutcome(outcome, runs)),
     cancellationOutcomes: previous.schemaVersion === 4
       ? previous.cancellationOutcomes
       : [],
@@ -1586,17 +1636,15 @@ export const createHarnessRunManager = async (options) => {
   const launch = (request) => withMutationLock(async () => {
     const authorizationClass = "harness_run_launch";
     const idempotencyKeyHash = requestIdempotencyKeyHash(request);
-    const requestFingerprint = fingerprint({
-      projectId: request.projectId,
-      parameters: request.parameters === undefined ? {} : request.parameters,
-      controllerSessionId: request.controllerSessionId,
-      source: request.source,
-      authorizationClass: request.authorizationClass,
-    });
+    const requestFingerprint = launchRequestFingerprint(request);
+    const compatibleRequestFingerprints = new Set([
+      requestFingerprint,
+      legacyLaunchRequestFingerprint(request),
+    ]);
     const retained = await readState();
     const existing = retainedLaunchOutcome(retained, idempotencyKeyHash);
     if (existing) {
-      if (existing.requestFingerprint !== requestFingerprint) {
+      if (!compatibleRequestFingerprints.has(existing.requestFingerprint)) {
         const auditId = await options.recordAudit("harness.run.launch", "rejected", {
           code: "idempotency_key_conflict",
           authorizationClass,

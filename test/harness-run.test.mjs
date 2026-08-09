@@ -170,6 +170,24 @@ const hashedLaunchRequest = (request) => {
   };
 };
 
+const canonicalJson = (value) => {
+  if (value === undefined) return '"<undefined>"';
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+};
+
+const schemaV4LaunchRequestFingerprint = (request) =>
+  `sha256:${createHash("sha256").update(canonicalJson({
+    projectId: request.projectId,
+    parameters: request.parameters === undefined ? {} : request.parameters,
+    controllerId: request.controllerId,
+    controllerSessionId: request.controllerSessionId,
+    source: request.source,
+    authorizationClass: request.authorizationClass,
+  })).digest("hex")}`;
+
 const cancellationRequest = (harnessRunId, overrides = {}) => ({
   requestId: "cancel-harness-run",
   harnessRunId,
@@ -2039,10 +2057,16 @@ test("schema-v3 immutable execution history gains cancellation state without rew
 test("schema-v4 terminal history gains reconciliation metadata without changing its truth", async () => {
   const fixture = await createFixture("sandking-harness-v4-upgrade-");
   try {
-    const launched = await fixture.manager.launch(launchRequest(
+    const request = hashedLaunchRequest(launchRequest(
       fixture.registered.project.projectId,
       160,
+      {
+        source: "cockpit",
+        controllerSessionId: null,
+        idempotencyKey: "schema-v4-cockpit-launch",
+      },
     ));
+    const launched = await fixture.manager.launch(request);
     await waitForTerminal(fixture.manager, launched.run.harnessRunId);
     const current = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
@@ -2053,6 +2077,7 @@ test("schema-v4 terminal history gains reconciliation metadata without changing 
     delete v4.runs[0].outcome.interruption;
     delete v4.runs[0].launchIdempotencyKeyHash;
     delete v4.launchOutcomes[0].response.run.launchIdempotencyKeyHash;
+    v4.launchOutcomes[0].requestFingerprint = schemaV4LaunchRequestFingerprint(request);
     await writeFile(join(fixture.dataDir, "harness-runs.json"), `${JSON.stringify(v4)}\n`);
 
     const manager = await createHarnessRunManager({
@@ -2079,6 +2104,12 @@ test("schema-v4 terminal history gains reconciliation metadata without changing 
     delete migratedWithoutMetadata.runs[0].outcome.interruption;
     delete migratedWithoutMetadata.runs[0].launchIdempotencyKeyHash;
     delete migratedWithoutMetadata.launchOutcomes[0].response.run.launchIdempotencyKeyHash;
+    assert.notEqual(
+      migratedWithoutMetadata.launchOutcomes[0].requestFingerprint,
+      v4.launchOutcomes[0].requestFingerprint,
+    );
+    migratedWithoutMetadata.launchOutcomes[0].requestFingerprint =
+      v4.launchOutcomes[0].requestFingerprint;
     assert.deepEqual(migratedWithoutMetadata, v4);
 
     const observation = await manager.observe({
@@ -2092,6 +2123,23 @@ test("schema-v4 terminal history gains reconciliation metadata without changing 
     assert.equal(fixture.audits.some((audit) =>
       audit.action === "harness.run.reconcile"
       && audit.details.harnessRunId === launched.run.harnessRunId), false);
+
+    const replay = await manager.launch({
+      ...request,
+      requestId: "reconnect-schema-v4-cockpit-launch",
+      controllerId: `runtime-${"8".repeat(24)}`,
+    });
+    assert.equal(replay.type, "harness.run.launch.result");
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.run.harnessRunId, launched.run.harnessRunId);
+    assert.equal(replay.run.controllerId, controllerId);
+    const afterReplay = JSON.parse(
+      await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.equal(afterReplay.runs.length, 1);
+    assert.equal(afterReplay.launchOutcomes.length, 1);
+    assert.deepEqual(afterReplay.runs[0].events, migrated.runs[0].events);
+    assert.deepEqual(afterReplay.runs[0].outcome, migrated.runs[0].outcome);
 
     await createHarnessRunManager({
       dataDir: fixture.dataDir,
@@ -2107,6 +2155,69 @@ test("schema-v4 terminal history gains reconciliation metadata without changing 
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("schema-v4 rejected launch outcomes replay under their original fingerprint", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-harness-v4-rejection-upgrade-"));
+  let auditSequence = 0;
+  const options = {
+    dataDir,
+    hostId,
+    recordAudit: async () => {
+      auditSequence += 1;
+      return `audit-${String(auditSequence).padStart(24, "0")}`;
+    },
+    loadLaunchContext: async () => {
+      throw new Error("project_not_found");
+    },
+  };
+  try {
+    const request = hashedLaunchRequest(launchRequest(
+      `project-${"7".repeat(24)}`,
+      160,
+      {
+        source: "cockpit",
+        controllerSessionId: null,
+        idempotencyKey: "schema-v4-rejected-cockpit-launch",
+      },
+    ));
+    const originalManager = await createHarnessRunManager(options);
+    const original = await originalManager.launch(request);
+    assert.equal(original.code, "project_not_found");
+
+    const v4 = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
+    v4.schemaVersion = 4;
+    v4.launchOutcomes[0].requestFingerprint = schemaV4LaunchRequestFingerprint(request);
+    await writeFile(join(dataDir, "harness-runs.json"), `${JSON.stringify(v4)}\n`);
+
+    const migratedManager = await createHarnessRunManager(options);
+    const replay = await migratedManager.launch({
+      ...request,
+      requestId: "replay-schema-v4-rejected-cockpit-launch",
+    });
+    assert.equal(replay.type, "harness.run.launch.failure");
+    assert.equal(replay.code, "project_not_found");
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.auditId, original.auditId);
+
+    const conflict = await migratedManager.launch({
+      ...request,
+      requestId: "conflict-schema-v4-rejected-cockpit-launch",
+      parameters: { issueNumber: 161, targetBranch: "sandcastle/issue-161" },
+    });
+    assert.equal(conflict.code, "idempotency_key_conflict");
+    assert.equal(conflict.prohibitedSideEffects.harnessRunCreated, false);
+    const retained = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
+    assert.equal(retained.schemaVersion, 5);
+    assert.equal(retained.runs.length, 0);
+    assert.equal(retained.launchOutcomes.length, 1);
+    assert.equal(
+      retained.launchOutcomes[0].requestFingerprint,
+      v4.launchOutcomes[0].requestFingerprint,
+    );
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
   }
 });
 
