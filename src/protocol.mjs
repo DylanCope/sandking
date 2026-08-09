@@ -7,6 +7,8 @@ import {
 import {
   harnessRunEventSchema,
   harnessRunOutcomeSchema,
+  harnessRunRecoveryActionSchema,
+  harnessRunRecoverySchema,
   harnessRunSchema,
   retainedLegacyHarnessRunSchema,
 } from "./harness-runs.mjs";
@@ -36,9 +38,10 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.v2",
   "sandking.harness-run-reconciliation.v1",
   "sandking.harness-run.cancel.v1",
+  "sandking.harness-run.recovery.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-cancellation-restart")
+  .update("sandking-host-control-schema-v1-with-safe-harness-recovery")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -451,6 +454,71 @@ export const harnessRunCancelOutcomeSchema = z.union([
   harnessRunCancelResultSchema,
   harnessRunCancelFailureSchema,
 ]);
+const harnessRunRecoveryAuthorizationClassSchema = z.literal(
+  "harness_run_recovery",
+);
+const harnessRunRecoverSchema = z.object({
+  type: z.literal("harness.run.recover"),
+  requestId: identifierSchema,
+  harnessRunId: harnessRunCancellationCandidateSchema,
+  action: harnessRunRecoveryActionSchema,
+  controllerId: runtimeIdSchema,
+  controllerSessionId: z.string()
+    .regex(/^controller-session-[a-f0-9]{24}$/)
+    .nullable(),
+  source: harnessRunCancellationSourceSchema,
+  authorizationClass: harnessRunRecoveryAuthorizationClassSchema,
+  idempotencyKeyHash: harnessRunCancellationCandidateSchema,
+}).strip();
+export const harnessRunRecoverResultSchema = z.object({
+  type: z.literal("harness.run.recover.result"),
+  requestId: identifierSchema,
+  code: z.enum([
+    "harness_recovery_rechecked",
+    "harness_recovery_inspection_unavailable",
+    "harness_recovery_termination_confirmed",
+    "harness_recovery_termination_unconfirmed",
+    "harness_recovery_finalized",
+  ]),
+  authorizationClass: harnessRunRecoveryAuthorizationClassSchema,
+  idempotencyKeyHash: digestSchema,
+  idempotentReplay: z.boolean(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
+  action: harnessRunRecoveryActionSchema,
+  run: harnessRunSchema,
+  recovery: harnessRunRecoverySchema.nullable(),
+  outcome: harnessRunOutcomeSchema.nullable(),
+}).strip();
+export const harnessRunRecoverFailureSchema = z.object({
+  type: z.literal("harness.run.recover.failure"),
+  requestId: identifierSchema,
+  code: z.enum([
+    "mutation_contract_invalid",
+    "idempotency_key_conflict",
+    "harness_run_not_found",
+    "harness_run_not_recoverable",
+    "harness_recovery_action_not_available",
+  ]),
+  retryable: z.boolean(),
+  authorizationClass: harnessRunRecoveryAuthorizationClassSchema,
+  idempotencyKeyHash: digestSchema.nullable(),
+  idempotentReplay: z.boolean(),
+  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/).nullable(),
+  action: harnessRunRecoveryActionSchema.nullable(),
+  prohibitedSideEffects: z.object({
+    recoveryChanged: z.literal(false),
+    processSignalRequested: z.literal(false),
+    terminalOutcomeCreated: z.literal(false),
+    replacementRunStarted: z.literal(false),
+    projectWrite: z.literal(false),
+  }).strict(),
+}).strip();
+export const harnessRunRecoverOutcomeSchema = z.union([
+  harnessRunRecoverResultSchema,
+  harnessRunRecoverFailureSchema,
+]);
 // Retained v1 mutation outcomes remain lookup-readable after the command that
 // created them is retired. These schemas are nested historical data only;
 // `harness.run.start` is not restored as an accepted top-level operation.
@@ -519,6 +587,23 @@ const harnessRunLookupResultSchema = z.object({
   found: z.boolean(),
   launchOutcome: retainedHarnessRunMutationOutcomeSchema.nullable(),
 }).strip();
+const harnessRunRecoveryLookupSchema = z.object({
+  type: z.literal("harness.run.recovery.lookup"),
+  requestId: identifierSchema,
+  idempotencyKeyHash: digestSchema,
+}).strip();
+const harnessRunRecoveryLookupResultSchema = z.object({
+  type: z.literal("harness.run.recovery.lookup.result"),
+  requestId: identifierSchema,
+  code: z.enum([
+    "harness_recovery_outcome_found",
+    "harness_recovery_outcome_absent",
+  ]),
+  idempotencyKeyHash: digestSchema.nullable(),
+  found: z.boolean(),
+  pending: z.boolean(),
+  recoveryOutcome: harnessRunRecoverOutcomeSchema.nullable(),
+}).strip();
 const harnessRunObserveSchema = z.object({
   type: z.literal("harness.run.observe"),
   requestId: identifierSchema,
@@ -553,7 +638,7 @@ const harnessRunObserveResultSchema = z.object({
     canonicalSnapshot: z.literal(true),
   }).strict().nullable(),
   run: harnessRunSchema.nullable(),
-  events: z.array(harnessRunEventSchema).max(1_025),
+  events: z.array(harnessRunEventSchema).max(1_026),
   nextSequence: z.number().int().nonnegative(),
   outcome: harnessRunOutcomeSchema.nullable(),
   logStreams: z.array(harnessLogStreamProjectionSchema).max(2),
@@ -618,8 +703,13 @@ export const controlMessageSchema = z.discriminatedUnion("type", [
   harnessRunCancelSchema,
   harnessRunCancelResultSchema,
   harnessRunCancelFailureSchema,
+  harnessRunRecoverSchema,
+  harnessRunRecoverResultSchema,
+  harnessRunRecoverFailureSchema,
   harnessRunLookupSchema,
   harnessRunLookupResultSchema,
+  harnessRunRecoveryLookupSchema,
+  harnessRunRecoveryLookupResultSchema,
   harnessRunObserveSchema,
   harnessRunObserveResultSchema,
   harnessRunLogsGetSchema,

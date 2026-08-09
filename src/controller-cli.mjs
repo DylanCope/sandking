@@ -47,12 +47,32 @@ const controllerCancelResultSchema = z.object({
   idempotencyKeyHash: digestSchema,
   harnessRunId: z.string().regex(harnessRunPattern),
 }).passthrough();
+const harnessRecoveryActionSchema = z.enum([
+  "recheck",
+  "terminate_confirmed_tree",
+  "finalize",
+]);
+const controllerRecoverResultSchema = z.object({
+  type: z.literal("harness.run.recover.result"),
+  code: z.enum([
+    "harness_recovery_rechecked",
+    "harness_recovery_inspection_unavailable",
+    "harness_recovery_termination_confirmed",
+    "harness_recovery_termination_unconfirmed",
+    "harness_recovery_finalized",
+  ]),
+  authorizationClass: z.literal("harness_run_recovery"),
+  idempotencyKeyHash: digestSchema,
+  harnessRunId: z.string().regex(harnessRunPattern),
+  action: harnessRecoveryActionSchema,
+}).passthrough();
 // A launch may consume one provider-operation window, while the first exact
 // lookup can spend a second window queued behind it. Leave one final lookup
 // window plus bounded transport overhead without ever retrying the mutation.
 const CONTROLLER_CLI_TIMEOUT_MS = 17_000;
 const pendingLaunchStateFile = "harness-launch-retries.json";
 const pendingCancellationStateFile = "harness-cancellation-retries.json";
+const pendingRecoveryStateFile = "harness-recovery-retries.json";
 
 class ControllerCliAcknowledgedFailure extends Error {}
 
@@ -61,6 +81,13 @@ const definitiveCancellationFailureCodes = new Set([
   "idempotency_key_conflict",
   "harness_run_not_found",
   "harness_run_not_cancellable",
+]);
+const definitiveRecoveryFailureCodes = new Set([
+  "mutation_contract_invalid",
+  "idempotency_key_conflict",
+  "harness_run_not_found",
+  "harness_run_not_recoverable",
+  "harness_recovery_action_not_available",
 ]);
 
 /** @param {unknown} value @returns {string} */
@@ -148,6 +175,27 @@ const retainPendingCancellation = async (request, environment) => {
   return { path, requestFingerprint, retryHash };
 };
 
+/** @param {{projectId: string, controllerSessionId: string, harnessRunId: string, action: string}} request @param {NodeJS.ProcessEnv} environment */
+const retainPendingRecovery = async (request, environment) => {
+  const path = join(retryStateDirectory(environment), pendingRecoveryStateFile);
+  const parsed = pendingLaunchStateSchema.safeParse(await readJson(path, {
+    schemaVersion: 1,
+    launches: [],
+  }));
+  if (!parsed.success) throw new Error("controller_cli_retry_state_invalid");
+  const requestFingerprint = digest(request);
+  const existing = parsed.data.launches.find((entry) =>
+    entry.requestFingerprint === requestFingerprint);
+  if (existing) return { path, requestFingerprint, retryHash: existing.retryHash };
+  if (parsed.data.launches.length >= 64) {
+    throw new Error("controller_cli_retry_capacity_exceeded");
+  }
+  const retryHash = digest(randomBytes(32));
+  parsed.data.launches.push({ requestFingerprint, retryHash });
+  await writePrivateJson(path, parsed.data);
+  return { path, requestFingerprint, retryHash };
+};
+
 /** @param {{path: string, requestFingerprint: string, retryHash: string}} pending */
 const clearPendingLaunch = async (pending) => {
   const parsed = pendingLaunchStateSchema.safeParse(await readJson(pending.path, {
@@ -168,7 +216,7 @@ const clearPendingLaunch = async (pending) => {
 };
 
 /**
- * @param {{operation: "describe" | "harness-run.launch" | "harness-run.cancel", projectId: string, parameters?: unknown, harnessRunId?: string, idempotencyKeyHash?: string}} request
+ * @param {{operation: "describe" | "harness-run.launch" | "harness-run.cancel" | "harness-run.recover", projectId: string, parameters?: unknown, harnessRunId?: string, action?: string, idempotencyKeyHash?: string}} request
  * @param {NodeJS.ProcessEnv} environment
  */
 const requestControllerOperation = async (request, environment) => {
@@ -211,10 +259,11 @@ const requestControllerOperation = async (request, environment) => {
         operation: request.operation,
         controllerSessionId,
         projectId: request.projectId,
-        ...(["harness-run.launch", "harness-run.cancel"].includes(request.operation) ? {
-          ...(request.operation === "harness-run.cancel"
+        ...(["harness-run.launch", "harness-run.cancel", "harness-run.recover"].includes(request.operation) ? {
+          ...(["harness-run.cancel", "harness-run.recover"].includes(request.operation)
             ? { harnessRunId: request.harnessRunId }
             : {}),
+          ...(request.operation === "harness-run.recover" ? { action: request.action } : {}),
           parameters: request.parameters,
           idempotencyKeyHash: request.idempotencyKeyHash,
         } : {}),
@@ -383,6 +432,55 @@ export const requestControllerCancel = async (request, environment = process.env
       // These are retained Host outcomes that prove cancellation was rejected
       // without signalling. Transport, provider, and Host failures remain
       // indeterminate and must keep the same private retry identity.
+      await clearPendingLaunch(pending);
+    }
+    throw error;
+  }
+};
+
+/**
+ * Apply one bounded recovery action through the ordinary CLI/API path. Retry
+ * identity is retained as a hash in Controller-private state, never in the
+ * Project or in user-visible command arguments.
+ * @param {{projectId: string, harnessRunId: string, action: string}} request
+ * @param {NodeJS.ProcessEnv} [environment]
+ */
+export const requestControllerRecover = async (request, environment = process.env) => {
+  const action = harnessRecoveryActionSchema.safeParse(request.action);
+  if (!harnessRunPattern.test(request.harnessRunId) || !action.success) {
+    throw new Error("controller_cli_contract_invalid");
+  }
+  const correlation = {
+    projectId: request.projectId,
+    controllerSessionId: environment.SANDKING_CONTROLLER_SESSION_ID ?? "",
+    harnessRunId: request.harnessRunId,
+    action: action.data,
+  };
+  const pending = await retainPendingRecovery(correlation, environment);
+  try {
+    const outcome = await requestControllerOperation({
+      operation: "harness-run.recover",
+      projectId: request.projectId,
+      harnessRunId: request.harnessRunId,
+      action: action.data,
+      idempotencyKeyHash: pending.retryHash,
+    }, environment);
+    const parsed = controllerRecoverResultSchema.safeParse(outcome);
+    if (
+      !parsed.success
+      || parsed.data.harnessRunId !== request.harnessRunId
+      || parsed.data.action !== action.data
+      || parsed.data.idempotencyKeyHash !== pending.retryHash
+    ) {
+      throw new Error("controller_cli_protocol_invalid");
+    }
+    await clearPendingLaunch(pending);
+    return parsed.data;
+  } catch (error) {
+    if (
+      error instanceof ControllerCliAcknowledgedFailure
+      && definitiveRecoveryFailureCodes.has(error.message)
+    ) {
       await clearPendingLaunch(pending);
     }
     throw error;

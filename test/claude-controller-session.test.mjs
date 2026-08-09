@@ -316,6 +316,7 @@ if (args.length === 1 && args[0] === "--version") {
       "controller.session.terminate",
       "controller.harness-run.launch",
       "controller.harness-run.cancel",
+      "controller.harness-run.recovery",
       "controller.session.stable-identity",
       "controller.session.typed-exit",
     ]);

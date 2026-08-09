@@ -138,6 +138,35 @@ const waitForAcceptedCancellation = async (dataDir) => {
 const readAudits = (dataDir) => readFile(join(dataDir, "audit.jsonl"), "utf8")
   .then((source) => source.trim().split("\n").filter(Boolean).map(JSON.parse));
 
+const waitForHostLossEvidence = async (dataDir, harnessRunId) => {
+  const path = join(
+    dataDir,
+    "harness-runs",
+    harnessRunId,
+    "host-loss-termination.json",
+  );
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const evidence = await readJson(path).catch(() => null);
+    if (evidence?.schemaVersion === 2) return { path, evidence };
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("host_loss_termination_evidence_timeout");
+};
+
+const waitForProcessesToExit = async (pids) => {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const processes = new Map((await readProcesses()).map((entry) => [entry.pid, entry]));
+    if (pids.every((pid) => {
+      const retained = processes.get(pid);
+      return !retained || /[XZ]/.test(retained.state[0]);
+    })) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("supervised_process_exit_timeout");
+};
+
 test("packaged Cockpit reconciles an active Harness run after real Host death", {
   skip: process.platform !== "linux"
     ? "the deterministic real-process identity assertions use Linux process inventory"
@@ -370,6 +399,236 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
         /host-death-reconciliation-secret/);
       assert.doesNotMatch(await page.locator("body").textContent(),
         /sha256:[a-f0-9]{64}|idempotencyKey/);
+      await context.close();
+    } finally {
+      await browser.close();
+    }
+  } finally {
+    await execFileAsync(installed.command, ["stop", "--data-dir", dataDir, "--json"], {
+      cwd: executionDirectory,
+      env: productEnvironment,
+    }).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("packaged Cockpit resolves uncertain Host-loss supervision through bounded recovery", {
+  skip: process.platform !== "linux"
+    ? "the deterministic real-process identity assertions use Linux process inventory"
+    : false,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-uncertain-host-recovery-"));
+  const dataDir = join(root, "host-state");
+  const executionDirectory = join(root, "outside-checkout");
+  const userHome = join(root, "user-home");
+  const projectPath = join(root, "selected-project");
+  await Promise.all([
+    mkdir(dataDir, { recursive: true }),
+    mkdir(executionDirectory, { recursive: true }),
+    mkdir(userHome, { recursive: true }),
+    execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]),
+  ]);
+  await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
+  const projectContentsBefore = await snapshotProjectContents(projectPath);
+  const installed = await installCurrentPackage(root);
+  const secret = "uncertain-host-recovery-secret";
+  const productEnvironment = { ...process.env, HOME: userHome, SANDKING_CONTROLLER_SECRET: secret };
+
+  try {
+    const firstLaunch = JSON.parse((await execFileAsync(installed.command, [
+      "launch", "--data-dir", dataDir, "--startup-timeout-ms", "60000",
+      "--idempotency-key", "uncertain-recovery-runtime-first",
+      "--expected-revision", "0", "--json", "--no-open",
+    ], { cwd: executionDirectory, env: productEnvironment })).stdout);
+    const browser = await launchBrowser({ niceAdjustment: 10 });
+    try {
+      const context = await browser.newContext();
+      let page = await context.newPage();
+      await page.goto(firstLaunch.bootstrapUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
+        timeout: 90_000,
+      });
+      await page.locator("#project-path").fill(projectPath);
+      await page.locator("#open-project").click();
+      await page.waitForSelector("#launch-harness:not([disabled])", { timeout: 90_000 });
+      await page.locator("#harness-launch-parameter-issueNumber").fill("999999993");
+      await page.locator("#harness-launch-parameter-targetBranch")
+        .fill("sandcastle/issue-999999993");
+      await page.locator("#launch-harness").click();
+      await page.locator("#harness-launch-confirmation-yes").click();
+      const { run: activeRun } = await waitForActiveRun(dataDir);
+      const beforeRecoveryEvents = structuredClone(activeRun.events);
+      const runtimeState = await readJson(join(dataDir, "runtime-state.json"));
+      const hostPid = await findLocalHostPid(runtimeState.pid);
+      const initialTree = await inspectHostProcessTree(hostPid);
+      const supervisedPids = initialTree.descendants.map(({ pid }) => pid);
+      assert.ok(supervisedPids.length >= 3, JSON.stringify(initialTree));
+
+      process.kill(hostPid, "SIGKILL");
+      await page.waitForSelector(
+        "#connection-status[data-host-status='disconnected']"
+          + "[data-failure-code='host_disconnected']",
+        { timeout: 90_000 },
+      );
+      await waitForProcessesToExit(supervisedPids);
+      const { path: evidencePath } = await waitForHostLossEvidence(
+        dataDir,
+        activeRun.harnessRunId,
+      );
+      await execFileAsync(installed.command, ["stop", "--data-dir", dataDir, "--json"], {
+        cwd: executionDirectory,
+        env: productEnvironment,
+      });
+      await writeFile(evidencePath, `${JSON.stringify({
+        schemaVersion: 2,
+        platform: "linux",
+        status: "termination_unconfirmed",
+        terminationScope: "complete_process_tree",
+        launchSettled: true,
+        treeEmpty: false,
+        observedAt: "2026-08-09T18:00:00.000Z",
+      })}\n`);
+
+      const secondLaunch = JSON.parse((await execFileAsync(installed.command, [
+        "launch", "--data-dir", dataDir, "--startup-timeout-ms", "60000",
+        "--idempotency-key", "uncertain-recovery-runtime-second",
+        "--json", "--no-open",
+      ], { cwd: executionDirectory, env: productEnvironment })).stdout);
+      await page.close();
+      page = await context.newPage();
+      const sentFrames = [];
+      page.on("websocket", (websocket) => {
+        websocket.on("framesent", (event) => sentFrames.push(String(event.payload)));
+      });
+      await page.goto(secondLaunch.bootstrapUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForSelector(
+        `#harness-run-observation[data-run-id='${activeRun.harnessRunId}']`
+          + "[data-run-status='recovery_required']",
+        { timeout: 90_000 },
+      );
+      const recoveryPanel = page.locator(
+        "#harness-run-recovery-required[data-related-process-state='unknown']"
+          + "[data-identity-proof='unavailable'][data-safe-to-terminate='false']",
+      );
+      await recoveryPanel.waitFor({ state: "visible" });
+      assert.equal(await recoveryPanel.getAttribute("data-process-identifiers-exposed"), "false");
+      assert.equal(
+        await recoveryPanel.getAttribute("data-unrestricted-process-handle-exposed"),
+        "false",
+      );
+      assert.match(await recoveryPanel.textContent(), /No terminal outcome has been invented/i);
+      assert.match(await recoveryPanel.textContent(), /deliberately launch a new run/i);
+      assert.match(await recoveryPanel.textContent(), /could overlap/i);
+      await page.locator("#project-path").fill(projectPath);
+      await page.locator("#open-project").click();
+      await page.waitForSelector("#open-project:not([disabled])", { timeout: 90_000 });
+      if (await page.locator("#launch-harness").isDisabled()) {
+        await page.locator("#open-project").click();
+      }
+      await page.waitForSelector("#launch-harness:not([disabled])", { timeout: 90_000 });
+      assert.equal(await page.locator("#launch-harness").isDisabled(), false);
+      assert.equal(await recoveryPanel.locator("[data-harness-recovery-action]").count(), 1);
+      assert.equal(
+        await recoveryPanel.locator("[data-harness-recovery-action]").getAttribute(
+          "data-harness-recovery-action",
+        ),
+        "recheck",
+      );
+
+      await writeFile(evidencePath, `${JSON.stringify({
+        schemaVersion: 2,
+        platform: "linux",
+        status: "termination_confirmed",
+        terminationScope: "complete_process_tree",
+        launchSettled: true,
+        treeEmpty: true,
+        observedAt: "2026-08-09T18:01:00.000Z",
+      })}\n`);
+      await page.locator("#harness-recovery-recheck").click();
+      const recheckDeadline = Date.now() + 10_000;
+      let recheckedState = null;
+      while (Date.now() < recheckDeadline) {
+        recheckedState = await readJson(join(dataDir, "harness-runs.json"));
+        if (recheckedState.runs[0].recovery?.processObservation.relatedProcessState
+          === "terminated_confirmed") break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.equal(
+        recheckedState?.runs[0].recovery?.processObservation.relatedProcessState,
+        "terminated_confirmed",
+        JSON.stringify({
+          sentFrames,
+          feedback: await page.locator("#harness-run-recovery-feedback").textContent(),
+          evidence: await readJson(evidencePath),
+          recovery: recheckedState?.runs[0].recovery,
+        }),
+      );
+      await page.waitForSelector(
+        "#harness-run-recovery-required[data-related-process-state='terminated_confirmed'] "
+          + "[data-harness-recovery-action='finalize']:not([disabled])",
+        { timeout: 10_000 },
+      );
+      const recheckFrame = sentFrames
+        .flatMap((frame) => {
+          try {
+            return [JSON.parse(frame)?.message];
+          } catch {
+            return [];
+          }
+        })
+        .find((message) => message?.type === "browser.harness-run.recover"
+          && message.action === "recheck");
+      assert.equal(recheckFrame.harnessRunId, activeRun.harnessRunId);
+      assert.match(recheckFrame.idempotencyKeyHash, /^sha256:[a-f0-9]{64}$/);
+      assert.equal("idempotencyKey" in recheckFrame, false);
+      assert.equal("expectedRevision" in recheckFrame, false);
+
+      await page.evaluate((pending) => {
+        sessionStorage.setItem("sandking.pendingHarnessRecovery", JSON.stringify(pending));
+      }, {
+        harnessRunId: recheckFrame.harnessRunId,
+        action: recheckFrame.action,
+        idempotencyKeyHash: recheckFrame.idempotencyKeyHash,
+      });
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForFunction(() =>
+        sessionStorage.getItem("sandking.pendingHarnessRecovery") === null);
+      await page.waitForSelector("[data-harness-recovery-action='finalize']:not([disabled])", {
+        timeout: 90_000,
+      });
+      await page.locator("[data-harness-recovery-action='finalize']").click();
+      await page.waitForSelector(
+        `#harness-run-observation[data-run-id='${activeRun.harnessRunId}']`
+          + "[data-run-status='failed']",
+        { timeout: 90_000 },
+      );
+
+      const retained = await waitForRunCount(dataDir, 1);
+      const resolved = retained.runs[0];
+      assert.equal(resolved.status, "failed");
+      assert.equal(resolved.outcome.status, "failed");
+      assert.equal(resolved.outcome.code, "host_daemon_interrupted");
+      assert.equal(resolved.outcome.incompleteResult, true);
+      assert.equal(resolved.outcome.result, null);
+      assert.deepEqual(resolved.events.slice(0, beforeRecoveryEvents.length), beforeRecoveryEvents);
+      assert.equal(resolved.events.filter((event) =>
+        event.type === "harness_run_recovery_required").length, 1);
+      assert.equal(resolved.events.filter((event) =>
+        event.type === "harness_run_failed").length, 1);
+      assert.equal(resolved.events.some((event) =>
+        event.type === "harness_run_succeeded"), false);
+      assert.deepEqual(await snapshotProjectContents(projectPath), projectContentsBefore);
+      const audits = await readAudits(dataDir);
+      const recoveryAudits = audits.filter((audit) => audit.action === "harness.run.recover");
+      assert.equal(recoveryAudits.filter((audit) => audit.outcome === "accepted").length, 2);
+      assert.equal(recoveryAudits.filter((audit) => audit.outcome === "observed").length, 1);
+      assert.equal(recoveryAudits.every((audit) => audit.details.projectWrite !== true), true);
+      assert.doesNotMatch(JSON.stringify({ resolved, recoveryAudits }),
+        new RegExp(`${secret}|idempotencyKey(?!Hash)|processHandle|environment`));
+      for (const pid of supervisedPids) {
+        assert.doesNotMatch(JSON.stringify({ resolved, recoveryAudits }), new RegExp(`\\b${pid}\\b`));
+      }
+      assert.doesNotMatch(await page.locator("body").textContent(), /sha256:[a-f0-9]{64}/);
       await context.close();
     } finally {
       await browser.close();

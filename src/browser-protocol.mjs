@@ -11,6 +11,7 @@ import { launchParametersSchema } from "./harness-launch.mjs";
 import {
   harnessRunCancelOutcomeSchema,
   harnessRunLaunchOutcomeSchema,
+  harnessRunRecoverOutcomeSchema,
   protocolVersion,
   releaseVersion,
   versionSchema,
@@ -35,6 +36,7 @@ export const browserCapabilities = Object.freeze([
   "cockpit.harness-run-observation.v2",
   "cockpit.harness-run-reconciliation.v1",
   "cockpit.harness-run-cancellation.v1",
+  "cockpit.harness-run-recovery.v1",
 ]);
 export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.structured-control.v1",
@@ -47,12 +49,13 @@ export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.harness-run-observation.v2",
   "cockpit.harness-run-reconciliation.v1",
   "cockpit.harness-run-cancellation.v1",
+  "cockpit.harness-run-recovery.v1",
 ]);
 export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-cancellation-restart")
+  .update("sandking-browser-runtime-schema-v1-with-safe-harness-recovery")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -130,7 +133,7 @@ const harnessRunObservationProjectionSchema = z.object({
     canonicalSnapshot: z.literal(true),
   }).strict().nullable(),
   run: harnessRunSchema.nullable(),
-  events: z.array(harnessRunEventSchema).max(1_025),
+  events: z.array(harnessRunEventSchema).max(1_026),
   nextSequence: z.number().int().nonnegative(),
   outcome: harnessRunOutcomeSchema.nullable(),
   logStreams: z.array(z.object({
@@ -209,6 +212,14 @@ const browserHarnessRunCancelSchema = z.object({
   idempotencyKeyHash: digestSchema,
 }).strict();
 
+const browserHarnessRunRecoverSchema = z.object({
+  type: z.literal("browser.harness-run.recover"),
+  requestId: identifierSchema,
+  harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
+  action: z.enum(["recheck", "terminate_confirmed_tree", "finalize"]),
+  idempotencyKeyHash: digestSchema,
+}).strict();
+
 const browserHarnessRunLogsGetSchema = z.object({
   type: z.literal("browser.harness-run.logs.get"),
   requestId: identifierSchema,
@@ -227,6 +238,7 @@ const browserControlEnvelopeSchema = z.object({
     browserTerminalResizeSchema,
     browserHarnessRunLaunchSchema,
     browserHarnessRunCancelSchema,
+    browserHarnessRunRecoverSchema,
     browserHarnessRunObserveSchema,
     browserHarnessRunLogsGetSchema,
   ]),
@@ -359,6 +371,12 @@ const runtimeHarnessRunCancelResultSchema = z.object({
   outcome: harnessRunCancelOutcomeSchema,
 }).strict();
 
+const runtimeHarnessRunRecoverResultSchema = z.object({
+  type: z.literal("runtime.harness-run.recover-result"),
+  requestId: identifierSchema,
+  outcome: harnessRunRecoverOutcomeSchema,
+}).strict();
+
 export const runtimeConnectionStateSchema = z.object({
   type: z.literal("runtime.connection-state"),
   boundary: z.literal("host"),
@@ -405,6 +423,7 @@ export const runtimeControlEnvelopeSchema = z.object({
     runtimeTerminalResizedSchema,
     runtimeHarnessRunLaunchResultSchema,
     runtimeHarnessRunCancelResultSchema,
+    runtimeHarnessRunRecoverResultSchema,
     runtimeHarnessRunObservationSchema,
     runtimeHarnessRunLogsResultSchema,
     runtimeConnectionStateSchema,
