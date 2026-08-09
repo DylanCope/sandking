@@ -62,3 +62,27 @@ export const pauseInstalledHostAtHarnessRunFault = async (installed, faultPoint)
     + "    },\n");
   await writeFile(localHostPath, instrumented, { mode: 0o755 });
 };
+
+/**
+ * Restore the legacy Host-mode conduit only inside a temporary installed test
+ * copy used by older protocol/timing fixtures. Production cli.mjs contains no
+ * such option and the modified copy is never packed as product evidence.
+ * @param {{packageDirectory: string}} installed
+ */
+export const enableInstalledHostModeCli = async (installed) => {
+  const cliPath = join(installed.packageDirectory, "src", "cli.mjs");
+  const source = await readFile(cliPath, "utf8");
+  const parseAnchor = "    } else if (current === \"--startup-timeout-ms\") {\n";
+  const launchAnchor = "      dataDir: options.dataDir,\n";
+  if (source.split(parseAnchor).length !== 2 || !source.includes(launchAnchor)) {
+    throw new Error("installed_cli_host_mode_instrumentation_anchor_invalid");
+  }
+  const instrumented = source
+    .replace(parseAnchor,
+      "    } else if (current === \"--host-mode\") {\n"
+      + "      options.hostMode = rest[index + 1];\n"
+      + "      index += 1;\n"
+      + parseAnchor)
+    .replace(launchAnchor, `${launchAnchor}      hostMode: options.hostMode,\n`);
+  await writeFile(cliPath, instrumented, { mode: 0o755 });
+};

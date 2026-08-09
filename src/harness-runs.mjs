@@ -1062,7 +1062,7 @@ export const scheduleCancellationEscalation = (
 /**
  * @param {z.infer<typeof storedRunSchema>} run
  * @param {any} context
- * @param {{onAdapterStarted: () => Promise<void>, onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, beforeCancellationSignal: (kind: "cooperative" | "forced") => Promise<void>, onCancellationSignalPublished: (kind: "cooperative" | "forced", sentAt: string) => Promise<void>, onCancellationTerminationConfirmed: (confirmedAt: string) => Promise<void>, onSupervisorAvailable: (supervisor: {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>}) => void}} observer
+ * @param {{onAdapterStarted: () => Promise<void>, onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, beforeCancellationSignal: (kind: "cooperative" | "forced") => Promise<void>, onCancellationSignalPublished: (kind: "cooperative" | "forced", sentAt: string) => Promise<void>, onCancellationTerminationConfirmed: (confirmedAt: string) => Promise<void>, onSupervisorAvailable: (supervisor: {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, interrupt: () => Promise<void>, releaseProcessTree: () => Promise<void>}) => void}} observer
  */
 const superviseConformanceHarness = async (run, context, observer) => {
   const pinnedAdapter = await loadPinnedHarnessAdapter({
@@ -1462,6 +1462,20 @@ const superviseConformanceHarness = async (run, context, observer) => {
   observer.onSupervisorAvailable({
     prepareCancellation,
     requestCancellation,
+    interrupt: async () => {
+      // Real Host loss is contained by the native process-tree guard. Mirror
+      // that boundary for deterministic in-process interruptions so no old
+      // adapter or diagnostic write can race the recreated manager.
+      adapterChannel.destroy();
+      if (posixProcessTree) {
+        await posixProcessTree.signal("SIGKILL");
+      } else if (windowsProcessTreePromise) {
+        const processTree = await windowsProcessTreePromise.catch(() => null);
+        await processTree?.forceTerminate();
+      }
+      await exit;
+      await diagnosticQueue;
+    },
     releaseProcessTree: posixProcessTree?.release ?? (async () => {
       await windowsProcessTreePromise?.catch(() => undefined);
       await windowsJobObject?.close();
@@ -1502,8 +1516,10 @@ export const createHarnessRunManager = async (options) => {
     throw new Error("harness_run_cancellation_deadline_invalid");
   }
   let mutationQueue = Promise.resolve();
-  /** @type {Map<string, {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>}>} */
+  /** @type {Map<string, {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, interrupt: () => Promise<void>, releaseProcessTree: () => Promise<void>}>} */
   const activeSupervisions = new Map();
+  /** @type {Set<Promise<void>>} */
+  const supervisionOperations = new Set();
   /** @type {Map<string, string>} */
   const acceptedCancellations = new Map();
   /** @template T @param {() => Promise<T>} operation */
@@ -2237,7 +2253,7 @@ export const createHarnessRunManager = async (options) => {
   /** @param {z.infer<typeof storedRunSchema>} initialRun @param {any} context */
   const supervise = async (initialRun, context) => {
     let supervision;
-    /** @type {{prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>} | null} */
+    /** @type {{prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, interrupt: () => Promise<void>, releaseProcessTree: () => Promise<void>} | null} */
     let cancellationSupervisor = null;
     /** @type {() => Promise<void>} */
     let releaseSupervisedProcessTree = async () => undefined;
@@ -2363,6 +2379,8 @@ export const createHarnessRunManager = async (options) => {
       });
     } catch (error) {
       if (error instanceof InjectedSupervisionInterruption) {
+        const interruptedSupervisor = /** @type {any} */ (cancellationSupervisor);
+        await interruptedSupervisor?.interrupt();
         await releaseSupervisedProcessTree();
         throw error;
       }
@@ -2808,7 +2826,7 @@ export const createHarnessRunManager = async (options) => {
     await ensureAcceptedLaunchAudits(retained);
     await options.faultInjector?.("harness_run_launch.after_commit");
     setImmediate(() => {
-      supervise(structuredClone(run), {
+      const operation = supervise(structuredClone(run), {
         ...context,
         parameters: structuredClone(parameters.data),
         cancellationGraceMs,
@@ -2818,7 +2836,13 @@ export const createHarnessRunManager = async (options) => {
           run.harnessRunId,
           "host-loss-termination.json",
         ),
-      }).catch(() => undefined);
+      });
+      supervisionOperations.add(operation);
+      void operation.then(
+        () => supervisionOperations.delete(operation),
+        () => supervisionOperations.delete(operation),
+      );
+      void operation.catch(() => undefined);
     });
     return response;
   });
@@ -3351,7 +3375,22 @@ export const createHarnessRunManager = async (options) => {
     }
   });
 
-  return { launch, cancel, recover, lookup, lookupRecovery, observe, readLogs };
+  const waitForIdle = async () => {
+    while (supervisionOperations.size > 0) {
+      await Promise.allSettled([...supervisionOperations]);
+    }
+  };
+
+  return {
+    launch,
+    cancel,
+    recover,
+    lookup,
+    lookupRecovery,
+    observe,
+    readLogs,
+    waitForIdle,
+  };
 };
 
 export const harnessRunInternals = Object.freeze({ statePath, logPath });

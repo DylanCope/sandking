@@ -2140,9 +2140,11 @@ test("readiness and terminal-envelope interruptions converge from exact pre/post
       } finally {
         clearTimeout(faultTimeout);
       }
-      // Let the interrupted supervision unwind before recreating the Host-owned
-      // manager against the same canonical private state.
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      // Restart only after the original Host-owned supervision operation has
+      // actually unwound from the injected interruption. A timing delay would
+      // leave this canonical recovery proof vulnerable to a cross-manager
+      // write race.
+      await manager.waitForIdle();
 
       const stateAfterFault = JSON.parse(
         await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),

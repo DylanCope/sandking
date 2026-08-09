@@ -6,7 +6,10 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { launchBrowser } from "./browser-launch.mjs";
-import { installCurrentPackage } from "./installed-package.mjs";
+import {
+  enableInstalledHostModeCli,
+  installCurrentPackage,
+} from "./installed-package.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -25,6 +28,7 @@ test("one-action Harness launch reconnects to canonical state without duplicate 
   await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
   const projectFilesBefore = (await readdir(projectPath)).sort();
   const installed = await installCurrentPackage(root);
+  await enableInstalledHostModeCli(installed);
   const productEnvironment = {
     ...process.env,
     HOME: userHome,
