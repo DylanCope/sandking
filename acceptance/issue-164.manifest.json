@@ -226,7 +226,7 @@
         "no operation accepts an expected Harness-run entity revision"
       ],
       "prohibitedSideEffects": [
-        "production fault-control protocol or browser API",
+        "production CLI, Host, protocol, or browser fault-control API",
         "invented success or duplicate canonical mutation",
         "credential, raw retry key, environment dump, unrestricted process handle, or tracked Project change in any public or retained surface",
         "Project or Harness-workspace execution-state file"

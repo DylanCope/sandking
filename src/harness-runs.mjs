@@ -2214,6 +2214,26 @@ export const createHarnessRunManager = async (options) => {
     });
   };
 
+  class InjectedSupervisionInterruption extends Error {
+    /** @param {unknown} cause */
+    constructor(cause) {
+      super(cause instanceof Error ? cause.message : String(cause), { cause });
+      this.name = "InjectedSupervisionInterruption";
+    }
+  }
+
+  /** @param {Parameters<NonNullable<typeof options.faultInjector>>[0]} point */
+  const injectSupervisionFault = async (point) => {
+    try {
+      await options.faultInjector?.(point);
+    } catch (error) {
+      // A deterministic Host interruption is not an adapter observation. Keep
+      // it distinguishable while it crosses the adapter-supervision callback
+      // stack so the catch below cannot invent an adapter-start failure.
+      throw new InjectedSupervisionInterruption(error);
+    }
+  };
+
   /** @param {z.infer<typeof storedRunSchema>} initialRun @param {any} context */
   const supervise = async (initialRun, context) => {
     let supervision;
@@ -2266,7 +2286,7 @@ export const createHarnessRunManager = async (options) => {
           }
         },
         onReady: async (readyAt) => {
-          await options.faultInjector?.(
+          await injectSupervisionFault(
             "harness_run_lifecycle.adapter_ready.before_commit",
           );
           await updateRun(initialRun.harnessRunId, (run) => {
@@ -2279,7 +2299,7 @@ export const createHarnessRunManager = async (options) => {
             run.revision += 1;
             appendEvent(run, "harness_adapter_ready");
           });
-          await options.faultInjector?.(
+          await injectSupervisionFault(
             "harness_run_lifecycle.adapter_ready.after_state_commit",
           );
         },
@@ -2296,12 +2316,12 @@ export const createHarnessRunManager = async (options) => {
         onDiagnostic: (producer, data) =>
           appendDiagnostic(initialRun.harnessRunId, producer, data),
         beforeCancellationSignal: async (kind) => {
-          await options.faultInjector?.(
+          await injectSupervisionFault(
             `harness_run_cancellation.${kind}_signal.before_dispatch`,
           );
         },
         onCancellationSignalPublished: async (kind, sentAt) => {
-          await options.faultInjector?.(
+          await injectSupervisionFault(
             `harness_run_cancellation.${kind}_signal.after_dispatch`,
           );
           await updateRun(initialRun.harnessRunId, (run) => {
@@ -2316,15 +2336,15 @@ export const createHarnessRunManager = async (options) => {
               run.revision += 1;
             }
           });
-          await options.faultInjector?.(
+          await injectSupervisionFault(
             `harness_run_cancellation.${kind}_signal.after_state_commit`,
           );
         },
         onCancellationTerminationConfirmed: async (confirmedAt) => {
-          await options.faultInjector?.(
+          await injectSupervisionFault(
             "harness_run_cancellation.before_termination_confirmation_commit",
           );
-          await options.faultInjector?.(
+          await injectSupervisionFault(
             "harness_run_cancellation.termination_confirmation.before_commit",
           );
           await updateRun(initialRun.harnessRunId, (run) => {
@@ -2336,12 +2356,16 @@ export const createHarnessRunManager = async (options) => {
               run.revision += 1;
             }
           });
-          await options.faultInjector?.(
+          await injectSupervisionFault(
             "harness_run_cancellation.termination_confirmation.after_state_commit",
           );
         },
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof InjectedSupervisionInterruption) {
+        await releaseSupervisedProcessTree();
+        throw error;
+      }
       supervision = {
         adapterReadyObserved: false,
         protocolInvalid: false,

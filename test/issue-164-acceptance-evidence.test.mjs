@@ -77,15 +77,17 @@ test("issue 164 merge gate maps every canonical durability boundary to executabl
   }
 });
 
-test("fault injection remains outside production protocol and browser contracts", async () => {
+test("fault injection remains outside production CLI, Host, protocol, and browser contracts", async () => {
   const publicContractText = (await Promise.all([
+    "../src/cli.mjs",
+    "../src/local-host.mjs",
     "../src/protocol.mjs",
     "../src/browser-protocol.mjs",
     "../src/runtime-daemon.mjs",
     "../src/cockpit.js",
   ].map((path) => readFile(new URL(path, import.meta.url), "utf8")))).join("\n");
   assert.doesNotMatch(publicContractText,
-    /harness_run_(?:migration|terminal_envelope|lifecycle)\.|faultInjector/);
+    /pause-after-harness-run-cancellation-acceptance|harness_run_(?:migration|terminal_envelope|lifecycle)\.|faultInjector/);
 });
 
 test("retained issue 164 evidence identifies a current sanitized packaged qualification", {

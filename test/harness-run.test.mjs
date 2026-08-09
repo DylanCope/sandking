@@ -2066,72 +2066,165 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
   }
 });
 
-test("readiness and terminal-envelope publications expose atomic pre/post fault boundaries", async () => {
-  const fixture = await createFixture("sandking-harness-lifecycle-boundaries-");
-  const observations = [];
-  try {
-    const manager = await createHarnessRunManager({
-      dataDir: fixture.dataDir,
-      hostId,
-      recordAudit: fixture.recordAudit,
-      loadLaunchContext: fixture.registry.loadLaunchContext,
-      faultInjector: async (point) => {
-        if (![
-          "harness_run_lifecycle.adapter_ready.before_commit",
-          "harness_run_lifecycle.adapter_ready.after_state_commit",
-          "harness_run_terminal_envelope.before_commit",
-          "harness_run_terminal_envelope.after_state_commit",
-        ].includes(point)) return;
-        const retained = JSON.parse(
-          await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
-        );
-        const run = retained.runs[0];
-        observations.push({
-          point,
-          status: run.status,
-          adapterReadyAt: run.adapterReadyAt,
-          eventTypes: run.events.map((event) => event.type),
-          outcome: run.outcome,
-        });
-      },
-    });
-    const launched = await manager.launch(launchRequest(
-      fixture.registered.project.projectId,
-      164,
-      { idempotencyKey: "lifecycle-boundary-launch" },
-    ));
-    const terminal = await waitForTerminal(manager, launched.run.harnessRunId);
-    assert.equal(terminal.run.status, "succeeded");
-    assert.deepEqual(observations.map(({ point }) => point), [
-      "harness_run_lifecycle.adapter_ready.before_commit",
-      "harness_run_lifecycle.adapter_ready.after_state_commit",
-      "harness_run_terminal_envelope.before_commit",
-      "harness_run_terminal_envelope.after_state_commit",
-    ]);
-    assert.deepEqual({
-      status: observations[0].status,
-      adapterReadyAt: observations[0].adapterReadyAt,
-      eventTypes: observations[0].eventTypes,
-    }, {
-      status: "starting",
-      adapterReadyAt: null,
-      eventTypes: ["harness_run_created"],
-    });
-    assert.equal(observations[1].status, "running");
-    assert.match(observations[1].adapterReadyAt, /^\d{4}-\d{2}-\d{2}T/);
-    assert.deepEqual(observations[1].eventTypes, [
-      "harness_run_created",
-      "harness_adapter_ready",
-    ]);
-    assert.equal(observations[2].status, "running");
-    assert.equal(observations[2].outcome, null);
-    assert.equal(observations[2].eventTypes.at(-1), "harness_progress_published");
-    assert.equal(observations[3].status, "succeeded");
-    assert.equal(observations[3].outcome.status, "succeeded");
-    assert.equal(observations[3].outcome.terminalEnvelope.status, "succeeded");
-    assert.equal(observations[3].eventTypes.at(-1), "harness_run_succeeded");
-  } finally {
-    await rm(fixture.root, { recursive: true, force: true });
+test("readiness and terminal-envelope interruptions converge from exact pre/post history", async () => {
+  const boundaries = [
+    {
+      point: "harness_run_lifecycle.adapter_ready.before_commit",
+      retainedStatus: "starting",
+      retainedEvents: ["harness_run_created"],
+      retainedOutcome: false,
+    },
+    {
+      point: "harness_run_lifecycle.adapter_ready.after_state_commit",
+      retainedStatus: "running",
+      retainedEvents: ["harness_run_created", "harness_adapter_ready"],
+      retainedOutcome: false,
+    },
+    {
+      point: "harness_run_terminal_envelope.before_commit",
+      retainedStatus: "running",
+      retainedEvents: [
+        "harness_run_created",
+        "harness_adapter_ready",
+        "harness_progress_published",
+      ],
+      retainedOutcome: false,
+    },
+    {
+      point: "harness_run_terminal_envelope.after_state_commit",
+      retainedStatus: "succeeded",
+      retainedEvents: [
+        "harness_run_created",
+        "harness_adapter_ready",
+        "harness_progress_published",
+        "harness_run_succeeded",
+      ],
+      retainedOutcome: true,
+    },
+  ];
+
+  for (const [index, boundary] of boundaries.entries()) {
+    const fixture = await createFixture(`sandking-harness-lifecycle-boundary-${index}-`);
+    const projectFilesBefore = (await readdir(fixture.projectPath)).sort();
+    let faultReached;
+    const reachedFault = new Promise((resolve) => { faultReached = resolve; });
+    let injected = false;
+    try {
+      const manager = await createHarnessRunManager({
+        dataDir: fixture.dataDir,
+        hostId,
+        recordAudit: fixture.recordAudit,
+        loadLaunchContext: fixture.registry.loadLaunchContext,
+        faultInjector: (point) => {
+          if (point !== boundary.point || injected) return;
+          injected = true;
+          faultReached();
+          throw new Error(`injected_lifecycle_boundary_${index}`);
+        },
+      });
+      const launched = await manager.launch(launchRequest(
+        fixture.registered.project.projectId,
+        164,
+        { idempotencyKey: `lifecycle-boundary-launch-${index}` },
+      ));
+      let faultTimeout;
+      try {
+        await Promise.race([
+          reachedFault,
+          new Promise((_, reject) => {
+            faultTimeout = setTimeout(() => reject(
+              new Error(`lifecycle_boundary_not_reached:${boundary.point}`),
+            ), 10_000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(faultTimeout);
+      }
+      // Let the interrupted supervision unwind before recreating the Host-owned
+      // manager against the same canonical private state.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const stateAfterFault = JSON.parse(
+        await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+      );
+      const retainedRun = stateAfterFault.runs[0];
+      assert.equal(retainedRun.harnessRunId, launched.run.harnessRunId);
+      assert.equal(retainedRun.status, boundary.retainedStatus, boundary.point);
+      assert.deepEqual(
+        retainedRun.events.map((event) => event.type),
+        boundary.retainedEvents,
+        boundary.point,
+      );
+      assert.equal(retainedRun.outcome !== null, boundary.retainedOutcome, boundary.point);
+      assert.notEqual(retainedRun.outcome?.code, "harness_adapter_start_failed");
+      const immutableSnapshot = structuredClone(retainedRun.executionSnapshot);
+      const retainedHistory = structuredClone(retainedRun.events);
+      const retainedOutcome = structuredClone(retainedRun.outcome);
+      let terminationInspections = 0;
+
+      const restarted = await createHarnessRunManager({
+        dataDir: fixture.dataDir,
+        hostId,
+        recordAudit: fixture.recordAudit,
+        loadLaunchContext: async () => {
+          throw new Error("lifecycle_restart_must_not_resolve_mutable_launch_context");
+        },
+        inspectInterruptedRunTermination: async () => {
+          terminationInspections += 1;
+          return { platform: process.platform, status: "confirmed" };
+        },
+      });
+      const converged = await restarted.observe({
+        requestId: `observe-lifecycle-boundary-${index}-after-restart`,
+        harnessRunId: launched.run.harnessRunId,
+        afterSequence: 0,
+      });
+      assert.deepEqual(converged.run.executionSnapshot, immutableSnapshot, boundary.point);
+      assert.deepEqual(
+        converged.events.slice(0, retainedHistory.length),
+        retainedHistory,
+        boundary.point,
+      );
+      assert.equal(converged.events.filter((event) => [
+        "harness_run_succeeded",
+        "harness_run_failed",
+        "harness_run_cancelled",
+      ].includes(event.type)).length, 1, boundary.point);
+
+      if (boundary.retainedOutcome) {
+        assert.equal(terminationInspections, 0, boundary.point);
+        assert.equal(converged.run.status, "succeeded", boundary.point);
+        assert.deepEqual(converged.outcome, retainedOutcome, boundary.point);
+      } else {
+        assert.equal(terminationInspections, 1, boundary.point);
+        assert.equal(converged.run.status, "failed", boundary.point);
+        assert.equal(converged.outcome.code, "host_daemon_interrupted", boundary.point);
+        assert.equal(converged.outcome.incompleteResult, true, boundary.point);
+        assert.equal(converged.outcome.terminalEnvelope, null, boundary.point);
+      }
+
+      const repeated = await createHarnessRunManager({
+        dataDir: fixture.dataDir,
+        hostId,
+        recordAudit: fixture.recordAudit,
+        loadLaunchContext: async () => {
+          throw new Error("terminal_lifecycle_history_must_not_relaunch");
+        },
+        inspectInterruptedRunTermination: async () => {
+          throw new Error("terminal_lifecycle_history_must_not_be_reinspected");
+        },
+      });
+      const repeatedObservation = await repeated.observe({
+        requestId: `observe-lifecycle-boundary-${index}-after-second-restart`,
+        harnessRunId: launched.run.harnessRunId,
+        afterSequence: 0,
+      });
+      assert.deepEqual(repeatedObservation.events, converged.events, boundary.point);
+      assert.deepEqual(repeatedObservation.outcome, converged.outcome, boundary.point);
+      assert.deepEqual((await readdir(fixture.projectPath)).sort(), projectFilesBefore);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
   }
 });
 

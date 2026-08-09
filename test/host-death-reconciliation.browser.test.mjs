@@ -15,7 +15,10 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { launchBrowser } from "./browser-launch.mjs";
-import { installCurrentPackage } from "./installed-package.mjs";
+import {
+  installCurrentPackage,
+  pauseInstalledHostAtHarnessRunFault,
+} from "./installed-package.mjs";
 
 const execFileAsync = promisify(execFile);
 const readJson = (path) => readFile(path, "utf8").then(JSON.parse);
@@ -798,6 +801,10 @@ test("packaged Cockpit continues accepted cancellation after real Host death", {
   await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
   const projectContentsBefore = await snapshotProjectContents(projectPath);
   const installed = await installCurrentPackage(root);
+  await pauseInstalledHostAtHarnessRunFault(
+    installed,
+    "harness_run_cancellation.after_state_commit",
+  );
   const productEnvironment = {
     ...process.env,
     HOME: userHome,
@@ -807,7 +814,6 @@ test("packaged Cockpit continues accepted cancellation after real Host death", {
   try {
     const firstLaunch = JSON.parse((await execFileAsync(installed.command, [
       "launch", "--data-dir", dataDir, "--startup-timeout-ms", "60000",
-      "--host-mode", "pause-after-harness-run-cancellation-acceptance",
       "--idempotency-key", "cancellation-restart-runtime-first",
       "--expected-revision", "0", "--json", "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment })).stdout);
