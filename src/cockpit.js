@@ -26,7 +26,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:0f008377397e7388d4ac6cff628f8d74a49d4f57905edb9c278248e744e1cfb7",
+  schemaDigest: "sha256:68117940278afbedc2f02099bf4c738c1dc1b9284cea0adb3162b89f8fc51ae3",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -1140,7 +1140,9 @@ const renderHarnessRun = (observation) => {
   }, run.cancellation
     ? run.status === "cancelling"
       ? `Cancellation accepted. Waiting until ${run.cancellation.cooperativeDeadlineAt} for termination.`
-      : `Cancellation accepted. Termination was confirmed at ${run.cancellation.terminationConfirmedAt}.`
+      : run.status === "cancelled"
+        ? `Cancellation accepted. Termination was confirmed at ${run.cancellation.terminationConfirmedAt}.`
+        : "Cancellation accepted. The Host could not prove termination; recovery is required."
     : "");
   if (["starting", "running"].includes(run.status)) {
     const cancelButton = element("button", {
@@ -1160,9 +1162,12 @@ const renderHarnessRun = (observation) => {
       "data-termination-confirmed": String(
         run.cancellation.terminationConfirmedAt !== null,
       ),
+      "data-reconciled-result": run.status,
     }, run.status === "cancelling"
       ? "Cancellation accepted; termination remains asynchronously observable."
-      : `Cancellation accepted; truthful terminal outcome: ${run.status}.`),
+      : run.status === "cancelled"
+        ? "Cancellation accepted; truthful terminal outcome: cancelled."
+        : "Cancellation accepted; termination is unconfirmed and recovery is required."),
     cancellationFeedback);
   }
   if (observation.outcome?.code === "host_daemon_interrupted") {

@@ -184,10 +184,18 @@ export const harnessRunCancellationSchema = z.object({
 
 export const harnessRunRecoverySchema = z.object({
   code: z.literal("harness_process_termination_unconfirmed"),
-  previousStatus: z.enum(["starting", "running"]),
+  previousStatus: z.enum(["starting", "running", "cancelling"]),
   detectedAt: z.string().datetime(),
   platform: z.enum(["linux", "win32", "darwin"]),
   terminationEvidence: z.literal("unconfirmed"),
+  reconciliationAuditId: auditIdSchema,
+}).strict();
+
+const harnessRunCancellationReconciliationSchema = z.object({
+  previousStatus: z.literal("cancelling"),
+  reconciledAt: z.string().datetime(),
+  platform: z.enum(["linux", "win32", "darwin"]),
+  terminationEvidence: z.literal("confirmed"),
   reconciliationAuditId: auditIdSchema,
 }).strict();
 
@@ -301,31 +309,37 @@ export const retainedLegacyHarnessRunSchema = z.union([
   previousLegacyHarnessRunSchema,
 ]);
 
-const storedRunFields = {
+const previousStoredRunFields = {
   events: z.array(harnessRunEventSchema).max(MAX_RETAINED_RUN_EVENTS),
   outcome: harnessRunOutcomeSchema.nullable(),
   terminalEnvelopeValidation: terminalEnvelopeValidationSchema,
   logStreams: z.tuple([logStreamSchema, logStreamSchema]),
 };
-const previousCurrentStoredRunSchema = previousHarnessRunSchema.extend(storedRunFields).strict();
+const storedRunFields = {
+  ...previousStoredRunFields,
+  cancellationReconciliation: harnessRunCancellationReconciliationSchema
+    .nullable().default(null),
+};
+const previousCurrentStoredRunSchema = previousHarnessRunSchema
+  .extend(previousStoredRunFields).strict();
 const previousLegacyStoredRunSchema = previousLegacyHarnessRunSchema
-  .extend(storedRunFields).strict();
+  .extend(previousStoredRunFields).strict();
 const previousStoredRunSchema = z.union([
   previousCurrentStoredRunSchema,
   previousLegacyStoredRunSchema,
 ]);
 const previousCurrentStoredRunWithSnapshotSchema = previousCurrentHarnessRunSchema
-  .extend(storedRunFields).strict();
+  .extend(previousStoredRunFields).strict();
 const previousLegacyStoredRunWithSnapshotSchema = previousLegacyHarnessRunWithSnapshotSchema
-  .extend(storedRunFields).strict();
+  .extend(previousStoredRunFields).strict();
 const previousStoredRunWithSnapshotSchema = z.union([
   previousCurrentStoredRunWithSnapshotSchema,
   previousLegacyStoredRunWithSnapshotSchema,
 ]);
 const previousCurrentStoredRunWithCancellationSchema =
-  previousCurrentHarnessRunWithCancellationSchema.extend(storedRunFields).strict();
+  previousCurrentHarnessRunWithCancellationSchema.extend(previousStoredRunFields).strict();
 const previousLegacyStoredRunWithCancellationSchema =
-  previousLegacyHarnessRunWithCancellationSchema.extend(storedRunFields).strict();
+  previousLegacyHarnessRunWithCancellationSchema.extend(previousStoredRunFields).strict();
 const previousStoredRunWithCancellationSchema = z.union([
   previousCurrentStoredRunWithCancellationSchema,
   previousLegacyStoredRunWithCancellationSchema,
@@ -333,17 +347,32 @@ const previousStoredRunWithCancellationSchema = z.union([
 const currentStoredRunSchema = currentHarnessRunSchema.extend(storedRunFields).strict();
 const legacyStoredRunSchema = legacyHarnessRunSchema.extend(storedRunFields).strict();
 const storedRunSchema = z.union([currentStoredRunSchema, legacyStoredRunSchema]);
+const previousCurrentStoredRunWithHostLossReconciliationSchema =
+  currentHarnessRunSchema.extend(previousStoredRunFields).strict();
+const previousLegacyStoredRunWithHostLossReconciliationSchema =
+  legacyHarnessRunSchema.extend(previousStoredRunFields).strict();
+const previousStoredRunWithHostLossReconciliationSchema = z.union([
+  previousCurrentStoredRunWithHostLossReconciliationSchema,
+  previousLegacyStoredRunWithHostLossReconciliationSchema,
+]);
 const retainedOutcomeSchema = z.object({
   idempotencyKeyHash: digestSchema,
   requestFingerprint: digestSchema,
   response: z.object({}).passthrough(),
 }).strict();
 const stateSchema = z.object({
-  schemaVersion: z.literal(6),
+  schemaVersion: z.literal(7),
   // Canonical runs and keyed mutation outcomes cannot be evicted without
   // breaking reconnect and ambiguous-outcome lookup. Retention/cleanup is a
   // later explicit workflow; the records themselves remain schema-bounded.
   runs: z.array(storedRunSchema),
+  launchOutcomes: z.array(retainedOutcomeSchema),
+  cancellationOutcomes: z.array(retainedOutcomeSchema),
+  legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
+}).strict();
+const previousStateWithHostLossReconciliationSchema = z.object({
+  schemaVersion: z.literal(6),
+  runs: z.array(previousStoredRunWithHostLossReconciliationSchema),
   launchOutcomes: z.array(retainedOutcomeSchema),
   cancellationOutcomes: z.array(retainedOutcomeSchema),
   legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
@@ -381,7 +410,7 @@ const legacyStateSchema = z.object({
 }).strict();
 
 const initialState = () => ({
-  schemaVersion: 6,
+  schemaVersion: 7,
   runs: [],
   launchOutcomes: [],
   cancellationOutcomes: [],
@@ -422,6 +451,26 @@ const launchRequestFingerprint = (request) => fingerprint({
 const legacyLaunchRequestFingerprint = (request) => fingerprint({
   projectId: request.projectId,
   parameters: request.parameters === undefined ? {} : request.parameters,
+  controllerId: request.controllerId,
+  controllerSessionId: request.controllerSessionId,
+  source: request.source,
+  authorizationClass: request.authorizationClass,
+});
+/** @param {any} request */
+const cancellationRequestFingerprint = (request) => fingerprint({
+  harnessRunId: request.harnessRunId,
+  controllerSessionId: request.controllerSessionId,
+  source: request.source,
+  authorizationClass: request.authorizationClass,
+});
+/**
+ * Schema v6 treated the ephemeral Controller runtime as cancellation content.
+ * Keep the legacy comparison for retained outcomes while new acceptances bind
+ * only the durable caller/session attribution.
+ * @param {any} request
+ */
+const legacyCancellationRequestFingerprint = (request) => fingerprint({
+  harnessRunId: request.harnessRunId,
   controllerId: request.controllerId,
   controllerSessionId: request.controllerSessionId,
   source: request.source,
@@ -557,6 +606,12 @@ const migrateStoredRunWithCancellation = (run) => storedRunSchema.parse({
   recovery: null,
 });
 
+/** @param {z.infer<typeof previousStoredRunWithHostLossReconciliationSchema>} run */
+const migrateStoredRunWithHostLossReconciliation = (run) => storedRunSchema.parse({
+  ...structuredClone(run),
+  cancellationReconciliation: null,
+});
+
 /**
  * Retained mutation outcomes are immutable accepted responses. Add only the
  * execution snapshot field introduced by schema v3; lifecycle changes in the
@@ -621,14 +676,16 @@ const migrateRetainedLaunchOutcome = (outcome, runs) =>
   normalizeRetainedLaunchOutcomeFingerprint(migrateRetainedOutcome(outcome, runs), runs);
 
 /**
- * @param {z.infer<typeof previousStateWithReconciliationSchema> | z.infer<typeof previousStateWithCancellationSchema> | z.infer<typeof previousStateWithSnapshotsSchema> | z.infer<typeof previousStateSchema> | z.infer<typeof legacyStateSchema>} previous
+ * @param {z.infer<typeof previousStateWithHostLossReconciliationSchema> | z.infer<typeof previousStateWithReconciliationSchema> | z.infer<typeof previousStateWithCancellationSchema> | z.infer<typeof previousStateWithSnapshotsSchema> | z.infer<typeof previousStateSchema> | z.infer<typeof legacyStateSchema>} previous
  */
 const migrateState = (previous) => {
-  const runs = previous.schemaVersion === 4 || previous.schemaVersion === 5
-    ? previous.runs.map(migrateStoredRunWithCancellation)
-    : previous.schemaVersion === 3
-      ? previous.runs.map(migrateStoredRunWithSnapshot)
-      : previous.runs.map(migrateStoredRun);
+  const runs = previous.schemaVersion === 6
+    ? previous.runs.map(migrateStoredRunWithHostLossReconciliation)
+    : previous.schemaVersion === 4 || previous.schemaVersion === 5
+      ? previous.runs.map(migrateStoredRunWithCancellation)
+      : previous.schemaVersion === 3
+        ? previous.runs.map(migrateStoredRunWithSnapshot)
+        : previous.runs.map(migrateStoredRun);
   const launchOutcomes = previous.schemaVersion === 1 ? [] : previous.launchOutcomes;
   for (const outcome of launchOutcomes) {
     const harnessRunId = /** @type {any} */ (outcome.response)?.run?.harnessRunId;
@@ -641,11 +698,13 @@ const migrateState = (previous) => {
     ? previous.startOutcomes
     : previous.legacyStartOutcomes;
   return stateSchema.parse({
-    schemaVersion: 6,
+    schemaVersion: 7,
     runs,
     launchOutcomes: launchOutcomes.map((outcome) =>
       migrateRetainedLaunchOutcome(outcome, runs)),
-    cancellationOutcomes: previous.schemaVersion === 4 || previous.schemaVersion === 5
+    cancellationOutcomes: previous.schemaVersion === 4
+      || previous.schemaVersion === 5
+      || previous.schemaVersion === 6
       ? previous.cancellationOutcomes
       : [],
     legacyStartOutcomes: legacyStartOutcomes
@@ -753,7 +812,7 @@ export const scheduleCancellationEscalation = (
 /**
  * @param {z.infer<typeof storedRunSchema>} run
  * @param {any} context
- * @param {{onAdapterStarted: () => Promise<void>, onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, onSupervisorAvailable: (supervisor: {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>}) => void}} observer
+ * @param {{onAdapterStarted: () => Promise<void>, onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, beforeCancellationSignal: (kind: "cooperative" | "forced") => Promise<void>, onCancellationSignalPublished: (kind: "cooperative" | "forced", sentAt: string) => Promise<void>, onCancellationTerminationConfirmed: (confirmedAt: string) => Promise<void>, onSupervisorAvailable: (supervisor: {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, releaseProcessTree: () => Promise<void>}) => void}} observer
  */
 const superviseConformanceHarness = async (run, context, observer) => {
   const pinnedAdapter = await loadPinnedHarnessAdapter({
@@ -1056,14 +1115,24 @@ const superviseConformanceHarness = async (run, context, observer) => {
           ? await windowsProcessTreePromise
           : null;
         if (windowsProcessTree) {
+          await observer.beforeCancellationSignal("forced");
           if (await windowsProcessTree.forceTerminate()) {
             forcedTerminationSentAt = new Date().toISOString();
+            await observer.onCancellationSignalPublished(
+              "forced",
+              forcedTerminationSentAt,
+            );
           }
           return;
         }
+        await observer.beforeCancellationSignal("forced");
         const forcedTermination = await signalProcessTree("SIGKILL");
-        if (forcedTermination.sent) {
+        if (forcedTermination.sent && forcedTermination.sentAt) {
           forcedTerminationSentAt = forcedTermination.sentAt;
+          await observer.onCancellationSignalPublished(
+            "forced",
+            forcedTermination.sentAt,
+          );
         }
       },
     );
@@ -1078,6 +1147,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
         ? !posixProcessTree.adapterExited()
         : false;
       if (windowsProcessTree) {
+        await observer.beforeCancellationSignal("cooperative");
         const cooperativeRequestSent = sendHarnessCancellationRequest(child, {
           type: "harness.run.cancel",
           adapterProtocol: run.adapterProtocol,
@@ -1087,11 +1157,20 @@ const superviseConformanceHarness = async (run, context, observer) => {
         });
         if (cooperativeRequestSent) {
           cooperativeSignalSentAt = new Date().toISOString();
+          await observer.onCancellationSignalPublished(
+            "cooperative",
+            cooperativeSignalSentAt,
+          );
         }
       } else if (posixTreeRequiresCooperativeSignal) {
+        await observer.beforeCancellationSignal("cooperative");
         const cooperativeSignal = await signalProcessTree("SIGTERM");
-        if (cooperativeSignal.sent) {
+        if (cooperativeSignal.sent && cooperativeSignal.sentAt) {
           cooperativeSignalSentAt = cooperativeSignal.sentAt;
+          await observer.onCancellationSignalPublished(
+            "cooperative",
+            cooperativeSignal.sentAt,
+          );
         }
       }
       await completion;
@@ -1119,6 +1198,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
       // allowing the cancellation terminal transition.
       if (!(await processTreeAlive())) {
         terminationConfirmedAt = new Date().toISOString();
+        await observer.onCancellationTerminationConfirmed(terminationConfirmedAt);
       }
       clearTimeout(forcedTerminationTimer);
       return {
@@ -1158,7 +1238,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
  *   loadLaunchContext: (projectId: string) => Promise<any>,
  *   now?: () => Date,
  *   cancellationGraceMs?: number,
- *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_state_commit" | "harness_run_launch.after_commit" | "harness_run_cancellation.before_commit" | "harness_run_cancellation.after_state_commit" | "harness_run_cancellation.after_commit" | "harness_run_cancellation.before_termination_confirmation_commit" | "harness_run_outcome.before_commit" | "harness_run_reconciliation.before_commit" | "harness_run_reconciliation.after_state_commit" | "harness_run_reconciliation.after_commit") => Promise<void> | void,
+ *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_state_commit" | "harness_run_launch.after_commit" | "harness_run_cancellation.before_commit" | "harness_run_cancellation.after_state_commit" | "harness_run_cancellation.after_commit" | "harness_run_cancellation.cooperative_signal.before_dispatch" | "harness_run_cancellation.cooperative_signal.after_dispatch" | "harness_run_cancellation.cooperative_signal.after_state_commit" | "harness_run_cancellation.forced_signal.before_dispatch" | "harness_run_cancellation.forced_signal.after_dispatch" | "harness_run_cancellation.forced_signal.after_state_commit" | "harness_run_cancellation.before_termination_confirmation_commit" | "harness_run_cancellation.termination_confirmation.before_commit" | "harness_run_cancellation.termination_confirmation.after_state_commit" | "harness_run_outcome.before_commit" | "harness_run_outcome.after_state_commit" | "harness_run_reconciliation.before_commit" | "harness_run_reconciliation.after_state_commit" | "harness_run_reconciliation.after_commit") => Promise<void> | void,
  *   inspectInterruptedRunTermination?: (run: z.infer<typeof harnessRunSchema>) => Promise<{platform: "linux" | "win32" | "darwin", status: "confirmed" | "unconfirmed"}>,
  * }} options
  */
@@ -1288,27 +1368,56 @@ export const createHarnessRunManager = async (options) => {
     for (const run of state.runs) {
       const interruption = run.outcome?.interruption;
       const recovery = run.recovery;
-      if (!interruption && !recovery) continue;
+      const cancellationReconciliation = run.cancellationReconciliation;
+      if (!interruption && !recovery && !cancellationReconciliation) continue;
       const reconciliationAuditId = interruption?.reconciliationAuditId
-        ?? recovery?.reconciliationAuditId;
-      const auditId = await options.recordAudit("harness.run.reconcile", "observed", {
-        code: interruption?.code ?? recovery?.code,
+        ?? recovery?.reconciliationAuditId
+        ?? cancellationReconciliation?.reconciliationAuditId;
+      const cancellationRestart = cancellationReconciliation !== null
+        || recovery?.previousStatus === "cancelling";
+      const reconciliationDetails = {
+        code: interruption?.code ?? recovery?.code
+          ?? "harness_run_cancellation_reconciled",
         harnessRunId: run.harnessRunId,
         hostId: run.hostId,
         projectId: run.projectId,
-        previousStatus: interruption?.previousStatus ?? recovery?.previousStatus,
+        previousStatus: interruption?.previousStatus ?? recovery?.previousStatus
+          ?? cancellationReconciliation?.previousStatus,
         status: run.outcome?.status ?? run.status,
         outcomeReference: run.outcome?.outcomeId,
         incompleteResult: run.outcome?.incompleteResult,
-        terminationEvidence: recovery?.terminationEvidence ?? "confirmed",
-        platform: recovery?.platform ?? process.platform,
+        terminationEvidence: recovery?.terminationEvidence
+          ?? cancellationReconciliation?.terminationEvidence
+          ?? "confirmed",
+        platform: recovery?.platform ?? cancellationReconciliation?.platform
+          ?? process.platform,
         retainedEventCount: run.events.length,
         stdoutRange: run.logStreams[0].availableEnd,
         stderrRange: run.logStreams[1].availableEnd,
         adapterRelaunched: false,
         harnessRunCreated: false,
         projectWrite: false,
-      }, reconciliationAuditId);
+        ...(cancellationRestart
+          ? {
+              cancellationAccepted: true,
+              cooperativeSignalSent: Boolean(
+                run.cancellation?.cooperativeSignalSentAt,
+              ),
+              forcedTerminationSent: Boolean(
+                run.cancellation?.forcedTerminationSentAt,
+              ),
+              terminationConfirmed: Boolean(
+                run.cancellation?.terminationConfirmedAt,
+              ),
+            }
+          : {}),
+      };
+      const auditId = await options.recordAudit(
+        "harness.run.reconcile",
+        "observed",
+        reconciliationDetails,
+        reconciliationAuditId,
+      );
       if (auditId !== reconciliationAuditId) {
         throw new Error("harness_run_reconciliation_audit_commit_invalid");
       }
@@ -1391,6 +1500,21 @@ export const createHarnessRunManager = async (options) => {
       await ensureReconciliationAudits(migrated);
       return migrated;
     }
+    if (
+      raw
+      && typeof raw === "object"
+      && "schemaVersion" in raw
+      && raw.schemaVersion === 6
+    ) {
+      const previous = previousStateWithHostLossReconciliationSchema.parse(raw);
+      const migrated = migrateState(previous);
+      await writePrivateJson(statePath(options.dataDir), migrated);
+      await ensureAcceptedLaunchAudits(migrated);
+      await ensureAcceptedCancellationAudits(migrated);
+      await ensureOutcomeAudits(migrated);
+      await ensureReconciliationAudits(migrated);
+      return migrated;
+    }
     const retained = stateSchema.parse(raw);
     const normalizedLaunchOutcomes = retained.launchOutcomes.map((outcome) =>
       normalizeRetainedLaunchOutcomeFingerprint(outcome, retained.runs));
@@ -1457,8 +1581,10 @@ export const createHarnessRunManager = async (options) => {
         changed = repairAcceptedTerminalOutcome(run) || changed;
         continue;
       }
-      if (!["starting", "running"].includes(run.status)) continue;
-      if (run.cancellation !== null) {
+      if (!["starting", "running", "cancelling"].includes(run.status)) continue;
+      const acceptedCancellation = run.status === "cancelling"
+        && run.cancellation !== null;
+      if (acceptedCancellation !== (run.cancellation !== null)) {
         throw new Error("harness_run_reconciliation_state_invalid");
       }
       if (run.events.some((event) => terminalEventTypes.has(event.type))) {
@@ -1472,9 +1598,15 @@ export const createHarnessRunManager = async (options) => {
       }
       const previousStatus = run.status;
       const reconciledAt = now().toISOString();
-      const termination = options.inspectInterruptedRunTermination
-        ? await options.inspectInterruptedRunTermination(publicRun(run))
-        : await (async () => {
+      const termination = acceptedCancellation
+        && run.cancellation?.terminationConfirmedAt !== null
+        ? {
+            platform: /** @type {"linux" | "win32" | "darwin"} */ (process.platform),
+            status: "confirmed",
+          }
+        : options.inspectInterruptedRunTermination
+          ? await options.inspectInterruptedRunTermination(publicRun(run))
+          : await (async () => {
             if (!["linux", "win32", "darwin"].includes(process.platform)) {
               throw new Error("harness_run_reconciliation_platform_unsupported");
             }
@@ -1513,7 +1645,6 @@ export const createHarnessRunManager = async (options) => {
         continue;
       }
       const outcomeId = `harness-outcome-${randomBytes(12).toString("hex")}`;
-      run.status = "failed";
       run.completedAt = reconciledAt;
       run.recovery = null;
       run.revision += 1;
@@ -1524,6 +1655,44 @@ export const createHarnessRunManager = async (options) => {
         adapterChannelClosedObserved: false,
         processExitObserved: false,
       };
+      const diagnosticReferences = run.logStreams.map((stream) => ({
+        streamId: stream.streamId,
+        producer: stream.producer,
+        range: {
+          start: stream.availableStart,
+          end: stream.availableEnd,
+        },
+        explicitRetrievalRequired: stream.explicitRetrievalRequired,
+        insertedIntoControllerConversation: stream.insertedIntoControllerConversation,
+      }));
+      if (acceptedCancellation && run.cancellation) {
+        run.status = "cancelled";
+        run.cancellation.terminationConfirmedAt ??= reconciledAt;
+        run.cancellationReconciliation =
+          harnessRunCancellationReconciliationSchema.parse({
+            previousStatus: "cancelling",
+            reconciledAt,
+            platform: termination.platform,
+            terminationEvidence: "confirmed",
+            reconciliationAuditId: `audit-${randomBytes(12).toString("hex")}`,
+          });
+        run.outcome = harnessRunOutcomeSchema.parse({
+          outcomeId,
+          status: "cancelled",
+          code: "conformance_run_cancelled",
+          completedAt: reconciledAt,
+          incompleteResult: true,
+          result: null,
+          diagnosticReferences,
+          terminalEnvelope: null,
+          outcomeAuditId: `audit-${randomBytes(12).toString("hex")}`,
+          interruption: null,
+        });
+        appendEvent(run, "harness_run_cancelled", { outcomeReference: outcomeId });
+        changed = true;
+        continue;
+      }
+      run.status = "failed";
       run.outcome = harnessRunOutcomeSchema.parse({
         outcomeId,
         status: "failed",
@@ -1531,16 +1700,7 @@ export const createHarnessRunManager = async (options) => {
         completedAt: reconciledAt,
         incompleteResult: true,
         result: null,
-        diagnosticReferences: run.logStreams.map((stream) => ({
-          streamId: stream.streamId,
-          producer: stream.producer,
-          range: {
-            start: stream.availableStart,
-            end: stream.availableEnd,
-          },
-          explicitRetrievalRequired: stream.explicitRetrievalRequired,
-          insertedIntoControllerConversation: stream.insertedIntoControllerConversation,
-        })),
+        diagnosticReferences,
         terminalEnvelope: null,
         outcomeAuditId: `audit-${randomBytes(12).toString("hex")}`,
         interruption: {
@@ -1657,7 +1817,8 @@ export const createHarnessRunManager = async (options) => {
             initialRun.harnessRunId,
           );
           if (cooperativeDeadlineAt) {
-            supervisor.requestCancellation(cooperativeDeadlineAt);
+            void supervisor.requestCancellation(cooperativeDeadlineAt)
+              .catch(() => undefined);
           }
         },
         onReady: async (readyAt) => {
@@ -1684,6 +1845,51 @@ export const createHarnessRunManager = async (options) => {
         },
         onDiagnostic: (producer, data) =>
           appendDiagnostic(initialRun.harnessRunId, producer, data),
+        beforeCancellationSignal: async (kind) => {
+          await options.faultInjector?.(
+            `harness_run_cancellation.${kind}_signal.before_dispatch`,
+          );
+        },
+        onCancellationSignalPublished: async (kind, sentAt) => {
+          await options.faultInjector?.(
+            `harness_run_cancellation.${kind}_signal.after_dispatch`,
+          );
+          await updateRun(initialRun.harnessRunId, (run) => {
+            if (!run.cancellation) {
+              throw new Error("harness_run_cancellation_state_invalid");
+            }
+            const field = kind === "cooperative"
+              ? "cooperativeSignalSentAt"
+              : "forcedTerminationSentAt";
+            if (run.cancellation[field] === null) {
+              run.cancellation[field] = sentAt;
+              run.revision += 1;
+            }
+          });
+          await options.faultInjector?.(
+            `harness_run_cancellation.${kind}_signal.after_state_commit`,
+          );
+        },
+        onCancellationTerminationConfirmed: async (confirmedAt) => {
+          await options.faultInjector?.(
+            "harness_run_cancellation.before_termination_confirmation_commit",
+          );
+          await options.faultInjector?.(
+            "harness_run_cancellation.termination_confirmation.before_commit",
+          );
+          await updateRun(initialRun.harnessRunId, (run) => {
+            if (!run.cancellation) {
+              throw new Error("harness_run_cancellation_state_invalid");
+            }
+            if (run.cancellation.terminationConfirmedAt === null) {
+              run.cancellation.terminationConfirmedAt = confirmedAt;
+              run.revision += 1;
+            }
+          });
+          await options.faultInjector?.(
+            "harness_run_cancellation.termination_confirmation.after_state_commit",
+          );
+        },
       });
     } catch {
       supervision = {
@@ -1721,38 +1927,50 @@ export const createHarnessRunManager = async (options) => {
       const outcomeId = `harness-outcome-${randomBytes(12).toString("hex")}`;
       const outcomeAuditId = `audit-${randomBytes(12).toString("hex")}`;
       let completedAt = now().toISOString();
+      /** @type {{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null} | null} */
+      let cancellationTermination = supervision.cancellation;
+      /** @type {string | null} */
+      let cancellationRequestDeadline = null;
+      const terminalCancellationSupervisor = /** @type {any} */ (
+        cancellationSupervisor
+      );
       await options.faultInjector?.("harness_run_outcome.before_commit");
-      const finalized = await updateRun(initialRun.harnessRunId, async (run) => {
+      const commitTerminalOutcome = () => updateRun(initialRun.harnessRunId, (run) => {
         if (run.outcome) return;
         if (run.cancellation) {
-          const cancellationTermination = supervision.cancellation
-            ?? (cancellationSupervisor
-              ? await cancellationSupervisor.requestCancellation(
-                  run.cancellation.cooperativeDeadlineAt,
-                )
-              : {
-                  cooperativeSignalSentAt: null,
-                  forcedTerminationSentAt: null,
-                  // No supervisor means adapter setup failed before a process
-                  // tree became available. That start-failure boundary is the
-                  // only late-cancellation case that can confirm no tree without
-                  // consulting a live supervisor.
-                  terminationConfirmedAt: supervision.exit.startFailed
-                    ? completedAt
-                    : null,
-                });
-          if (cancellationTermination.terminationConfirmedAt) {
-            await options.faultInjector?.(
-              "harness_run_cancellation.before_termination_confirmation_commit",
-            );
+          if (!cancellationTermination && run.cancellation.terminationConfirmedAt) {
+            cancellationTermination = {
+              cooperativeSignalSentAt: run.cancellation.cooperativeSignalSentAt,
+              forcedTerminationSentAt: run.cancellation.forcedTerminationSentAt,
+              terminationConfirmedAt: run.cancellation.terminationConfirmedAt,
+            };
           }
-          run.cancellation.cooperativeSignalSentAt =
+          if (!cancellationTermination && terminalCancellationSupervisor) {
+            // Preserve serialized terminal-order arbitration, then leave the
+            // mutation lock before waiting for process-tree progress. Signal
+            // and confirmation publication use the same lock independently.
+            cancellationRequestDeadline = run.cancellation.cooperativeDeadlineAt;
+            return;
+          }
+          if (!cancellationTermination) {
+            cancellationTermination = {
+              cooperativeSignalSentAt: null,
+              forcedTerminationSentAt: null,
+              // No supervisor means adapter setup failed before a process tree
+              // became available. That start-failure boundary is the only late
+              // cancellation case that can confirm no tree without a live tree.
+              terminationConfirmedAt: supervision.exit.startFailed
+                ? completedAt
+                : null,
+            };
+          }
+          run.cancellation.cooperativeSignalSentAt ??=
             cancellationTermination.cooperativeSignalSentAt;
-          run.cancellation.forcedTerminationSentAt =
+          run.cancellation.forcedTerminationSentAt ??=
             cancellationTermination.forcedTerminationSentAt;
-          run.cancellation.terminationConfirmedAt =
+          run.cancellation.terminationConfirmedAt ??=
             cancellationTermination.terminationConfirmedAt;
-          if (!cancellationTermination.terminationConfirmedAt) return;
+          if (!run.cancellation.terminationConfirmedAt) return;
           completedAt = now().toISOString();
           const validCancellationTerminal = validTerminal && terminal.status === "cancelled";
           status = "cancelled";
@@ -1808,7 +2026,17 @@ export const createHarnessRunManager = async (options) => {
         );
         terminalOutcomeCommitted = true;
       });
+      let finalized = await commitTerminalOutcome();
+      if (!terminalOutcomeCommitted && cancellationRequestDeadline
+        && terminalCancellationSupervisor) {
+        cancellationTermination = await terminalCancellationSupervisor.requestCancellation(
+          cancellationRequestDeadline,
+        );
+        cancellationRequestDeadline = null;
+        finalized = await commitTerminalOutcome();
+      }
       if (!terminalOutcomeCommitted) return;
+      await options.faultInjector?.("harness_run_outcome.after_state_commit");
       acceptedCancellations.delete(initialRun.harnessRunId);
       const committedAuditId = await options.recordAudit(
         "harness.run.outcome",
@@ -2120,17 +2348,23 @@ export const createHarnessRunManager = async (options) => {
   const cancel = (request) => withMutationLock(async () => {
     const authorizationClass = "harness_run_cancellation";
     const idempotencyKeyHash = requestIdempotencyKeyHash(request);
-    const requestFingerprint = fingerprint({
-      harnessRunId: request.harnessRunId,
-      controllerId: request.controllerId,
-      controllerSessionId: request.controllerSessionId,
-      source: request.source,
-      authorizationClass: request.authorizationClass,
-    });
+    const requestFingerprint = cancellationRequestFingerprint(request);
+    const compatibleRequestFingerprints = new Set([
+      requestFingerprint,
+      legacyCancellationRequestFingerprint(request),
+    ]);
     const retained = await readState();
     const existing = retainedCancellationOutcome(retained, idempotencyKeyHash);
     if (existing) {
-      if (existing.requestFingerprint !== requestFingerprint) {
+      if (!compatibleRequestFingerprints.has(existing.requestFingerprint)) {
+        for (const retainedControllerId of await readRetainedControllerIds(options.dataDir)) {
+          compatibleRequestFingerprints.add(legacyCancellationRequestFingerprint({
+            ...request,
+            controllerId: retainedControllerId,
+          }));
+        }
+      }
+      if (!compatibleRequestFingerprints.has(existing.requestFingerprint)) {
         const auditId = await options.recordAudit("harness.run.cancel", "rejected", {
           code: "idempotency_key_conflict",
           authorizationClass,
@@ -2176,9 +2410,18 @@ export const createHarnessRunManager = async (options) => {
         const cooperativeDeadlineAt = /** @type {any} */ (
           existing.response
         ).cooperativeDeadlineAt;
-        acceptedCancellations.set(harnessRunId, cooperativeDeadlineAt);
-        setImmediate(() => activeSupervisions.get(harnessRunId)
-          ?.requestCancellation(cooperativeDeadlineAt));
+        const replayedRun = retained.runs.find((candidate) =>
+          candidate.harnessRunId === harnessRunId);
+        const activeSupervision = activeSupervisions.get(harnessRunId);
+        if (replayedRun?.status === "cancelling" && !replayedRun.outcome
+          && activeSupervision) {
+          acceptedCancellations.set(harnessRunId, cooperativeDeadlineAt);
+          setImmediate(() => {
+            void activeSupervision.requestCancellation(
+              cooperativeDeadlineAt,
+            ).catch(() => undefined);
+          });
+        }
       }
       return {
         ...structuredClone(existing.response),
@@ -2296,8 +2539,11 @@ export const createHarnessRunManager = async (options) => {
     await persist(retained);
     await options.faultInjector?.("harness_run_cancellation.after_state_commit");
     acceptedCancellations.set(run.harnessRunId, cooperativeDeadlineAt);
-    void activeSupervisions.get(run.harnessRunId)
-      ?.requestCancellation(cooperativeDeadlineAt);
+    const activeSupervision = activeSupervisions.get(run.harnessRunId);
+    if (activeSupervision) {
+      void activeSupervision.requestCancellation(cooperativeDeadlineAt)
+        .catch(() => undefined);
+    }
     await ensureAcceptedCancellationAudits(retained);
     await options.faultInjector?.("harness_run_cancellation.after_commit");
     return response;
