@@ -1488,7 +1488,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
  *   loadLaunchContext: (projectId: string) => Promise<any>,
  *   now?: () => Date,
  *   cancellationGraceMs?: number,
- *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_state_commit" | "harness_run_launch.after_commit" | "harness_run_cancellation.before_commit" | "harness_run_cancellation.after_state_commit" | "harness_run_cancellation.after_commit" | "harness_run_cancellation.cooperative_signal.before_dispatch" | "harness_run_cancellation.cooperative_signal.after_dispatch" | "harness_run_cancellation.cooperative_signal.after_state_commit" | "harness_run_cancellation.forced_signal.before_dispatch" | "harness_run_cancellation.forced_signal.after_dispatch" | "harness_run_cancellation.forced_signal.after_state_commit" | "harness_run_cancellation.before_termination_confirmation_commit" | "harness_run_cancellation.termination_confirmation.before_commit" | "harness_run_cancellation.termination_confirmation.after_state_commit" | "harness_run_outcome.before_commit" | "harness_run_outcome.after_state_commit" | "harness_run_reconciliation.before_commit" | "harness_run_reconciliation.after_state_commit" | "harness_run_reconciliation.after_commit" | "harness_run_recovery.before_intent_commit" | "harness_run_recovery.after_intent_commit" | "harness_run_recovery.before_action" | "harness_run_recovery.after_action" | "harness_run_recovery.before_result_commit" | "harness_run_recovery.after_state_commit" | "harness_run_recovery.after_commit") => Promise<void> | void,
+ *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_state_commit" | "harness_run_launch.after_commit" | "harness_run_lifecycle.adapter_ready.before_commit" | "harness_run_lifecycle.adapter_ready.after_state_commit" | "harness_run_terminal_envelope.before_commit" | "harness_run_terminal_envelope.after_state_commit" | "harness_run_cancellation.before_commit" | "harness_run_cancellation.after_state_commit" | "harness_run_cancellation.after_commit" | "harness_run_cancellation.cooperative_signal.before_dispatch" | "harness_run_cancellation.cooperative_signal.after_dispatch" | "harness_run_cancellation.cooperative_signal.after_state_commit" | "harness_run_cancellation.forced_signal.before_dispatch" | "harness_run_cancellation.forced_signal.after_dispatch" | "harness_run_cancellation.forced_signal.after_state_commit" | "harness_run_cancellation.before_termination_confirmation_commit" | "harness_run_cancellation.termination_confirmation.before_commit" | "harness_run_cancellation.termination_confirmation.after_state_commit" | "harness_run_outcome.before_commit" | "harness_run_outcome.after_state_commit" | "harness_run_reconciliation.before_commit" | "harness_run_reconciliation.after_state_commit" | "harness_run_reconciliation.after_commit" | "harness_run_recovery.before_intent_commit" | "harness_run_recovery.after_intent_commit" | "harness_run_recovery.before_action" | "harness_run_recovery.after_action" | "harness_run_recovery.before_result_commit" | "harness_run_recovery.after_state_commit" | "harness_run_recovery.after_commit" | "harness_run_migration.before_commit" | "harness_run_migration.after_state_commit" | "harness_run_migration.after_commit") => Promise<void> | void,
  *   inspectInterruptedRunTermination?: (run: z.infer<typeof harnessRunSchema>) => Promise<{platform: "linux" | "win32" | "darwin", status: "confirmed" | "unconfirmed", relatedProcessState?: "unknown" | "running_confirmed", identityProof?: "unavailable" | "retained_supervision_identity", processCount?: number | null, launchSettled?: boolean | null, treeEmpty?: boolean | null, safeToTerminate?: boolean}>,
  *   terminateConfirmedInterruptedRun?: (run: z.infer<typeof harnessRunSchema>, actionIdentity: {auditId: string, idempotencyKeyHash: string}) => Promise<{platform: "linux" | "win32" | "darwin", status: "confirmed" | "unconfirmed", relatedProcessState?: "unknown" | "running_confirmed", identityProof?: "unavailable" | "retained_supervision_identity", processCount?: number | null, launchSettled?: boolean | null, treeEmpty?: boolean | null, safeToTerminate?: boolean}>,
  * }} options
@@ -1744,6 +1744,22 @@ export const createHarnessRunManager = async (options) => {
       }
     }
   };
+  /** @param {z.infer<typeof stateSchema>} migrated */
+  const publishMigratedState = async (migrated) => {
+    // All legacy schema upgrades converge through the same atomic publication
+    // and audit-repair seam. This keeps every supported source schema subject
+    // to one deterministic interruption contract.
+    await options.faultInjector?.("harness_run_migration.before_commit");
+    await writePrivateJson(statePath(options.dataDir), migrated);
+    await options.faultInjector?.("harness_run_migration.after_state_commit");
+    await ensureAcceptedLaunchAudits(migrated);
+    await ensureAcceptedCancellationAudits(migrated);
+    await ensureOutcomeAudits(migrated);
+    await ensureReconciliationAudits(migrated);
+    await ensureRecoveryAudits(migrated);
+    await options.faultInjector?.("harness_run_migration.after_commit");
+    return migrated;
+  };
   const readState = async () => {
     const raw = await readJson(statePath(options.dataDir), initialState());
     if (
@@ -1754,13 +1770,7 @@ export const createHarnessRunManager = async (options) => {
     ) {
       const legacy = legacyStateSchema.parse(raw);
       const migrated = migrateState(legacy);
-      await writePrivateJson(statePath(options.dataDir), migrated);
-      await ensureAcceptedLaunchAudits(migrated);
-      await ensureAcceptedCancellationAudits(migrated);
-      await ensureOutcomeAudits(migrated);
-      await ensureReconciliationAudits(migrated);
-      await ensureRecoveryAudits(migrated);
-      return migrated;
+      return publishMigratedState(migrated);
     }
     if (
       raw
@@ -1770,13 +1780,7 @@ export const createHarnessRunManager = async (options) => {
     ) {
       const previous = previousStateSchema.parse(raw);
       const migrated = migrateState(previous);
-      await writePrivateJson(statePath(options.dataDir), migrated);
-      await ensureAcceptedLaunchAudits(migrated);
-      await ensureAcceptedCancellationAudits(migrated);
-      await ensureOutcomeAudits(migrated);
-      await ensureReconciliationAudits(migrated);
-      await ensureRecoveryAudits(migrated);
-      return migrated;
+      return publishMigratedState(migrated);
     }
     if (
       raw
@@ -1786,13 +1790,7 @@ export const createHarnessRunManager = async (options) => {
     ) {
       const previous = previousStateWithSnapshotsSchema.parse(raw);
       const migrated = migrateState(previous);
-      await writePrivateJson(statePath(options.dataDir), migrated);
-      await ensureAcceptedLaunchAudits(migrated);
-      await ensureAcceptedCancellationAudits(migrated);
-      await ensureOutcomeAudits(migrated);
-      await ensureReconciliationAudits(migrated);
-      await ensureRecoveryAudits(migrated);
-      return migrated;
+      return publishMigratedState(migrated);
     }
     if (
       raw
@@ -1802,13 +1800,7 @@ export const createHarnessRunManager = async (options) => {
     ) {
       const previous = previousStateWithCancellationSchema.parse(raw);
       const migrated = migrateState(previous);
-      await writePrivateJson(statePath(options.dataDir), migrated);
-      await ensureAcceptedLaunchAudits(migrated);
-      await ensureAcceptedCancellationAudits(migrated);
-      await ensureOutcomeAudits(migrated);
-      await ensureReconciliationAudits(migrated);
-      await ensureRecoveryAudits(migrated);
-      return migrated;
+      return publishMigratedState(migrated);
     }
     if (
       raw
@@ -1818,13 +1810,7 @@ export const createHarnessRunManager = async (options) => {
     ) {
       const previous = previousStateWithReconciliationSchema.parse(raw);
       const migrated = migrateState(previous);
-      await writePrivateJson(statePath(options.dataDir), migrated);
-      await ensureAcceptedLaunchAudits(migrated);
-      await ensureAcceptedCancellationAudits(migrated);
-      await ensureOutcomeAudits(migrated);
-      await ensureReconciliationAudits(migrated);
-      await ensureRecoveryAudits(migrated);
-      return migrated;
+      return publishMigratedState(migrated);
     }
     if (
       raw
@@ -1834,13 +1820,7 @@ export const createHarnessRunManager = async (options) => {
     ) {
       const previous = previousStateWithHostLossReconciliationSchema.parse(raw);
       const migrated = migrateState(previous);
-      await writePrivateJson(statePath(options.dataDir), migrated);
-      await ensureAcceptedLaunchAudits(migrated);
-      await ensureAcceptedCancellationAudits(migrated);
-      await ensureOutcomeAudits(migrated);
-      await ensureReconciliationAudits(migrated);
-      await ensureRecoveryAudits(migrated);
-      return migrated;
+      return publishMigratedState(migrated);
     }
     if (
       raw
@@ -1850,13 +1830,7 @@ export const createHarnessRunManager = async (options) => {
     ) {
       const previous = previousStateWithCancellationRestartSchema.parse(raw);
       const migrated = migrateState(previous);
-      await writePrivateJson(statePath(options.dataDir), migrated);
-      await ensureAcceptedLaunchAudits(migrated);
-      await ensureAcceptedCancellationAudits(migrated);
-      await ensureOutcomeAudits(migrated);
-      await ensureReconciliationAudits(migrated);
-      await ensureRecoveryAudits(migrated);
-      return migrated;
+      return publishMigratedState(migrated);
     }
     const retained = stateSchema.parse(raw);
     const normalizedLaunchOutcomes = retained.launchOutcomes.map((outcome) =>
@@ -2292,6 +2266,9 @@ export const createHarnessRunManager = async (options) => {
           }
         },
         onReady: async (readyAt) => {
+          await options.faultInjector?.(
+            "harness_run_lifecycle.adapter_ready.before_commit",
+          );
           await updateRun(initialRun.harnessRunId, (run) => {
             if (run.status !== "starting" && run.status !== "cancelling") {
               throw new Error("harness_run_state_invalid");
@@ -2302,6 +2279,9 @@ export const createHarnessRunManager = async (options) => {
             run.revision += 1;
             appendEvent(run, "harness_adapter_ready");
           });
+          await options.faultInjector?.(
+            "harness_run_lifecycle.adapter_ready.after_state_commit",
+          );
         },
         onProgress: async (record) => {
           progressRecordCount += 1;
@@ -2404,6 +2384,9 @@ export const createHarnessRunManager = async (options) => {
       const terminalCancellationSupervisor = /** @type {any} */ (
         cancellationSupervisor
       );
+      if (validTerminal) {
+        await options.faultInjector?.("harness_run_terminal_envelope.before_commit");
+      }
       await options.faultInjector?.("harness_run_outcome.before_commit");
       const commitTerminalOutcome = () => updateRun(initialRun.harnessRunId, (run) => {
         if (run.outcome) return;
@@ -2506,6 +2489,11 @@ export const createHarnessRunManager = async (options) => {
         finalized = await commitTerminalOutcome();
       }
       if (!terminalOutcomeCommitted) return;
+      if (validTerminal) {
+        await options.faultInjector?.(
+          "harness_run_terminal_envelope.after_state_commit",
+        );
+      }
       await options.faultInjector?.("harness_run_outcome.after_state_commit");
       acceptedCancellations.delete(initialRun.harnessRunId);
       const committedAuditId = await options.recordAudit(

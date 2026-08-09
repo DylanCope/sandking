@@ -1,0 +1,377 @@
+{
+  "schemaVersion": 2,
+  "issue": 164,
+  "parentPrd": 165,
+  "sourceIssue": {
+    "githubBodyUtf8Sha256": "38039912caeb744c5718f397b97161e19b73754a15c7816d7d3dd5afe2be3555"
+  },
+  "sourcePrd": {
+    "issue": 165,
+    "githubBodyUtf8Sha256": "a99ed44bf55d31f18693f2d3cf72854598928f65ffc963ecee7d47ea485c7367"
+  },
+  "sourceSpecification": {
+    "issue": 158,
+    "githubBodyUtf8Sha256": "2b3d280284b113dd7c874a37a9633f7d98231b44abdaa6c1792564c9ba882b96",
+    "parentApprovedBodySha256": "032dfb83b75dab2f90d5c6380985e1fe1cbd2e41187ac0766d10a67eb738acda",
+    "parentApprovedHashBasis": "GitHub body UTF-8 with leading and trailing whitespace trimmed",
+    "parentApprovedBaselineCommit": "ca06fb7906dca384c8a1ff49114d701df9e925b6"
+  },
+  "scenarioVersion": "1.0.0",
+  "scenarios": [
+    {
+      "id": "durable-execution/reconciles-host-death-mid-run",
+      "requirements": [
+        "#158 stable acceptance scenario durable-execution/reconciles-host-death-mid-run",
+        "#164 real-process Host SIGKILL, restart reconciliation, replay, truth, and retained evidence",
+        "#165 packaged-Cockpit highest acceptance seam"
+      ],
+      "environmentAndTransport": [
+        "npm-packed Sand-King installed outside the checkout on Linux x64/arm64",
+        "real npm-pinned headless Chromium Cockpit over authenticated loopback WebSocket",
+        "real Controller runtime and framed local Host with Host-private state",
+        "pinned deterministic conformance Harness adapter supervised through the native process-tree guardian"
+      ],
+      "initialState": [
+        "one ordinary Git Project with a pinned reusable Harness registration",
+        "no Harness run, launch lookup, or Sand-King Project file",
+        "one clean Controller runtime and Host identity binding"
+      ],
+      "actionsAndFaultPoints": [
+        "launch through the ordinary Controller CLI visible in the packaged Cockpit",
+        "wait for durable run identity, immutable execution snapshot, readiness, events, and diagnostic ranges",
+        "SIGKILL the real Host at real_host_sigkill_after_active_publication",
+        "restart from the same private state and reopen the packaged Cockpit",
+        "retry the original launch hash and then launch deliberately with a fresh key"
+      ],
+      "expectedTypedResults": [
+        "harness_run_created followed by one failed/incomplete host_daemon_interrupted outcome",
+        "same-key launch returns the original run identity as an idempotent replay",
+        "fresh-key launch creates a distinct run without rewriting the interrupted run"
+      ],
+      "canonicalInvariants": [
+        "one immutable run identity and execution snapshot survive Host death",
+        "ordered earlier events and diagnostic range references survive restart",
+        "one terminal event and outcome agree with the current Cockpit view",
+        "the original adapter process tree terminates and is never relaunched automatically"
+      ],
+      "prohibitedSideEffects": [
+        "invented success",
+        "duplicate run, adapter start, terminal event, or accepted audit",
+        "raw retry key, credential, environment dump, process handle, or numeric process target disclosure",
+        "Project write or tracked Sand-King file"
+      ],
+      "retainedEvidence": [
+        "acceptance/evidence/issue-164.json#scenarioResults[0]",
+        "test/host-death-reconciliation.browser.test.mjs",
+        "test/harness-run.test.mjs"
+      ]
+    },
+    {
+      "id": "durable-execution/cancels-across-host-restart",
+      "requirements": [
+        "#158 stable acceptance scenario durable-execution/cancels-across-host-restart",
+        "#164 cancellation acceptance, signalling, termination, restart, and replay boundaries"
+      ],
+      "environmentAndTransport": [
+        "npm-packed Sand-King and packaged loopback Cockpit",
+        "real Controller runtime, framed local Host, deterministic Harness, and complete-tree process guardian"
+      ],
+      "initialState": [
+        "one active deterministic Harness run with readiness and diagnostics durably observable",
+        "no terminal outcome and no prior cancellation lookup"
+      ],
+      "actionsAndFaultPoints": [
+        "accept cancellation through the Cockpit",
+        "interrupt before signalling, after cooperative or forced signalling, and while awaiting termination",
+        "SIGKILL and restart the Host after durable cancellation acceptance",
+        "retry the same cancellation-key hash"
+      ],
+      "expectedTypedResults": [
+        "harness_run_cancellation_accepted returns before asynchronous termination",
+        "restart converges once to cancelled after confirmed termination or recovery_required when unproved",
+        "same-key cancellation replays the original typed acceptance without another signal"
+      ],
+      "canonicalInvariants": [
+        "acceptance precedes every adapter signal",
+        "accepted cancellation survives browser, Controller, and Host interruption",
+        "no Harness-defined progress is accepted after cancellation",
+        "cancelled is published only after complete-tree termination proof"
+      ],
+      "prohibitedSideEffects": [
+        "second cancellation transition or signal",
+        "invented cancelled result under uncertain termination",
+        "replacement Harness work",
+        "Project write, raw key, process handle, or environment disclosure"
+      ],
+      "retainedEvidence": [
+        "acceptance/evidence/issue-164.json#scenarioResults[1]",
+        "test/host-death-reconciliation.browser.test.mjs",
+        "test/harness-run.test.mjs"
+      ]
+    },
+    {
+      "id": "durable-execution/completion-wins-cancellation-race",
+      "requirements": [
+        "#158 stable acceptance scenario durable-execution/completion-wins-cancellation-race",
+        "#164 state and race coverage for completion on both sides of cancellation acceptance"
+      ],
+      "environmentAndTransport": [
+        "Host-private deterministic component fixture using the real conformance Harness process",
+        "typed Controller-to-Host launch, cancellation, observation, and outcome contracts"
+      ],
+      "initialState": [
+        "one active run at the serialized terminal/cancellation arbitration boundary",
+        "one valid structured terminal envelope and one fresh cancellation key"
+      ],
+      "actionsAndFaultPoints": [
+        "pause immediately before terminal-envelope/outcome commit and accept cancellation first",
+        "commit a valid terminal result first and submit cancellation second",
+        "observe ordered history and retained audits after each interleaving"
+      ],
+      "expectedTypedResults": [
+        "a valid terminal result accepted first remains succeeded or failed",
+        "cancellation accepted first follows bounded cancellation and becomes cancelled only after termination",
+        "later cancellation against a terminal run returns harness_run_not_cancellable"
+      ],
+      "canonicalInvariants": [
+        "one serialized terminal winner",
+        "one terminal event and structured outcome",
+        "current status, event history, envelope validation, and audits agree"
+      ],
+      "prohibitedSideEffects": [
+        "contradictory succeeded and cancelled outcomes",
+        "two terminal events",
+        "success inferred from logs or exit",
+        "caller-visible entity-revision precondition"
+      ],
+      "retainedEvidence": [
+        "acceptance/evidence/issue-164.json#scenarioResults[2]",
+        "test/harness-run.test.mjs"
+      ]
+    },
+    {
+      "id": "durable-execution/exposes-uncertain-supervision-for-recovery",
+      "requirements": [
+        "#158 stable acceptance scenario durable-execution/exposes-uncertain-supervision-for-recovery",
+        "#164 bounded public recovery, replay, security, and retained process-fact evidence"
+      ],
+      "environmentAndTransport": [
+        "npm-packed Sand-King and packaged loopback Cockpit",
+        "real Controller runtime and Host restart over Host-private recovery state",
+        "identity-bound supported-platform process-tree observation"
+      ],
+      "initialState": [
+        "one interrupted run whose related process state cannot initially be proved terminated",
+        "no accepted terminal envelope and no replacement run"
+      ],
+      "actionsAndFaultPoints": [
+        "restart into recovery_required",
+        "inspect sanitized process facts and bounded actions through the Cockpit",
+        "recheck with a hashed retry key, reconnect, and replay the original action",
+        "finalize only after termination becomes confirmed"
+      ],
+      "expectedTypedResults": [
+        "harness_process_termination_unconfirmed with recheck and only identity-safe actions",
+        "idempotent recovery lookup and replay",
+        "one failed/incomplete host_daemon_interrupted outcome after confirmed finalization"
+      ],
+      "canonicalInvariants": [
+        "initial uncertainty remains immutable evidence",
+        "current process observation may advance without rewriting detection history",
+        "an unrelated or PID-reused process is never adopted or targeted",
+        "recovery never launches replacement Harness work"
+      ],
+      "prohibitedSideEffects": [
+        "invented success, failure, or cancellation before proof",
+        "unrestricted process API, handle, PID, command, or environment disclosure",
+        "duplicate destructive action or terminal result",
+        "Project write"
+      ],
+      "retainedEvidence": [
+        "acceptance/evidence/issue-164.json#scenarioResults[3]",
+        "test/host-death-reconciliation.browser.test.mjs",
+        "test/harness-run.test.mjs"
+      ]
+    },
+    {
+      "id": "durable-execution/recovers-every-canonical-boundary",
+      "requirements": [
+        "#158 stable acceptance scenario durable-execution/recovers-every-canonical-boundary",
+        "#164 deterministic fault, migration, protocol, state, security, and packaged-browser merge gate"
+      ],
+      "environmentAndTransport": [
+        "test-only deterministic fault callback inside the Host-private manager",
+        "typed framed Host and browser contracts plus packaged loopback Cockpit",
+        "supported Linux, Windows, and macOS process supervision suites"
+      ],
+      "initialState": [
+        "fresh, active, cancelling, recovery_required, terminal, and legacy-schema state fixtures",
+        "bounded raw key, credential, environment, process, and Project-change security markers"
+      ],
+      "actionsAndFaultPoints": [
+        "interrupt immediately before and after every faultMatrix publication or action point",
+        "restart repeatedly from the exact retained Host-private bytes",
+        "retry launch, cancellation, and recovery with matching and conflicting request fingerprints",
+        "refresh/reconnect observation cursors and migrate every supported legacy state"
+      ],
+      "expectedTypedResults": [
+        "pre-commit faults leave no claimed accepted effect",
+        "post-commit faults preserve exact keyed replay and repair only missing audits or current view",
+        "typed terminal, recovery, resync-required, conflict, and unsupported-platform results remain schema-valid"
+      ],
+      "canonicalInvariants": [
+        "immutable snapshot and ordered event history agree with the current view",
+        "acknowledged effects survive and unacknowledged effects are never claimed",
+        "keyed mutations, terminal outcomes, signals, recovery actions, and migrations do not duplicate",
+        "no operation accepts an expected Harness-run entity revision"
+      ],
+      "prohibitedSideEffects": [
+        "production fault-control protocol or browser API",
+        "invented success or duplicate canonical mutation",
+        "credential, raw retry key, environment dump, unrestricted process handle, or tracked Project change in any public or retained surface",
+        "Project or Harness-workspace execution-state file"
+      ],
+      "retainedEvidence": [
+        "acceptance/evidence/issue-164.json#scenarioResults[4]",
+        "test/issue-164-acceptance-evidence.test.mjs",
+        "test/harness-run.test.mjs",
+        "test/protocol.test.mjs",
+        "test/browser-protocol.test.mjs"
+      ]
+    }
+  ],
+  "verification": {
+    "faultMatrix": [
+      {
+        "boundary": "run creation and retained launch outcome",
+        "atomicPublication": "one Host-private snapshot binds run, immutable execution snapshot, created event, key hash, request fingerprint, and typed launch result",
+        "faultPoints": [
+          "harness_run_launch.before_commit",
+          "harness_run_launch.after_state_commit",
+          "harness_run_launch.after_commit"
+        ],
+        "executableEvidence": ["test/harness-run.test.mjs"]
+      },
+      {
+        "boundary": "lifecycle event and current-view publication",
+        "atomicPublication": "adapter readiness facts, running view, revision, and ordered readiness event",
+        "faultPoints": [
+          "harness_run_lifecycle.adapter_ready.before_commit",
+          "harness_run_lifecycle.adapter_ready.after_state_commit"
+        ],
+        "executableEvidence": ["test/harness-run.test.mjs"]
+      },
+      {
+        "boundary": "terminal-envelope acceptance and terminal outcome",
+        "atomicPublication": "terminal-envelope validation, typed outcome, current terminal view, and one terminal event",
+        "faultPoints": [
+          "harness_run_terminal_envelope.before_commit",
+          "harness_run_outcome.before_commit",
+          "harness_run_terminal_envelope.after_state_commit",
+          "harness_run_outcome.after_state_commit"
+        ],
+        "executableEvidence": ["test/harness-run.test.mjs", "test/harness-adapter-protocol.test.mjs"]
+      },
+      {
+        "boundary": "cancellation acceptance",
+        "atomicPublication": "cancelling view, accepted event, cancellation facts, key fingerprint, and typed retained result",
+        "faultPoints": [
+          "harness_run_cancellation.before_commit",
+          "harness_run_cancellation.after_state_commit",
+          "harness_run_cancellation.after_commit"
+        ],
+        "executableEvidence": ["test/harness-run.test.mjs"]
+      },
+      {
+        "boundary": "cancellation signalling and termination",
+        "atomicPublication": "signal intent/effect observation followed by complete-tree termination confirmation",
+        "faultPoints": [
+          "harness_run_cancellation.cooperative_signal.before_dispatch",
+          "harness_run_cancellation.cooperative_signal.after_dispatch",
+          "harness_run_cancellation.cooperative_signal.after_state_commit",
+          "harness_run_cancellation.forced_signal.before_dispatch",
+          "harness_run_cancellation.forced_signal.after_dispatch",
+          "harness_run_cancellation.forced_signal.after_state_commit",
+          "harness_run_cancellation.termination_confirmation.before_commit",
+          "harness_run_cancellation.termination_confirmation.after_state_commit"
+        ],
+        "executableEvidence": [
+          "test/harness-run.test.mjs",
+          "test/posix-process-tree.test.mjs",
+          "test/windows-process-tree.test.mjs",
+          "test/darwin-process-tree.test.mjs"
+        ]
+      },
+      {
+        "boundary": "restart reconciliation",
+        "atomicPublication": "truthful failed/cancelled/recovery_required view, minimum ordered event, outcome or recovery facts, and repairable audits",
+        "faultPoints": [
+          "harness_run_reconciliation.before_commit",
+          "harness_run_reconciliation.after_state_commit",
+          "harness_run_reconciliation.after_commit"
+        ],
+        "executableEvidence": [
+          "test/harness-run.test.mjs",
+          "test/host-death-reconciliation.browser.test.mjs"
+        ]
+      },
+      {
+        "boundary": "recovery intent and action",
+        "atomicPublication": "hashed recovery intent precedes bounded identity-safe action; result publication binds current facts and typed replay",
+        "faultPoints": [
+          "harness_run_recovery.before_intent_commit",
+          "harness_run_recovery.after_intent_commit",
+          "harness_run_recovery.before_action",
+          "harness_run_recovery.after_action",
+          "harness_run_recovery.before_result_commit",
+          "harness_run_recovery.after_state_commit",
+          "harness_run_recovery.after_commit"
+        ],
+        "executableEvidence": [
+          "test/harness-run.test.mjs",
+          "test/host-death-reconciliation.browser.test.mjs"
+        ]
+      },
+      {
+        "boundary": "legacy-state migration",
+        "atomicPublication": "all schemas v1-v7 converge through one deterministic schema-v8 snapshot and idempotent audit repair seam",
+        "faultPoints": [
+          "harness_run_migration.before_commit",
+          "harness_run_migration.after_state_commit",
+          "harness_run_migration.after_commit"
+        ],
+        "executableEvidence": ["test/harness-run.test.mjs"]
+      }
+    ],
+    "commands": [
+      ["npm", "run", "typecheck"],
+      [
+        "node",
+        "--test",
+        "test/issue-164-acceptance-evidence.test.mjs",
+        "test/protocol.test.mjs",
+        "test/browser-protocol.test.mjs",
+        "test/harness-adapter-protocol.test.mjs",
+        "test/harness-run.test.mjs",
+        "test/harness-process-control.test.mjs",
+        "test/host-loss-termination-evidence.test.mjs",
+        "test/posix-process-tree.test.mjs",
+        "test/windows-process-tree.test.mjs",
+        "test/darwin-process-tree.test.mjs",
+        "test/security-boundary.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "--test-concurrency=1",
+        "test/harness-run.browser.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "--test-concurrency=1",
+        "test/host-death-reconciliation.browser.test.mjs"
+      ]
+    ]
+  }
+}

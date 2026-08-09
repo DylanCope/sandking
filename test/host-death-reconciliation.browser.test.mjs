@@ -19,6 +19,21 @@ import { installCurrentPackage } from "./installed-package.mjs";
 
 const execFileAsync = promisify(execFile);
 const readJson = (path) => readFile(path, "utf8").then(JSON.parse);
+const softwareVersion = JSON.parse(await readFile(
+  new URL("../package.json", import.meta.url),
+  "utf8",
+)).version;
+
+const writeAcceptanceResult = async (name, result) => {
+  const resultDirectory = process.env.SANDKING_ACCEPTANCE_RESULT_DIR;
+  if (!resultDirectory) return;
+  await mkdir(resultDirectory, { recursive: true, mode: 0o700 });
+  await writeFile(
+    join(resultDirectory, name),
+    `${JSON.stringify(result, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+};
 
 const readProcesses = async () => {
   const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,stat=,args="]);
@@ -184,18 +199,38 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
     execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]),
   ]);
   await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
+  await execFileAsync("git", [
+    "-c", "user.name=Sand-King Acceptance",
+    "-c", "user.email=sandking-acceptance@example.invalid",
+    "add", "README.md",
+  ], { cwd: projectPath });
+  await execFileAsync("git", [
+    "-c", "user.name=Sand-King Acceptance",
+    "-c", "user.email=sandking-acceptance@example.invalid",
+    "commit", "--quiet", "-m", "Project fixture",
+  ], { cwd: projectPath });
+  const trackedProjectChange = "TRACKED_PROJECT_CHANGE_164";
+  await writeFile(
+    join(projectPath, "README.md"),
+    `ordinary Project content\n${trackedProjectChange}\n`,
+  );
   const projectContentsBefore = await snapshotProjectContents(projectPath);
   const installed = await installCurrentPackage(root);
+  const rawRuntimeRetryKey = "raw-durable-retry-key-164-runtime-first";
+  const environmentDumpMarker = "durable-environment-dump-164";
+  const processHandleMarker = "unrestricted-process-handle-164";
   const productEnvironment = {
     ...process.env,
     HOME: userHome,
     SANDKING_CONTROLLER_SECRET: "host-death-reconciliation-secret",
+    SANDKING_DURABLE_ENVIRONMENT_DUMP: environmentDumpMarker,
+    SANDKING_UNRESTRICTED_PROCESS_HANDLE: processHandleMarker,
   };
 
   try {
     const firstLaunch = JSON.parse((await execFileAsync(installed.command, [
       "launch", "--data-dir", dataDir, "--startup-timeout-ms", "60000",
-      "--idempotency-key", "host-death-runtime-first", "--expected-revision", "0",
+      "--idempotency-key", rawRuntimeRetryKey, "--expected-revision", "0",
       "--json", "--no-open",
     ], { cwd: executionDirectory, env: productEnvironment })).stdout);
     const browser = await launchBrowser({ niceAdjustment: 10 });
@@ -399,6 +434,108 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
         /host-death-reconciliation-secret/);
       assert.doesNotMatch(await page.locator("body").textContent(),
         /sha256:[a-f0-9]{64}|idempotencyKey/);
+      const diagnosticText = (await Promise.all(reconciled.logStreams.map((stream) =>
+        readFile(join(
+          dataDir,
+          "harness-runs",
+          reconciled.harnessRunId,
+          `${stream.producer}.log`,
+        ), "utf8")))).join("\n");
+      const publicAndRetainedSurfaces = JSON.stringify({
+        firstSentFrames,
+        secondSentFrames,
+        secondReceivedFrames,
+        reconciled,
+        finalAudits,
+        browserModel: await page.locator("body").textContent(),
+        diagnostics: diagnosticText,
+      });
+      for (const prohibited of [
+        "host-death-reconciliation-secret",
+        environmentDumpMarker,
+        processHandleMarker,
+        rawRuntimeRetryKey,
+        trackedProjectChange,
+      ]) {
+        assert.doesNotMatch(publicAndRetainedSurfaces, new RegExp(prohibited));
+      }
+      assert.doesNotMatch(publicAndRetainedSurfaces,
+        /processHandle|unrestrictedProcessHandle|process\.env|GITHUB_TOKEN=/i);
+      await writeAcceptanceResult("reconciles-host-death-mid-run.json", {
+        schemaVersion: 1,
+        id: "durable-execution/reconciles-host-death-mid-run",
+        scenarioVersion: "1.0.0",
+        softwareVersion,
+        passed: true,
+        packagedPublicSeam: {
+          ...installed.observation,
+          transport:
+            "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+        },
+        identities: {
+          hostId: reconciled.hostId,
+          projectId: reconciled.projectId,
+          harnessId: reconciled.harnessId,
+          harnessRunId: reconciled.harnessRunId,
+          harnessPinnedCommit: reconciled.harnessPinnedRevision,
+        },
+        adapter: {
+          identity: reconciled.adapterId,
+          protocol: reconciled.adapterProtocol,
+          entryPoint: reconciled.adapterEntryPoint,
+        },
+        eventReferences: reconciled.events.map((event) => ({
+          eventId: event.eventId,
+          sequence: event.sequence,
+          type: event.type,
+          outcomeReference: event.outcomeReference,
+        })),
+        auditReferences: finalAudits.filter((audit) =>
+          audit.details?.harnessRunId === reconciled.harnessRunId).map((audit) => ({
+          auditId: audit.auditId,
+          action: audit.action,
+          outcome: audit.outcome,
+        })),
+        retryKeyHashes: [
+          reconciled.launchIdempotencyKeyHash,
+          ...finalAudits.flatMap((audit) =>
+            typeof audit.details?.idempotencyKeyHash === "string"
+              ? [audit.details.idempotencyKeyHash]
+              : []),
+        ].filter((value, index, values) => value && values.indexOf(value) === index),
+        faultPoint: "real_host_sigkill_after_active_publication",
+        reconciliationDecision: "finalize_failed_incomplete",
+        terminalEnvelopeValidation: reconciled.terminalEnvelopeValidation,
+        typedOutcome: {
+          outcomeId: reconciled.outcome.outcomeId,
+          status: reconciled.outcome.status,
+          code: reconciled.outcome.code,
+          incompleteResult: reconciled.outcome.incompleteResult,
+          terminalEnvelope: reconciled.outcome.terminalEnvelope,
+        },
+        sanitizedDiagnosticRanges: reconciled.outcome.diagnosticReferences.map((reference) => ({
+          streamId: reference.streamId,
+          producer: reference.producer,
+          range: reference.range,
+          explicitRetrievalRequired: reference.explicitRetrievalRequired,
+        })),
+        invariantAssertions: {
+          sameRunIdentity: true,
+          immutableExecutionSnapshot: true,
+          orderedHistoryPreserved: true,
+          oneTerminalOutcome: true,
+          sameKeyReplayDidNotStartAdapter: true,
+          originalProcessTreeTerminated: true,
+          projectContentsUnchanged: true,
+        },
+        securityAssertions: {
+          credentialFixtureAbsent: true,
+          rawRetryKeyAbsent: true,
+          unrestrictedProcessHandleAbsent: true,
+          environmentDumpAbsent: true,
+          trackedProjectChangeAbsent: true,
+        },
+      });
       await context.close();
     } finally {
       await browser.close();
