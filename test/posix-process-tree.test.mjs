@@ -40,22 +40,39 @@ const waitForProcessesToExit = async (processIds) => {
   throw new Error(`process_exit_timeout:${processIds.filter(processCanRun).join(",")}`);
 };
 
-test("a Linux Host death closes its still-active supervised process group", {
+test("a Linux Host death closes its complete supervised process tree", {
   skip: process.platform !== "linux"
     ? "the packaged Linux supervisor owns this Host-death boundary"
     : false,
 }, async () => {
   const modulePath = fileURLToPath(new URL("../src/posix-process-tree.mjs", import.meta.url));
+  const adapterSource = String.raw`
+    import { spawn } from "node:child_process";
+    const descendant = spawn(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      "process.stdout.write('ready\\n'); setInterval(() => undefined, 1000)",
+    ], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    descendant.stdout.once("data", () => {
+      descendant.stdout.destroy();
+      descendant.unref();
+      process.stdout.write(JSON.stringify({
+        adapterPid: process.pid,
+        escapedDescendantPid: descendant.pid,
+      }) + "\n");
+    });
+    setInterval(() => undefined, 1000);
+  `;
   const hostSource = `
     import { once } from "node:events";
     import { spawnPosixProcessTree } from ${JSON.stringify(modulePath)};
     const tree = spawnPosixProcessTree(process.execPath, [
       "--input-type=module",
       "--eval",
-      "process.stdout.write(String(process.pid) + '\\\\n'); setInterval(() => undefined, 1000)",
+      ${JSON.stringify(adapterSource)},
     ], { cwd: process.cwd(), env: process.env });
     const [chunk] = await once(tree.child.stdout, "data");
-    process.stdout.write(JSON.stringify({ wrapperPid: tree.child.pid, adapterPid: Number(String(chunk).trim()) }) + "\\n");
+    process.stdout.write(JSON.stringify({ wrapperPid: tree.child.pid, ...JSON.parse(String(chunk)) }) + "\\n");
     setInterval(() => undefined, 1000);
   `;
   const host = spawn(process.execPath, ["--input-type=module", "--eval", hostSource], {
@@ -65,21 +82,27 @@ test("a Linux Host death closes its still-active supervised process group", {
   });
   let wrapperPid = null;
   let adapterPid = null;
+  let escapedDescendantPid = null;
   try {
     const [chunk] = await once(host.stdout, "data");
-    ({ wrapperPid, adapterPid } = JSON.parse(String(chunk).trim()));
+    ({ wrapperPid, adapterPid, escapedDescendantPid } = JSON.parse(String(chunk).trim()));
     assert.equal(Number.isSafeInteger(wrapperPid), true);
     assert.equal(Number.isSafeInteger(adapterPid), true);
+    assert.equal(Number.isSafeInteger(escapedDescendantPid), true);
     assert.equal(processCanRun(wrapperPid), true);
     assert.equal(processCanRun(adapterPid), true);
+    assert.equal(processCanRun(escapedDescendantPid), true);
 
     host.kill("SIGKILL");
     await once(host, "exit");
-    await waitForProcessesToExit([wrapperPid, adapterPid]);
+    await waitForProcessesToExit([wrapperPid, adapterPid, escapedDescendantPid]);
   } finally {
     if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL");
     if (wrapperPid && processCanRun(wrapperPid)) {
       process.kill(-wrapperPid, "SIGKILL");
+    }
+    if (escapedDescendantPid && processCanRun(escapedDescendantPid)) {
+      process.kill(escapedDescendantPid, "SIGKILL");
     }
   }
 });
