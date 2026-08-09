@@ -134,6 +134,7 @@ const nextControl = async (socket) => {
 
 test("Cockpit Harness-run cancellation is capability-negotiated and hash-only", () => {
   assert.ok(browserCapabilities.includes("cockpit.harness-run-cancellation.v1"));
+  assert.ok(browserCapabilities.includes("cockpit.harness-run-reconciliation.v1"));
   const harnessRunId = `harness-run-${"1".repeat(24)}`;
   const idempotencyKeyHash = `sha256:${"2".repeat(64)}`;
   const request = {

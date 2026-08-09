@@ -432,6 +432,23 @@ button:disabled {
   box-shadow: inset 3px 0 #fb7185;
 }
 
+#harness-run-interruption {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid #fb7185;
+  border-radius: 8px;
+  background: #2a111b;
+}
+
+#harness-run-interruption h3 {
+  margin-top: 0;
+  color: #fecdd3;
+}
+
+#harness-run-interruption button {
+  margin-top: 4px;
+}
+
 .workbench-drawer-toggle {
   display: none;
 }

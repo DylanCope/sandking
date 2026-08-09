@@ -120,6 +120,7 @@ export const harnessRunOutcomeSchema = z.object({
     "harness_result_incomplete",
     "harness_adapter_protocol_invalid",
     "harness_adapter_start_failed",
+    "host_daemon_interrupted",
   ]),
   completedAt: z.string().datetime(),
   incompleteResult: z.boolean(),
@@ -140,6 +141,13 @@ export const harnessRunOutcomeSchema = z.object({
     adapterId: z.literal("conformance-harness-adapter-v1"),
     adapterProtocol: z.literal("1.0.0"),
   }).strict().nullable(),
+  outcomeAuditId: auditIdSchema.nullable().default(null),
+  interruption: z.object({
+    code: z.literal("host_daemon_interrupted"),
+    previousStatus: z.enum(["starting", "running"]),
+    reconciledAt: z.string().datetime(),
+    reconciliationAuditId: auditIdSchema,
+  }).strict().nullable().default(null),
 }).strict();
 
 const terminalEnvelopeValidationSchema = z.object({
@@ -254,6 +262,7 @@ const previousLegacyHarnessRunWithSnapshotSchema = previousLegacyHarnessRunSchem
 }).strict();
 const currentHarnessRunSchema = previousCurrentHarnessRunSchema.extend({
   cancellation: harnessRunCancellationSchema.nullable(),
+  launchIdempotencyKeyHash: digestSchema.nullable().default(null),
 }).strict();
 const legacyHarnessRunSchema = previousLegacyHarnessRunWithSnapshotSchema.extend({
   cancellation: harnessRunCancellationSchema.nullable(),
@@ -298,10 +307,17 @@ const retainedOutcomeSchema = z.object({
   response: z.object({}).passthrough(),
 }).strict();
 const stateSchema = z.object({
-  schemaVersion: z.literal(4),
+  schemaVersion: z.literal(5),
   // Canonical runs and keyed mutation outcomes cannot be evicted without
   // breaking reconnect and ambiguous-outcome lookup. Retention/cleanup is a
   // later explicit workflow; the records themselves remain schema-bounded.
+  runs: z.array(storedRunSchema),
+  launchOutcomes: z.array(retainedOutcomeSchema),
+  cancellationOutcomes: z.array(retainedOutcomeSchema),
+  legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
+}).strict();
+const previousStateWithCancellationSchema = z.object({
+  schemaVersion: z.literal(4),
   runs: z.array(storedRunSchema),
   launchOutcomes: z.array(retainedOutcomeSchema),
   cancellationOutcomes: z.array(retainedOutcomeSchema),
@@ -326,7 +342,7 @@ const legacyStateSchema = z.object({
 }).strict();
 
 const initialState = () => ({
-  schemaVersion: 4,
+  schemaVersion: 5,
   runs: [],
   launchOutcomes: [],
   cancellationOutcomes: [],
@@ -392,6 +408,7 @@ const publicRun = (run) => {
     parameters: structuredClone(run.parameters),
     source: run.source,
     launchAuditId: run.launchAuditId,
+    launchIdempotencyKeyHash: run.launchIdempotencyKeyHash,
   });
 };
 
@@ -458,26 +475,40 @@ const migrateRetainedOutcome = (outcome, runs) => {
   if (run && responseRun && typeof responseRun === "object") {
     responseRun.executionSnapshot = structuredClone(run.executionSnapshot);
     responseRun.cancellation = null;
+    if ("launchIdempotencyKeyHash" in run) {
+      responseRun.launchIdempotencyKeyHash = outcome.idempotencyKeyHash;
+    }
   }
   return retainedOutcomeSchema.parse(migrated);
 };
 
 /**
- * @param {z.infer<typeof previousStateWithSnapshotsSchema> | z.infer<typeof previousStateSchema> | z.infer<typeof legacyStateSchema>} previous
+ * @param {z.infer<typeof previousStateWithCancellationSchema> | z.infer<typeof previousStateWithSnapshotsSchema> | z.infer<typeof previousStateSchema> | z.infer<typeof legacyStateSchema>} previous
  */
 const migrateState = (previous) => {
-  const runs = previous.schemaVersion === 3
-    ? previous.runs.map(migrateStoredRunWithSnapshot)
-    : previous.runs.map(migrateStoredRun);
+  const runs = previous.schemaVersion === 4
+    ? previous.runs
+    : previous.schemaVersion === 3
+      ? previous.runs.map(migrateStoredRunWithSnapshot)
+      : previous.runs.map(migrateStoredRun);
   const launchOutcomes = previous.schemaVersion === 1 ? [] : previous.launchOutcomes;
+  for (const outcome of launchOutcomes) {
+    const harnessRunId = /** @type {any} */ (outcome.response)?.run?.harnessRunId;
+    const run = runs.find((candidate) => candidate.harnessRunId === harnessRunId);
+    if (run && "launchIdempotencyKeyHash" in run) {
+      run.launchIdempotencyKeyHash = outcome.idempotencyKeyHash;
+    }
+  }
   const legacyStartOutcomes = previous.schemaVersion === 1
     ? previous.startOutcomes
     : previous.legacyStartOutcomes;
   return stateSchema.parse({
-    schemaVersion: 4,
+    schemaVersion: 5,
     runs,
     launchOutcomes: launchOutcomes.map((outcome) => migrateRetainedOutcome(outcome, runs)),
-    cancellationOutcomes: [],
+    cancellationOutcomes: previous.schemaVersion === 4
+      ? previous.cancellationOutcomes
+      : [],
     legacyStartOutcomes: legacyStartOutcomes
       .map((outcome) => migrateRetainedOutcome(outcome, runs)),
   });
@@ -968,7 +999,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
  *   loadLaunchContext: (projectId: string) => Promise<any>,
  *   now?: () => Date,
  *   cancellationGraceMs?: number,
-   *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_state_commit" | "harness_run_launch.after_commit" | "harness_run_cancellation.before_commit" | "harness_run_cancellation.after_state_commit" | "harness_run_cancellation.after_commit" | "harness_run_cancellation.before_termination_confirmation_commit" | "harness_run_outcome.before_commit") => Promise<void> | void,
+ *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_state_commit" | "harness_run_launch.after_commit" | "harness_run_cancellation.before_commit" | "harness_run_cancellation.after_state_commit" | "harness_run_cancellation.after_commit" | "harness_run_cancellation.before_termination_confirmation_commit" | "harness_run_outcome.before_commit" | "harness_run_reconciliation.before_commit" | "harness_run_reconciliation.after_state_commit" | "harness_run_reconciliation.after_commit") => Promise<void> | void,
  * }} options
  */
 export const createHarnessRunManager = async (options) => {
@@ -1056,6 +1087,68 @@ export const createHarnessRunManager = async (options) => {
       }
     }
   };
+  /** @param {z.infer<typeof storedRunSchema>} run */
+  const outcomeAuditDetails = (run) => {
+    if (!run.outcome) throw new Error("harness_run_outcome_missing");
+    return {
+      harnessRunId: run.harnessRunId,
+      projectId: run.projectId,
+      outcomeReference: run.outcome.outcomeId,
+      status: run.outcome.status,
+      code: run.outcome.code,
+      incompleteResult: run.outcome.incompleteResult,
+      adapterReadyObserved: run.terminalEnvelopeValidation.adapterReadyObserved,
+      validTerminalEnvelopeCount:
+        run.terminalEnvelopeValidation.validTerminalEnvelopeCount,
+      adapterChannelClosedObserved:
+        run.terminalEnvelopeValidation.adapterChannelClosedObserved,
+      processExitObserved: run.terminalEnvelopeValidation.processExitObserved,
+      stdoutRange: run.logStreams[0].availableEnd,
+      stderrRange: run.logStreams[1].availableEnd,
+      interruptionCode: run.outcome.interruption?.code ?? null,
+    };
+  };
+  /** @param {z.infer<typeof stateSchema>} state */
+  const ensureOutcomeAudits = async (state) => {
+    for (const run of state.runs) {
+      if (!run.outcome?.outcomeAuditId) continue;
+      const auditId = await options.recordAudit(
+        "harness.run.outcome",
+        "observed",
+        outcomeAuditDetails(run),
+        run.outcome.outcomeAuditId,
+      );
+      if (auditId !== run.outcome.outcomeAuditId) {
+        throw new Error("harness_run_outcome_audit_commit_invalid");
+      }
+    }
+  };
+  /** @param {z.infer<typeof stateSchema>} state */
+  const ensureReconciliationAudits = async (state) => {
+    for (const run of state.runs) {
+      const interruption = run.outcome?.interruption;
+      if (!interruption) continue;
+      const auditId = await options.recordAudit("harness.run.reconcile", "observed", {
+        code: interruption.code,
+        harnessRunId: run.harnessRunId,
+        hostId: run.hostId,
+        projectId: run.projectId,
+        previousStatus: interruption.previousStatus,
+        status: run.outcome?.status,
+        outcomeReference: run.outcome?.outcomeId,
+        incompleteResult: run.outcome?.incompleteResult,
+        retainedEventCount: run.events.length,
+        stdoutRange: run.logStreams[0].availableEnd,
+        stderrRange: run.logStreams[1].availableEnd,
+        adapterRelaunched: false,
+        harnessRunCreated: false,
+        projectWrite: false,
+      }, interruption.reconciliationAuditId);
+      if (auditId !== interruption.reconciliationAuditId) {
+        throw new Error("harness_run_reconciliation_audit_commit_invalid");
+      }
+    }
+  };
   const readState = async () => {
     const raw = await readJson(statePath(options.dataDir), initialState());
     if (
@@ -1069,6 +1162,8 @@ export const createHarnessRunManager = async (options) => {
       await writePrivateJson(statePath(options.dataDir), migrated);
       await ensureAcceptedLaunchAudits(migrated);
       await ensureAcceptedCancellationAudits(migrated);
+      await ensureOutcomeAudits(migrated);
+      await ensureReconciliationAudits(migrated);
       return migrated;
     }
     if (
@@ -1082,6 +1177,8 @@ export const createHarnessRunManager = async (options) => {
       await writePrivateJson(statePath(options.dataDir), migrated);
       await ensureAcceptedLaunchAudits(migrated);
       await ensureAcceptedCancellationAudits(migrated);
+      await ensureOutcomeAudits(migrated);
+      await ensureReconciliationAudits(migrated);
       return migrated;
     }
     if (
@@ -1095,11 +1192,30 @@ export const createHarnessRunManager = async (options) => {
       await writePrivateJson(statePath(options.dataDir), migrated);
       await ensureAcceptedLaunchAudits(migrated);
       await ensureAcceptedCancellationAudits(migrated);
+      await ensureOutcomeAudits(migrated);
+      await ensureReconciliationAudits(migrated);
+      return migrated;
+    }
+    if (
+      raw
+      && typeof raw === "object"
+      && "schemaVersion" in raw
+      && raw.schemaVersion === 4
+    ) {
+      const previous = previousStateWithCancellationSchema.parse(raw);
+      const migrated = migrateState(previous);
+      await writePrivateJson(statePath(options.dataDir), migrated);
+      await ensureAcceptedLaunchAudits(migrated);
+      await ensureAcceptedCancellationAudits(migrated);
+      await ensureOutcomeAudits(migrated);
+      await ensureReconciliationAudits(migrated);
       return migrated;
     }
     const retained = stateSchema.parse(raw);
     await ensureAcceptedLaunchAudits(retained);
     await ensureAcceptedCancellationAudits(retained);
+    await ensureOutcomeAudits(retained);
+    await ensureReconciliationAudits(retained);
     return retained;
   };
   /** @param {z.infer<typeof stateSchema>} state */
@@ -1107,10 +1223,116 @@ export const createHarnessRunManager = async (options) => {
     statePath(options.dataDir),
     stateSchema.parse(state),
   );
-  // Complete the one-time upgrade before exposing read and mutation methods.
-  // Otherwise a first observation can migrate a stale v1 snapshot concurrently
-  // with a first launch and overwrite the newly retained run.
-  await readState();
+  const terminalEventTypes = new Set([
+    "harness_run_succeeded",
+    "harness_run_failed",
+    "harness_run_cancelled",
+  ]);
+  /** @param {z.infer<typeof storedRunSchema>} run */
+  const repairAcceptedTerminalOutcome = (run) => {
+    if (!run.outcome) return false;
+    const expectedEventType = run.outcome.status === "succeeded"
+      ? "harness_run_succeeded"
+      : run.outcome.status === "cancelled"
+        ? "harness_run_cancelled"
+        : "harness_run_failed";
+    const terminalEvents = run.events.filter((event) => terminalEventTypes.has(event.type));
+    if (terminalEvents.length > 1) {
+      throw new Error("harness_run_terminal_history_invalid");
+    }
+    if (terminalEvents.length === 1 && (
+      terminalEvents[0].type !== expectedEventType
+      || terminalEvents[0].outcomeReference !== run.outcome.outcomeId
+    )) {
+      throw new Error("harness_run_terminal_history_invalid");
+    }
+    let repaired = false;
+    if (terminalEvents.length === 0) {
+      appendEvent(run, expectedEventType, { outcomeReference: run.outcome.outcomeId });
+      repaired = true;
+    }
+    if (run.status !== run.outcome.status || run.completedAt !== run.outcome.completedAt) {
+      run.status = run.outcome.status;
+      run.completedAt = run.outcome.completedAt;
+      repaired = true;
+    }
+    if (repaired) run.revision += 1;
+    return repaired;
+  };
+  const reconcileInterruptedRuns = async () => {
+    const retained = await readState();
+    let changed = false;
+    for (const run of retained.runs) {
+      if (run.outcome) {
+        changed = repairAcceptedTerminalOutcome(run) || changed;
+        continue;
+      }
+      if (!["starting", "running"].includes(run.status)) continue;
+      if (run.cancellation !== null) {
+        throw new Error("harness_run_reconciliation_state_invalid");
+      }
+      if (run.events.some((event) => terminalEventTypes.has(event.type))) {
+        throw new Error("harness_run_terminal_history_invalid");
+      }
+      if (
+        run.terminalEnvelopeValidation.validTerminalEnvelopeCount !== 0
+        || run.terminalEnvelopeValidation.exactlyOne
+      ) {
+        throw new Error("harness_run_terminal_outcome_missing");
+      }
+      const previousStatus = run.status;
+      const reconciledAt = now().toISOString();
+      const outcomeId = `harness-outcome-${randomBytes(12).toString("hex")}`;
+      run.status = "failed";
+      run.completedAt = reconciledAt;
+      run.revision += 1;
+      run.terminalEnvelopeValidation = {
+        adapterReadyObserved: run.terminalEnvelopeValidation.adapterReadyObserved,
+        validTerminalEnvelopeCount: 0,
+        exactlyOne: false,
+        adapterChannelClosedObserved: false,
+        processExitObserved: false,
+      };
+      run.outcome = harnessRunOutcomeSchema.parse({
+        outcomeId,
+        status: "failed",
+        code: "host_daemon_interrupted",
+        completedAt: reconciledAt,
+        incompleteResult: true,
+        result: null,
+        diagnosticReferences: run.logStreams.map((stream) => ({
+          streamId: stream.streamId,
+          producer: stream.producer,
+          range: {
+            start: stream.availableStart,
+            end: stream.availableEnd,
+          },
+          explicitRetrievalRequired: stream.explicitRetrievalRequired,
+          insertedIntoControllerConversation: stream.insertedIntoControllerConversation,
+        })),
+        terminalEnvelope: null,
+        outcomeAuditId: `audit-${randomBytes(12).toString("hex")}`,
+        interruption: {
+          code: "host_daemon_interrupted",
+          previousStatus,
+          reconciledAt,
+          reconciliationAuditId: `audit-${randomBytes(12).toString("hex")}`,
+        },
+      });
+      appendEvent(run, "harness_run_failed", { outcomeReference: outcomeId });
+      changed = true;
+    }
+    if (!changed) return;
+    await options.faultInjector?.("harness_run_reconciliation.before_commit");
+    await persist(retained);
+    await options.faultInjector?.("harness_run_reconciliation.after_state_commit");
+    await ensureOutcomeAudits(retained);
+    await ensureReconciliationAudits(retained);
+    await options.faultInjector?.("harness_run_reconciliation.after_commit");
+  };
+  // Complete migration, terminal-view repair, and active-run reconciliation
+  // before exposing observation or mutation methods to the framed Host loop.
+  await reconcileInterruptedRuns();
   /** @param {z.infer<typeof stateSchema>} state @param {string | null} idempotencyKeyHash */
   const retainedLaunchOutcome = (state, idempotencyKeyHash) => idempotencyKeyHash
     ? state.launchOutcomes.find((outcome) =>
@@ -1255,6 +1477,7 @@ export const createHarnessRunManager = async (options) => {
       let incompleteResult = !validTerminal;
       let acceptedTerminal = validTerminal ? terminal : null;
       const outcomeId = `harness-outcome-${randomBytes(12).toString("hex")}`;
+      const outcomeAuditId = `audit-${randomBytes(12).toString("hex")}`;
       let completedAt = now().toISOString();
       await options.faultInjector?.("harness_run_outcome.before_commit");
       const finalized = await updateRun(initialRun.harnessRunId, async (run) => {
@@ -1329,6 +1552,8 @@ export const createHarnessRunManager = async (options) => {
             adapterId: acceptedTerminal.adapterId,
             adapterProtocol: acceptedTerminal.adapterProtocol,
           } : null,
+          outcomeAuditId,
+          interruption: null,
         });
         appendEvent(
           run,
@@ -1343,20 +1568,15 @@ export const createHarnessRunManager = async (options) => {
       });
       if (!terminalOutcomeCommitted) return;
       acceptedCancellations.delete(initialRun.harnessRunId);
-      await options.recordAudit("harness.run.outcome", "observed", {
-        harnessRunId: finalized.harnessRunId,
-        projectId: finalized.projectId,
-        outcomeReference: outcomeId,
-        status,
-        code,
-        incompleteResult,
-        adapterReadyObserved: supervision.adapterReadyObserved,
-        validTerminalEnvelopeCount: supervision.terminalEnvelopes.length,
-        adapterChannelClosedObserved: supervision.adapterChannelClosedObserved,
-        processExitObserved: !supervision.exit.startFailed,
-        stdoutRange: finalized.logStreams[0].availableEnd,
-        stderrRange: finalized.logStreams[1].availableEnd,
-      });
+      const committedAuditId = await options.recordAudit(
+        "harness.run.outcome",
+        "observed",
+        outcomeAuditDetails(finalized),
+        outcomeAuditId,
+      );
+      if (committedAuditId !== outcomeAuditId) {
+        throw new Error("harness_run_outcome_audit_commit_invalid");
+      }
     } finally {
       await releaseSupervisedProcessTree();
     }
@@ -1369,7 +1589,6 @@ export const createHarnessRunManager = async (options) => {
     const requestFingerprint = fingerprint({
       projectId: request.projectId,
       parameters: request.parameters === undefined ? {} : request.parameters,
-      controllerId: request.controllerId,
       controllerSessionId: request.controllerSessionId,
       source: request.source,
       authorizationClass: request.authorizationClass,
@@ -1512,6 +1731,7 @@ export const createHarnessRunManager = async (options) => {
       adapterReadyAt: null,
       completedAt: null,
       launchAuditId: auditId,
+      launchIdempotencyKeyHash: idempotencyKeyHash,
       cancellation: null,
       executionSnapshot: {
         schemaVersion: 1,
@@ -1887,8 +2107,12 @@ export const createHarnessRunManager = async (options) => {
       throw new Error("harness_log_range_invalid");
     }
     const available = await readFile(logPath(options.dataDir, run.harnessRunId, stream.producer));
-    const start = Math.min(request.offset, available.byteLength);
-    const end = Math.min(start + request.limit, available.byteLength);
+    // State is the diagnostic commit boundary. A Host can die after appending
+    // bytes but before advancing availableEnd, so never expose that tail as
+    // though reconciliation had retained it canonically.
+    const durableAvailableEnd = Math.min(stream.availableEnd, available.byteLength);
+    const start = Math.min(request.offset, durableAvailableEnd);
+    const end = Math.min(start + request.limit, durableAvailableEnd);
     const data = available.subarray(start, end);
     return {
       response: {
@@ -1901,8 +2125,8 @@ export const createHarnessRunManager = async (options) => {
         range: {
           start,
           end,
-          availableEnd: available.byteLength,
-          eof: end === available.byteLength,
+          availableEnd: durableAvailableEnd,
+          eof: end === durableAvailableEnd,
         },
         byteLength: data.byteLength,
         sha256: digest(data),

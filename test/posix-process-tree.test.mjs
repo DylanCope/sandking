@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import test from "node:test";
 import { once } from "node:events";
 import { readFileSync, readlinkSync } from "node:fs";
@@ -30,6 +30,59 @@ const processCanRun = (processId) => {
       && error.code === "ESRCH");
   }
 };
+
+const waitForProcessesToExit = async (processIds) => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (processIds.every((processId) => !processCanRun(processId))) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`process_exit_timeout:${processIds.filter(processCanRun).join(",")}`);
+};
+
+test("a Linux Host death closes its still-active supervised process group", {
+  skip: process.platform !== "linux"
+    ? "the packaged Linux supervisor owns this Host-death boundary"
+    : false,
+}, async () => {
+  const modulePath = fileURLToPath(new URL("../src/posix-process-tree.mjs", import.meta.url));
+  const hostSource = `
+    import { once } from "node:events";
+    import { spawnPosixProcessTree } from ${JSON.stringify(modulePath)};
+    const tree = spawnPosixProcessTree(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      "process.stdout.write(String(process.pid) + '\\\\n'); setInterval(() => undefined, 1000)",
+    ], { cwd: process.cwd(), env: process.env });
+    const [chunk] = await once(tree.child.stdout, "data");
+    process.stdout.write(JSON.stringify({ wrapperPid: tree.child.pid, adapterPid: Number(String(chunk).trim()) }) + "\\n");
+    setInterval(() => undefined, 1000);
+  `;
+  const host = spawn(process.execPath, ["--input-type=module", "--eval", hostSource], {
+    cwd: process.cwd(),
+    env: { ...process.env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let wrapperPid = null;
+  let adapterPid = null;
+  try {
+    const [chunk] = await once(host.stdout, "data");
+    ({ wrapperPid, adapterPid } = JSON.parse(String(chunk).trim()));
+    assert.equal(Number.isSafeInteger(wrapperPid), true);
+    assert.equal(Number.isSafeInteger(adapterPid), true);
+    assert.equal(processCanRun(wrapperPid), true);
+    assert.equal(processCanRun(adapterPid), true);
+
+    host.kill("SIGKILL");
+    await once(host, "exit");
+    await waitForProcessesToExit([wrapperPid, adapterPid]);
+  } finally {
+    if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL");
+    if (wrapperPid && processCanRun(wrapperPid)) {
+      process.kill(-wrapperPid, "SIGKILL");
+    }
+  }
+});
 
 test("a cold Linux process-tree launch needs no compiler or warmed cache", {
   skip: process.platform !== "linux"

@@ -3072,6 +3072,16 @@ const main = async () => {
       hostIdentityAuditId: negotiation.hostIdentityOutcome?.auditId ?? null,
       startedAt: new Date().toISOString(),
     };
+    const startupHarnessRunObservation = await requestHostOperation({
+      type: "harness.run.observe",
+      requestId: `harness-observe-startup-${randomBytes(8).toString("hex")}`,
+      harnessRunId: null,
+      afterSequence: 0,
+    });
+    if (startupHarnessRunObservation.type !== "harness.run.observe.result") {
+      throw new Error("harness_run_startup_observation_failed");
+    }
+    retainCanonicalHarnessRunObservation(startupHarnessRunObservation);
     await writePrivateJson(statePath, state);
 
     hostProcess?.once("exit", async () => {
