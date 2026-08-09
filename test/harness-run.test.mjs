@@ -2263,20 +2263,53 @@ test("schema-v4 rejected launch outcomes replay under their original fingerprint
     v4.schemaVersion = 4;
     v4.launchOutcomes[0].requestFingerprint = schemaV4LaunchRequestFingerprint(request);
     await writeFile(join(dataDir, "harness-runs.json"), `${JSON.stringify(v4)}\n`);
+    await writeFile(join(dataDir, "audit.jsonl"), `${JSON.stringify({
+      auditId: `audit-${"9".repeat(24)}`,
+      action: "host.negotiate",
+      outcome: "accepted",
+      details: { controllerId },
+      recordedAt: "2026-08-09T12:00:00.000Z",
+    })}\n`);
 
     const migratedManager = await createHarnessRunManager(options);
+    const replacementControllerId = `runtime-${"8".repeat(24)}`;
+    const legacyConflict = await migratedManager.launch({
+      ...request,
+      requestId: "conflict-before-schema-v4-rejected-replay",
+      controllerId: replacementControllerId,
+      parameters: { issueNumber: 161, targetBranch: "sandcastle/issue-161" },
+    });
+    assert.equal(legacyConflict.code, "idempotency_key_conflict");
+    assert.equal(legacyConflict.prohibitedSideEffects.harnessRunCreated, false);
     const replay = await migratedManager.launch({
       ...request,
       requestId: "replay-schema-v4-rejected-cockpit-launch",
+      controllerId: replacementControllerId,
     });
     assert.equal(replay.type, "harness.run.launch.failure");
     assert.equal(replay.code, "project_not_found");
     assert.equal(replay.idempotentReplay, true);
     assert.equal(replay.auditId, original.auditId);
 
-    const conflict = await migratedManager.launch({
+    const normalized = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
+    assert.notEqual(
+      normalized.launchOutcomes[0].requestFingerprint,
+      v4.launchOutcomes[0].requestFingerprint,
+    );
+    await rm(join(dataDir, "audit.jsonl"));
+    const restartedManager = await createHarnessRunManager(options);
+    const repeatedReplay = await restartedManager.launch({
+      ...request,
+      requestId: "repeat-schema-v4-rejected-cockpit-launch",
+      controllerId: `runtime-${"6".repeat(24)}`,
+    });
+    assert.equal(repeatedReplay.code, "project_not_found");
+    assert.equal(repeatedReplay.idempotentReplay, true);
+
+    const conflict = await restartedManager.launch({
       ...request,
       requestId: "conflict-schema-v4-rejected-cockpit-launch",
+      controllerId: replacementControllerId,
       parameters: { issueNumber: 161, targetBranch: "sandcastle/issue-161" },
     });
     assert.equal(conflict.code, "idempotency_key_conflict");
@@ -2287,10 +2320,59 @@ test("schema-v4 rejected launch outcomes replay under their original fingerprint
     assert.equal(retained.launchOutcomes.length, 1);
     assert.equal(
       retained.launchOutcomes[0].requestFingerprint,
-      v4.launchOutcomes[0].requestFingerprint,
+      normalized.launchOutcomes[0].requestFingerprint,
     );
   } finally {
     await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("reconciliation retains adapter readiness from durable running history", async () => {
+  const fixture = await createFixture("sandking-harness-running-readiness-repair-");
+  try {
+    const launched = await fixture.manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      160,
+    ));
+    await waitForTerminal(fixture.manager, launched.run.harnessRunId);
+    const retainedPath = join(fixture.dataDir, "harness-runs.json");
+    const interrupted = JSON.parse(await readFile(retainedPath, "utf8"));
+    const run = interrupted.runs[0];
+    run.status = "running";
+    run.completedAt = null;
+    run.outcome = null;
+    run.events = run.events.filter((event) => event.type !== "harness_run_succeeded");
+    run.terminalEnvelopeValidation = {
+      adapterReadyObserved: false,
+      validTerminalEnvelopeCount: 0,
+      exactlyOne: false,
+      adapterChannelClosedObserved: false,
+      processExitObserved: false,
+    };
+    assert.ok(run.adapterReadyAt);
+    assert.equal(run.events.some((event) => event.type === "harness_adapter_ready"), true);
+    await writeFile(retainedPath, `${JSON.stringify(interrupted)}\n`);
+
+    const restarted = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: async () => {
+        throw new Error("running_reconciliation_must_not_resolve_launch_context");
+      },
+    });
+    const observation = await restarted.observe({
+      requestId: "observe-reconciled-running-readiness",
+      harnessRunId: run.harnessRunId,
+      afterSequence: 0,
+    });
+    assert.equal(observation.outcome.interruption.previousStatus, "running");
+    assert.equal(observation.terminalEnvelopeValidation.adapterReadyObserved, true);
+    const outcomeAudit = fixture.audits.find((audit) =>
+      audit.auditId === observation.outcome.outcomeAuditId);
+    assert.equal(outcomeAudit?.details.adapterReadyObserved, true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
   }
 });
 

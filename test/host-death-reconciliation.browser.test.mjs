@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  readlink,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -33,8 +42,7 @@ const findLocalHostPid = async (runtimePid) => {
   return host.pid;
 };
 
-const descendantPids = async (rootPid) => {
-  const processes = await readProcesses();
+const descendantProcesses = (rootPid, processes) => {
   const retained = new Set([rootPid]);
   let changed = true;
   while (changed) {
@@ -47,7 +55,47 @@ const descendantPids = async (rootPid) => {
     }
   }
   retained.delete(rootPid);
-  return [...retained];
+  return processes.filter((processEntry) => retained.has(processEntry.pid));
+};
+
+const inspectHostProcessTree = async (rootPid) => {
+  const processes = await readProcesses();
+  const descendants = descendantProcesses(rootPid, processes);
+  const processByPid = new Map(processes.map((processEntry) => [processEntry.pid, processEntry]));
+  const adapters = descendants.filter((processEntry) =>
+    processByPid.get(processEntry.parentPid)?.args.includes("posix-process-tree.mjs supervise")
+    && !processEntry.args.includes("posix-process-tree.mjs supervise")
+    && processEntry.args.includes("adapters/conformance.mjs run"));
+  return { descendants, adapters };
+};
+
+const snapshotProjectContents = async (root, relativePath = "") => {
+  const directory = join(root, relativePath);
+  const entries = await readdir(directory, { withFileTypes: true });
+  const snapshots = await Promise.all(entries.map(async (entry) => {
+    const entryRelativePath = join(relativePath, entry.name);
+    if (entry.isDirectory()) {
+      return [
+        { path: entryRelativePath, kind: "directory" },
+        ...await snapshotProjectContents(root, entryRelativePath),
+      ];
+    }
+    if (entry.isSymbolicLink()) {
+      return [{
+        path: entryRelativePath,
+        kind: "symbolic-link",
+        target: await readlink(join(root, entryRelativePath)),
+      }];
+    }
+    const contents = await readFile(join(root, entryRelativePath));
+    return [{
+      path: entryRelativePath,
+      kind: "file",
+      bytes: contents.byteLength,
+      digest: `sha256:${createHash("sha256").update(contents).digest("hex")}`,
+    }];
+  }));
+  return snapshots.flat().sort((left, right) => left.path.localeCompare(right.path));
 };
 
 const waitForProcessesToExit = async (pids) => {
@@ -108,7 +156,7 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
     execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]),
   ]);
   await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
-  const projectFilesBefore = (await readdir(projectPath)).sort();
+  const projectContentsBefore = await snapshotProjectContents(projectPath);
   const installed = await installCurrentPackage(root);
   const productEnvironment = {
     ...process.env,
@@ -152,8 +200,14 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
       const originalLaunchRequest = JSON.parse(launchFrame).message;
       const runtimeState = await readJson(join(dataDir, "runtime-state.json"));
       const hostPid = await findLocalHostPid(runtimeState.pid);
-      const supervisedPids = await descendantPids(hostPid);
+      const initialProcessTree = await inspectHostProcessTree(hostPid);
+      const supervisedPids = initialProcessTree.descendants.map(({ pid }) => pid);
       assert.ok(supervisedPids.length >= 3, JSON.stringify({ hostPid, supervisedPids }));
+      const adapterStartCountBeforeHostDeath = initialProcessTree.adapters.length;
+      assert.equal(adapterStartCountBeforeHostDeath, 1, JSON.stringify({
+        descendants: initialProcessTree.descendants.map(({ pid, parentPid }) => ({ pid, parentPid })),
+        adapters: initialProcessTree.adapters.map(({ pid, parentPid }) => ({ pid, parentPid })),
+      }));
 
       process.kill(hostPid, "SIGKILL");
       await page.waitForSelector(
@@ -166,6 +220,7 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
       assert.equal(retainedActive.harnessRunId, activeRun.harnessRunId);
       assert.equal(retainedActive.status, "running");
       assert.equal(retainedActive.outcome, null);
+      assert.equal(retainedActive.terminalEnvelopeValidation.adapterReadyObserved, true);
 
       await execFileAsync(installed.command, ["stop", "--data-dir", dataDir, "--json"], {
         cwd: executionDirectory,
@@ -177,6 +232,8 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
       ], { cwd: executionDirectory, env: productEnvironment })).stdout);
       assert.notEqual(secondLaunch.runtime.runtimeId, firstLaunch.runtime.runtimeId);
       assert.equal(secondLaunch.host.hostId, firstLaunch.host.hostId);
+      const restartedRuntimeState = await readJson(join(dataDir, "runtime-state.json"));
+      const restartedHostPid = await findLocalHostPid(restartedRuntimeState.pid);
 
       await page.close();
       page = await context.newPage();
@@ -251,6 +308,14 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
           explicitRetrievalRequired: stream.explicitRetrievalRequired,
           insertedIntoControllerConversation: stream.insertedIntoControllerConversation,
         })));
+      const processTreeAfterReplay = await inspectHostProcessTree(restartedHostPid);
+      assert.deepEqual(processTreeAfterReplay.descendants, [],
+        JSON.stringify(processTreeAfterReplay));
+      assert.equal(
+        adapterStartCountBeforeHostDeath + processTreeAfterReplay.adapters.length,
+        adapterStartCountBeforeHostDeath,
+      );
+      assert.deepEqual(await snapshotProjectContents(projectPath), projectContentsBefore);
       const auditsBeforeNewLaunch = await readAudits(dataDir);
       assert.equal(auditsBeforeNewLaunch.filter((audit) =>
         audit.action === "harness.run.launch" && audit.outcome === "accepted").length, 1);
@@ -278,7 +343,7 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
       const withDeliberateRun = await waitForRunCount(dataDir, 2);
       assert.notEqual(withDeliberateRun.runs[1].harnessRunId, activeRun.harnessRunId);
       assert.deepEqual(withDeliberateRun.runs[0], reconciled);
-      assert.deepEqual((await readdir(projectPath)).sort(), projectFilesBefore);
+      assert.deepEqual(await snapshotProjectContents(projectPath), projectContentsBefore);
 
       const finalAudits = await readAudits(dataDir);
       assert.equal(finalAudits.filter((audit) =>

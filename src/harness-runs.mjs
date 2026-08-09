@@ -388,6 +388,38 @@ const legacyLaunchRequestFingerprint = (request) => fingerprint({
   source: request.source,
   authorizationClass: request.authorizationClass,
 });
+/**
+ * Schema-v4 launch fingerprints included the ephemeral Controller runtime.
+ * Every real Controller/Host connection retained that identity in the
+ * Host-private negotiation audit before it could submit a launch. Those
+ * historical identities let an upgrade compare the rest of a rejected
+ * request exactly without treating the replacement Controller as content.
+ * @param {string} dataDir
+ */
+const readRetainedControllerIds = async (dataDir) => {
+  const source = await readFile(join(dataDir, "audit.jsonl"), "utf8").catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return "";
+    }
+    throw error;
+  });
+  const controllerIds = new Set();
+  for (const line of source.split("\n")) {
+    if (!line) continue;
+    try {
+      const audit = JSON.parse(line);
+      const candidate = audit?.action === "host.negotiate"
+        && audit?.outcome === "accepted"
+        ? audit?.details?.controllerId
+        : null;
+      const parsed = controllerIdSchema.safeParse(candidate);
+      if (parsed.success) controllerIds.add(parsed.data);
+    } catch {
+      // Malformed unrelated audit history cannot establish compatibility.
+    }
+  }
+  return [...controllerIds];
+};
 /** @param {any} request */
 const requestIdempotencyKeyHash = (request) => {
   const suppliedHash = digestSchema.safeParse(request.idempotencyKeyHash);
@@ -593,6 +625,12 @@ const appendEvent = (run, type, details = {}) => {
     outcomeReference: details.outcomeReference ?? null,
   }));
 };
+
+/** @param {z.infer<typeof storedRunSchema>} run */
+const adapterReadinessWasDurablyObserved = (run) =>
+  run.terminalEnvelopeValidation.adapterReadyObserved
+  || run.adapterReadyAt !== null
+  || run.events.some((event) => event.type === "harness_adapter_ready");
 
 /**
  * Arm forced cancellation against the absolute deadline retained in canonical
@@ -1357,7 +1395,7 @@ export const createHarnessRunManager = async (options) => {
       run.completedAt = reconciledAt;
       run.revision += 1;
       run.terminalEnvelopeValidation = {
-        adapterReadyObserved: run.terminalEnvelopeValidation.adapterReadyObserved,
+        adapterReadyObserved: adapterReadinessWasDurablyObserved(run),
         validTerminalEnvelopeCount: 0,
         exactlyOne: false,
         adapterChannelClosedObserved: false,
@@ -1496,6 +1534,7 @@ export const createHarnessRunManager = async (options) => {
             }
             if (run.status === "starting") run.status = "running";
             run.adapterReadyAt = readyAt;
+            run.terminalEnvelopeValidation.adapterReadyObserved = true;
             run.revision += 1;
             appendEvent(run, "harness_adapter_ready");
           });
@@ -1665,6 +1704,14 @@ export const createHarnessRunManager = async (options) => {
     const existing = retainedLaunchOutcome(retained, idempotencyKeyHash);
     if (existing) {
       if (!compatibleRequestFingerprints.has(existing.requestFingerprint)) {
+        for (const retainedControllerId of await readRetainedControllerIds(options.dataDir)) {
+          compatibleRequestFingerprints.add(legacyLaunchRequestFingerprint({
+            ...request,
+            controllerId: retainedControllerId,
+          }));
+        }
+      }
+      if (!compatibleRequestFingerprints.has(existing.requestFingerprint)) {
         const auditId = await options.recordAudit("harness.run.launch", "rejected", {
           code: "idempotency_key_conflict",
           authorizationClass,
@@ -1682,6 +1729,17 @@ export const createHarnessRunManager = async (options) => {
           auditId,
           prohibitedSideEffects: { harnessRunCreated: false, projectWrite: false },
         };
+      }
+      if (
+        existing.requestFingerprint !== requestFingerprint
+        && retained.launchOutcomes.includes(existing)
+      ) {
+        // Once a legacy fingerprint has been matched exactly, make the repair
+        // durable so later Controller replacements no longer depend on the
+        // compatibility audit history. An interruption before this atomic
+        // rewrite can safely repeat the same proof on the next retry.
+        existing.requestFingerprint = requestFingerprint;
+        await persist(retained);
       }
       await options.recordAudit("harness.run.launch", "observed", {
         authorizationClass,
