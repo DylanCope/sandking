@@ -1,0 +1,462 @@
+{
+  "schemaVersion": 2,
+  "issue": 164,
+  "parentPrd": 165,
+  "sourceIssue": {
+    "githubBodyUtf8Sha256": "38039912caeb744c5718f397b97161e19b73754a15c7816d7d3dd5afe2be3555"
+  },
+  "sourcePrd": {
+    "issue": 165,
+    "githubBodyUtf8Sha256": "a99ed44bf55d31f18693f2d3cf72854598928f65ffc963ecee7d47ea485c7367"
+  },
+  "sourceSpecification": {
+    "issue": 158,
+    "githubBodyUtf8Sha256": "2b3d280284b113dd7c874a37a9633f7d98231b44abdaa6c1792564c9ba882b96",
+    "parentApprovedBodySha256": "032dfb83b75dab2f90d5c6380985e1fe1cbd2e41187ac0766d10a67eb738acda",
+    "parentApprovedHashBasis": "GitHub body UTF-8 with leading and trailing whitespace trimmed",
+    "parentApprovedBaselineCommit": "ca06fb7906dca384c8a1ff49114d701df9e925b6"
+  },
+  "generatedFromCommit": "1e34f2948a7e9a408c98092429a85f12f03b90f1",
+  "recordedAt": "2026-08-09T20:52:53.498Z",
+  "verificationCommands": [
+    [
+      "npm",
+      "run",
+      "typecheck"
+    ],
+    [
+      "node",
+      "--test",
+      "--test-concurrency=1",
+      "test/issue-164-acceptance-evidence.test.mjs",
+      "test/protocol.test.mjs",
+      "test/browser-protocol.test.mjs",
+      "test/harness-adapter-protocol.test.mjs",
+      "test/harness-run.test.mjs",
+      "test/harness-process-control.test.mjs",
+      "test/host-loss-termination-evidence.test.mjs",
+      "test/posix-process-tree.test.mjs",
+      "test/windows-process-tree.test.mjs",
+      "test/darwin-process-tree.test.mjs",
+      "test/security-boundary.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "--test-concurrency=1",
+      "test/harness-run.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "--test-concurrency=1",
+      "test/host-death-reconciliation.browser.test.mjs"
+    ]
+  ],
+  "scenarioResults": [
+    {
+      "schemaVersion": 1,
+      "id": "durable-execution/reconciles-host-death-mid-run",
+      "scenarioVersion": "1.0.0",
+      "softwareVersion": "0.1.0",
+      "passed": true,
+      "packagedPublicSeam": {
+        "command": "sandking",
+        "installed": true,
+        "launchedOutsideCheckout": true,
+        "tarballSha256": "f278dade2a8d18cbfef66e6ceb55a8ed09add1736ab85a782ef5f606fdbd64e6",
+        "transport": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host"
+      },
+      "identities": {
+        "hostId": "host-d250322f82e70ecd215d7a5f",
+        "projectId": "project-0364ff33343fe9e53bfc004c",
+        "harnessId": "harness-64b70d28ed84af1a672fdb61",
+        "harnessRunId": "harness-run-2c10a07c8be2fa3c277de5de",
+        "harnessPinnedCommit": "6c3d8dd81fde7498c2437468d82fd083d8348212"
+      },
+      "adapter": {
+        "identity": "conformance-harness-adapter-v1",
+        "protocol": "1.0.0",
+        "entryPoint": "adapters/conformance.mjs"
+      },
+      "eventReferences": [
+        {
+          "eventId": "harness-event-fcee982b5bc4e55e62b33061",
+          "sequence": 1,
+          "type": "harness_run_created",
+          "outcomeReference": null
+        },
+        {
+          "eventId": "harness-event-5510b432d404207b2afc286a",
+          "sequence": 2,
+          "type": "harness_adapter_ready",
+          "outcomeReference": null
+        },
+        {
+          "eventId": "harness-event-f2d9f3525cf096987e2845c2",
+          "sequence": 3,
+          "type": "harness_progress_published",
+          "outcomeReference": null
+        },
+        {
+          "eventId": "harness-event-43a2169b0e904fe5f9afe554",
+          "sequence": 4,
+          "type": "harness_run_failed",
+          "outcomeReference": "harness-outcome-1ec4984c31da1d49b49535a4"
+        }
+      ],
+      "auditReferences": [
+        {
+          "auditId": "audit-c214dced4182503a2238fc60",
+          "action": "harness.run.launch",
+          "outcome": "accepted"
+        },
+        {
+          "auditId": "audit-5bf4e4e338fb21e8ead486c8",
+          "action": "harness.adapter.start",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-453dd83c272029805a4b5aac",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-b16ad48ebc9f9b1bbe8ddc20",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-fb817aa4092f374ed4e3e665",
+          "action": "harness.run.outcome",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-a3bc00114a4b5d677d64e8c9",
+          "action": "harness.run.reconcile",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-8a5a68fffe48713052b34c73",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-ff10d44b3dce9e37be2122d9",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-436fd72126db763ac3ad8a9e",
+          "action": "harness.run.launch",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-59c42e18fb3f39747cf3efb7",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-1f80aafcb0ae46125e262594",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        }
+      ],
+      "retryKeyHashes": [
+        "sha256:ad903a4c954a4f585832970d72c1b0478d8e86a60a3d155fd8106945a9953324",
+        "sha256:7d77c2214a9ad9659503d87a9910ef894d963cf33b6c005728d47c48998cb6c1",
+        "sha256:b256d5952520231d27a79535f4ba70d3f7984c0617660e7a4ed4dcbd382382fc",
+        "sha256:12a48215f8d7cd867fa1797a2ca5cbb4528d695c7f0765f4d18c101ef909d87a",
+        "sha256:e2d63213c3646dce7eb3aa4f25d6702003c104139f3718cefef424ffb0806069",
+        "sha256:46614741e478a35290f851d3290256216fd1cf6e554af9ac9757bede2a69183f",
+        "sha256:01e470bd1c457dc5d8418a7ff20566f330d1caa7821683380e4142260884a676",
+        "sha256:bb7ed889b59699affb55877967a2b813b7c463327b8394bae532a9dca339610a",
+        "sha256:411f88bda883554967e7ffaf854bec893382a72984b1f9ad71375ddea1edc727",
+        "sha256:e8f28f870a362732b458bb36372de88340b1389b79504f703ce2010a34b1ee00",
+        "sha256:7ac81e8b931706970b6be07f8916b5561e5d82e8719ff567b60f457a373d716a",
+        "sha256:59135e603a19bd34629c1a25ce26d4a97626067cdf6fe354b3496f4fa1b265c2",
+        "sha256:3d2bf6b087dd888b7ae7016e11988f10030ba14b943f7208a1026f4c3038cf0c",
+        "sha256:386f78b46bde30efab0d9373e09b0b948eac981636b93556739ceb36588b8206",
+        "sha256:0c55fdaf720d54272cae6b2b3610062cea8489ec571faa78f469103c35402f80",
+        "sha256:e1de222460d1a3fd36cde0649bb7755214bcce56d10cfe2208b0c7ff14fb7bcf"
+      ],
+      "faultPoint": "real_host_sigkill_after_active_publication",
+      "reconciliationDecision": "finalize_failed_incomplete",
+      "terminalEnvelopeValidation": {
+        "adapterReadyObserved": true,
+        "validTerminalEnvelopeCount": 0,
+        "exactlyOne": false,
+        "adapterChannelClosedObserved": false,
+        "processExitObserved": false
+      },
+      "typedOutcome": {
+        "outcomeId": "harness-outcome-1ec4984c31da1d49b49535a4",
+        "status": "failed",
+        "code": "host_daemon_interrupted",
+        "incompleteResult": true,
+        "terminalEnvelope": null
+      },
+      "sanitizedDiagnosticRanges": [
+        {
+          "streamId": "harness-log-fe0f1fdf8cff0bc89fa37e0d",
+          "producer": "stdout",
+          "range": {
+            "start": 0,
+            "end": 52
+          },
+          "explicitRetrievalRequired": true
+        },
+        {
+          "streamId": "harness-log-81a3a6a01df63a59e0ccd13b",
+          "producer": "stderr",
+          "range": {
+            "start": 0,
+            "end": 62
+          },
+          "explicitRetrievalRequired": true
+        }
+      ],
+      "invariantAssertions": {
+        "sameRunIdentity": true,
+        "immutableExecutionSnapshot": true,
+        "orderedHistoryPreserved": true,
+        "oneTerminalOutcome": true,
+        "sameKeyReplayDidNotStartAdapter": true,
+        "originalProcessTreeTerminated": true,
+        "projectContentsUnchanged": true
+      },
+      "securityAssertions": {
+        "credentialFixtureAbsent": true,
+        "rawRetryKeyAbsent": true,
+        "unrestrictedProcessHandleAbsent": true,
+        "environmentDumpAbsent": true,
+        "trackedProjectChangeAbsent": true
+      }
+    },
+    {
+      "id": "durable-execution/cancels-across-host-restart",
+      "scenarioVersion": "1.0.0",
+      "softwareVersion": "0.1.0",
+      "passed": true,
+      "executableEvidence": [
+        "test/host-death-reconciliation.browser.test.mjs:packaged Cockpit continues accepted cancellation after real Host death",
+        "test/harness-run.test.mjs:cancellation fault and restart matrix"
+      ],
+      "typedResults": [
+        "harness_run_cancellation_accepted",
+        "cancelled",
+        "recovery_required"
+      ],
+      "faultPoints": [
+        "harness_run_cancellation.before_commit",
+        "harness_run_cancellation.after_state_commit",
+        "harness_run_cancellation.after_commit",
+        "harness_run_cancellation.cooperative_signal.before_dispatch",
+        "harness_run_cancellation.cooperative_signal.after_dispatch",
+        "harness_run_cancellation.cooperative_signal.after_state_commit",
+        "harness_run_cancellation.forced_signal.before_dispatch",
+        "harness_run_cancellation.forced_signal.after_dispatch",
+        "harness_run_cancellation.forced_signal.after_state_commit",
+        "harness_run_cancellation.termination_confirmation.before_commit",
+        "harness_run_cancellation.termination_confirmation.after_state_commit"
+      ],
+      "invariantAssertions": {
+        "acceptancePrecedesSignal": true,
+        "acceptedCancellationSurvivesRestart": true,
+        "sameKeyReplaysWithoutSecondSignal": true,
+        "cancellationRequiresTerminationProof": true,
+        "noProjectWrite": true
+      }
+    },
+    {
+      "id": "durable-execution/completion-wins-cancellation-race",
+      "scenarioVersion": "1.0.0",
+      "softwareVersion": "0.1.0",
+      "passed": true,
+      "executableEvidence": [
+        "test/harness-run.test.mjs:a valid terminal outcome committed before cancellation remains the one outcome",
+        "test/harness-run.test.mjs:cancellation accepted before terminal commit wins the serialized race"
+      ],
+      "typedResults": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "harness_run_not_cancellable"
+      ],
+      "invariantAssertions": {
+        "completionAcceptedFirstWins": true,
+        "cancellationAcceptedFirstUsesBoundedTermination": true,
+        "oneTerminalEvent": true,
+        "oneStructuredOutcome": true,
+        "noEntityRevisionPrecondition": true
+      }
+    },
+    {
+      "id": "durable-execution/exposes-uncertain-supervision-for-recovery",
+      "scenarioVersion": "1.0.0",
+      "softwareVersion": "0.1.0",
+      "passed": true,
+      "executableEvidence": [
+        "test/host-death-reconciliation.browser.test.mjs:packaged Cockpit resolves uncertain Host-loss supervision through bounded recovery",
+        "test/harness-run.test.mjs:recovery durability and identity-bound action matrix"
+      ],
+      "typedResults": [
+        "harness_process_termination_unconfirmed",
+        "harness_recovery_rechecked",
+        "harness_recovery_finalized",
+        "host_daemon_interrupted"
+      ],
+      "invariantAssertions": {
+        "initialUncertaintyImmutable": true,
+        "publicFactsSanitized": true,
+        "unrelatedProcessCannotBeTargeted": true,
+        "recoveryReplayIdempotent": true,
+        "noReplacementWork": true
+      }
+    },
+    {
+      "id": "durable-execution/recovers-every-canonical-boundary",
+      "scenarioVersion": "1.0.0",
+      "softwareVersion": "0.1.0",
+      "passed": true,
+      "executableEvidence": [
+        "test/issue-164-acceptance-evidence.test.mjs",
+        "test/protocol.test.mjs",
+        "test/browser-protocol.test.mjs",
+        "test/harness-adapter-protocol.test.mjs",
+        "test/harness-run.test.mjs",
+        "test/harness-process-control.test.mjs",
+        "test/host-loss-termination-evidence.test.mjs",
+        "test/posix-process-tree.test.mjs",
+        "test/windows-process-tree.test.mjs",
+        "test/darwin-process-tree.test.mjs",
+        "test/security-boundary.test.mjs",
+        "test/harness-run.browser.test.mjs",
+        "test/host-death-reconciliation.browser.test.mjs"
+      ],
+      "boundaryResults": [
+        {
+          "boundary": "run creation and retained launch outcome",
+          "atomicPublication": "one Host-private snapshot binds run, immutable execution snapshot, created event, key hash, request fingerprint, and typed launch result",
+          "faultPoints": [
+            "harness_run_launch.before_commit",
+            "harness_run_launch.after_state_commit",
+            "harness_run_launch.after_commit"
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "lifecycle event and current-view publication",
+          "atomicPublication": "adapter readiness facts, running view, revision, and ordered readiness event",
+          "faultPoints": [
+            "harness_run_lifecycle.adapter_ready.before_commit",
+            "harness_run_lifecycle.adapter_ready.after_state_commit"
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "terminal-envelope acceptance and terminal outcome",
+          "atomicPublication": "terminal-envelope validation, typed outcome, current terminal view, and one terminal event",
+          "faultPoints": [
+            "harness_run_terminal_envelope.before_commit",
+            "harness_run_outcome.before_commit",
+            "harness_run_terminal_envelope.after_state_commit",
+            "harness_run_outcome.after_state_commit"
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "cancellation acceptance",
+          "atomicPublication": "cancelling view, accepted event, cancellation facts, key fingerprint, and typed retained result",
+          "faultPoints": [
+            "harness_run_cancellation.before_commit",
+            "harness_run_cancellation.after_state_commit",
+            "harness_run_cancellation.after_commit"
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "cancellation signalling and termination",
+          "atomicPublication": "signal intent/effect observation followed by complete-tree termination confirmation",
+          "faultPoints": [
+            "harness_run_cancellation.cooperative_signal.before_dispatch",
+            "harness_run_cancellation.cooperative_signal.after_dispatch",
+            "harness_run_cancellation.cooperative_signal.after_state_commit",
+            "harness_run_cancellation.forced_signal.before_dispatch",
+            "harness_run_cancellation.forced_signal.after_dispatch",
+            "harness_run_cancellation.forced_signal.after_state_commit",
+            "harness_run_cancellation.termination_confirmation.before_commit",
+            "harness_run_cancellation.termination_confirmation.after_state_commit"
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "restart reconciliation",
+          "atomicPublication": "truthful failed/cancelled/recovery_required view, minimum ordered event, outcome or recovery facts, and repairable audits",
+          "faultPoints": [
+            "harness_run_reconciliation.before_commit",
+            "harness_run_reconciliation.after_state_commit",
+            "harness_run_reconciliation.after_commit"
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "recovery intent and action",
+          "atomicPublication": "hashed recovery intent precedes bounded identity-safe action; result publication binds current facts and typed replay",
+          "faultPoints": [
+            "harness_run_recovery.before_intent_commit",
+            "harness_run_recovery.after_intent_commit",
+            "harness_run_recovery.before_action",
+            "harness_run_recovery.after_action",
+            "harness_run_recovery.before_result_commit",
+            "harness_run_recovery.after_state_commit",
+            "harness_run_recovery.after_commit"
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "legacy-state migration",
+          "atomicPublication": "all schemas v1-v7 converge through one deterministic schema-v8 snapshot and idempotent audit repair seam",
+          "faultPoints": [
+            "harness_run_migration.before_commit",
+            "harness_run_migration.after_state_commit",
+            "harness_run_migration.after_commit"
+          ],
+          "passed": true
+        }
+      ],
+      "invariantAssertions": {
+        "preCommitEffectsUnclaimed": true,
+        "postCommitEffectsReplayable": true,
+        "currentViewMatchesOrderedHistory": true,
+        "immutableSnapshotsUnchanged": true,
+        "keyedMutationsNotDuplicated": true,
+        "terminalTruthUnique": true,
+        "migrationsRetrySafely": true,
+        "productionFaultApiAbsent": true,
+        "noEntityRevisionPrecondition": true
+      }
+    }
+  ],
+  "securityAssertions": {
+    "credentialFixturesAbsentFromAllSurfaces": true,
+    "rawRetryKeysAbsentFromAllSurfaces": true,
+    "unrestrictedProcessHandlesAbsentFromAllSurfaces": true,
+    "environmentDumpsAbsentFromAllSurfaces": true,
+    "trackedProjectChangesAbsentFromAllSurfaces": true,
+    "protocolFramesSanitized": true,
+    "immutableSnapshotsSanitized": true,
+    "eventsAndOutcomesSanitized": true,
+    "auditsAndDiagnosticsSanitized": true,
+    "browserModelsSanitized": true,
+    "retainedEvidenceSanitized": true
+  },
+  "prohibitedSideEffectAssertions": {
+    "inventedSuccess": false,
+    "duplicateMutation": false,
+    "lostAcknowledgedHistory": false,
+    "duplicateTerminalOutcome": false,
+    "projectWrite": false,
+    "automaticRelaunch": false
+  }
+}
