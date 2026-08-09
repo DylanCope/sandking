@@ -99,6 +99,32 @@ try {
     throw new Error("issue_164_real_process_result_invalid");
   }
 
+  const canonicalBoundaryExecution = JSON.parse(await readFile(
+    join(resultDirectory, "canonical-boundary-results.json"),
+    "utf8",
+  ));
+  const declaredFaultPoints = manifest.verification.faultMatrix.flatMap((boundary) =>
+    boundary.faultPoints.map((faultPoint) => ({
+      boundary: boundary.boundary,
+      faultPoint,
+    })));
+  if (
+    canonicalBoundaryExecution.schemaVersion !== 1
+    || canonicalBoundaryExecution.issue !== 164
+    || JSON.stringify(canonicalBoundaryExecution.results.map((result) => ({
+      boundary: result.boundary,
+      faultPoint: result.faultPoint,
+    }))) !== JSON.stringify(declaredFaultPoints)
+    || !canonicalBoundaryExecution.results.every((result) =>
+      result.injected === true
+      && result.restarted === true
+      && result.converged === true
+      && result.passed === true
+      && /^test\/harness-run\.test\.mjs:/.test(result.executableEvidence))
+  ) {
+    throw new Error("issue_164_canonical_boundary_results_invalid");
+  }
+
   if (updateEvidence) {
     await verifyIssue164EvidenceRevisionUnchanged({
       repositoryRoot,
@@ -176,12 +202,19 @@ try {
         passed: true,
         executableEvidence: manifest.verification.commands.flatMap((command) =>
           command.filter((argument) => typeof argument === "string" && argument.startsWith("test/"))),
-        boundaryResults: manifest.verification.faultMatrix.map((boundary) => ({
-          boundary: boundary.boundary,
-          atomicPublication: boundary.atomicPublication,
-          faultPoints: boundary.faultPoints,
-          passed: true,
-        })),
+        boundaryResults: manifest.verification.faultMatrix.map((boundary) => {
+          const pointResults = boundary.faultPoints.map((faultPoint) =>
+            canonicalBoundaryExecution.results.find((result) =>
+              result.boundary === boundary.boundary
+              && result.faultPoint === faultPoint));
+          return {
+            boundary: boundary.boundary,
+            atomicPublication: boundary.atomicPublication,
+            faultPoints: boundary.faultPoints,
+            pointResults,
+            passed: pointResults.every((result) => result?.passed === true),
+          };
+        }),
         invariantAssertions: {
           preCommitEffectsUnclaimed: true,
           postCommitEffectsReplayable: true,

@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { instrumentHostModeRuntime } from "./host-mode-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 const sourceRoot = new URL("..", import.meta.url);
@@ -70,6 +71,7 @@ export const pauseInstalledHostAtHarnessRunFault = async (installed, faultPoint)
  * @param {{packageDirectory: string}} installed
  */
 export const enableInstalledHostModeCli = async (installed) => {
+  await instrumentHostModeRuntime(installed);
   const cliPath = join(installed.packageDirectory, "src", "cli.mjs");
   const source = await readFile(cliPath, "utf8");
   const parseAnchor = "    } else if (current === \"--startup-timeout-ms\") {\n";

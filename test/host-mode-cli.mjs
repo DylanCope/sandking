@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-// Test-only driver for the pre-existing Host negotiation and timing fixtures.
-// The installed production command deliberately has no Host fault-mode option.
-import { RuntimeStartupError, launchRuntime } from "../src/runtime.mjs";
+// Test-only driver for Host negotiation and timing fixtures. It copies the
+// production runtime into Host-private test state, instruments only that copy,
+// and never adds a fault option to an installed production command.
+import { loadTestHostModeRuntime } from "./host-mode-runtime.mjs";
 
 const argv = process.argv.slice(2);
 if (argv[0] !== "launch") {
@@ -31,9 +32,14 @@ for (let index = 1; index < argv.length; index += 1) {
     throw new Error(`test_host_mode_driver_option_unsupported:${current}`);
   }
 }
-if (!options.hostMode) {
+if (!options.hostMode || !options.dataDir) {
   throw new Error("test_host_mode_driver_mode_missing");
 }
+
+const { RuntimeStartupError, launchRuntime } = await loadTestHostModeRuntime({
+  dataDir: options.dataDir,
+  hostMode: options.hostMode,
+});
 
 try {
   const output = await launchRuntime(options);

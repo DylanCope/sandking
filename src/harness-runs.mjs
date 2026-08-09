@@ -1388,6 +1388,10 @@ const superviseConformanceHarness = async (run, context, observer) => {
     );
     forcedTerminationTimer = scheduledEscalation.timer;
     forcedTerminationOperation = scheduledEscalation.operation;
+    // The deadline can fault independently while the adapter-completion path
+    // is still settling. Attach a handler immediately; the awaited operation
+    // below still propagates the injected interruption to supervision.
+    void forcedTerminationOperation.catch(() => undefined);
     cancellationOperation = (async () => {
       await cancellationPreparation;
       const windowsProcessTree = windowsProcessTreePromise
@@ -1502,7 +1506,7 @@ const superviseConformanceHarness = async (run, context, observer) => {
  *   loadLaunchContext: (projectId: string) => Promise<any>,
  *   now?: () => Date,
  *   cancellationGraceMs?: number,
- *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_state_commit" | "harness_run_launch.after_commit" | "harness_run_lifecycle.adapter_ready.before_commit" | "harness_run_lifecycle.adapter_ready.after_state_commit" | "harness_run_terminal_envelope.before_commit" | "harness_run_terminal_envelope.after_state_commit" | "harness_run_cancellation.before_commit" | "harness_run_cancellation.after_state_commit" | "harness_run_cancellation.after_commit" | "harness_run_cancellation.cooperative_signal.before_dispatch" | "harness_run_cancellation.cooperative_signal.after_dispatch" | "harness_run_cancellation.cooperative_signal.after_state_commit" | "harness_run_cancellation.forced_signal.before_dispatch" | "harness_run_cancellation.forced_signal.after_dispatch" | "harness_run_cancellation.forced_signal.after_state_commit" | "harness_run_cancellation.before_termination_confirmation_commit" | "harness_run_cancellation.termination_confirmation.before_commit" | "harness_run_cancellation.termination_confirmation.after_state_commit" | "harness_run_outcome.before_commit" | "harness_run_outcome.after_state_commit" | "harness_run_reconciliation.before_commit" | "harness_run_reconciliation.after_state_commit" | "harness_run_reconciliation.after_commit" | "harness_run_recovery.before_intent_commit" | "harness_run_recovery.after_intent_commit" | "harness_run_recovery.before_action" | "harness_run_recovery.after_action" | "harness_run_recovery.before_result_commit" | "harness_run_recovery.after_state_commit" | "harness_run_recovery.after_commit" | "harness_run_migration.before_commit" | "harness_run_migration.after_state_commit" | "harness_run_migration.after_commit") => Promise<void> | void,
+ *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_state_commit" | "harness_run_launch.after_commit" | "harness_run_lifecycle.adapter_ready.before_commit" | "harness_run_lifecycle.adapter_ready.after_state_commit" | "harness_run_terminal_envelope.before_commit" | "harness_run_terminal_envelope.after_state_commit" | "harness_run_cancellation.before_commit" | "harness_run_cancellation.after_state_commit" | "harness_run_cancellation.after_commit" | "harness_run_cancellation.cooperative_signal.before_dispatch" | "harness_run_cancellation.cooperative_signal.after_dispatch" | "harness_run_cancellation.cooperative_signal.after_state_commit" | "harness_run_cancellation.forced_signal.before_dispatch" | "harness_run_cancellation.forced_signal.after_dispatch" | "harness_run_cancellation.forced_signal.after_state_commit" | "harness_run_cancellation.termination_confirmation.before_commit" | "harness_run_cancellation.termination_confirmation.after_state_commit" | "harness_run_outcome.before_commit" | "harness_run_outcome.after_state_commit" | "harness_run_reconciliation.before_commit" | "harness_run_reconciliation.after_state_commit" | "harness_run_reconciliation.after_commit" | "harness_run_recovery.before_intent_commit" | "harness_run_recovery.after_intent_commit" | "harness_run_recovery.before_action" | "harness_run_recovery.after_action" | "harness_run_recovery.before_result_commit" | "harness_run_recovery.after_state_commit" | "harness_run_recovery.after_commit" | "harness_run_migration.before_commit" | "harness_run_migration.after_state_commit" | "harness_run_migration.after_commit") => Promise<void> | void,
  *   inspectInterruptedRunTermination?: (run: z.infer<typeof harnessRunSchema>) => Promise<{platform: "linux" | "win32" | "darwin", status: "confirmed" | "unconfirmed", relatedProcessState?: "unknown" | "running_confirmed", identityProof?: "unavailable" | "retained_supervision_identity", processCount?: number | null, launchSettled?: boolean | null, treeEmpty?: boolean | null, safeToTerminate?: boolean}>,
  *   terminateConfirmedInterruptedRun?: (run: z.infer<typeof harnessRunSchema>, actionIdentity: {auditId: string, idempotencyKeyHash: string}) => Promise<{platform: "linux" | "win32" | "darwin", status: "confirmed" | "unconfirmed", relatedProcessState?: "unknown" | "running_confirmed", identityProof?: "unavailable" | "retained_supervision_identity", processCount?: number | null, launchSettled?: boolean | null, treeEmpty?: boolean | null, safeToTerminate?: boolean}>,
  * }} options
@@ -2290,14 +2294,29 @@ export const createHarnessRunManager = async (options) => {
           });
         },
         onSupervisorAvailable: (supervisor) => {
-          cancellationSupervisor = supervisor;
+          const faultAwareSupervisor = {
+            ...supervisor,
+            requestCancellation: async (
+              /** @type {string} */ cooperativeDeadlineAt,
+            ) => {
+              try {
+                return await supervisor.requestCancellation(cooperativeDeadlineAt);
+              } catch (error) {
+                if (error instanceof InjectedSupervisionInterruption) {
+                  await supervisor.interrupt();
+                }
+                throw error;
+              }
+            },
+          };
+          cancellationSupervisor = faultAwareSupervisor;
           releaseSupervisedProcessTree = supervisor.releaseProcessTree;
-          activeSupervisions.set(initialRun.harnessRunId, supervisor);
+          activeSupervisions.set(initialRun.harnessRunId, faultAwareSupervisor);
           const cooperativeDeadlineAt = acceptedCancellations.get(
             initialRun.harnessRunId,
           );
           if (cooperativeDeadlineAt) {
-            void supervisor.requestCancellation(cooperativeDeadlineAt)
+            void faultAwareSupervisor.requestCancellation(cooperativeDeadlineAt)
               .catch(() => undefined);
           }
         },
@@ -2357,9 +2376,6 @@ export const createHarnessRunManager = async (options) => {
           );
         },
         onCancellationTerminationConfirmed: async (confirmedAt) => {
-          await injectSupervisionFault(
-            "harness_run_cancellation.before_termination_confirmation_commit",
-          );
           await injectSupervisionFault(
             "harness_run_cancellation.termination_confirmation.before_commit",
           );

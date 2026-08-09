@@ -81,6 +81,33 @@ test("fault injection remains outside production CLI, Host, protocol, and browse
   const productionCliText = await readFile(new URL("../src/cli.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(productionCliText, /--host-mode|\bhostMode\b/);
 
+  const productionHostText = await readFile(
+    new URL("../src/local-host.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(productionHostText, /--mode|\bmode ===/);
+  for (const faultMode of [
+    "exit-before-ack",
+    "hang-before-ack",
+    "malformed-frame",
+    "secret-probe",
+    "pause-after-project-registration",
+    "delayed-harness-run-launch-response",
+  ]) {
+    assert.doesNotMatch(productionHostText, new RegExp(faultMode));
+  }
+
+  const productionRuntimeText = await readFile(
+    new URL("../src/runtime.mjs", import.meta.url),
+    "utf8",
+  );
+  const productionDaemonText = await readFile(
+    new URL("../src/runtime-daemon.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(productionRuntimeText, /--host-mode|\bhostMode\b/);
+  assert.doesNotMatch(productionDaemonText, /--host-mode|\bhostMode\b/);
+
   const publicContractText = (await Promise.all([
     "../src/local-host.mjs",
     "../src/protocol.mjs",
@@ -147,4 +174,28 @@ test("retained issue 164 evidence identifies a current sanitized packaged qualif
   assert.ok(Object.values(evidence.securityAssertions).every(Boolean));
   assert.doesNotMatch(evidenceText,
     /host-death-reconciliation-secret|durable-environment-dump-164|raw-durable-retry-key-164|unrestricted-process-handle-164|TRACKED_PROJECT_CHANGE_164|process\.env|GITHUB_TOKEN=|SANDKING_CONTROLLER_SECRET=/i);
+
+  const canonicalBoundaryResult = evidence.scenarioResults.find(({ id }) =>
+    id === "durable-execution/recovers-every-canonical-boundary");
+  assert.ok(canonicalBoundaryResult);
+  assert.deepEqual(
+    canonicalBoundaryResult.boundaryResults.map(({ boundary }) => boundary),
+    manifest.verification.faultMatrix.map(({ boundary }) => boundary),
+  );
+  for (const declaredBoundary of manifest.verification.faultMatrix) {
+    const retainedBoundary = canonicalBoundaryResult.boundaryResults.find(({ boundary }) =>
+      boundary === declaredBoundary.boundary);
+    assert.ok(retainedBoundary, declaredBoundary.boundary);
+    assert.equal(retainedBoundary.passed, true, declaredBoundary.boundary);
+    assert.deepEqual(
+      retainedBoundary.pointResults.map(({ faultPoint }) => faultPoint),
+      declaredBoundary.faultPoints,
+      declaredBoundary.boundary,
+    );
+    assert.ok(retainedBoundary.pointResults.every((result) =>
+      result.injected === true
+      && result.restarted === true
+      && result.converged === true
+      && result.passed === true), declaredBoundary.boundary);
+  }
 });
