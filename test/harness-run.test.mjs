@@ -765,7 +765,7 @@ test("cancellation acceptance commits before the cooperative signal is dispatche
     const committed = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
     );
-    assert.equal(committed.schemaVersion, 5);
+    assert.equal(committed.schemaVersion, 6);
     assert.equal(committed.runs[0].status, "cancelling");
     assert.match(committed.runs[0].cancellation.auditId, /^audit-[a-f0-9]{24}$/);
     assert.equal(committed.runs[0].cancellation.cooperativeSignalSentAt, null);
@@ -1068,6 +1068,7 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
     assert.equal(conflict.code, "idempotency_key_conflict");
     assert.deepEqual(conflict.prohibitedSideEffects, {
       harnessRunCreated: false,
+      adapterStarted: false,
       projectWrite: false,
     });
     const afterReplay = JSON.parse(
@@ -1377,6 +1378,110 @@ test("startup reconciles a durably launched run before exposing manager operatio
       audit.action === "harness.run.outcome"
       && audit.details.harnessRunId === interruptedRun.harnessRunId).length, 1);
     assert.deepEqual((await readdir(fixture.projectPath)).sort(), projectFilesBefore);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("startup retains recovery-required truth when Host-loss termination is unconfirmed", async () => {
+  const fixture = await createFixture("sandking-harness-reconcile-uncertain-");
+  const request = hashedLaunchRequest(launchRequest(
+    fixture.registered.project.projectId,
+    160,
+    { idempotencyKey: "reconcile-uncertain-termination" },
+  ));
+  try {
+    const interruptedManager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      faultInjector: (point) => {
+        if (point === "harness_run_launch.after_state_commit") {
+          throw new Error("injected_host_death_before_supervision");
+        }
+      },
+    });
+    await assert.rejects(
+      interruptedManager.launch(request),
+      /injected_host_death_before_supervision/,
+    );
+    const interruptedState = JSON.parse(
+      await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+    );
+    const interruptedRun = structuredClone(interruptedState.runs[0]);
+
+    const restarted = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: async () => {
+        throw new Error("uncertain_reconciliation_must_not_resolve_launch_context");
+      },
+      now: () => new Date("2026-08-09T17:00:00.000Z"),
+      inspectInterruptedRunTermination: async (run) => {
+        assert.equal(run.harnessRunId, interruptedRun.harnessRunId);
+        return { platform: "darwin", status: "unconfirmed" };
+      },
+    });
+    const observation = await restarted.observe({
+      requestId: "observe-recovery-required-run",
+      harnessRunId: interruptedRun.harnessRunId,
+      afterSequence: 0,
+    });
+
+    assert.equal(observation.run.status, "recovery_required");
+    assert.equal(observation.outcome, null);
+    assert.deepEqual(observation.run.recovery, {
+      code: "harness_process_termination_unconfirmed",
+      previousStatus: "starting",
+      detectedAt: "2026-08-09T17:00:00.000Z",
+      platform: "darwin",
+      terminationEvidence: "unconfirmed",
+      reconciliationAuditId: observation.run.recovery.reconciliationAuditId,
+    });
+    assert.match(observation.run.recovery.reconciliationAuditId,
+      /^audit-[a-f0-9]{24}$/);
+    assert.deepEqual(observation.events.slice(0, -1), interruptedRun.events);
+    assert.equal(observation.events.at(-1).type, "harness_run_recovery_required");
+    assert.equal(observation.events.at(-1).outcomeReference, null);
+
+    const blockedReplacement = await restarted.launch(hashedLaunchRequest(launchRequest(
+      fixture.registered.project.projectId,
+      16_000,
+      { idempotencyKey: "replacement-while-recovery-required" },
+    )));
+    assert.equal(blockedReplacement.type, "harness.run.launch.failure");
+    assert.equal(blockedReplacement.code, "harness_recovery_required");
+    assert.equal(blockedReplacement.prohibitedSideEffects.harnessRunCreated, false);
+    assert.equal(blockedReplacement.prohibitedSideEffects.adapterStarted, false);
+    const blockedCancellation = await restarted.cancel(cancellationRequest(
+      interruptedRun.harnessRunId,
+      { idempotencyKey: "cancel-recovery-required-run" },
+    ));
+    assert.equal(blockedCancellation.type, "harness.run.cancel.failure");
+    assert.equal(blockedCancellation.code, "harness_run_not_cancellable");
+    assert.equal(blockedCancellation.prohibitedSideEffects.cancellationAccepted, false);
+
+    const repeated = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      inspectInterruptedRunTermination: async () => {
+        throw new Error("settled_recovery_state_must_not_be_reclassified");
+      },
+    });
+    const repeatedObservation = await repeated.observe({
+      requestId: "observe-repeated-recovery-required-run",
+      harnessRunId: interruptedRun.harnessRunId,
+      afterSequence: 0,
+    });
+    assert.deepEqual(repeatedObservation.run, observation.run);
+    assert.deepEqual(repeatedObservation.events, observation.events);
+    assert.equal(fixture.audits.filter((audit) =>
+      audit.action === "harness.run.reconcile"
+      && audit.details.harnessRunId === interruptedRun.harnessRunId).length, 1);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -1845,7 +1950,7 @@ test("distinct launch outcomes remain durable and lookup-safe past 256 keys", as
       assert.equal(outcome.code, "project_not_found");
     }
     const retained = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
-    assert.equal(retained.schemaVersion, 5);
+    assert.equal(retained.schemaVersion, 6);
     assert.equal(retained.launchOutcomes.length, 257);
     assert.deepEqual(retained.cancellationOutcomes, []);
     const reloaded = await createHarnessRunManager(options);
@@ -1885,12 +1990,14 @@ test("schema-v2 execution history migrates deterministically without losing acce
     for (const run of v2.runs) {
       delete run.executionSnapshot;
       delete run.cancellation;
+      delete run.recovery;
       delete run.launchIdempotencyKeyHash;
     }
     for (const outcome of [...v2.launchOutcomes, ...v2.legacyStartOutcomes]) {
       if (outcome.response?.run) {
         delete outcome.response.run.executionSnapshot;
         delete outcome.response.run.cancellation;
+        delete outcome.response.run.recovery;
         delete outcome.response.run.launchIdempotencyKeyHash;
       }
     }
@@ -1914,7 +2021,7 @@ test("schema-v2 execution history migrates deterministically without losing acce
     const migrated = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
     );
-    assert.equal(migrated.schemaVersion, 5);
+    assert.equal(migrated.schemaVersion, 6);
     const { executionSnapshot: migratedSnapshot, ...migratedHistory } = migrated.runs[0];
     const { executionSnapshot: originalSnapshot, ...originalHistory } = v4.runs[0];
     void originalSnapshot;
@@ -2007,11 +2114,13 @@ test("schema-v3 immutable execution history gains cancellation state without rew
     delete v3.cancellationOutcomes;
     for (const run of v3.runs) {
       delete run.cancellation;
+      delete run.recovery;
       delete run.launchIdempotencyKeyHash;
     }
     for (const outcome of [...v3.launchOutcomes, ...v3.legacyStartOutcomes]) {
       if (outcome.response?.run) {
         delete outcome.response.run.cancellation;
+        delete outcome.response.run.recovery;
         delete outcome.response.run.launchIdempotencyKeyHash;
       }
     }
@@ -2026,18 +2135,21 @@ test("schema-v3 immutable execution history gains cancellation state without rew
     const migrated = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
     );
-    assert.equal(migrated.schemaVersion, 5);
+    assert.equal(migrated.schemaVersion, 6);
     assert.deepEqual(migrated.cancellationOutcomes, []);
     assert.equal(migrated.runs[0].cancellation, null);
     const {
       cancellation,
+      recovery,
       launchIdempotencyKeyHash,
       ...migratedHistory
     } = migrated.runs[0];
     void cancellation;
+    assert.equal(recovery, null);
     assert.deepEqual(migratedHistory, v3.runs[0]);
     assert.equal(launchIdempotencyKeyHash, v3.launchOutcomes[0].idempotencyKeyHash);
     assert.equal(migrated.launchOutcomes[0].response.run.cancellation, null);
+    assert.equal(migrated.launchOutcomes[0].response.run.recovery, null);
     assert.equal(
       migrated.launchOutcomes[0].response.run.launchIdempotencyKeyHash,
       v3.launchOutcomes[0].idempotencyKeyHash,
@@ -2073,6 +2185,8 @@ test("schema-v4 terminal history gains reconciliation metadata without changing 
     );
     const v4 = structuredClone(current);
     v4.schemaVersion = 4;
+    delete v4.runs[0].recovery;
+    delete v4.launchOutcomes[0].response.run.recovery;
     delete v4.runs[0].outcome.outcomeAuditId;
     delete v4.runs[0].outcome.interruption;
     delete v4.runs[0].launchIdempotencyKeyHash;
@@ -2091,7 +2205,7 @@ test("schema-v4 terminal history gains reconciliation metadata without changing 
     const migrated = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
     );
-    assert.equal(migrated.schemaVersion, 5);
+    assert.equal(migrated.schemaVersion, 6);
     assert.equal(migrated.runs[0].outcome.outcomeAuditId, null);
     assert.equal(migrated.runs[0].outcome.interruption, null);
     assert.equal(
@@ -2100,6 +2214,8 @@ test("schema-v4 terminal history gains reconciliation metadata without changing 
     );
     const migratedWithoutMetadata = structuredClone(migrated);
     migratedWithoutMetadata.schemaVersion = 4;
+    delete migratedWithoutMetadata.runs[0].recovery;
+    delete migratedWithoutMetadata.launchOutcomes[0].response.run.recovery;
     delete migratedWithoutMetadata.runs[0].outcome.outcomeAuditId;
     delete migratedWithoutMetadata.runs[0].outcome.interruption;
     delete migratedWithoutMetadata.runs[0].launchIdempotencyKeyHash;
@@ -2176,6 +2292,11 @@ test("startup repairs launch fingerprints retained by the initial schema-v5 migr
     const staleV5 = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
     );
+    staleV5.schemaVersion = 5;
+    for (const run of staleV5.runs) delete run.recovery;
+    for (const outcome of [...staleV5.launchOutcomes, ...staleV5.legacyStartOutcomes]) {
+      if (outcome.response?.run) delete outcome.response.run.recovery;
+    }
     const staleFingerprint = schemaV4LaunchRequestFingerprint(request);
     staleV5.launchOutcomes[0].requestFingerprint = staleFingerprint;
     await writeFile(
@@ -2315,7 +2436,7 @@ test("schema-v4 rejected launch outcomes replay under their original fingerprint
     assert.equal(conflict.code, "idempotency_key_conflict");
     assert.equal(conflict.prohibitedSideEffects.harnessRunCreated, false);
     const retained = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
-    assert.equal(retained.schemaVersion, 5);
+    assert.equal(retained.schemaVersion, 6);
     assert.equal(retained.runs.length, 0);
     assert.equal(retained.launchOutcomes.length, 1);
     assert.equal(
@@ -2457,10 +2578,12 @@ test("main-era Harness-run history remains observable after the launch-schema up
       join(dataDir, "harness-runs.json"),
       "utf8",
     ));
-    assert.equal(initialized.schemaVersion, 5);
-    const [{ executionSnapshot, cancellation, ...migratedLegacyRun }] = initialized.runs;
+    assert.equal(initialized.schemaVersion, 6);
+    const [{ executionSnapshot, cancellation, recovery, ...migratedLegacyRun }] =
+      initialized.runs;
     assert.deepEqual(migratedLegacyRun, legacyRun);
     assert.equal(cancellation, null);
+    assert.equal(recovery, null);
     assert.deepEqual(executionSnapshot, {
       schemaVersion: 1,
       capture: "migration",
@@ -2531,6 +2654,7 @@ test("main-era Harness-run history remains observable after the launch-schema up
       startAuditId: legacyRun.startAuditId,
       executionSnapshot,
       cancellation: null,
+      recovery: null,
     });
     const lookup = await manager.lookup({
       requestId: "lookup-legacy-start",
@@ -2559,7 +2683,7 @@ test("main-era Harness-run history remains observable after the launch-schema up
     assert.equal(conflictingLaunch.code, "idempotency_key_conflict");
     assert.equal(conflictingLaunch.prohibitedSideEffects.harnessRunCreated, false);
     const migrated = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
-    assert.equal(migrated.schemaVersion, 5);
+    assert.equal(migrated.schemaVersion, 6);
     assert.deepEqual(migrated.runs, initialized.runs);
     assert.deepEqual(migrated.launchOutcomes, []);
     assert.deepEqual(migrated.cancellationOutcomes, []);

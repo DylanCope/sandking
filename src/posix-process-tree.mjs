@@ -332,7 +332,7 @@ const startedNoLaterThan = (left, right) => {
  *
  * @param {string} executable
  * @param {string[]} args
- * @param {{cwd: string, env: NodeJS.ProcessEnv}} options
+ * @param {{cwd: string, env: NodeJS.ProcessEnv, hostLossTerminationEvidencePath?: string}} options
  */
 export const spawnPosixProcessTree = (executable, args, options) => {
   if (process.platform === "darwin") {
@@ -388,6 +388,13 @@ export const spawnPosixProcessTree = (executable, args, options) => {
   const wrapperPid = child.pid;
 
   let adapterSpawned = false;
+  let adapterStartSettled = false;
+  /** @type {(started: boolean) => void} */
+  let resolveAdapterStarted = () => {};
+  /** @type {Promise<boolean>} */
+  const adapterStarted = new Promise((resolve) => {
+    resolveAdapterStarted = resolve;
+  });
   /** @type {number | null} */
   let internalSupervisorPid = null;
   /** @type {number | null} */
@@ -430,6 +437,12 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     if (adapterExitResult) return;
     adapterExitResult = result;
     resolveAdapterExit(result);
+  };
+  /** @param {boolean} started */
+  const settleAdapterStarted = (started) => {
+    if (adapterStartSettled) return;
+    adapterStartSettled = true;
+    resolveAdapterStarted(started);
   };
   /** @param {number} requestId @param {boolean} sent @param {string | null} sentAt */
   const settleSignal = (requestId, sent, sentAt) => {
@@ -666,6 +679,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     if (!message || typeof message !== "object") return;
     if (message.type === "posix-process-tree.adapter-spawned") {
       adapterSpawned = true;
+      settleAdapterStarted(true);
       internalSupervisorPid = Number.isSafeInteger(message.supervisorPid)
         && message.supervisorPid > 0
         && message.supervisorPid !== wrapperPid
@@ -680,6 +694,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
       return;
     }
     if (message.type === "posix-process-tree.adapter-error") {
+      settleAdapterStarted(false);
       settleAdapterExit({ code: null, signal: null, startFailed: true });
       return;
     }
@@ -754,6 +769,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
   exactSignalResultChannel.once("error", () => settleAllExactSignals(null));
   exactSignalResultChannel.once("close", () => settleAllExactSignals(null));
   child.once("error", () => {
+    settleAdapterStarted(false);
     settleAdapterExit({ code: null, signal: null, startFailed: true });
     settleAllExactSignals(null);
   });
@@ -761,6 +777,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     wrapperExitResult = { code, signal };
   });
   child.once("close", (code, signal) => {
+    settleAdapterStarted(adapterSpawned);
     wrapperExitResult ??= { code, signal };
     if (!adapterExitResult) {
       settleAdapterExit({
@@ -913,6 +930,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
   return {
     child,
     adapterChannel,
+    adapterStarted,
     adapterExit,
     adapterExited: () => adapterExitResult !== null,
     captureDescendants,

@@ -38,7 +38,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.cancel.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-host-death-reconciliation")
+  .update("sandking-host-control-schema-v1-with-host-death-recovery")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -375,6 +375,7 @@ export const harnessRunLaunchFailureSchema = z.object({
     "harness_capability_unsupported",
     "harness_adapter_protocol_invalid",
     "harness_preparation_side_effect_detected",
+    "harness_recovery_required",
   ]),
   retryable: z.boolean(),
   authorizationClass: harnessRunAuthorizationClassSchema,
@@ -383,6 +384,7 @@ export const harnessRunLaunchFailureSchema = z.object({
   auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
   prohibitedSideEffects: z.object({
     harnessRunCreated: z.literal(false),
+    adapterStarted: z.literal(false).default(false),
     projectWrite: z.literal(false),
   }).strict(),
 }).strip();

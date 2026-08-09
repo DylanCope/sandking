@@ -3,15 +3,20 @@ import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   chmodSync,
+  closeSync,
+  fsyncSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -20,9 +25,11 @@ const containmentPreloadPath = fileURLToPath(
   new URL("./darwin-process-containment.cjs", import.meta.url),
 );
 const lsappinfoPath = "/usr/bin/lsappinfo";
+const applicationSpecifierPattern = /^dev\.sandking\.harness\.[a-f0-9]{16,64}$/;
 
 /** @typedef {{code: number | null, signal: string | null, startFailed: boolean}} AdapterExitResult */
 /** @typedef {{sent: boolean, sentAt: string | null}} SignalResult */
+/** @typedef {{schemaVersion: 1, platform: "darwin", applicationSpecifier: string, status: "termination_confirmed" | "termination_unconfirmed", killAccepted: boolean, coalitionAbsent: boolean, observedAt: string}} DarwinHostLossTerminationEvidence */
 
 /**
  * The detached supervisor, not the adapter, owns the cooperative process-group
@@ -126,6 +133,142 @@ export const darwinSupervisorSpawnOptions = () => ({
   stdio: /** @type {const} */ ("ignore"),
 });
 
+/** @param {string} evidencePath @param {Record<string, unknown>} evidence */
+const publishDarwinHostLossTerminationEvidence = (evidencePath, evidence) => {
+  const temporaryPath = `${evidencePath}.${randomBytes(8).toString("hex")}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(evidence)}\n`, {
+    mode: 0o600,
+    flag: "wx",
+  });
+  const file = openSync(temporaryPath, "r");
+  try {
+    fsyncSync(file);
+  } finally {
+    closeSync(file);
+  }
+  renameSync(temporaryPath, evidencePath);
+  const directory = openSync(dirname(evidencePath), "r");
+  try {
+    fsyncSync(directory);
+  } finally {
+    closeSync(directory);
+  }
+};
+
+/** @param {string[]} arguments_ */
+const runLsappinfo = (arguments_) => new Promise((resolve) => {
+  execFile(lsappinfoPath, arguments_, {
+    timeout: arguments_[0] === "kill" ? 4_000 : 500,
+    windowsHide: true,
+  }, (error, stdout) => resolve({ ok: !error, stdout: String(stdout ?? "") }));
+});
+
+/** @param {unknown} value @returns {DarwinHostLossTerminationEvidence | null} */
+const parseDarwinHostLossTerminationEvidence = (value) => {
+  const record = /** @type {Record<string, any>} */ (value);
+  if (
+    !value
+    || typeof value !== "object"
+    || record.schemaVersion !== 1
+    || record.platform !== "darwin"
+    || !applicationSpecifierPattern.test(record.applicationSpecifier ?? "")
+    || !["termination_confirmed", "termination_unconfirmed"].includes(record.status)
+    || typeof record.killAccepted !== "boolean"
+    || typeof record.coalitionAbsent !== "boolean"
+    || Number.isNaN(Date.parse(record.observedAt ?? ""))
+    || (record.status === "termination_confirmed" && record.coalitionAbsent !== true)
+    || (record.status === "termination_unconfirmed" && record.coalitionAbsent !== false)
+  ) {
+    return null;
+  }
+  return /** @type {DarwinHostLossTerminationEvidence} */ (record);
+};
+
+/**
+ * Ask LaunchServices to terminate the retained application coalition, then
+ * durably publish proof only after its non-reused bundle identity disappears.
+ * A failed kill invocation can still converge to confirmed absence; an
+ * unreadable or live coalition always remains explicitly unconfirmed.
+ *
+ * @param {{applicationSpecifier: string, terminationEvidencePath: string}} configuration
+ * @param {{runLsappinfo?: (arguments_: string[]) => Promise<{ok: boolean, stdout: string}>, now?: () => Date, delay?: (milliseconds: number) => Promise<void>, maxObservationAttempts?: number}} [options]
+ */
+export const terminateDarwinCoalitionAfterHostLoss = async (configuration, options = {}) => {
+  if (
+    !applicationSpecifierPattern.test(configuration.applicationSpecifier)
+    || typeof configuration.terminationEvidencePath !== "string"
+    || configuration.terminationEvidencePath.length === 0
+  ) {
+    throw new Error("darwin_host_loss_termination_configuration_invalid");
+  }
+  const invoke = options.runLsappinfo ?? runLsappinfo;
+  const delay = options.delay ?? ((milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const maxObservationAttempts = options.maxObservationAttempts ?? 16;
+  const termination = await invoke([
+    "kill",
+    "-coalition",
+    "-launchdjobs",
+    "-hard",
+    configuration.applicationSpecifier,
+  ]).catch(() => ({ ok: false, stdout: "" }));
+  let coalitionAbsent = false;
+  for (let attempt = 0; attempt < maxObservationAttempts; attempt += 1) {
+    const observation = await invoke([
+      "find",
+      "--includeExitedApplications",
+      `bundleid=${configuration.applicationSpecifier}`,
+    ]).catch(() => ({ ok: false, stdout: "" }));
+    if (observation.ok
+      && !/ASN:0x[0-9a-f]+[-:]0x[0-9a-f]+:/i.test(observation.stdout)) {
+      coalitionAbsent = true;
+      break;
+    }
+    if (attempt + 1 < maxObservationAttempts) await delay(100);
+  }
+  const evidence = {
+    schemaVersion: 1,
+    platform: "darwin",
+    applicationSpecifier: configuration.applicationSpecifier,
+    status: coalitionAbsent ? "termination_confirmed" : "termination_unconfirmed",
+    killAccepted: termination.ok,
+    coalitionAbsent,
+    observedAt: (options.now ?? (() => new Date()))().toISOString(),
+  };
+  publishDarwinHostLossTerminationEvidence(configuration.terminationEvidencePath, evidence);
+  return evidence;
+};
+
+/** @param {string} evidencePath */
+export const readDarwinHostLossTerminationEvidence = async (evidencePath) => {
+  try {
+    return parseDarwinHostLossTerminationEvidence(JSON.parse(await readFile(evidencePath, "utf8")));
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Startup is serialized behind this bounded wait so it cannot classify a run
+ * while the detached supervisor is still proving coalition removal.
+ * @param {string} evidencePath
+ * @param {{timeoutMs?: number, delay?: (milliseconds: number) => Promise<void>}} [options]
+ */
+export const waitForDarwinHostLossTerminationEvidence = async (
+  evidencePath,
+  options = {},
+) => {
+  const deadline = Date.now() + (options.timeoutMs ?? 15_000);
+  const delay = options.delay ?? ((milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  while (Date.now() < deadline) {
+    const evidence = await readDarwinHostLossTerminationEvidence(evidencePath);
+    if (evidence) return evidence.status;
+    await delay(25);
+  }
+  return "termination_unconfirmed";
+};
+
 const runDarwinLauncher = async () => {
   const configurationPath = process.argv[3];
   if (!configurationPath) process.exit(1);
@@ -143,6 +286,40 @@ const runDarwinLauncher = async () => {
   } catch {
     process.exit(1);
   }
+};
+
+const runDarwinTerminationWitness = async () => {
+  const configurationPath = process.argv[3];
+  if (!configurationPath) process.exit(1);
+  let configuration;
+  try {
+    configuration = JSON.parse(readFileSync(configurationPath, "utf8"));
+  } catch {
+    process.exit(1);
+  }
+  if (
+    !applicationSpecifierPattern.test(configuration.applicationSpecifier ?? "")
+    || typeof configuration.hostLossTerminationEvidencePath !== "string"
+  ) {
+    process.exit(1);
+  }
+  await new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve(undefined);
+    };
+    process.stdin.once("end", finish);
+    process.stdin.once("close", finish);
+    process.stdin.once("error", finish);
+    process.stdin.resume();
+  });
+  const evidence = await terminateDarwinCoalitionAfterHostLoss({
+    applicationSpecifier: configuration.applicationSpecifier,
+    terminationEvidencePath: configuration.hostLossTerminationEvidencePath,
+  }).catch(() => null);
+  process.exit(evidence?.status === "termination_confirmed" ? 0 : 2);
 };
 
 const runDarwinSupervisor = async () => {
@@ -167,22 +344,8 @@ const runDarwinSupervisor = async () => {
     try {
       controlSocket.write(`${JSON.stringify(message)}\n`);
     } catch {
-      // The Host disappeared. The control-close path asks LaunchServices to
-      // terminate the still-identifiable application coalition.
-    }
-  };
-  const terminateCoalition = () => {
-    try {
-      const termination = spawn(lsappinfoPath, [
-        "kill",
-        "-coalition",
-        "-launchdjobs",
-        "-hard",
-        configuration.applicationSpecifier,
-      ], { stdio: "ignore" });
-      termination.unref();
-    } catch {
-      // Host restart reconciliation retains uncertainty if launchservicesd is unavailable.
+      // The Host disappeared. Its external termination witness owns the
+      // LaunchServices coalition removal and durable evidence boundary.
     }
   };
   let adapter;
@@ -231,7 +394,6 @@ const runDarwinSupervisor = async () => {
     }
   });
   controlSocket.once("close", () => {
-    terminateCoalition();
     process.exit(0);
   });
   let adapterExitReported = false;
@@ -276,8 +438,8 @@ const createOutputServer = (path, output) => {
  *
  * @param {string} executable
  * @param {string[]} args
- * @param {{cwd: string, env: NodeJS.ProcessEnv}} options
- * @returns {{child: import("node:child_process").ChildProcess, adapterChannel: PassThrough, adapterExit: Promise<AdapterExitResult>, adapterExited: () => boolean, captureDescendants: () => Promise<boolean>, prepareCancellation: () => Promise<boolean>, processTreeAlive: () => Promise<boolean>, signal: (signal: "SIGTERM" | "SIGKILL") => Promise<SignalResult>, release: () => Promise<void>}}
+ * @param {{cwd: string, env: NodeJS.ProcessEnv, hostLossTerminationEvidencePath?: string}} options
+ * @returns {{child: import("node:child_process").ChildProcess, adapterChannel: PassThrough, adapterStarted: Promise<boolean>, adapterExit: Promise<AdapterExitResult>, adapterExited: () => boolean, captureDescendants: () => Promise<boolean>, prepareCancellation: () => Promise<boolean>, processTreeAlive: () => Promise<boolean>, signal: (signal: "SIGTERM" | "SIGKILL") => Promise<SignalResult>, release: () => Promise<void>}}
  */
 export const spawnDarwinProcessTree = (executable, args, options) => {
   if (typeof process.getuid !== "function") {
@@ -334,6 +496,7 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
     env: darwinContainedEnvironment(options.env),
     channels,
     applicationSpecifier,
+    hostLossTerminationEvidencePath: options.hostLossTerminationEvidencePath ?? null,
   })}\n`, { mode: 0o600 });
 
   const child = /** @type {any} */ (new EventEmitter());
@@ -346,6 +509,13 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
   child.connected = true;
 
   let adapterSpawned = false;
+  let adapterStartSettled = false;
+  /** @type {(started: boolean) => void} */
+  let resolveAdapterStarted = () => {};
+  /** @type {Promise<boolean>} */
+  const adapterStarted = new Promise((resolve) => {
+    resolveAdapterStarted = resolve;
+  });
   /** @type {number | null} */
   let wrapperPid = null;
   /** @type {number | null} */
@@ -376,10 +546,38 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
     adapterExitResult = result;
     resolveAdapterExit(result);
   };
+  /** @param {boolean} started */
+  const settleAdapterStarted = (started) => {
+    if (adapterStartSettled) return;
+    adapterStartSettled = true;
+    resolveAdapterStarted(started);
+  };
   const failLaunch = () => {
     containmentAvailable = false;
+    settleAdapterStarted(false);
     settleAdapterExit({ code: null, signal: null, startFailed: true });
   };
+  /** @type {import("node:child_process").ChildProcess | null} */
+  let terminationWitness = null;
+  let terminationWitnessClosed = Promise.resolve();
+  if (typeof options.hostLossTerminationEvidencePath === "string") {
+    terminationWitness = spawn(process.execPath, [
+      supervisorPath,
+      "darwin-termination-witness",
+      configurationPath,
+    ], {
+      detached: true,
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    terminationWitnessClosed = new Promise((resolve) => {
+      terminationWitness?.once("exit", () => resolve(undefined));
+      terminationWitness?.once("error", () => {
+        failLaunch();
+        resolve(undefined);
+      });
+    });
+    terminationWitness.unref();
+  }
   controlServer.once("connection", (socket) => {
     controlServer.close();
     controlSocket = socket;
@@ -399,6 +597,7 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
         }
         if (message.type === "darwin-process-tree.adapter-spawned") {
           adapterSpawned = true;
+          settleAdapterStarted(true);
           containmentAvailable = true;
           wrapperPid = Number.isSafeInteger(message.wrapperPid) && message.wrapperPid > 0
             ? message.wrapperPid
@@ -435,6 +634,7 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
       }
     });
     socket.once("close", () => {
+      settleAdapterStarted(adapterSpawned);
       child.connected = false;
       child.exitCode = containmentRemoved ? null : 1;
       child.signalCode = containmentRemoved ? "SIGKILL" : null;
@@ -601,6 +801,8 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
       if (!containmentRemoved) await removeContainment();
       released = true;
       controlSocket?.destroy();
+      terminationWitness?.stdin?.end();
+      await terminationWitnessClosed;
       for (const server of [...outputServers, controlServer]) {
         try { server.close(); } catch { /* already closed */ }
       }
@@ -615,6 +817,7 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
   return {
     child: /** @type {import("node:child_process").ChildProcess} */ (child),
     adapterChannel,
+    adapterStarted,
     adapterExit,
     adapterExited: () => adapterExitResult !== null,
     captureDescendants: async () => containmentAvailable
@@ -632,4 +835,7 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
 if (process.platform === "darwin" && process.argv[1] === supervisorPath) {
   if (process.argv[2] === "darwin-launch") await runDarwinLauncher();
   if (process.argv[2] === "darwin-supervise") await runDarwinSupervisor();
+  if (process.argv[2] === "darwin-termination-witness") {
+    await runDarwinTerminationWitness();
+  }
 }

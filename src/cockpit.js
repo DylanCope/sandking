@@ -26,7 +26,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:75b0390fa1dd5155b3a83833e5101b4cf50662a5361ac2066cb480039f4bcb95",
+  schemaDigest: "sha256:0f008377397e7388d4ac6cff628f8d74a49d4f57905edb9c278248e744e1cfb7",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -72,8 +72,21 @@ const suppressLaunchConfirmation = () => {
   }
 };
 
-const selectedProjectLaunchReady = () =>
-  document.getElementById("project-readiness")?.dataset.harnessLaunchReady === "true";
+const selectedProjectLaunchReady = () => {
+  const selectedProject = document.getElementById("project-readiness");
+  return selectedProject?.dataset.harnessLaunchReady === "true"
+    && !(
+      currentHarnessRunObservation?.run?.status === "recovery_required"
+      && currentHarnessRunObservation.run.projectId === selectedProject.dataset.projectId
+    );
+};
+
+const blockLaunchForRetainedRecovery = () => {
+  if (!selectedProjectLaunchReady()) {
+    const launchButton = document.getElementById("launch-harness");
+    if (launchButton) launchButton.disabled = true;
+  }
+};
 
 const retainedHarnessRunCursor = () => {
   try {
@@ -549,6 +562,8 @@ const readPendingHarnessLaunch = () => {
       || !launch.parameters
       || typeof launch.parameters !== "object"
       || Array.isArray(launch.parameters)
+      || (launch.reconnectHarnessRunId !== undefined
+        && !/^harness-run-[a-f0-9]{24}$/.test(launch.reconnectHarnessRunId))
     ) {
       sessionStorage.removeItem(pendingHarnessLaunchStorageKey);
       return null;
@@ -850,14 +865,14 @@ const renderProjectPreparation = (
     hidden: true,
   });
   const updateProjectActionAvailability = () => {
-    const launchReady = currentProject?.canPrepareLaunchRequest === true
-      && selectedProjectLaunchReady();
+    const projectReady = currentProject?.canPrepareLaunchRequest === true;
+    const launchReady = projectReady && selectedProjectLaunchReady();
     launchButton.disabled = hostConnectionStatus !== "connected"
       || !launchReady
       || pendingHarnessLaunchRequestId !== null;
-    openController.disabled = hostConnectionStatus !== "connected" || !launchReady;
+    openController.disabled = hostConnectionStatus !== "connected" || !projectReady;
     openClaudeController.disabled = hostConnectionStatus !== "connected"
-      || !launchReady
+      || !projectReady
       || !claudeAvailable;
   };
 
@@ -1193,6 +1208,7 @@ const renderHarnessRun = (observation) => {
           projectId: run.projectId,
           parameters: snapshot.parameters ?? {},
           idempotencyKeyHash: run.launchIdempotencyKeyHash,
+          reconnectHarnessRunId: run.harnessRunId,
         };
         retainPendingHarnessLaunch(pendingLaunch);
         pendingHarnessLaunchRequestId = `harness-launch-reconnect-${harnessRequestSequence}`;
@@ -1210,12 +1226,32 @@ const renderHarnessRun = (observation) => {
               ? {}
               : { parameters: pendingLaunch.parameters }),
             idempotencyKeyHash: pendingLaunch.idempotencyKeyHash,
+            reconnectHarnessRunId: pendingLaunch.reconnectHarnessRunId,
           },
         }));
       });
       interruptionPanel.append(reconnectButton);
     }
     section.append(interruptionPanel);
+  }
+  if (run.status === "recovery_required" && run.recovery) {
+    section.append(element("section", {
+      id: "harness-run-recovery-required",
+      role: "alert",
+      "data-recovery-code": run.recovery.code,
+      "data-termination-evidence": run.recovery.terminationEvidence,
+      "data-reconciliation-audit-id": run.recovery.reconciliationAuditId,
+      "data-next-action": "recovery-required",
+    },
+    element("h3", {}, "Run requires recovery"),
+    element("p", { id: "harness-run-recovery-reason" },
+      "The Host could not prove that the retained Harness process coalition terminated. "
+      + "This run has no terminal outcome and replacement work is blocked."),
+    element("p", { id: "harness-run-recovery-history" },
+      "Earlier ordered events, immutable execution facts, and bounded diagnostic ranges remain "
+      + "available below."),
+    element("p", { id: "harness-run-recovery-guidance" },
+      "Do not launch the work again while related process state may still exist.")));
   }
   const executionFacts = element("section", {
     id: "harness-run-execution-snapshot",
@@ -1335,6 +1371,7 @@ const applyHarnessRunObservation = (observation) => {
       }
     : observation;
   currentHarnessRunObservation = visibleObservation;
+  blockLaunchForRetainedRecovery();
   updateWorkbenchChrome({ harnessRunObservation: visibleObservation });
   if (visibleObservation.run) {
     if (visibleObservation.run.harnessRunId === pendingSelection) {
@@ -1373,7 +1410,8 @@ const applyHarnessRunObservation = (observation) => {
   clearTimeout(harnessObservationTimer);
   if (
     !visibleObservation.run
-    || !["succeeded", "failed", "cancelled"].includes(visibleObservation.run.status)
+    || !["succeeded", "failed", "cancelled", "recovery_required"]
+      .includes(visibleObservation.run.status)
   ) {
     harnessObservationTimer = setTimeout(requestHarnessRunObservation, 75);
   }
@@ -2277,9 +2315,10 @@ socket.addEventListener("message", (event) => {
   document.documentElement.dataset.observationMode = message.observation.mode;
   document.documentElement.dataset.protocolVersion = message.protocol.version;
   document.documentElement.dataset.hostConnectionStatus = hostConnectionStatus;
+  currentHarnessRunObservation = message.viewModel.harnessRunObservation;
   app.textContent = "";
   app.append(renderWorkbench(message));
-  currentHarnessRunObservation = message.viewModel.harnessRunObservation;
+  blockLaunchForRetainedRecovery();
   harnessRunSection = document.getElementById("harness-run-observation");
   const pendingLaunch = readPendingHarnessLaunch();
   if (
@@ -2305,6 +2344,9 @@ socket.addEventListener("message", (event) => {
           ? {}
           : { parameters: pendingLaunch.parameters }),
         idempotencyKeyHash: pendingLaunch.idempotencyKeyHash,
+        ...(pendingLaunch.reconnectHarnessRunId
+          ? { reconnectHarnessRunId: pendingLaunch.reconnectHarnessRunId }
+          : {}),
       },
     }));
   }

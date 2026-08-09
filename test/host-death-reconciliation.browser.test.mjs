@@ -185,19 +185,27 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
       await page.locator("#project-path").fill(projectPath);
       await page.locator("#open-project").click();
       await page.waitForSelector("#launch-harness:not([disabled])", { timeout: 90_000 });
-      await page.locator("#harness-launch-parameter-issueNumber").fill("999999993");
-      await page.locator("#harness-launch-parameter-targetBranch")
-        .fill("sandcastle/issue-999999993");
-      await page.locator("#launch-harness").click();
-      await page.locator("#harness-launch-confirmation-yes").click();
-      await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} launched\./
-        .test(document.querySelector("#harness-launch-feedback")?.textContent ?? ""));
+      await page.locator("#open-project-controller").click();
+      await page.waitForSelector(
+        "#project-focused-controller-session[data-terminal-attachment='read-write']",
+        { timeout: 90_000 },
+      );
+      const controllerSessionId = await page.locator("#project-focused-controller-session")
+        .getAttribute("data-session-id");
+      await page.waitForFunction(() => document.querySelector(
+        "#project-controller-terminal-output",
+      )?.textContent?.includes("Conformance Controller ready"));
+      await page.locator("#project-controller-terminal-output .xterm-helper-textarea").focus();
+      await page.keyboard.type("launch 999999993 sandcastle/issue-999999993");
+      await page.keyboard.press("Enter");
+      await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} created/
+        .test(document.querySelector("#project-controller-terminal-output")?.textContent ?? ""));
 
       const { run: activeRun } = await waitForActiveRun(dataDir);
-      const launchFrame = firstSentFrames.find((frame) =>
-        frame.includes('"type":"browser.harness-run.launch"'));
-      assert.ok(launchFrame);
-      const originalLaunchRequest = JSON.parse(launchFrame).message;
+      assert.equal(activeRun.source, "controller-cli");
+      assert.equal(activeRun.controllerSessionId, controllerSessionId);
+      assert.equal(firstSentFrames.some((frame) =>
+        frame.includes('"type":"browser.harness-run.launch"')), false);
       const runtimeState = await readJson(join(dataDir, "runtime-state.json"));
       const hostPid = await findLocalHostPid(runtimeState.pid);
       const initialProcessTree = await inspectHostProcessTree(hostPid);
@@ -285,8 +293,11 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
       const retryFrame = secondSentFrames
         .map((frame) => JSON.parse(frame)?.message)
         .find((message) => message?.type === "browser.harness-run.launch");
-      assert.equal(retryFrame.idempotencyKeyHash, originalLaunchRequest.idempotencyKeyHash);
-      assert.deepEqual(retryFrame.parameters ?? {}, originalLaunchRequest.parameters ?? {});
+      assert.equal(retryFrame.reconnectHarnessRunId, activeRun.harnessRunId);
+      assert.equal(retryFrame.idempotencyKeyHash, activeRun.launchIdempotencyKeyHash);
+      assert.deepEqual(retryFrame.parameters ?? {}, activeRun.parameters ?? {});
+      assert.equal("source" in retryFrame, false);
+      assert.equal("controllerSessionId" in retryFrame, false);
 
       const reconciledState = await waitForRunCount(dataDir, 1);
       const reconciled = reconciledState.runs[0];
@@ -311,12 +322,11 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
       const processTreeAfterReplay = await inspectHostProcessTree(restartedHostPid);
       assert.deepEqual(processTreeAfterReplay.descendants, [],
         JSON.stringify(processTreeAfterReplay));
-      assert.equal(
-        adapterStartCountBeforeHostDeath + processTreeAfterReplay.adapters.length,
-        adapterStartCountBeforeHostDeath,
-      );
       assert.deepEqual(await snapshotProjectContents(projectPath), projectContentsBefore);
       const auditsBeforeNewLaunch = await readAudits(dataDir);
+      assert.equal(auditsBeforeNewLaunch.filter((audit) =>
+        audit.action === "harness.adapter.start"
+        && audit.details.harnessRunId === activeRun.harnessRunId).length, 1);
       assert.equal(auditsBeforeNewLaunch.filter((audit) =>
         audit.action === "harness.run.launch" && audit.outcome === "accepted").length, 1);
       assert.equal(auditsBeforeNewLaunch.filter((audit) =>

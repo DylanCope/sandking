@@ -1,17 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { once } from "node:events";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
   createDarwinSupervisorSignalController,
   darwinAdapterSpawnOptions,
   darwinSupervisorSpawnOptions,
+  readDarwinHostLossTerminationEvidence,
   spawnDarwinProcessTree,
+  terminateDarwinCoalitionAfterHostLoss,
 } from "../src/darwin-process-tree.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -117,6 +119,59 @@ test("the Darwin supervisor revokes queued cooperative signals after adapter exi
     requestId: 42,
     signal: "SIGKILL",
   }), null);
+});
+
+test("Darwin Host-loss termination is durable only after coalition absence is observed", async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "sandking-darwin-host-loss-evidence-"));
+  const evidencePath = join(fixture, "termination.json");
+  const calls = [];
+  try {
+    const evidence = await terminateDarwinCoalitionAfterHostLoss({
+      applicationSpecifier: "dev.sandking.harness.1234567890abcdef",
+      terminationEvidencePath: evidencePath,
+    }, {
+      now: () => new Date("2026-08-09T18:00:00.000Z"),
+      maxObservationAttempts: 2,
+      delay: async () => undefined,
+      runLsappinfo: async (arguments_) => {
+        calls.push(arguments_);
+        if (arguments_[0] === "kill") return { ok: false, stdout: "" };
+        return calls.filter(([operation]) => operation === "find").length === 1
+          ? { ok: true, stdout: "ASN:0x0-0x1234: bundleid=dev.sandking.harness\n" }
+          : { ok: true, stdout: "" };
+      },
+    });
+
+    assert.equal(evidence.status, "termination_confirmed");
+    assert.equal(evidence.killAccepted, false);
+    assert.equal(evidence.coalitionAbsent, true);
+    assert.deepEqual(await readDarwinHostLossTerminationEvidence(evidencePath), evidence);
+    assert.deepEqual(calls.map(([operation]) => operation), ["kill", "find", "find"]);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("Darwin Host-loss termination retains uncertainty when LaunchServices cannot prove absence", async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "sandking-darwin-host-loss-uncertain-"));
+  const evidencePath = join(fixture, "termination.json");
+  try {
+    const evidence = await terminateDarwinCoalitionAfterHostLoss({
+      applicationSpecifier: "dev.sandking.harness.fedcba0987654321",
+      terminationEvidencePath: evidencePath,
+    }, {
+      now: () => new Date("2026-08-09T18:05:00.000Z"),
+      maxObservationAttempts: 2,
+      delay: async () => undefined,
+      runLsappinfo: async () => ({ ok: false, stdout: "" }),
+    });
+
+    assert.equal(evidence.status, "termination_unconfirmed");
+    assert.equal(evidence.coalitionAbsent, false);
+    assert.deepEqual(await readDarwinHostLossTerminationEvidence(evidencePath), evidence);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test("the Darwin Node preload keeps detached Workers in the inherited group", async () => {
@@ -278,6 +333,66 @@ int main(void) {
       if (processId && processCanRun(processId)) process.kill(processId, "SIGKILL");
     }
     await tree.release();
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("Darwin Host death terminates the real adapter coalition before retaining proof", {
+  skip: process.platform === "darwin"
+    ? false
+    : "LaunchServices process-coalition containment is available only on Darwin",
+}, async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "sandking-darwin-real-host-loss-"));
+  const evidencePath = join(fixture, "termination.json");
+  const modulePath = fileURLToPath(new URL("../src/darwin-process-tree.mjs", import.meta.url));
+  const hostSource = String.raw`
+    import { spawnDarwinProcessTree } from ${JSON.stringify(pathToFileURL(modulePath).href)};
+    const adapterSource = String.raw\`
+      import { spawn } from "node:child_process";
+      const worker = spawn(process.execPath, [
+        "--input-type=module", "--eval", "setInterval(() => undefined, 1000)",
+      ], { detached: true, stdio: "ignore" });
+      process.stdout.write(JSON.stringify({ adapterPid: process.pid, workerPid: worker.pid }) + "\\n");
+      setInterval(() => undefined, 1000);
+    \`;
+    const tree = spawnDarwinProcessTree(process.execPath, [
+      "--input-type=module", "--eval", adapterSource,
+    ], {
+      cwd: process.cwd(),
+      env: { ...process.env },
+      hostLossTerminationEvidencePath: ${JSON.stringify(evidencePath)},
+    });
+    let output = "";
+    tree.child.stdout.setEncoding("utf8");
+    tree.child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (!output.includes("\\n")) return;
+      process.stdout.write(output.slice(0, output.indexOf("\\n") + 1));
+    });
+    setInterval(() => undefined, 1000);
+  `;
+  const host = spawn(process.execPath, ["--input-type=module", "--eval", hostSource], {
+    cwd: process.cwd(),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let adapterPid = null;
+  let workerPid = null;
+  try {
+    ({ adapterPid, workerPid } = await readJsonLine(host.stdout));
+    assert.equal(processCanRun(adapterPid), true);
+    assert.equal(processCanRun(workerPid), true);
+    process.kill(host.pid, "SIGKILL");
+    await once(host, "exit");
+
+    await waitUntil(async () =>
+      (await readDarwinHostLossTerminationEvidence(evidencePath))?.status
+        === "termination_confirmed", 20_000);
+    await waitUntil(() => !processCanRun(adapterPid) && !processCanRun(workerPid), 20_000);
+  } finally {
+    if (processCanRun(host.pid)) process.kill(host.pid, "SIGKILL");
+    for (const processId of [workerPid, adapterPid]) {
+      if (processId && processCanRun(processId)) process.kill(processId, "SIGKILL");
+    }
     await rm(fixture, { recursive: true, force: true });
   }
 });

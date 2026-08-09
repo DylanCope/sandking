@@ -178,6 +178,37 @@ test("Cockpit Harness-run cancellation is capability-negotiated and hash-only", 
     && error.code === "browser_control_schema_invalid");
 });
 
+test("Cockpit reconnect identifies the retained launch without supplying its attribution", () => {
+  const harnessRunId = `harness-run-${"4".repeat(24)}`;
+  const request = {
+    channel: "control",
+    message: {
+      type: "browser.harness-run.launch",
+      requestId: "browser-reconnect-harness-launch",
+      projectId: `project-${"5".repeat(24)}`,
+      parameters: {
+        issueNumber: 160,
+        targetBranch: "sandcastle/issue-160",
+      },
+      idempotencyKeyHash: `sha256:${"6".repeat(64)}`,
+      reconnectHarnessRunId: harnessRunId,
+    },
+  };
+
+  assert.deepEqual(parseBrowserControl(request), request.message);
+  assert.equal("source" in request.message, false);
+  assert.equal("controllerSessionId" in request.message, false);
+  assert.throws(() => parseBrowserControl({
+    ...request,
+    message: {
+      ...request.message,
+      source: "controller-cli",
+      controllerSessionId: `controller-session-${"7".repeat(24)}`,
+    },
+  }), (error) => error instanceof BrowserProtocolError
+    && error.code === "browser_control_schema_invalid");
+});
+
 test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and resynchronizable", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-browser-protocol-"));
   const secret = "recognizable-controller-secret-fixture";
