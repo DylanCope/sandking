@@ -348,6 +348,7 @@
       [
         "node",
         "--test",
+        "--test-concurrency=1",
         "test/issue-164-acceptance-evidence.test.mjs",
         "test/protocol.test.mjs",
         "test/browser-protocol.test.mjs",
