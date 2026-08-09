@@ -2393,14 +2393,48 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           }
         }
         if (control.type === "browser.harness-run.launch") {
+          let originalRun = null;
+          if (control.reconnectHarnessRunId) {
+            const lookup = await requestHostOperation({
+              type: "harness.run.lookup",
+              requestId: `harness-run-reconnect-lookup-${randomBytes(8).toString("hex")}`,
+              idempotencyKeyHash: control.idempotencyKeyHash,
+            });
+            const candidateRun = lookup.type === "harness.run.lookup.result"
+              && lookup.found === true
+              && lookup.launchOutcome?.type === "harness.run.launch.result"
+              && lookup.launchOutcome.run?.harnessRunId === control.reconnectHarnessRunId
+              ? lookup.launchOutcome.run
+              : null;
+            originalRun = candidateRun
+              && "source" in candidateRun
+              && "parameters" in candidateRun
+              ? candidateRun
+              : null;
+            if (
+              !originalRun
+              || originalRun.projectId !== control.projectId
+              || canonicalJson(originalRun.parameters ?? {})
+                !== canonicalJson(control.parameters ?? {})
+              || !["controller-cli", "cockpit"].includes(originalRun.source)
+              || (originalRun.source === "controller-cli"
+                && !/^controller-session-[a-f0-9]{24}$/.test(
+                  originalRun.controllerSessionId ?? "",
+                ))
+              || (originalRun.source === "cockpit"
+                && originalRun.controllerSessionId !== null)
+            ) {
+              throw new BrowserProtocolError("harness_run_launch_reconnect_invalid");
+            }
+          }
           const message = {
             type: "harness.run.launch",
             requestId: `harness-run-launch-${randomBytes(8).toString("hex")}`,
             projectId: control.projectId,
             parameters: control.parameters,
             controllerId: state.runtimeId,
-            controllerSessionId: null,
-            source: "cockpit",
+            controllerSessionId: originalRun?.controllerSessionId ?? null,
+            source: originalRun?.source ?? "cockpit",
             authorizationClass: "harness_run_launch",
             idempotencyKeyHash: control.idempotencyKeyHash,
           };
@@ -3072,6 +3106,16 @@ const main = async () => {
       hostIdentityAuditId: negotiation.hostIdentityOutcome?.auditId ?? null,
       startedAt: new Date().toISOString(),
     };
+    const startupHarnessRunObservation = await requestHostOperation({
+      type: "harness.run.observe",
+      requestId: `harness-observe-startup-${randomBytes(8).toString("hex")}`,
+      harnessRunId: null,
+      afterSequence: 0,
+    });
+    if (startupHarnessRunObservation.type !== "harness.run.observe.result") {
+      throw new Error("harness_run_startup_observation_failed");
+    }
+    retainCanonicalHarnessRunObservation(startupHarnessRunObservation);
     await writePrivateJson(statePath, state);
 
     hostProcess?.once("exit", async () => {

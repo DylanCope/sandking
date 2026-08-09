@@ -396,6 +396,7 @@ const main = async () => {
   });
   let delayedHarnessRunLaunchResponse = false;
   let pausedAfterProjectRegistration = false;
+  let startupObservationCompleted = false;
 
   // The Host is a durable process boundary. It remains available after
   // negotiation and keeps control and opaque bulk frames structurally distinct.
@@ -468,10 +469,11 @@ const main = async () => {
       continue;
     }
     if (frame.message.type === "harness.run.observe") {
-      if (mode === "malformed-frame-after-negotiation") {
+      if (mode === "malformed-frame-after-negotiation" && startupObservationCompleted) {
         writeMalformedFrame();
         continue;
       }
+      startupObservationCompleted = true;
       writeFrame(process.stdout, await harnessRuns.observe(frame.message));
       continue;
     }

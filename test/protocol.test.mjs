@@ -184,6 +184,7 @@ test("Harness cancellation is a capability-negotiated revision-free Host operati
 
 test("Harness-run lookup, cursor observation, and ranged logs are typed Host operations", async () => {
   assert.ok(hostCapabilities.includes("sandking.harness-run.v2"));
+  assert.ok(hostCapabilities.includes("sandking.harness-run-reconciliation.v1"));
   const stream = new PassThrough();
   const harnessRunId = `harness-run-${"1".repeat(24)}`;
   const lookup = {

@@ -33,6 +33,7 @@ export const browserCapabilities = Object.freeze([
   "cockpit.project-preparation.v1",
   "cockpit.harness-run-launch.v2",
   "cockpit.harness-run-observation.v2",
+  "cockpit.harness-run-reconciliation.v1",
   "cockpit.harness-run-cancellation.v1",
 ]);
 export const runtimeRequiredBrowserCapabilities = Object.freeze([
@@ -44,13 +45,14 @@ export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.project-preparation.v1",
   "cockpit.harness-run-launch.v2",
   "cockpit.harness-run-observation.v2",
+  "cockpit.harness-run-reconciliation.v1",
   "cockpit.harness-run-cancellation.v1",
 ]);
 export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-complete-harness-run-cancellation-history")
+  .update("sandking-browser-runtime-schema-v1-with-canonical-launch-reconnect")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -197,6 +199,7 @@ const browserHarnessRunLaunchSchema = z.object({
   projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
   parameters: launchParametersSchema.optional(),
   idempotencyKeyHash: digestSchema,
+  reconnectHarnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/).optional(),
 }).strict();
 
 const browserHarnessRunCancelSchema = z.object({

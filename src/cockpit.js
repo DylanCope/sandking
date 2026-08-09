@@ -21,11 +21,12 @@ const browserProtocol = Object.freeze({
       "cockpit.project-preparation.v1",
       "cockpit.harness-run-launch.v2",
       "cockpit.harness-run-observation.v2",
+      "cockpit.harness-run-reconciliation.v1",
       "cockpit.harness-run-cancellation.v1",
     ],
     optional: [],
   },
-  schemaDigest: "sha256:c45f5e50c1b13b445e41e4de7e4d1cc9664a8651feae11de8b6cf079fc168275",
+  schemaDigest: "sha256:0f008377397e7388d4ac6cff628f8d74a49d4f57905edb9c278248e744e1cfb7",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -71,8 +72,21 @@ const suppressLaunchConfirmation = () => {
   }
 };
 
-const selectedProjectLaunchReady = () =>
-  document.getElementById("project-readiness")?.dataset.harnessLaunchReady === "true";
+const selectedProjectLaunchReady = () => {
+  const selectedProject = document.getElementById("project-readiness");
+  return selectedProject?.dataset.harnessLaunchReady === "true"
+    && !(
+      currentHarnessRunObservation?.run?.status === "recovery_required"
+      && currentHarnessRunObservation.run.projectId === selectedProject.dataset.projectId
+    );
+};
+
+const blockLaunchForRetainedRecovery = () => {
+  if (!selectedProjectLaunchReady()) {
+    const launchButton = document.getElementById("launch-harness");
+    if (launchButton) launchButton.disabled = true;
+  }
+};
 
 const retainedHarnessRunCursor = () => {
   try {
@@ -548,6 +562,8 @@ const readPendingHarnessLaunch = () => {
       || !launch.parameters
       || typeof launch.parameters !== "object"
       || Array.isArray(launch.parameters)
+      || (launch.reconnectHarnessRunId !== undefined
+        && !/^harness-run-[a-f0-9]{24}$/.test(launch.reconnectHarnessRunId))
     ) {
       sessionStorage.removeItem(pendingHarnessLaunchStorageKey);
       return null;
@@ -849,14 +865,14 @@ const renderProjectPreparation = (
     hidden: true,
   });
   const updateProjectActionAvailability = () => {
-    const launchReady = currentProject?.canPrepareLaunchRequest === true
-      && selectedProjectLaunchReady();
+    const projectReady = currentProject?.canPrepareLaunchRequest === true;
+    const launchReady = projectReady && selectedProjectLaunchReady();
     launchButton.disabled = hostConnectionStatus !== "connected"
       || !launchReady
       || pendingHarnessLaunchRequestId !== null;
-    openController.disabled = hostConnectionStatus !== "connected" || !launchReady;
+    openController.disabled = hostConnectionStatus !== "connected" || !projectReady;
     openClaudeController.disabled = hostConnectionStatus !== "connected"
-      || !launchReady
+      || !projectReady
       || !claudeAvailable;
   };
 
@@ -1149,6 +1165,94 @@ const renderHarnessRun = (observation) => {
       : `Cancellation accepted; truthful terminal outcome: ${run.status}.`),
     cancellationFeedback);
   }
+  if (observation.outcome?.code === "host_daemon_interrupted") {
+    const interruption = observation.outcome.interruption;
+    const interruptionPanel = element("section", {
+      id: "harness-run-interruption",
+      role: "alert",
+      "data-interruption-code": observation.outcome.code,
+      "data-previous-status": interruption?.previousStatus ?? "",
+      "data-reconciliation-audit-id": interruption?.reconciliationAuditId ?? "",
+      "data-outcome-audit-id": observation.outcome.outcomeAuditId ?? "",
+      "data-next-action": "deliberate-new-run",
+    });
+    interruptionPanel.append(
+      element("h3", {}, "Run interrupted by Host shutdown"),
+      element("p", { id: "harness-run-interruption-reason" },
+        "The Host ended before this run produced a valid terminal result. Startup reconciled "
+        + "the retained run as failed with an incomplete result; the adapter was not relaunched."),
+      element("p", { id: "harness-run-interruption-history" },
+        "Earlier ordered events, immutable execution facts, and bounded diagnostic ranges remain "
+        + "available below."),
+      element("p", { id: "harness-run-interruption-guidance" },
+        "Retrying the original launch reconnects to this same result. To try the work again, open "
+        + "the Project and use Launch for a deliberate new run; this interrupted run will remain "
+        + "unchanged."),
+    );
+    if (run.launchIdempotencyKeyHash) {
+      const reconnectButton = element("button", {
+        id: "reconnect-harness-launch",
+        type: "button",
+        "data-action": "reconnect-original-launch",
+        disabled: hostConnectionStatus !== "connected",
+      }, "Reconnect original launch");
+      reconnectButton.addEventListener("click", () => {
+        if (
+          hostConnectionStatus !== "connected"
+          || pendingHarnessLaunchRequestId !== null
+          || !harnessLaunchFeedback
+        ) {
+          return;
+        }
+        const pendingLaunch = {
+          projectId: run.projectId,
+          parameters: snapshot.parameters ?? {},
+          idempotencyKeyHash: run.launchIdempotencyKeyHash,
+          reconnectHarnessRunId: run.harnessRunId,
+        };
+        retainPendingHarnessLaunch(pendingLaunch);
+        pendingHarnessLaunchRequestId = `harness-launch-reconnect-${harnessRequestSequence}`;
+        harnessRequestSequence += 1;
+        reconnectButton.disabled = true;
+        harnessLaunchFeedback.textContent =
+          "Reconnecting to the retained Harness launch outcome…";
+        socket.send(JSON.stringify({
+          channel: "control",
+          message: {
+            type: "browser.harness-run.launch",
+            requestId: pendingHarnessLaunchRequestId,
+            projectId: pendingLaunch.projectId,
+            ...(Object.keys(pendingLaunch.parameters).length === 0
+              ? {}
+              : { parameters: pendingLaunch.parameters }),
+            idempotencyKeyHash: pendingLaunch.idempotencyKeyHash,
+            reconnectHarnessRunId: pendingLaunch.reconnectHarnessRunId,
+          },
+        }));
+      });
+      interruptionPanel.append(reconnectButton);
+    }
+    section.append(interruptionPanel);
+  }
+  if (run.status === "recovery_required" && run.recovery) {
+    section.append(element("section", {
+      id: "harness-run-recovery-required",
+      role: "alert",
+      "data-recovery-code": run.recovery.code,
+      "data-termination-evidence": run.recovery.terminationEvidence,
+      "data-reconciliation-audit-id": run.recovery.reconciliationAuditId,
+      "data-next-action": "recovery-required",
+    },
+    element("h3", {}, "Run requires recovery"),
+    element("p", { id: "harness-run-recovery-reason" },
+      "The Host could not prove that the retained Harness process coalition terminated. "
+      + "This run has no terminal outcome and replacement work is blocked."),
+    element("p", { id: "harness-run-recovery-history" },
+      "Earlier ordered events, immutable execution facts, and bounded diagnostic ranges remain "
+      + "available below."),
+    element("p", { id: "harness-run-recovery-guidance" },
+      "Do not launch the work again while related process state may still exist.")));
+  }
   const executionFacts = element("section", {
     id: "harness-run-execution-snapshot",
     "data-snapshot-version": snapshot.schemaVersion,
@@ -1267,6 +1371,7 @@ const applyHarnessRunObservation = (observation) => {
       }
     : observation;
   currentHarnessRunObservation = visibleObservation;
+  blockLaunchForRetainedRecovery();
   updateWorkbenchChrome({ harnessRunObservation: visibleObservation });
   if (visibleObservation.run) {
     if (visibleObservation.run.harnessRunId === pendingSelection) {
@@ -1305,7 +1410,8 @@ const applyHarnessRunObservation = (observation) => {
   clearTimeout(harnessObservationTimer);
   if (
     !visibleObservation.run
-    || !["succeeded", "failed", "cancelled"].includes(visibleObservation.run.status)
+    || !["succeeded", "failed", "cancelled", "recovery_required"]
+      .includes(visibleObservation.run.status)
   ) {
     harnessObservationTimer = setTimeout(requestHarnessRunObservation, 75);
   }
@@ -2179,10 +2285,7 @@ socket.addEventListener("message", (event) => {
       && harnessObservation?.resynchronization === null;
   const harnessObservationCompatible =
     harnessObservation?.type === "harness.run.observe.result"
-    && resynchronizationConsistent
-    && (harnessObservation.run === null
-      || harnessObservation.run.projectId
-        === message?.viewModel?.projectPreparation?.current?.projectId);
+    && resynchronizationConsistent;
 
   if (
     message?.type !== "runtime.hello-ack"
@@ -2212,15 +2315,19 @@ socket.addEventListener("message", (event) => {
   document.documentElement.dataset.observationMode = message.observation.mode;
   document.documentElement.dataset.protocolVersion = message.protocol.version;
   document.documentElement.dataset.hostConnectionStatus = hostConnectionStatus;
+  currentHarnessRunObservation = message.viewModel.harnessRunObservation;
   app.textContent = "";
   app.append(renderWorkbench(message));
-  currentHarnessRunObservation = message.viewModel.harnessRunObservation;
+  blockLaunchForRetainedRecovery();
   harnessRunSection = document.getElementById("harness-run-observation");
   const pendingLaunch = readPendingHarnessLaunch();
   if (
     pendingLaunch
     && hostConnectionStatus === "connected"
-    && pendingLaunch.projectId === message.viewModel.projectPreparation.current?.projectId
+    && (
+      pendingLaunch.projectId === message.viewModel.projectPreparation.current?.projectId
+      || pendingLaunch.projectId === message.viewModel.harnessRunObservation.run?.projectId
+    )
   ) {
     pendingHarnessLaunchRequestId = `harness-launch-retry-${harnessRequestSequence}`;
     harnessRequestSequence += 1;
@@ -2237,6 +2344,9 @@ socket.addEventListener("message", (event) => {
           ? {}
           : { parameters: pendingLaunch.parameters }),
         idempotencyKeyHash: pendingLaunch.idempotencyKeyHash,
+        ...(pendingLaunch.reconnectHarnessRunId
+          ? { reconnectHarnessRunId: pendingLaunch.reconnectHarnessRunId }
+          : {}),
       },
     }));
   }

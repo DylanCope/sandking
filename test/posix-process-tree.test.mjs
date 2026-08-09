@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import test from "node:test";
 import { once } from "node:events";
 import { readFileSync, readlinkSync } from "node:fs";
@@ -8,6 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import {
+  waitForHostLossTerminationEvidence,
+} from "../src/host-loss-termination-evidence.mjs";
 import { spawnPosixProcessTree } from "../src/posix-process-tree.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -30,6 +33,98 @@ const processCanRun = (processId) => {
       && error.code === "ESRCH");
   }
 };
+
+const waitForProcessesToExit = async (processIds) => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (processIds.every((processId) => !processCanRun(processId))) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`process_exit_timeout:${processIds.filter(processCanRun).join(",")}`);
+};
+
+test("a Linux Host death closes its complete supervised process tree", {
+  skip: process.platform !== "linux"
+    ? "the packaged Linux supervisor owns this Host-death boundary"
+    : false,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sandking-linux-host-loss-proof-"));
+  const evidencePath = join(directory, "termination.json");
+  const modulePath = fileURLToPath(new URL("../src/posix-process-tree.mjs", import.meta.url));
+  const adapterSource = String.raw`
+    import { spawn } from "node:child_process";
+    const descendant = spawn(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      "process.stdout.write('ready\\n'); setInterval(() => undefined, 1000)",
+    ], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    descendant.stdout.once("data", () => {
+      descendant.stdout.destroy();
+      descendant.unref();
+      process.stdout.write(JSON.stringify({
+        adapterPid: process.pid,
+        escapedDescendantPid: descendant.pid,
+      }) + "\n");
+    });
+    setInterval(() => undefined, 1000);
+  `;
+  const hostSource = `
+    import { once } from "node:events";
+    import { spawnPosixProcessTree } from ${JSON.stringify(modulePath)};
+    const tree = spawnPosixProcessTree(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      ${JSON.stringify(adapterSource)},
+    ], {
+      cwd: process.cwd(),
+      env: process.env,
+      hostLossTerminationEvidencePath: ${JSON.stringify(evidencePath)},
+    });
+    const [chunk] = await once(tree.child.stdout, "data");
+    process.stdout.write(JSON.stringify({ wrapperPid: tree.child.pid, ...JSON.parse(String(chunk)) }) + "\\n");
+    setInterval(() => undefined, 1000);
+  `;
+  const host = spawn(process.execPath, ["--input-type=module", "--eval", hostSource], {
+    cwd: process.cwd(),
+    env: { ...process.env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let wrapperPid = null;
+  let adapterPid = null;
+  let escapedDescendantPid = null;
+  try {
+    const [chunk] = await once(host.stdout, "data");
+    ({ wrapperPid, adapterPid, escapedDescendantPid } = JSON.parse(String(chunk).trim()));
+    assert.equal(Number.isSafeInteger(wrapperPid), true);
+    assert.equal(Number.isSafeInteger(adapterPid), true);
+    assert.equal(Number.isSafeInteger(escapedDescendantPid), true);
+    assert.equal(processCanRun(wrapperPid), true);
+    assert.equal(processCanRun(adapterPid), true);
+    assert.equal(processCanRun(escapedDescendantPid), true);
+
+    host.kill("SIGKILL");
+    await once(host, "exit");
+    const evidence = await waitForHostLossTerminationEvidence(evidencePath, {
+      expectedPlatform: "linux",
+      timeoutMs: 10_000,
+    });
+    assert.equal(evidence?.status, "termination_confirmed");
+    assert.equal(evidence?.launchSettled, true);
+    assert.equal(evidence?.treeEmpty, true);
+    assert.equal(processCanRun(wrapperPid), false);
+    assert.equal(processCanRun(adapterPid), false);
+    assert.equal(processCanRun(escapedDescendantPid), false);
+  } finally {
+    if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL");
+    if (wrapperPid && processCanRun(wrapperPid)) {
+      process.kill(-wrapperPid, "SIGKILL");
+    }
+    if (escapedDescendantPid && processCanRun(escapedDescendantPid)) {
+      process.kill(escapedDescendantPid, "SIGKILL");
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("a cold Linux process-tree launch needs no compiler or warmed cache", {
   skip: process.platform !== "linux"

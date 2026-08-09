@@ -11,6 +11,7 @@
 #include <sys/ptrace.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 enum {
@@ -239,7 +240,140 @@ static void handle_signal_command(char *command, int force_ptrace) {
   );
 }
 
-static int supervise(char **supervisor_argv) {
+/*
+ * The helper is the retained child subreaper for the supervised tree. Direct
+ * children cannot have their numeric PIDs reused until this process reaps
+ * them, so signalling the current direct children and then repeating as their
+ * children are reparented here closes the tree without a PID-reuse race. This
+ * also catches descendants which left the original process group with setsid.
+ */
+static int signal_direct_children(void) {
+  char path[96];
+  int path_length = snprintf(
+    path,
+    sizeof(path),
+    "/proc/%ld/task/%ld/children",
+    (long)getpid(),
+    (long)getpid()
+  );
+  if (path_length <= 0 || (size_t)path_length >= sizeof(path)) return 0;
+
+  int descriptor = open(path, O_RDONLY | O_CLOEXEC);
+  if (descriptor < 0) return 0;
+  size_t capacity = 4096;
+  size_t length = 0;
+  char *children = malloc(capacity);
+  if (!children) {
+    close(descriptor);
+    return 0;
+  }
+  for (;;) {
+    if (length + 1 == capacity) {
+      size_t next_capacity = capacity * 2;
+      char *expanded = realloc(children, next_capacity);
+      if (!expanded) {
+        free(children);
+        close(descriptor);
+        return 0;
+      }
+      children = expanded;
+      capacity = next_capacity;
+    }
+    ssize_t read_length = read(descriptor, children + length, capacity - length - 1);
+    if (read_length > 0) {
+      length += (size_t)read_length;
+      continue;
+    }
+    if (read_length < 0 && errno == EINTR) continue;
+    if (read_length < 0) {
+      free(children);
+      close(descriptor);
+      return 0;
+    }
+    break;
+  }
+  close(descriptor);
+  children[length] = '\0';
+
+  char *cursor = children;
+  while (*cursor != '\0') {
+    while (*cursor == ' ') cursor += 1;
+    if (*cursor == '\0') break;
+    char *end = NULL;
+    errno = 0;
+    long parsed = strtol(cursor, &end, 10);
+    if (end == cursor || errno != 0 || parsed <= 0
+        || (long)(pid_t)parsed != parsed) {
+      free(children);
+      return 0;
+    }
+    if (kill((pid_t)parsed, SIGKILL) != 0 && errno != ESRCH) {
+      free(children);
+      return 0;
+    }
+    cursor = end;
+  }
+  free(children);
+  return 1;
+}
+
+static void terminate_retained_descendants(void) {
+  const struct timespec retry_delay = {
+    .tv_sec = 0,
+    .tv_nsec = 1000000,
+  };
+  for (;;) {
+    (void)signal_direct_children();
+    int status = 0;
+    pid_t reaped;
+    do {
+      reaped = waitpid(-1, &status, WNOHANG);
+    } while (reaped > 0);
+    if (reaped < 0 && errno == ECHILD) return;
+    (void)nanosleep(&retry_delay, NULL);
+  }
+}
+
+static void publish_host_loss_termination_evidence(const char *evidence_path) {
+  if (!evidence_path || strcmp(evidence_path, "-") == 0) return;
+  struct timespec observed_time;
+  struct tm observed_utc;
+  char observed_at[32];
+  if (clock_gettime(CLOCK_REALTIME, &observed_time) != 0
+      || !gmtime_r(&observed_time.tv_sec, &observed_utc)
+      || strftime(
+        observed_at,
+        sizeof(observed_at),
+        "%Y-%m-%dT%H:%M:%SZ",
+        &observed_utc
+      ) == 0) {
+    return;
+  }
+  char evidence[512];
+  int evidence_length = snprintf(
+    evidence,
+    sizeof(evidence),
+    "{\"schemaVersion\":2,\"platform\":\"linux\","
+    "\"status\":\"termination_confirmed\","
+    "\"terminationScope\":\"complete_process_tree\","
+    "\"launchSettled\":true,\"treeEmpty\":true,"
+    "\"descendantsReaped\":true,\"observedAt\":\"%s\"}\n",
+    observed_at
+  );
+  if (evidence_length <= 0 || (size_t)evidence_length >= sizeof(evidence)) return;
+
+  int descriptor = open(
+    evidence_path,
+    O_WRONLY | O_TRUNC | O_NOFOLLOW | O_CLOEXEC
+  );
+  if (descriptor < 0) return;
+  int published = write_all(descriptor, evidence, (size_t)evidence_length)
+    && fsync(descriptor) == 0;
+  if (close(descriptor) != 0) published = 0;
+  (void)published;
+}
+
+static int supervise(const char *evidence_path, char **supervisor_argv) {
   if (prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
     return SANDKING_UNCERTAIN;
   }
@@ -259,11 +393,13 @@ static int supervise(char **supervisor_argv) {
   for (int descriptor = 0; descriptor <= 5; descriptor += 1) close(descriptor);
   signal(SIGTERM, SIG_IGN);
   signal(SIGPIPE, SIG_IGN);
+  signal(SIGCHLD, SIG_DFL);
   char commands[4096];
   size_t command_length = 0;
   int supervisor_status = 0;
   int supervisor_exited = 0;
-  while (!supervisor_exited) {
+  int host_lost = 0;
+  while (!supervisor_exited && !host_lost) {
     struct pollfd command_poll = {
       .fd = SANDKING_COMMAND_DESCRIPTOR,
       .events = POLLIN,
@@ -288,7 +424,13 @@ static int supervise(char **supervisor_argv) {
           command_length -= consumed;
         }
         if (command_length == sizeof(commands)) command_length = 0;
+      } else if (read_length == 0) {
+        host_lost = 1;
       }
+    }
+    if (poll_result > 0
+        && (command_poll.revents & (POLLHUP | POLLERR | POLLNVAL))) {
+      host_lost = 1;
     }
 
     int status = 0;
@@ -301,16 +443,46 @@ static int supervise(char **supervisor_argv) {
       }
     } while (reaped > 0);
   }
+  if (!host_lost && supervisor_exited) {
+    /*
+     * The Host pipe can close in the same scheduler turn in which the
+     * supervisor becomes waitable. Check once more before classifying that
+     * exit as an ordinary Host-owned release.
+     */
+    struct pollfd host_poll = {
+      .fd = SANDKING_COMMAND_DESCRIPTOR,
+      .events = POLLIN,
+      .revents = 0,
+    };
+    int poll_result;
+    do {
+      poll_result = poll(&host_poll, 1, 50);
+    } while (poll_result < 0 && errno == EINTR);
+    if (poll_result > 0
+        && (host_poll.revents & (POLLHUP | POLLERR | POLLNVAL))) {
+      host_lost = 1;
+    }
+  }
+  /*
+   * An abnormal supervisor exit also revokes safe ownership of any remaining
+   * Harness work. Draining the still-retained subreaper tree is correct both
+   * for Host-loss SIGKILL and for a Host-requested forced termination.
+   */
+  if (host_lost || WIFSIGNALED(supervisor_status)) {
+    terminate_retained_descendants();
+  }
+  if (host_lost) publish_host_loss_termination_evidence(evidence_path);
   close(SANDKING_COMMAND_DESCRIPTOR);
   close(SANDKING_RESULT_DESCRIPTOR);
+  if (host_lost) return 128 + SIGKILL;
   if (WIFEXITED(supervisor_status)) return WEXITSTATUS(supervisor_status);
   if (WIFSIGNALED(supervisor_status)) return 128 + WTERMSIG(supervisor_status);
   return SANDKING_UNCERTAIN;
 }
 
 int main(int argc, char **argv) {
-  if (argc >= 4 && strcmp(argv[1], "subreaper") == 0) {
-    return supervise(&argv[2]);
+  if (argc >= 5 && strcmp(argv[1], "subreaper") == 0) {
+    return supervise(argv[2], &argv[3]);
   }
   if (argc == 5 && strcmp(argv[1], "signal") == 0) {
     return exact_signal(argv[2], argv[3], argv[4], 0);

@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { prepareHostLossTerminationEvidence } from "./host-loss-termination-evidence.mjs";
 
 const WINDOWS_EPOCH_FILE_TIME = 116_444_736_000_000_000n;
 const WINDOWS_CREATION_TIME_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,7}))?Z$/;
@@ -607,13 +608,25 @@ exit [SandKingExactProcess]::TerminateExact([uint32]${processIdentity.processId}
  * entry point is released; Windows then associates every descendant with the
  * same job even after intermediate creators exit.
  *
- * @param {{name: string, execute?: typeof execFile}} options
+ * @param {{name: string, execute?: typeof execFile, hostLossTerminationEvidencePath?: string, launchBarrierMarkerPath?: string}} options
  */
 export const createNativeWindowsJobObject = (options) => {
   if (!/^Local\\SandKingHarnessRun-[A-Za-z0-9-]{1,96}$/.test(options.name)) {
     throw new Error("windows_job_object_name_invalid");
   }
   const escapedName = options.name.replaceAll("'", "''");
+  const hasHostLossEvidence = typeof options.hostLossTerminationEvidencePath === "string"
+    && options.hostLossTerminationEvidencePath.length > 0;
+  const hasLaunchBarrier = typeof options.launchBarrierMarkerPath === "string"
+    && options.launchBarrierMarkerPath.length > 0;
+  if (hasHostLossEvidence !== hasLaunchBarrier) {
+    throw new Error("windows_job_object_host_loss_configuration_invalid");
+  }
+  if (hasHostLossEvidence) {
+    prepareHostLossTerminationEvidence(
+      /** @type {string} */ (options.hostLossTerminationEvidencePath),
+    );
+  }
   if (options.execute) {
     const execute = options.execute;
     /** @param {string} invocation @param {(error: any, stdout: string) => unknown} consume */
@@ -673,12 +686,50 @@ Write-Output $count`,
     };
   }
 
+  const escapedEvidencePath = (options.hostLossTerminationEvidencePath ?? "")
+    .replaceAll("'", "''");
+  const escapedBarrierPath = (options.launchBarrierMarkerPath ?? "")
+    .replaceAll("'", "''");
   const brokerCommand = `$ErrorActionPreference='Stop'
 Add-Type -TypeDefinition @'
 ${exactWindowsProcessSource}
 '@
+$hostLossEvidencePath = '${escapedEvidencePath}'
+$launchBarrierMarkerPath = '${escapedBarrierPath}'
+function Publish-HostLossTerminationEvidence {
+  param([string]$EvidencePath)
+  if ([string]::IsNullOrEmpty($EvidencePath) -or -not [IO.File]::Exists($EvidencePath)) {
+    return
+  }
+  $payload = @{
+    schemaVersion = 2
+    platform = 'win32'
+    status = 'termination_confirmed'
+    terminationScope = 'complete_process_tree'
+    launchSettled = $true
+    treeEmpty = $true
+    terminationBoundary = 'job_active_processes_zero'
+    observedAt = [DateTime]::UtcNow.ToString('o')
+  } | ConvertTo-Json -Compress
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes("$payload\`n")
+  $stream = [IO.FileStream]::new(
+    $EvidencePath,
+    [IO.FileMode]::Truncate,
+    [IO.FileAccess]::Write,
+    [IO.FileShare]::None,
+    4096,
+    [IO.FileOptions]::WriteThrough
+  )
+  try {
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+  } finally {
+    $stream.Dispose()
+  }
+}
 $jobHandle = [SandKingExactProcess]::CreateOwnedJob('${escapedName}')
 if ($jobHandle -eq [IntPtr]::Zero) { exit 4 }
+$hostLossDetected = $true
 try {
   [Console]::Out.WriteLine('{"type":"ready"}')
   while (($line = [Console]::In.ReadLine()) -ne $null) {
@@ -697,6 +748,7 @@ try {
     } elseif ($request.operation -eq 'close') {
       $result = $true
       $closing = $true
+      $hostLossDetected = $false
     } else {
       $result = $null
     }
@@ -704,6 +756,21 @@ try {
     if ($closing) { break }
   }
 } finally {
+  if ($hostLossDetected
+      -and -not [string]::IsNullOrEmpty($hostLossEvidencePath)
+      -and [IO.File]::Exists($launchBarrierMarkerPath)
+      -and [IO.File]::ReadAllText($launchBarrierMarkerPath) -eq "assigned\`n") {
+    [void][SandKingExactProcess]::TerminateOwnedJob($jobHandle)
+    $terminationDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+      $activeProcessCount = [SandKingExactProcess]::ActiveOwnedProcessCount($jobHandle)
+      if ($activeProcessCount -eq 0) { break }
+      Start-Sleep -Milliseconds 10
+    } while ([DateTime]::UtcNow -lt $terminationDeadline)
+    if ($activeProcessCount -eq 0) {
+      Publish-HostLossTerminationEvidence $hostLossEvidencePath
+    }
+  }
   [SandKingExactProcess]::CloseOwnedJob($jobHandle)
 }`;
   const broker = spawn("powershell.exe", [
