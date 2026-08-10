@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
+  projectHarnessAdapterIdentityAgrees,
   harnessRegistrationSchema,
   projectRegistrationSchema,
 } from "./project-registration.mjs";
 import {
   harnessRunEventSchema,
   harnessRunOutcomeSchema,
+  requireHarnessRunOutcomeAdapterIdentityAgreement,
   harnessRunRecoveryActionSchema,
   harnessRunRecoverySchema,
   harnessRunSchema,
@@ -41,7 +43,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.recovery.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-safe-harness-recovery")
+  .update("sandking-host-control-schema-v1-with-consistent-bundled-harness-identities")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -286,7 +288,18 @@ const projectHarnessPinResultSchema = z.object({
   auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
   project: projectRegistrationSchema,
   harness: harnessRegistrationSchema,
-}).strip();
+}).strip().superRefine((result, context) => {
+  if (
+    !result.project.harness
+    || !projectHarnessAdapterIdentityAgrees(result.project.harness, result.harness)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Project and Harness adapter identities disagree",
+      path: ["project", "harness"],
+    });
+  }
+});
 const projectOperationFailureSchema = z.object({
   type: z.literal("project.operation.failure"),
   requestId: identifierSchema,
@@ -489,7 +502,7 @@ export const harnessRunRecoverResultSchema = z.object({
   run: harnessRunSchema,
   recovery: harnessRunRecoverySchema.nullable(),
   outcome: harnessRunOutcomeSchema.nullable(),
-}).strip();
+}).strip().superRefine(requireHarnessRunOutcomeAdapterIdentityAgreement);
 export const harnessRunRecoverFailureSchema = z.object({
   type: z.literal("harness.run.recover.failure"),
   requestId: identifierSchema,
@@ -643,7 +656,7 @@ const harnessRunObserveResultSchema = z.object({
   outcome: harnessRunOutcomeSchema.nullable(),
   logStreams: z.array(harnessLogStreamProjectionSchema).max(2),
   terminalEnvelopeValidation: terminalEnvelopeValidationSchema.nullable(),
-}).strip();
+}).strip().superRefine(requireHarnessRunOutcomeAdapterIdentityAgreement);
 const harnessRunLogsGetSchema = z.object({
   type: z.literal("harness.run.logs.get"),
   requestId: identifierSchema,

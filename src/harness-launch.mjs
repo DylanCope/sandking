@@ -9,6 +9,7 @@ import {
   invokePinnedHarnessAdapter,
   loadPinnedHarnessAdapter,
 } from "./harness-adapter-protocol.mjs";
+import { harnessAdapterIdSchema } from "./harness-adapter-identity.mjs";
 
 const execFileAsync = promisify(execFile);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
@@ -73,7 +74,7 @@ export const validateDeclaredLaunchParameters = (declaration, parameters) => {
 };
 
 const harnessLaunchValidationSchema = z.object({
-  adapterId: z.literal("conformance-harness-adapter-v1"),
+  adapterId: harnessAdapterIdSchema,
   adapterProtocol: z.literal("1.0.0"),
   adapterEntryPoint: harnessAdapterEntryPointSchema,
   negotiatedCapabilities: z.array(z.literal("harness.launch.prepare.v1")).length(1),
@@ -95,7 +96,7 @@ const harnessLaunchValidationSchema = z.object({
  * @param {any} context
  * @param {unknown} parameters
  */
-export const validateConformanceHarnessLaunch = async (context, parameters) => {
+export const validateHarnessLaunch = async (context, parameters) => {
   const launchParameters = launchParametersSchema.parse(parameters);
   const workspacePath = typeof context?.harnessWorkspacePath === "string"
     ? context.harnessWorkspacePath
@@ -121,6 +122,7 @@ export const validateConformanceHarnessLaunch = async (context, parameters) => {
   }
   if (
     pinnedAdapter.compatibility.adapterId !== context.harness.adapterId
+    || context.project.harness.adapterId !== context.harness.adapterId
     || pinnedAdapter.compatibility.adapterProtocol
       !== context.project.harness.boundedConfiguration.adapterProtocol
   ) {
@@ -161,7 +163,11 @@ export const validateConformanceHarnessLaunch = async (context, parameters) => {
   ) {
     throw new Error("harness_capability_unsupported");
   }
-  const prepared = harnessPreparedEnvelopeSchema.parse(preparedInvocation.message);
+  const parsedPrepared = harnessPreparedEnvelopeSchema.safeParse(preparedInvocation.message);
+  if (!parsedPrepared.success) {
+    throw new Error("harness_adapter_protocol_invalid");
+  }
+  const prepared = parsedPrepared.data;
   if (
     prepared.adapterId !== preparedInvocation.compatibility.adapterId
     || prepared.adapterProtocol !== preparedInvocation.compatibility.adapterProtocol
@@ -185,3 +191,7 @@ export const validateConformanceHarnessLaunch = async (context, parameters) => {
     adapterEntryPoint: finalAdapter.compatibility.entryPoint,
   });
 };
+
+// Retain the established import while callers move to the adapter-neutral
+// name. Both identities cross the same validation seam.
+export const validateConformanceHarnessLaunch = validateHarnessLaunch;

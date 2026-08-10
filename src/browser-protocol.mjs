@@ -6,6 +6,7 @@ import {
   harnessRunEventSchema,
   harnessRunOutcomeSchema,
   harnessRunSchema,
+  requireHarnessRunOutcomeAdapterIdentityAgreement,
 } from "./harness-runs.mjs";
 import { launchParametersSchema } from "./harness-launch.mjs";
 import {
@@ -55,7 +56,7 @@ export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-safe-harness-recovery")
+  .update("sandking-browser-runtime-schema-v1-with-consistent-bundled-harness-identities")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -151,7 +152,7 @@ const harnessRunObservationProjectionSchema = z.object({
     adapterChannelClosedObserved: z.boolean(),
     processExitObserved: z.boolean(),
   }).strict().nullable(),
-}).strict();
+}).strict().superRefine(requireHarnessRunOutcomeAdapterIdentityAgreement);
 
 export const browserHelloSchema = z.object({
   type: z.literal("browser.hello"),

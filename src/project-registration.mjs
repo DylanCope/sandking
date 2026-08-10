@@ -12,6 +12,11 @@ import {
   legacyConformanceHarnessLaunchParametersDeclaration as legacyConformanceLaunchParameters,
   loadPinnedHarnessAdapter,
 } from "./harness-adapter-protocol.mjs";
+import {
+  CONFORMANCE_HARNESS_ADAPTER_ID,
+  SANDCASTLE_HARNESS_ADAPTER_ID,
+  harnessAdapterIdSchema,
+} from "./harness-adapter-identity.mjs";
 import { readJson, writePrivateJson } from "./private-state.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -63,7 +68,7 @@ export const projectReadinessSchema = z.object({
 const projectHarnessLinkSchema = z.object({
   harnessId: harnessIdSchema,
   name: z.string().min(1).max(120),
-  adapterId: z.literal("conformance-harness-adapter-v1"),
+  adapterId: harnessAdapterIdSchema,
   pinnedRevision: commitSchema,
   boundedConfiguration: boundedHarnessConfigurationSchema,
 }).strict();
@@ -83,35 +88,62 @@ export const projectRegistrationSchema = z.object({
   readiness: projectReadinessSchema,
 }).strict();
 
-export const harnessRegistrationSchema = z.object({
+const harnessRegistrationBaseShape = {
   harnessId: harnessIdSchema,
   revision: z.number().int().positive(),
   name: z.string().min(1).max(120),
-  adapterId: z.literal("conformance-harness-adapter-v1"),
-  kind: z.literal("conformance"),
   immutableRevision: commitSchema,
-  // Schema-v1 conformance registrations predate adapter-declared parameters.
-  // Their immutable adapter bytes still require this known historical shape;
-  // fresh registrations retain the explicit value observed from the pinned probe.
-  launchParameters: harnessLaunchParametersDeclarationSchema
-    .default(legacyConformanceLaunchParameters),
   workspace: z.object({
     kind: z.literal("harness-workspace"),
     versionControl: z.literal("git"),
     independent: z.literal(true),
     headRevision: commitSchema,
   }).strict(),
+};
+const conformanceHarnessRegistrationSchema = z.object({
+  ...harnessRegistrationBaseShape,
+  adapterId: z.literal(CONFORMANCE_HARNESS_ADAPTER_ID),
+  kind: z.literal("conformance"),
+  // Schema-v1 conformance registrations predate adapter-declared parameters.
+  // Their immutable adapter bytes still require this known historical shape;
+  // fresh registrations retain the explicit value observed from the pinned probe.
+  launchParameters: harnessLaunchParametersDeclarationSchema
+    .default(legacyConformanceLaunchParameters),
 }).strict();
+const sandcastleHarnessRegistrationSchema = z.object({
+  ...harnessRegistrationBaseShape,
+  adapterId: z.literal(SANDCASTLE_HARNESS_ADAPTER_ID),
+  kind: z.literal("production"),
+  // Production registrations have no conformance-era representation to
+  // inherit. Their pinned probe must declare the exact parameter contract.
+  launchParameters: harnessLaunchParametersDeclarationSchema,
+}).strict();
+export const harnessRegistrationSchema = z.discriminatedUnion("adapterId", [
+  conformanceHarnessRegistrationSchema,
+  sandcastleHarnessRegistrationSchema,
+]);
+
+/**
+ * @param {z.infer<typeof projectHarnessLinkSchema>} projectHarness
+ * @param {z.infer<typeof harnessRegistrationSchema>} harness
+ */
+export const projectHarnessAdapterIdentityAgrees = (projectHarness, harness) =>
+  projectHarness.harnessId === harness.harnessId
+  && projectHarness.adapterId === harness.adapterId;
 
 const storedProjectSchema = projectRegistrationSchema.extend({
   filesystemIdentityDigest: digestSchema,
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
-const storedHarnessSchema = harnessRegistrationSchema.extend({
+const storedHarnessFields = {
   workspacePath: pathSchema,
   createdAt: z.string().datetime(),
-});
+};
+const storedHarnessSchema = z.discriminatedUnion("adapterId", [
+  conformanceHarnessRegistrationSchema.extend(storedHarnessFields),
+  sandcastleHarnessRegistrationSchema.extend(storedHarnessFields),
+]);
 const outcomeSchema = z.object({
   idempotencyKeyHash: digestSchema,
   requestFingerprint: digestSchema,
@@ -137,7 +169,7 @@ export const projectPreparationProjectionSchema = z.object({
   }).strict(),
   conformanceHarness: z.object({
     name: z.literal("Sand-King Conformance Harness"),
-    adapterId: z.literal("conformance-harness-adapter-v1"),
+    adapterId: z.literal(CONFORMANCE_HARNESS_ADAPTER_ID),
     permittedTestDouble: z.literal(true),
     launchParameters: harnessLaunchParametersDeclarationSchema,
   }).strict(),
@@ -157,7 +189,7 @@ export const projectPreparationProjectionSchema = z.object({
     harness: z.object({
       harnessId: harnessIdSchema,
       name: z.string().min(1).max(120),
-      adapterId: z.literal("conformance-harness-adapter-v1"),
+      adapterId: harnessAdapterIdSchema,
       pinnedRevision: commitSchema,
       launchParameters: harnessLaunchParametersDeclarationSchema,
     }).strict().nullable(),
@@ -456,7 +488,7 @@ const initializeConformanceWorkspace = async (workspacePath) => {
       schemaVersion: 1,
       name: "Sand-King Conformance Harness",
       compatibility: {
-        adapterId: "conformance-harness-adapter-v1",
+        adapterId: CONFORMANCE_HARNESS_ADAPTER_ID,
         adapterProtocol: "1.0.0",
         entryPoint: conformanceAdapterEntryPoint,
       },
@@ -469,7 +501,7 @@ import { randomBytes } from "node:crypto";
 import { writeSync } from "node:fs";
 
 const adapterProtocol = "1.0.0";
-const adapterId = "conformance-harness-adapter-v1";
+const adapterId = ${JSON.stringify(CONFORMANCE_HARNESS_ADAPTER_ID)};
 const capabilities = ["harness.launch.prepare.v1", "harness.run.v1"];
 const launchParameters = ${JSON.stringify(conformanceLaunchParameters)};
 const writeFrame = (message) => {
@@ -731,13 +763,23 @@ if (command === "probe") {
  * @param {z.infer<typeof projectRegistrationSchema> | null} project
  * @param {z.infer<typeof harnessRegistrationSchema> | null} harness
  */
-export const projectPreparationProjection = (project = null, harness = null) =>
-  projectPreparationProjectionSchema.parse({
+export const projectPreparationProjection = (project = null, harness = null) => {
+  if (
+    project?.harness
+    && harness
+    && !projectHarnessAdapterIdentityAgrees(project.harness, harness)
+  ) {
+    throw new Error("Project and Harness adapter identities disagree");
+  }
+  if (project?.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID && !harness) {
+    throw new Error("Project and Harness adapter identities disagree");
+  }
+  return projectPreparationProjectionSchema.parse({
     kind: "cockpit.project-preparation",
     selection: { mode: "explicit-host-path", directoryScanning: false },
     conformanceHarness: {
       name: "Sand-King Conformance Harness",
-      adapterId: "conformance-harness-adapter-v1",
+      adapterId: CONFORMANCE_HARNESS_ADAPTER_ID,
       permittedTestDouble: true,
       launchParameters: conformanceLaunchParameters,
     },
@@ -758,9 +800,7 @@ export const projectPreparationProjection = (project = null, harness = null) =>
         name: project.harness.name,
         adapterId: project.harness.adapterId,
         pinnedRevision: project.harness.pinnedRevision,
-        launchParameters: harness?.harnessId === project.harness.harnessId
-          ? harness.launchParameters
-          : conformanceLaunchParameters,
+        launchParameters: harness?.launchParameters ?? conformanceLaunchParameters,
       } : null,
       readiness: project.readiness,
       canPrepareLaunchRequest: project.readiness.launchRequest === "ready",
@@ -772,6 +812,7 @@ export const projectPreparationProjection = (project = null, harness = null) =>
       "drift-recovery",
     ],
   });
+};
 
 /**
  * @param {{
@@ -1223,7 +1264,7 @@ export const createProjectRegistry = async (options) => {
         harnessId,
         revision: 1,
         name: request.name,
-        adapterId: "conformance-harness-adapter-v1",
+        adapterId: CONFORMANCE_HARNESS_ADAPTER_ID,
         kind: "conformance",
         immutableRevision,
         launchParameters: probe.data.launchParameters,

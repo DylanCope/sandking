@@ -19,10 +19,11 @@ import {
   loadPinnedHarnessAdapter,
   readHarnessAdapterFrame,
 } from "./harness-adapter-protocol.mjs";
+import { harnessAdapterIdSchema } from "./harness-adapter-identity.mjs";
 import { sendHarnessCancellationRequest } from "./harness-process-control.mjs";
 import {
   launchParametersSchema,
-  validateConformanceHarnessLaunch,
+  validateHarnessLaunch,
 } from "./harness-launch.mjs";
 import {
   ensurePrivateDirectory,
@@ -145,7 +146,7 @@ export const harnessRunOutcomeSchema = z.object({
   terminalEnvelope: z.object({
     terminalId: z.string().regex(/^harness-terminal-[a-f0-9]{24}$/),
     status: z.enum(["succeeded", "failed", "cancelled"]),
-    adapterId: z.literal("conformance-harness-adapter-v1"),
+    adapterId: harnessAdapterIdSchema,
     adapterProtocol: z.literal("1.0.0"),
   }).strict().nullable(),
   outcomeAuditId: auditIdSchema.nullable().default(null),
@@ -297,7 +298,7 @@ const previousHarnessRunSchema = z.object({
   projectId: projectIdSchema,
   harnessId: harnessIdSchema,
   harnessPinnedRevision: commitSchema,
-  adapterId: z.literal("conformance-harness-adapter-v1"),
+  adapterId: harnessAdapterIdSchema,
   adapterProtocol: z.literal("1.0.0"),
   adapterEntryPoint: harnessAdapterEntryPointSchema,
   parameters: launchParametersSchema,
@@ -323,7 +324,7 @@ const previousLegacyHarnessRunSchema = z.object({
   projectId: projectIdSchema,
   harnessId: harnessIdSchema,
   harnessPinnedRevision: commitSchema,
-  adapterId: z.literal("conformance-harness-adapter-v1"),
+  adapterId: harnessAdapterIdSchema,
   adapterProtocol: z.literal("1.0.0"),
   adapterEntryPoint: harnessAdapterEntryPointSchema,
   controllerId: controllerIdSchema,
@@ -350,7 +351,7 @@ export const harnessRunExecutionSnapshotSchema = z.object({
     pinnedRevision: commitSchema,
   }).strict(),
   adapter: z.object({
-    adapterId: z.literal("conformance-harness-adapter-v1"),
+    adapterId: harnessAdapterIdSchema,
     protocol: z.literal("1.0.0"),
     entryPoint: harnessAdapterEntryPointSchema,
   }).strict(),
@@ -365,6 +366,37 @@ export const harnessRunExecutionSnapshotSchema = z.object({
     .max(8).nullable(),
   launchAuditId: auditIdSchema,
 }).strict();
+
+/**
+ * @param {{adapterId: string, adapterProtocol: string}} run
+ * @param {{terminalEnvelope?: {adapterId: string, adapterProtocol: string} | null} | null | undefined} outcome
+ */
+export const harnessRunOutcomeAdapterIdentityAgrees = (run, outcome) =>
+  !outcome?.terminalEnvelope
+  || (
+    outcome.terminalEnvelope.adapterId === run.adapterId
+    && outcome.terminalEnvelope.adapterProtocol === run.adapterProtocol
+  );
+
+/**
+ * Apply the run/outcome adapter invariant to any public composite that carries
+ * those two fields. Keeping the refinement here prevents retained, Host, and
+ * browser schemas from drifting into different identity rules.
+ * @param {{run?: {adapterId: string, adapterProtocol: string} | null, outcome?: {terminalEnvelope?: {adapterId: string, adapterProtocol: string} | null} | null}} composite
+ * @param {import("zod").RefinementCtx} context
+ */
+export const requireHarnessRunOutcomeAdapterIdentityAgreement = (composite, context) => {
+  if (
+    composite.run
+    && !harnessRunOutcomeAdapterIdentityAgrees(composite.run, composite.outcome)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Harness run and outcome adapter identities disagree",
+      path: ["outcome", "terminalEnvelope"],
+    });
+  }
+};
 
 const previousCurrentHarnessRunSchema = previousHarnessRunSchema.extend({
   executionSnapshot: harnessRunExecutionSnapshotSchema,
@@ -399,14 +431,33 @@ const legacyHarnessRunSchema = previousLegacyHarnessRunWithSnapshotSchema.extend
   recovery: harnessRunRecoverySchema.nullable().default(null),
 }).strict();
 
+/** @param {any} run @param {import("zod").RefinementCtx} context */
+const requireConsistentRetainedAdapterIdentity = (run, context) => {
+  if (
+    "executionSnapshot" in run
+    && (
+      run.executionSnapshot.adapter.adapterId !== run.adapterId
+      || run.executionSnapshot.adapter.protocol !== run.adapterProtocol
+      || run.executionSnapshot.adapter.entryPoint !== run.adapterEntryPoint
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "retained Harness adapter facts disagree",
+      path: ["executionSnapshot", "adapter"],
+    });
+  }
+  requireHarnessRunOutcomeAdapterIdentityAgreement({ run, outcome: run.outcome }, context);
+};
+
 export const harnessRunSchema = z.union([
   currentHarnessRunSchema,
   legacyHarnessRunSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 export const retainedLegacyHarnessRunSchema = z.union([
   legacyHarnessRunSchema,
   previousLegacyHarnessRunSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 
 const previousStoredRunFields = {
   events: z.array(harnessRunEventSchema).max(MAX_RETAINED_RUN_EVENTS),
@@ -426,7 +477,7 @@ const previousLegacyStoredRunSchema = previousLegacyHarnessRunSchema
 const previousStoredRunSchema = z.union([
   previousCurrentStoredRunSchema,
   previousLegacyStoredRunSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 const previousCurrentStoredRunWithSnapshotSchema = previousCurrentHarnessRunSchema
   .extend(previousStoredRunFields).strict();
 const previousLegacyStoredRunWithSnapshotSchema = previousLegacyHarnessRunWithSnapshotSchema
@@ -434,7 +485,7 @@ const previousLegacyStoredRunWithSnapshotSchema = previousLegacyHarnessRunWithSn
 const previousStoredRunWithSnapshotSchema = z.union([
   previousCurrentStoredRunWithSnapshotSchema,
   previousLegacyStoredRunWithSnapshotSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 const previousCurrentStoredRunWithCancellationSchema =
   previousCurrentHarnessRunWithCancellationSchema.extend(previousStoredRunFields).strict();
 const previousLegacyStoredRunWithCancellationSchema =
@@ -442,10 +493,13 @@ const previousLegacyStoredRunWithCancellationSchema =
 const previousStoredRunWithCancellationSchema = z.union([
   previousCurrentStoredRunWithCancellationSchema,
   previousLegacyStoredRunWithCancellationSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 const currentStoredRunSchema = currentHarnessRunSchema.extend(storedRunFields).strict();
 const legacyStoredRunSchema = legacyHarnessRunSchema.extend(storedRunFields).strict();
-const storedRunSchema = z.union([currentStoredRunSchema, legacyStoredRunSchema]);
+const storedRunSchema = z.union([
+  currentStoredRunSchema,
+  legacyStoredRunSchema,
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 const previousV7CurrentStoredRunSchema = previousV7CurrentHarnessRunSchema
   .extend(storedRunFields).strict();
 const previousV7LegacyStoredRunSchema = previousV7LegacyHarnessRunSchema
@@ -453,7 +507,7 @@ const previousV7LegacyStoredRunSchema = previousV7LegacyHarnessRunSchema
 const previousV7StoredRunSchema = z.union([
   previousV7CurrentStoredRunSchema,
   previousV7LegacyStoredRunSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 const previousCurrentStoredRunWithHostLossReconciliationSchema =
   previousV7CurrentHarnessRunSchema.extend(previousStoredRunFields).strict();
 const previousLegacyStoredRunWithHostLossReconciliationSchema =
@@ -461,7 +515,7 @@ const previousLegacyStoredRunWithHostLossReconciliationSchema =
 const previousStoredRunWithHostLossReconciliationSchema = z.union([
   previousCurrentStoredRunWithHostLossReconciliationSchema,
   previousLegacyStoredRunWithHostLossReconciliationSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 const retainedOutcomeSchema = z.object({
   idempotencyKeyHash: digestSchema,
   requestFingerprint: digestSchema,
@@ -529,7 +583,8 @@ const previousStateSchema = z.object({
 }).strict();
 const legacyStateSchema = z.object({
   schemaVersion: z.literal(1),
-  runs: z.array(previousLegacyStoredRunSchema),
+  runs: z.array(previousLegacyStoredRunSchema
+    .superRefine(requireConsistentRetainedAdapterIdentity)),
   startOutcomes: z.array(retainedOutcomeSchema),
 }).strict();
 
@@ -1064,7 +1119,7 @@ export const scheduleCancellationEscalation = (
  * @param {any} context
  * @param {{onAdapterStarted: () => Promise<void>, onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, beforeCancellationSignal: (kind: "cooperative" | "forced") => Promise<void>, onCancellationSignalPublished: (kind: "cooperative" | "forced", sentAt: string) => Promise<void>, onCancellationTerminationConfirmed: (confirmedAt: string) => Promise<void>, onSupervisorAvailable: (supervisor: {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, interrupt: () => Promise<void>, releaseProcessTree: () => Promise<void>}) => void}} observer
  */
-const superviseConformanceHarness = async (run, context, observer) => {
+const superviseHarnessAdapter = async (run, context, observer) => {
   const pinnedAdapter = await loadPinnedHarnessAdapter({
     workspacePath: context.harnessWorkspacePath,
     pinnedRevision: run.harnessPinnedRevision,
@@ -2284,7 +2339,7 @@ export const createHarnessRunManager = async (options) => {
       pendingProgressRecords.splice(0, records.length);
     };
     try {
-      supervision = await superviseConformanceHarness(initialRun, context, {
+      supervision = await superviseHarnessAdapter(initialRun, context, {
         onAdapterStarted: async () => {
           await options.recordAudit("harness.adapter.start", "observed", {
             harnessRunId: initialRun.harnessRunId,
@@ -2661,7 +2716,7 @@ export const createHarnessRunManager = async (options) => {
     if (!code && parameters.success) {
       try {
         context = await options.loadLaunchContext(request.projectId);
-        prepared = await validateConformanceHarnessLaunch(context, parameters.data);
+        prepared = await validateHarnessLaunch(context, parameters.data);
         if (
           context.project.projectId !== request.projectId
           || context.harness.harnessId !== context.project.harness.harnessId

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { SANDCASTLE_HARNESS_ADAPTER_ID } from "../src/harness-adapter-identity.mjs";
 import { createProjectRegistry } from "../src/project-registration.mjs";
 import { launchBrowser } from "./browser-launch.mjs";
 import {
@@ -450,7 +451,7 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
   }
 });
 
-test("Cockpit Launch renders no fields for a focused Harness that declares none", async () => {
+test("Cockpit projects and launches a bundled Sandcastle identity with no parameters", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-empty-harness-form-browser-"));
   const dataDir = join(root, "host-state");
   const executionDirectory = join(root, "outside-checkout");
@@ -483,26 +484,41 @@ test("Cockpit Launch renders no fields for a focused Harness that declares none"
   const harnessState = JSON.parse(await readFile(harnessStatePath, "utf8"));
   const workspacePath = harnessState.harnesses[0].workspacePath;
   const adapterPath = join(workspacePath, "adapters", "conformance.mjs");
+  const manifestPath = join(workspacePath, "harness.json");
   const adapterSource = await readFile(adapterPath, "utf8");
-  const noParameterSource = adapterSource.replace(
-    /^const launchParameters = .*;$/m,
-    'const launchParameters = {"kind":"none"};',
-  );
+  const noParameterSource = adapterSource
+    .replace(
+      /^const launchParameters = .*;$/m,
+      'const launchParameters = {"kind":"none"};',
+    )
+    .replace(
+      /^const adapterId = .*;$/m,
+      `const adapterId = ${JSON.stringify(SANDCASTLE_HARNESS_ADAPTER_ID)};`,
+    );
   assert.notEqual(noParameterSource, adapterSource);
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.name = "Bundled Sandcastle identity fixture";
+  manifest.compatibility.adapterId = SANDCASTLE_HARNESS_ADAPTER_ID;
   await writeFile(adapterPath, noParameterSource, { mode: 0o700 });
-  await execFileAsync("git", ["-C", workspacePath, "add", "--", "adapters/conformance.mjs"]);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await execFileAsync("git", [
+    "-C", workspacePath, "add", "--", "harness.json", "adapters/conformance.mjs",
+  ]);
   await execFileAsync("git", [
     "-C", workspacePath,
     "-c", "user.name=Sand-King Conformance",
     "-c", "user.email=conformance@sandking.invalid",
     "-c", "commit.gpgSign=false",
-    "commit", "--quiet", "-m", "Declare no launch parameters",
+    "commit", "--quiet", "-m", "Declare Sandcastle identity without parameters",
   ]);
   const { stdout: noneRevisionOutput } = await execFileAsync(
     "git",
     ["-C", workspacePath, "rev-parse", "HEAD"],
   );
   const noneRevision = noneRevisionOutput.trim();
+  harnessState.harnesses[0].name = "Bundled Sandcastle identity fixture";
+  harnessState.harnesses[0].adapterId = SANDCASTLE_HARNESS_ADAPTER_ID;
+  harnessState.harnesses[0].kind = "production";
   harnessState.harnesses[0].immutableRevision = noneRevision;
   harnessState.harnesses[0].launchParameters = { kind: "none" };
   harnessState.harnesses[0].workspace.headRevision = noneRevision;
@@ -541,6 +557,14 @@ test("Cockpit Launch renders no fields for a focused Harness that declares none"
     );
     const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");
     assert.match(projectId, /^project-[a-f0-9]{24}$/);
+    assert.equal(
+      await page.locator("#project-readiness").getAttribute("data-harness-adapter-id"),
+      SANDCASTLE_HARNESS_ADAPTER_ID,
+    );
+    assert.match(
+      await page.locator("#project-readiness").textContent(),
+      new RegExp(`Harness adapter: ${SANDCASTLE_HARNESS_ADAPTER_ID}`),
+    );
     const parameters = page.locator("#harness-launch-parameters");
     assert.equal(await parameters.getAttribute("data-parameter-kind"), "none");
     assert.equal(await parameters.getAttribute("data-parameter-count"), "0");
@@ -556,7 +580,25 @@ test("Cockpit Launch renders no fields for a focused Harness that declares none"
     assert.equal(run.harnessPinnedRevision, noneRevision);
     assert.equal(run.status, "succeeded", JSON.stringify(run));
     assert.equal(run.source, "cockpit");
+    assert.equal(run.adapterId, SANDCASTLE_HARNESS_ADAPTER_ID);
+    assert.equal(
+      run.executionSnapshot.adapter.adapterId,
+      SANDCASTLE_HARNESS_ADAPTER_ID,
+    );
+    assert.equal(run.outcome.terminalEnvelope.adapterId, SANDCASTLE_HARNESS_ADAPTER_ID);
     assert.deepEqual(run.parameters, {});
+    await page.waitForSelector(
+      `#harness-run-observation[data-run-id='${run.harnessRunId}'][data-run-status='succeeded']`,
+      { timeout: 15_000 },
+    );
+    assert.equal(
+      await page.locator("#harness-run-execution-snapshot").getAttribute("data-adapter-id"),
+      SANDCASTLE_HARNESS_ADAPTER_ID,
+    );
+    assert.match(
+      await page.locator("#harness-run-execution-snapshot").textContent(),
+      new RegExp(`Adapter: ${SANDCASTLE_HARNESS_ADAPTER_ID}`),
+    );
     await context.close();
   } finally {
     await browser?.close().catch(() => undefined);
