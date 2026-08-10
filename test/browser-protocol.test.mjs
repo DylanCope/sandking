@@ -23,6 +23,11 @@ const execFileAsync = promisify(execFile);
 const cliPath = join(process.cwd(), "src", "cli.mjs");
 const runtimePids = new Map();
 
+test("the served Cockpit advertises the current browser schema digest", async () => {
+  const cockpitSource = await readFile(join(process.cwd(), "src", "cockpit.js"), "utf8");
+  assert.ok(cockpitSource.includes(`schemaDigest: "${BROWSER_SCHEMA_DIGEST}"`));
+});
+
 const stop = async (dataDir) => {
   await execFileAsync(process.execPath, [
     cliPath, "stop", "--data-dir", dataDir, "--json",

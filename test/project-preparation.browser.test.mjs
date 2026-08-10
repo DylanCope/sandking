@@ -110,6 +110,10 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
       const readiness = page.locator("#project-readiness");
       const projectId = await readiness.getAttribute("data-project-id");
       const harnessId = await readiness.getAttribute("data-harness-id");
+      assert.equal(
+        await readiness.getAttribute("data-harness-adapter-id"),
+        "conformance-harness-adapter-v1",
+      );
       const pinnedRevision = await readiness.getAttribute("data-harness-pin");
       assert.match(projectId, /^project-[a-f0-9]{24}$/);
       assert.match(harnessId, /^harness-[a-f0-9]{24}$/);
@@ -119,6 +123,10 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
       assert.equal(await readiness.getAttribute("data-configuration-readiness"), "ready");
       assert.match(await readiness.textContent(), new RegExp(`Project identity: ${projectId}`));
       assert.match(await readiness.textContent(), new RegExp(`Harness identity: ${harnessId}`));
+      assert.match(
+        await readiness.textContent(),
+        /Harness adapter: conformance-harness-adapter-v1/,
+      );
       assert.match(await readiness.textContent(), new RegExp(pinnedRevision));
       assert.match(await readiness.textContent(), /pinned Harness is ready to launch/);
       assert.match(await page.locator("#project-feedback").textContent(), /ready to launch/i);

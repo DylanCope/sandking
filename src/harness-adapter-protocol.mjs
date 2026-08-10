@@ -3,6 +3,17 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
+import {
+  CONFORMANCE_HARNESS_ADAPTER_ID,
+  SANDCASTLE_HARNESS_ADAPTER_ID,
+  harnessAdapterIdSchema,
+} from "./harness-adapter-identity.mjs";
+
+export {
+  CONFORMANCE_HARNESS_ADAPTER_ID,
+  SANDCASTLE_HARNESS_ADAPTER_ID,
+  harnessAdapterIdSchema,
+};
 
 const execFileAsync = promisify(execFile);
 const FRAME_HEADER_BYTES = 4;
@@ -10,7 +21,6 @@ export const MAX_HARNESS_ADAPTER_FRAME_BYTES = 32_768;
 
 const harnessRunIdSchema = z.string().regex(/^harness-run-[a-f0-9]{24}$/);
 const adapterProtocolSchema = z.literal("1.0.0");
-const adapterIdSchema = z.literal("conformance-harness-adapter-v1");
 export const harnessAdapterEntryPointSchema = z.string().min(1).max(256)
   .regex(/^[a-zA-Z0-9._/-]+\.mjs$/)
   .refine((value) =>
@@ -20,7 +30,7 @@ export const harnessCompatibilityManifestSchema = z.object({
   schemaVersion: z.literal(1),
   name: z.string().min(1).max(120),
   compatibility: z.object({
-    adapterId: adapterIdSchema,
+    adapterId: harnessAdapterIdSchema,
     adapterProtocol: adapterProtocolSchema,
     entryPoint: harnessAdapterEntryPointSchema,
   }).strict(),
@@ -136,21 +146,31 @@ export const legacyConformanceHarnessLaunchParametersDeclaration =
     })),
   });
 
-export const harnessAdapterProbeSchema = z.object({
+const harnessAdapterProbeShape = {
   type: z.literal("harness.adapter.probe"),
   adapterProtocol: adapterProtocolSchema,
-  adapterId: adapterIdSchema,
   capabilities: z.array(capabilitySchema).min(2).max(2),
-  launchParameters: harnessLaunchParametersDeclarationSchema
+};
+export const harnessAdapterProbeSchema = z.discriminatedUnion("adapterId", [
+  z.object({
+    ...harnessAdapterProbeShape,
+    adapterId: z.literal(CONFORMANCE_HARNESS_ADAPTER_ID),
+    launchParameters: harnessLaunchParametersDeclarationSchema
     .default(legacyConformanceHarnessLaunchParametersDeclaration),
-}).strict().refine((probe) =>
+  }).strict(),
+  z.object({
+    ...harnessAdapterProbeShape,
+    adapterId: z.literal(SANDCASTLE_HARNESS_ADAPTER_ID),
+    launchParameters: harnessLaunchParametersDeclarationSchema,
+  }).strict(),
+]).refine((probe) =>
   probe.capabilities.includes("harness.launch.prepare.v1")
   && probe.capabilities.includes("harness.run.v1"));
 
 export const harnessPreparedEnvelopeSchema = z.object({
   type: z.literal("harness.launch.prepared"),
   adapterProtocol: adapterProtocolSchema,
-  adapterId: adapterIdSchema,
+  adapterId: harnessAdapterIdSchema,
   negotiatedCapabilities: z.array(z.literal("harness.launch.prepare.v1")).length(1),
   suppliedCapabilities: z.array(z.enum([
     "github.issues.read",
@@ -170,7 +190,7 @@ export const harnessPreparedEnvelopeSchema = z.object({
 export const harnessReadyEnvelopeSchema = z.object({
   type: z.literal("harness.run.ready"),
   adapterProtocol: adapterProtocolSchema,
-  adapterId: adapterIdSchema,
+  adapterId: harnessAdapterIdSchema,
   harnessRunId: harnessRunIdSchema,
   capabilities: z.array(z.literal("harness.run.v1")).length(1),
   readyAt: z.string().datetime(),
@@ -179,7 +199,7 @@ export const harnessReadyEnvelopeSchema = z.object({
 export const harnessCancellationRequestSchema = z.object({
   type: z.literal("harness.run.cancel"),
   adapterProtocol: adapterProtocolSchema,
-  adapterId: adapterIdSchema,
+  adapterId: harnessAdapterIdSchema,
   harnessRunId: harnessRunIdSchema,
   cooperativeDeadlineAt: z.string().datetime(),
 }).strict();
@@ -187,7 +207,7 @@ export const harnessCancellationRequestSchema = z.object({
 export const harnessProgressEnvelopeSchema = z.object({
   type: z.literal("harness.run.progress"),
   adapterProtocol: adapterProtocolSchema,
-  adapterId: adapterIdSchema,
+  adapterId: harnessAdapterIdSchema,
   harnessRunId: harnessRunIdSchema,
   record: z.object({
     recordId: z.string().regex(/^progress-[a-f0-9]{24}$/),
@@ -205,7 +225,7 @@ export const harnessProgressEnvelopeSchema = z.object({
 export const harnessTerminalEnvelopeSchema = z.object({
   type: z.literal("harness.run.terminal"),
   adapterProtocol: adapterProtocolSchema,
-  adapterId: adapterIdSchema,
+  adapterId: harnessAdapterIdSchema,
   harnessRunId: harnessRunIdSchema,
   terminalId: z.string().regex(/^harness-terminal-[a-f0-9]{24}$/),
   status: z.enum(["succeeded", "failed", "cancelled"]),
@@ -213,7 +233,7 @@ export const harnessTerminalEnvelopeSchema = z.object({
   result: z.record(z.string(), z.unknown()).nullable(),
 }).strict();
 
-export const harnessAdapterMessageSchema = z.discriminatedUnion("type", [
+export const harnessAdapterMessageSchema = z.union([
   harnessAdapterProbeSchema,
   harnessPreparedEnvelopeSchema,
   harnessReadyEnvelopeSchema,

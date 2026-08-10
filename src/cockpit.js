@@ -27,7 +27,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:1b3f3bfdc31ac25da8bfd278b79882207b908e69ab3a31a7aece5d360501310f",
+  schemaDigest: "sha256:84fc96e07dddc4d3b7035fb57bcf4ed277efcde6107dac75423703e7503bbf4a",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -635,6 +635,7 @@ const renderPreparedProject = (current) => {
     "data-project-revision": current.revision,
     "data-harness-id": current.harness?.harnessId ?? "",
     "data-harness-pin": current.harness?.pinnedRevision ?? "",
+    "data-harness-adapter-id": current.harness?.adapterId ?? "",
     "data-checks-readiness": current.readiness.checks,
     "data-configuration-readiness": current.readiness.configuration,
     "data-harness-launch-ready": String(current.canPrepareLaunchRequest),
@@ -649,6 +650,10 @@ const renderPreparedProject = (current) => {
     element("p", {}, current.harness
       ? `Harness identity: ${current.harness.harnessId} — ${current.harness.name}`
       : "Harness: missing"),
+    element("p", { "data-project-harness-adapter-id": current.harness?.adapterId ?? "" },
+      current.harness
+        ? `Harness adapter: ${current.harness.adapterId}`
+        : "Harness adapter: missing"),
     element("p", {}, current.harness
       ? `Pinned immutable revision: ${current.harness.pinnedRevision}`
       : "Pinned immutable revision: missing"),

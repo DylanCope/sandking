@@ -41,7 +41,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.recovery.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-safe-harness-recovery")
+  .update("sandking-host-control-schema-v1-with-safe-recovery-and-bundled-harness-identities")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({

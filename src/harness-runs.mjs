@@ -19,10 +19,11 @@ import {
   loadPinnedHarnessAdapter,
   readHarnessAdapterFrame,
 } from "./harness-adapter-protocol.mjs";
+import { harnessAdapterIdSchema } from "./harness-adapter-identity.mjs";
 import { sendHarnessCancellationRequest } from "./harness-process-control.mjs";
 import {
   launchParametersSchema,
-  validateConformanceHarnessLaunch,
+  validateHarnessLaunch,
 } from "./harness-launch.mjs";
 import {
   ensurePrivateDirectory,
@@ -145,7 +146,7 @@ export const harnessRunOutcomeSchema = z.object({
   terminalEnvelope: z.object({
     terminalId: z.string().regex(/^harness-terminal-[a-f0-9]{24}$/),
     status: z.enum(["succeeded", "failed", "cancelled"]),
-    adapterId: z.literal("conformance-harness-adapter-v1"),
+    adapterId: harnessAdapterIdSchema,
     adapterProtocol: z.literal("1.0.0"),
   }).strict().nullable(),
   outcomeAuditId: auditIdSchema.nullable().default(null),
@@ -297,7 +298,7 @@ const previousHarnessRunSchema = z.object({
   projectId: projectIdSchema,
   harnessId: harnessIdSchema,
   harnessPinnedRevision: commitSchema,
-  adapterId: z.literal("conformance-harness-adapter-v1"),
+  adapterId: harnessAdapterIdSchema,
   adapterProtocol: z.literal("1.0.0"),
   adapterEntryPoint: harnessAdapterEntryPointSchema,
   parameters: launchParametersSchema,
@@ -323,7 +324,7 @@ const previousLegacyHarnessRunSchema = z.object({
   projectId: projectIdSchema,
   harnessId: harnessIdSchema,
   harnessPinnedRevision: commitSchema,
-  adapterId: z.literal("conformance-harness-adapter-v1"),
+  adapterId: harnessAdapterIdSchema,
   adapterProtocol: z.literal("1.0.0"),
   adapterEntryPoint: harnessAdapterEntryPointSchema,
   controllerId: controllerIdSchema,
@@ -350,7 +351,7 @@ export const harnessRunExecutionSnapshotSchema = z.object({
     pinnedRevision: commitSchema,
   }).strict(),
   adapter: z.object({
-    adapterId: z.literal("conformance-harness-adapter-v1"),
+    adapterId: harnessAdapterIdSchema,
     protocol: z.literal("1.0.0"),
     entryPoint: harnessAdapterEntryPointSchema,
   }).strict(),
@@ -399,10 +400,38 @@ const legacyHarnessRunSchema = previousLegacyHarnessRunWithSnapshotSchema.extend
   recovery: harnessRunRecoverySchema.nullable().default(null),
 }).strict();
 
+/** @param {any} run @param {import("zod").RefinementCtx} context */
+const requireConsistentRetainedAdapterIdentity = (run, context) => {
+  if (
+    run.executionSnapshot.adapter.adapterId !== run.adapterId
+    || run.executionSnapshot.adapter.protocol !== run.adapterProtocol
+    || run.executionSnapshot.adapter.entryPoint !== run.adapterEntryPoint
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "retained Harness adapter facts disagree",
+      path: ["executionSnapshot", "adapter"],
+    });
+  }
+  if (
+    run.outcome?.terminalEnvelope
+    && (
+      run.outcome.terminalEnvelope.adapterId !== run.adapterId
+      || run.outcome.terminalEnvelope.adapterProtocol !== run.adapterProtocol
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "retained Harness terminal identity disagrees",
+      path: ["outcome", "terminalEnvelope"],
+    });
+  }
+};
+
 export const harnessRunSchema = z.union([
   currentHarnessRunSchema,
   legacyHarnessRunSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 export const retainedLegacyHarnessRunSchema = z.union([
   legacyHarnessRunSchema,
   previousLegacyHarnessRunSchema,
@@ -445,7 +474,10 @@ const previousStoredRunWithCancellationSchema = z.union([
 ]);
 const currentStoredRunSchema = currentHarnessRunSchema.extend(storedRunFields).strict();
 const legacyStoredRunSchema = legacyHarnessRunSchema.extend(storedRunFields).strict();
-const storedRunSchema = z.union([currentStoredRunSchema, legacyStoredRunSchema]);
+const storedRunSchema = z.union([
+  currentStoredRunSchema,
+  legacyStoredRunSchema,
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 const previousV7CurrentStoredRunSchema = previousV7CurrentHarnessRunSchema
   .extend(storedRunFields).strict();
 const previousV7LegacyStoredRunSchema = previousV7LegacyHarnessRunSchema
@@ -1064,7 +1096,7 @@ export const scheduleCancellationEscalation = (
  * @param {any} context
  * @param {{onAdapterStarted: () => Promise<void>, onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, beforeCancellationSignal: (kind: "cooperative" | "forced") => Promise<void>, onCancellationSignalPublished: (kind: "cooperative" | "forced", sentAt: string) => Promise<void>, onCancellationTerminationConfirmed: (confirmedAt: string) => Promise<void>, onSupervisorAvailable: (supervisor: {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, interrupt: () => Promise<void>, releaseProcessTree: () => Promise<void>}) => void}} observer
  */
-const superviseConformanceHarness = async (run, context, observer) => {
+const superviseHarnessAdapter = async (run, context, observer) => {
   const pinnedAdapter = await loadPinnedHarnessAdapter({
     workspacePath: context.harnessWorkspacePath,
     pinnedRevision: run.harnessPinnedRevision,
@@ -2284,7 +2316,7 @@ export const createHarnessRunManager = async (options) => {
       pendingProgressRecords.splice(0, records.length);
     };
     try {
-      supervision = await superviseConformanceHarness(initialRun, context, {
+      supervision = await superviseHarnessAdapter(initialRun, context, {
         onAdapterStarted: async () => {
           await options.recordAudit("harness.adapter.start", "observed", {
             harnessRunId: initialRun.harnessRunId,
@@ -2661,7 +2693,7 @@ export const createHarnessRunManager = async (options) => {
     if (!code && parameters.success) {
       try {
         context = await options.loadLaunchContext(request.projectId);
-        prepared = await validateConformanceHarnessLaunch(context, parameters.data);
+        prepared = await validateHarnessLaunch(context, parameters.data);
         if (
           context.project.projectId !== request.projectId
           || context.harness.harnessId !== context.project.harness.harnessId
