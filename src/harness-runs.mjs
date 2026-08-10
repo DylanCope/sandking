@@ -31,6 +31,7 @@ import {
 import {
   materializeProductionHarnessExecutionSnapshot,
   productionHarnessPreparationSchema,
+  verifyProductionHarnessRuntimeEntryPoint,
 } from "./production-harness-preparation.mjs";
 import {
   ensurePrivateDirectory,
@@ -1149,18 +1150,26 @@ const superviseHarnessAdapter = async (run, context, observer) => {
   ) {
     throw new Error("harness_adapter_protocol_invalid");
   }
+  const preparedProductionHarness = run.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+    && context.project?.harness?.preparation;
+  const productionHarnessSnapshot = preparedProductionHarness
+    ? run.executionSnapshot.productionHarness
+    : null;
+  if (
+    preparedProductionHarness
+    && (
+      !productionHarnessSnapshot
+      || typeof context.productionHarnessExecutionPath !== "string"
+      || typeof context.productionHarnessRuntimeEntryPointSource !== "string"
+      || typeof context.productionHarnessRuntimeEntryPointIntegrity !== "string"
+    )
+  ) {
+    throw new Error("harness_adapter_start_failed");
+  }
   const encodedExecution = Buffer.from(JSON.stringify({
     harnessRunId: run.harnessRunId,
     parameters: context.parameters,
   }), "utf8").toString("base64url");
-  const preparedProductionHarness = run.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
-    && context.project?.harness?.preparation;
-  if (
-    preparedProductionHarness
-    && typeof context.productionHarnessExecutionPath !== "string"
-  ) {
-    throw new Error("harness_adapter_start_failed");
-  }
   const adapterWorkingDirectory = preparedProductionHarness
     ? context.productionHarnessExecutionPath
     : context.harnessWorkspacePath;
@@ -1188,6 +1197,13 @@ const superviseHarnessAdapter = async (run, context, observer) => {
     "run",
     encodedExecution,
   ];
+  if (preparedProductionHarness) {
+    await verifyProductionHarnessRuntimeEntryPoint({
+      executionPath: context.productionHarnessExecutionPath,
+      runtimeEntryPointSource: context.productionHarnessRuntimeEntryPointSource,
+      runtimeEntryPointIntegrity: context.productionHarnessRuntimeEntryPointIntegrity,
+    });
+  }
   const posixProcessTree = process.platform === "win32"
     ? null
       : spawnPosixProcessTree(process.execPath, adapterArgs, {
@@ -2794,6 +2810,8 @@ export const createHarnessRunManager = async (options) => {
 
     let harnessRunId = null;
     let productionHarnessExecutionPath = null;
+    let productionHarnessRuntimeEntryPointSource = null;
+    let productionHarnessRuntimeEntryPointIntegrity = null;
     if (!code && context && prepared && parameters.success && idempotencyKeyHash) {
       harnessRunId = `harness-run-${randomBytes(12).toString("hex")}`;
       if (
@@ -2806,12 +2824,17 @@ export const createHarnessRunManager = async (options) => {
           if (typeof context.productionHarnessProjectionPath !== "string") {
             throw new Error("harness_projection_failed");
           }
-          await materializeProductionHarnessExecutionSnapshot({
+          const executionSnapshot = await materializeProductionHarnessExecutionSnapshot({
             sourcePath: context.productionHarnessProjectionPath,
             destinationPath: productionHarnessExecutionPath,
             projectPath: context.project.canonicalPath,
             preparation: context.project.harness.preparation,
           });
+          productionHarnessExecutionPath = executionSnapshot.path;
+          productionHarnessRuntimeEntryPointSource =
+            executionSnapshot.runtimeEntryPointSource;
+          productionHarnessRuntimeEntryPointIntegrity =
+            executionSnapshot.runtimeEntryPointIntegrity;
         } catch (error) {
           const typedCode = error instanceof Error ? error.message : "";
           code = new Set([
@@ -2819,6 +2842,8 @@ export const createHarnessRunManager = async (options) => {
             "harness_projection_failed",
           ]).has(typedCode) ? typedCode : "harness_projection_failed";
           productionHarnessExecutionPath = null;
+          productionHarnessRuntimeEntryPointSource = null;
+          productionHarnessRuntimeEntryPointIntegrity = null;
           await rm(logsDirectory, { recursive: true, force: true }).catch(() => undefined);
         }
       }
@@ -3013,6 +3038,8 @@ export const createHarnessRunManager = async (options) => {
         ...context,
         parameters: structuredClone(parameters.data),
         productionHarnessExecutionPath,
+        productionHarnessRuntimeEntryPointSource,
+        productionHarnessRuntimeEntryPointIntegrity,
         cancellationGraceMs,
         hostLossTerminationEvidencePath: join(
           options.dataDir,

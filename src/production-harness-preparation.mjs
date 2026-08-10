@@ -33,6 +33,7 @@ const relativeProjectionPathSchema = z.string().min(1).max(512).refine((value) =
   && !value.includes("\\")
   && !value.includes("\0")
   && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."));
+const controlledWorkerRuntimePath = ".sandcastle/controlled-worker-fixture.mjs";
 
 const productionHarnessProjectionManifestSchema = z.object({
   schemaVersion: z.literal(1),
@@ -378,6 +379,10 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
   if (projectionDigest !== preparation.projection.digest) {
     throw new ProductionHarnessPreparationError("harness_projection_collision");
   }
+  const runtimeEntryPointSource = snapshotFiles.get(controlledWorkerRuntimePath);
+  if (typeof runtimeEntryPointSource !== "string") {
+    throw new ProductionHarnessPreparationError("harness_projection_collision");
+  }
   snapshotFiles.set("projection-manifest.json", manifestSource);
 
   const destinationPath = resolve(options.destinationPath);
@@ -442,7 +447,11 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
     stagingPath = null;
     published = true;
     await makeExecutionTreeReadOnly(destinationPath);
-    return destinationPath;
+    return {
+      path: destinationPath,
+      runtimeEntryPointSource,
+      runtimeEntryPointIntegrity: sha256(runtimeEntryPointSource),
+    };
   } catch (error) {
     if (stagingPath) {
       await makeExecutionTreeRemovable(stagingPath).catch(() => undefined);
@@ -452,6 +461,41 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
       await makeExecutionTreeRemovable(destinationPath).catch(() => undefined);
       await rm(destinationPath, { recursive: true, force: true }).catch(() => undefined);
     }
+    if (error instanceof ProductionHarnessPreparationError) throw error;
+    throw new ProductionHarnessPreparationError("harness_projection_failed");
+  }
+};
+
+/**
+ * Re-authenticate the executable projection input at the last Host-controlled
+ * boundary before the adapter process is created. The retained source was
+ * captured before launch acceptance, so a later replacement cannot become an
+ * accepted Worker runtime merely by restoring writable file permissions.
+ *
+ * @param {{
+ *   executionPath: string,
+ *   runtimeEntryPointSource: string,
+ *   runtimeEntryPointIntegrity: string,
+ * }} options
+ */
+export const verifyProductionHarnessRuntimeEntryPoint = async (options) => {
+  const runtimePath = join(
+    options.executionPath,
+    ...controlledWorkerRuntimePath.split("/"),
+  );
+  try {
+    const details = await lstat(runtimePath);
+    const source = details.isFile() && !details.isSymbolicLink() && details.nlink === 1
+      ? await readFile(runtimePath, "utf8")
+      : null;
+    if (
+      source === null
+      || source !== options.runtimeEntryPointSource
+      || sha256(source) !== options.runtimeEntryPointIntegrity
+    ) {
+      throw new ProductionHarnessPreparationError("harness_projection_failed");
+    }
+  } catch (error) {
     if (error instanceof ProductionHarnessPreparationError) throw error;
     throw new ProductionHarnessPreparationError("harness_projection_failed");
   }

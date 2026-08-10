@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -27,6 +35,22 @@ const writeControlledFixture = (projectPath, value) => writeFile(
   join(projectPath, "sandcastle.worker-fixture.json"),
   `${JSON.stringify(value, null, 2)}\n`,
 );
+
+const alteredWorkerSource = [
+  'import { writeFile } from "node:fs/promises";',
+  'import { join } from "node:path";',
+  'await writeFile(join(process.cwd(), "tampered-runtime.txt"), "tampered runtime executed\\n");',
+  'process.stdout.write(`${JSON.stringify({',
+  '  type: "sandcastle.worker.result",',
+  '  status: "succeeded",',
+  '  result: {',
+  '    schemaVersion: 1,',
+  '    kind: "sandcastle.delegation",',
+  '    code: "tampered_runtime_executed",',
+  '  },',
+  '})}\\n`);',
+  "",
+].join("\n");
 
 const createProductionFixture = async (root, fixture, managerOptions = {}) => {
   const dataDir = join(root, "host-state");
@@ -238,21 +262,7 @@ test("an accepted production launch executes its immutable pinned runtime snapsh
         );
         await writeFile(
           join(projectionPath, ".sandcastle", "controlled-worker-fixture.mjs"),
-          [
-            'import { writeFile } from "node:fs/promises";',
-            'import { join } from "node:path";',
-            'await writeFile(join(process.cwd(), "tampered-runtime.txt"), "tampered runtime executed\\n");',
-            'process.stdout.write(`${JSON.stringify({',
-            '  type: "sandcastle.worker.result",',
-            '  status: "succeeded",',
-            '  result: {',
-            '    schemaVersion: 1,',
-            '    kind: "sandcastle.delegation",',
-            '    code: "tampered_runtime_executed",',
-            '  },',
-            '})}\\n`);',
-            "",
-          ].join("\n"),
+          alteredWorkerSource,
         );
       },
     });
@@ -273,6 +283,49 @@ test("an accepted production launch executes its immutable pinned runtime snapsh
       await readFile(join(fixture.projectPath, "pinned-runtime.txt"), "utf8"),
       "exact pinned runtime executed\n",
     );
+    await assert.rejects(
+      readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
+      { code: "ENOENT" },
+    );
+  } finally {
+    await fixture?.manager.waitForIdle().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an altered retained production runtime never starts or reports success", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-altered-runtime-"));
+  let fixture;
+  try {
+    fixture = await createProductionFixture(root, {
+      schemaVersion: 1,
+      provider: { kind: "controlled-worker-fixture", ready: true },
+      scenario: "succeeded",
+    }, {
+      faultInjector: async (point) => {
+        if (point !== "harness_run_launch.after_commit") return;
+        const [harnessRunId] = await readdir(join(fixture.dataDir, "harness-runs"));
+        const executionWorkerPath = join(
+          fixture.dataDir,
+          "harness-runs",
+          harnessRunId,
+          "execution",
+          ".sandcastle",
+          "controlled-worker-fixture.mjs",
+        );
+        await chmod(executionWorkerPath, 0o600);
+        await writeFile(executionWorkerPath, alteredWorkerSource);
+      },
+    });
+
+    const launched = await fixture.manager.launch(launchRequest(
+      fixture.project.project.projectId,
+    ));
+    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
+    const terminal = await observeTerminal(fixture.manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
+    assert.equal(terminal.outcome.code, "harness_adapter_start_failed");
+    assert.equal(fixture.audits.some(({ action }) => action === "harness.adapter.start"), false);
     await assert.rejects(
       readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
       { code: "ENOENT" },
