@@ -32,7 +32,7 @@ const sourceUrlSchema = z.url().refine((value) => {
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
 const SAND_KING_SEED_REVISION = "0a602896e4063dce7b390b3a514e34cfe36b46c1";
 const SAND_KING_SEED_SOURCE_INTEGRITY =
-  "sha256:2f938e35f7b8093a444e683e949faf40ff722c581b681aed9c67d49b5625da8a";
+  "sha256:aa935016db68d05f4273f21ab42eb5a2ba2a966cea4a75ae1b7c589d589a7451";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -207,13 +207,13 @@ const compareSeedPaths = (left, right) => left.path < right.path
 
 /**
  * Bind the immutable seed implementation to the recorded Sand-King revision.
- * The package-sourced orchestration files are the revision-derived bytes. Seed
- * artifacts have their own structural, adapter-probe, and lock validations.
+ * Every source artifact except the self-referential provenance and independently
+ * digested skill lock must originate at the recorded Sand-King revision.
  * @param {z.infer<typeof seedManifestSchema>} manifest
  */
 const seedSourceIntegrity = (manifest) => sha256(
   [...manifest.files]
-    .filter(({ source }) => source === "sandking-package")
+    .filter(({ path }) => path !== "provenance.json" && path !== "skills.lock.json")
     .sort(compareSeedPaths)
     .map((file) => JSON.stringify({
       path: file.path,

@@ -272,6 +272,11 @@ const idempotencyHash = (key) => sha256(key);
 const projectStatePath = (dataDir) => join(dataDir, "project-registrations.json");
 /** @param {string} dataDir */
 const harnessStatePath = (dataDir) => join(dataDir, "harness-registry.json");
+/** @param {string} dataDir */
+const harnessWorkspaceRoot = (dataDir) => {
+  const stateRoot = resolve(dataDir);
+  return join(dirname(stateRoot), `${basename(stateRoot)}-harness-workspaces`);
+};
 
 /** @param {string} dataDir */
 const readProjectState = async (dataDir) => {
@@ -388,6 +393,16 @@ const containsPath = (parent, child) => {
       && !isAbsolute(pathFromParent));
 };
 
+/** @param {string} left @param {string} right */
+const pathsOverlap = (left, right) => containsPath(left, right) || containsPath(right, left);
+
+/** @param {string} path */
+const canonicalManagedPath = async (path) => realpath(path).catch(async () => {
+  const resolvedPath = resolve(path);
+  const canonicalParent = await realpath(dirname(resolvedPath)).catch(() => dirname(resolvedPath));
+  return join(canonicalParent, basename(resolvedPath));
+});
+
 /**
  * Resolve only the supplied path. The function never enumerates a parent or
  * sibling directory; stored filesystem evidence is the only cross-registration lookup.
@@ -410,7 +425,12 @@ const resolveProjectLocation = async (state, selectedPath, dataDir) => {
     if (!details.isDirectory()) {
       return { kind: "failure", code: "project_path_invalid", actualRevision: 0 };
     }
-    if (containsPath(canonicalPath, resolve(dataDir))) {
+    const hostStateRoot = await canonicalManagedPath(resolve(dataDir));
+    const workspaceRoot = await canonicalManagedPath(harnessWorkspaceRoot(dataDir));
+    if (
+      pathsOverlap(canonicalPath, hostStateRoot)
+      || pathsOverlap(canonicalPath, workspaceRoot)
+    ) {
       return { kind: "failure", code: "project_path_invalid", actualRevision: 0 };
     }
   } catch {
@@ -1296,10 +1316,8 @@ export const createProjectRegistry = async (options) => {
       code = descriptor.reusedCode;
     } else {
       const harnessId = `harness-${randomBytes(12).toString("hex")}`;
-      const stateRoot = resolve(options.dataDir);
       const workspacePath = join(
-        dirname(stateRoot),
-        `${basename(stateRoot)}-harness-workspaces`,
+        harnessWorkspaceRoot(options.dataDir),
         harnessId,
       );
       try {

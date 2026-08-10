@@ -111,6 +111,78 @@ test("ordinary Cockpit Project registration defaults to the production Sandcastl
   }
 });
 
+test("production registration rejects a Project overlapping Host-private Harness workspaces", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-workspace-isolation-browser-"));
+  const dataDir = join(root, "host-state");
+  const executionDirectory = join(root, "outside-project");
+  const userHome = join(root, "user-home");
+  const projectPath = `${dataDir}-harness-workspaces`;
+  await Promise.all([
+    mkdir(dataDir, { recursive: true }),
+    mkdir(executionDirectory, { recursive: true }),
+    mkdir(userHome, { recursive: true }),
+    execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]),
+  ]);
+  await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
+  await execFileAsync("git", ["-C", projectPath, "add", "README.md"]);
+  await execFileAsync("git", [
+    "-C", projectPath,
+    "-c", "user.name=Project Fixture",
+    "-c", "user.email=project-fixture@sandking.invalid",
+    "commit", "--quiet", "-m", "Initialize Project fixture",
+  ]);
+  const projectFilesBefore = (await readdir(projectPath)).sort();
+  const installed = await installCurrentPackage(root);
+  const environment = { ...process.env, HOME: userHome };
+  let browser;
+
+  try {
+    const { stdout } = await execFileAsync(installed.command, [
+      "launch",
+      "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
+      "--idempotency-key", "production-workspace-isolation-runtime",
+      "--expected-revision", "0",
+      "--json",
+      "--no-open",
+    ], { cwd: executionDirectory, env: environment });
+    const runtime = JSON.parse(stdout);
+    browser = await launchBrowser({ niceAdjustment: 10 });
+    const page = await browser.newPage();
+    await page.goto(runtime.bootstrapUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
+      timeout: 90_000,
+    });
+    await page.locator("#project-path").fill(projectPath);
+    const responsePromise = page.waitForResponse((response) =>
+      response.request().method() === "POST"
+      && response.url().endsWith("/projects/open"));
+    await page.locator("#open-project").click();
+    const response = await responsePromise;
+    const outcome = { status: response.status(), body: await response.json() };
+
+    assert.equal(outcome.status, 400);
+    assert.equal(outcome.body.type, "project.operation.failure");
+    assert.equal(outcome.body.operation, "project.inspect");
+    assert.equal(outcome.body.code, "project_path_invalid");
+    assert.equal(outcome.body.prohibitedSideEffects.projectFileWrite, false);
+    assert.equal(outcome.body.prohibitedSideEffects.harnessWorkspaceWrite, false);
+    assert.deepEqual((await readdir(projectPath)).sort(), projectFilesBefore);
+    assert.equal(
+      (await execFileAsync("git", ["-C", projectPath, "status", "--short"])).stdout,
+      "",
+    );
+    await assert.rejects(readFile(join(dataDir, "project-registrations.json"), "utf8"));
+    await assert.rejects(readFile(join(dataDir, "harness-registry.json"), "utf8"));
+  } finally {
+    await browser?.close().catch(() => undefined);
+    await execFileAsync(installed.command, [
+      "stop", "--data-dir", dataDir, "--json",
+    ], { cwd: executionDirectory, env: environment }).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("an invalid production seed rejects the composite without tracking a Project", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-seed-failure-browser-"));
   const dataDir = join(root, "host-state");

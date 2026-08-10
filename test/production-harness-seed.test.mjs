@@ -128,7 +128,7 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
       );
     }
     const seedSourceInventory = seedManifest.files
-      .filter(({ source }) => source === "sandking-package")
+      .filter(({ path }) => path !== "provenance.json" && path !== "skills.lock.json")
       .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
       .map((file) => JSON.stringify({
         path: file.path,
@@ -287,7 +287,7 @@ test("invalid production seed inputs fail truthfully without retaining a ready H
       },
       {
         name: "invalid-adapter",
-        code: "harness_seed_missing",
+        code: "harness_seed_provenance_invalid",
         mutate: (sourceRoot) => rewriteLockedSeedFile(
           sourceRoot,
           "adapters/sandcastle.mjs",
@@ -418,6 +418,19 @@ test("invalid production seed inputs fail truthfully without retaining a ready H
             sourceRoot,
             ".sandcastle/Dockerfile",
             `${dockerfile}\n# bytes absent from the recorded Sand-King revision\n`,
+          );
+        },
+      },
+      {
+        name: "seed-owned-adapter-bytes-do-not-match-provenance",
+        code: "harness_seed_provenance_invalid",
+        mutate: async (sourceRoot) => {
+          const adapterPath = join(sourceRoot, "adapters/sandcastle.mjs");
+          const adapter = await readFile(adapterPath, "utf8");
+          await rewriteLockedSeedFile(
+            sourceRoot,
+            "adapters/sandcastle.mjs",
+            `${adapter}\n// bytes absent from the recorded Sand-King revision\n`,
           );
         },
       },

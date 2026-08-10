@@ -4,7 +4,7 @@
   "sandKing": {
     "repository": "https://github.com/DylanCope/sandking.git",
     "revision": "0a602896e4063dce7b390b3a514e34cfe36b46c1",
-    "seedSourceIntegrity": "sha256:2f938e35f7b8093a444e683e949faf40ff722c581b681aed9c67d49b5625da8a"
+    "seedSourceIntegrity": "sha256:aa935016db68d05f4273f21ab42eb5a2ba2a966cea4a75ae1b7c589d589a7451"
   },
   "sandcastle": {
     "repository": "https://github.com/mattpocock/sandcastle.git",
