@@ -62,10 +62,12 @@ const createProductionFixture = async (root, fixture, managerOptions = {}) => {
   await commitProject(projectPath, "Initialize controlled production Project");
 
   const audits = [];
+  const { onAudit, ...runManagerOptions } = managerOptions;
   const recordAudit = async (action, outcome, details, requestedAuditId) => {
     const auditId = requestedAuditId
       ?? `audit-${String(audits.length + 1).padStart(24, "0")}`;
     audits.push({ auditId, action, outcome, details });
+    await onAudit?.(action, outcome, details);
     return auditId;
   };
   const registry = await createProjectRegistry({ dataDir, recordAudit });
@@ -104,7 +106,7 @@ const createProductionFixture = async (root, fixture, managerOptions = {}) => {
     hostId: `host-${"1".repeat(24)}`,
     recordAudit,
     loadLaunchContext: registry.loadLaunchContext,
-    ...managerOptions,
+    ...runManagerOptions,
   });
   return { audits, dataDir, harness, manager, pinned, project, projectPath, registry };
 };
@@ -326,6 +328,47 @@ test("an altered retained production runtime never starts or reports success", a
     assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
     assert.equal(terminal.outcome.code, "harness_adapter_start_failed");
     assert.equal(fixture.audits.some(({ action }) => action === "harness.adapter.start"), false);
+    await assert.rejects(
+      readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
+      { code: "ENOENT" },
+    );
+  } finally {
+    await fixture?.manager.waitForIdle().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the accepted Worker bytes remain bound after the adapter process starts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-worker-handoff-"));
+  let fixture;
+  try {
+    fixture = await createProductionFixture(root, {
+      schemaVersion: 1,
+      provider: { kind: "controlled-worker-fixture", ready: true },
+      scenario: "succeeded",
+    }, {
+      onAudit: async (action, _outcome, details) => {
+        if (action !== "harness.adapter.start") return;
+        const executionWorkerPath = join(
+          fixture.dataDir,
+          "harness-runs",
+          details.harnessRunId,
+          "execution",
+          ".sandcastle",
+          "controlled-worker-fixture.mjs",
+        );
+        await chmod(executionWorkerPath, 0o600);
+        await writeFile(executionWorkerPath, alteredWorkerSource);
+      },
+    });
+
+    const launched = await fixture.manager.launch(launchRequest(
+      fixture.project.project.projectId,
+    ));
+    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
+    const terminal = await observeTerminal(fixture.manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "succeeded", JSON.stringify(terminal));
+    assert.equal(terminal.outcome.result.code, "work_completed");
     await assert.rejects(
       readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
       { code: "ENOENT" },

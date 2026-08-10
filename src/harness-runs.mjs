@@ -1134,6 +1134,45 @@ export const scheduleCancellationEscalation = (
 };
 
 /**
+ * Keep the pinned adapter's process and cancellation behavior unchanged while
+ * binding its Worker spawn to the bytes authenticated before launch
+ * acceptance. The preload runs before the exact pinned adapter source and
+ * replaces only that adapter's one expected Worker invocation. The Worker is
+ * evaluated from the retained source, so replacing its projected path after
+ * the adapter process starts cannot change the code that executes.
+ *
+ * @param {{workerPath: string, workerSource: string}} options
+ */
+const productionWorkerExecutionPreload = (options) => {
+  const preloadSource = [
+    'import childProcess from "node:child_process";',
+    'import { syncBuiltinESMExports } from "node:module";',
+    `const expectedWorkerPath = ${JSON.stringify(options.workerPath)};`,
+    `const exactWorkerSource = ${JSON.stringify(options.workerSource)};`,
+    "const originalSpawn = childProcess.spawn;",
+    "childProcess.spawn = function(executable, args, spawnOptions) {",
+    "  if (executable === process.execPath",
+    "      && Array.isArray(args)",
+    "      && args.length === 2",
+    "      && args[0] === expectedWorkerPath",
+    '      && typeof args[1] === "string") {',
+    "    return originalSpawn.call(this, executable, [",
+    '      "--input-type=module",',
+    '      "--eval",',
+    "      exactWorkerSource,",
+    "      expectedWorkerPath,",
+    "      args[1],",
+    "    ], spawnOptions);",
+    "  }",
+    "  return originalSpawn.call(this, executable, args, spawnOptions);",
+    "};",
+    "syncBuiltinESMExports();",
+    "",
+  ].join("\n");
+  return `data:text/javascript;base64,${Buffer.from(preloadSource, "utf8").toString("base64")}`;
+};
+
+/**
  * @param {z.infer<typeof storedRunSchema>} run
  * @param {any} context
  * @param {{onAdapterStarted: () => Promise<void>, onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, beforeCancellationSignal: (kind: "cooperative" | "forced") => Promise<void>, onCancellationSignalPublished: (kind: "cooperative" | "forced", sentAt: string) => Promise<void>, onCancellationTerminationConfirmed: (confirmedAt: string) => Promise<void>, onSupervisorAvailable: (supervisor: {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, interrupt: () => Promise<void>, releaseProcessTree: () => Promise<void>}) => void}} observer
@@ -1173,6 +1212,13 @@ const superviseHarnessAdapter = async (run, context, observer) => {
   const adapterWorkingDirectory = preparedProductionHarness
     ? context.productionHarnessExecutionPath
     : context.harnessWorkspacePath;
+  const productionWorkerPath = preparedProductionHarness
+    ? join(
+        context.productionHarnessExecutionPath,
+        ".sandcastle",
+        "controlled-worker-fixture.mjs",
+      )
+    : null;
   const windowsBarrierDirectory = process.platform === "win32"
     ? await mkdtemp(join(tmpdir(), "sandking-harness-job-"))
     : null;
@@ -1191,6 +1237,15 @@ const superviseHarnessAdapter = async (run, context, observer) => {
   // window in which different adapter bytes could otherwise be launched.
   const adapterArgs = [
     ...(windowsBarrierMarker ? ["--require", windowsProcessBarrierPath] : []),
+    ...(productionWorkerPath
+      ? [
+          "--import",
+          productionWorkerExecutionPreload({
+            workerPath: productionWorkerPath,
+            workerSource: context.productionHarnessRuntimeEntryPointSource,
+          }),
+        ]
+      : []),
     "--input-type=module",
     "--eval", pinnedAdapter.pinnedEntryPointSource,
     pinnedAdapter.compatibility.entryPoint,
