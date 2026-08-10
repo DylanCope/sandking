@@ -79,6 +79,8 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
         timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
+      await page.locator("#project-harness-adapter")
+        .selectOption("conformance-harness-adapter-v1");
       await page.locator("#open-project").click();
       await page.waitForSelector("#project-readiness[data-harness-launch-ready='true']", {
         timeout: 90_000,

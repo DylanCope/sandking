@@ -205,6 +205,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         "sandking.bulk-stream.v1",
         "sandking.project-registration.v1",
         "sandking.conformance-harness-registration.v1",
+        "sandking.production-harness-registration.v1",
         "sandking.harness-run.launch.v2",
         "sandking.harness-run.v2",
         "sandking.harness-run-reconciliation.v1",

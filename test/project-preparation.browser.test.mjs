@@ -91,6 +91,8 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
       assert.equal(await page.locator("#project-not-selected").getAttribute(
         "data-project-selected",
       ), "false");
+      await page.locator("#project-harness-adapter")
+        .selectOption("conformance-harness-adapter-v1");
 
       await page.locator("#project-path").fill("relative/project");
       await page.locator("#open-project").click();
@@ -142,6 +144,7 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
           { checkId: "test", command: "npm run test" },
         ],
       });
+      assert.equal(acceptedBody.harnessAdapterId, "conformance-harness-adapter-v1");
       const browserIdempotencyKey = acceptedRequest.headers["x-sandking-idempotency-key"];
       assert.ok(browserIdempotencyKey);
       assert.equal(acceptedRequest.headers["x-sandking-expected-revision"], "0");

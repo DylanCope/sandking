@@ -177,6 +177,8 @@ test("the production Workbench terminal is usable at a touch phone viewport", as
       browserErrors,
     );
     await page.locator("#project-path").fill(projectPath);
+    await page.locator("#project-harness-adapter")
+      .selectOption("conformance-harness-adapter-v1");
     await page.locator("#open-project").click();
     await waitForCockpitReadiness(
       page,

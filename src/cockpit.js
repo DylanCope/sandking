@@ -27,7 +27,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:ec72d35d9788bd31bb5f07de56b1010064e73eddff22b250c8fd94dabedab326",
+  schemaDigest: "sha256:16490461d44deb390c0bada6692add8e4dad5762f9aa13523d98bdedafcf8256",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -708,6 +708,21 @@ const renderProjectPreparation = (
     type: "text",
     value: "npm run test",
   });
+  const harnessLabel = element("label", { for: "project-harness-adapter" }, "Bundled Harness");
+  const harnessSelect = element("select", {
+    id: "project-harness-adapter",
+    disabled: Boolean(preparation.current?.harness),
+  });
+  harnessSelect.append(
+    element("option", {
+      value: preparation.productionHarness.adapterId,
+    }, `${preparation.productionHarness.name} (production default)`),
+    element("option", {
+      value: preparation.conformanceHarness.adapterId,
+    }, `${preparation.conformanceHarness.name} (deterministic conformance)`),
+  );
+  harnessSelect.value = preparation.current?.harness?.adapterId
+    ?? preparation.defaultHarnessAdapterId;
   const openButton = element("button", {
     id: "open-project",
     type: "button",
@@ -906,6 +921,7 @@ const renderProjectPreparation = (
       },
       body: JSON.stringify({
         path: pathInput.value,
+        harnessAdapterId: harnessSelect.value,
         configuration: {
           issueWorkflow: { provider: "github", kind: "issues" },
           checks: [
@@ -948,7 +964,7 @@ const renderProjectPreparation = (
     currentNode.replaceWith(replacement);
     currentNode = replacement;
     updateWorkbenchChrome({ currentProject: outcome.project });
-    feedback.textContent = "Project and conformance Harness are ready to launch.";
+    feedback.textContent = `Project and ${outcome.project.harness.name} are ready to launch.`;
     updateProjectActionAvailability();
     openButton.disabled = hostConnectionStatus !== "connected";
   });
@@ -1031,6 +1047,8 @@ const renderProjectPreparation = (
     typecheckInput,
     testLabel,
     testInput,
+    harnessLabel,
+    harnessSelect,
     openButton,
     feedback,
     currentNode,
@@ -2400,6 +2418,9 @@ socket.addEventListener("message", (event) => {
     message?.viewModel?.projectPreparation?.kind === "cockpit.project-preparation"
     && message.viewModel.projectPreparation.selection?.mode === "explicit-host-path"
     && message.viewModel.projectPreparation.selection?.directoryScanning === false
+    && message.viewModel.projectPreparation.defaultHarnessAdapterId
+      === "sandcastle-harness-adapter-v1"
+    && message.viewModel.projectPreparation.productionHarness?.permittedTestDouble === false
     && message.viewModel.projectPreparation.conformanceHarness?.permittedTestDouble === true;
   const controllerProvidersCompatible =
     Array.isArray(message?.viewModel?.controllerProviders)

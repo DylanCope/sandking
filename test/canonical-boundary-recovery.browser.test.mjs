@@ -187,6 +187,8 @@ const openPreparedProject = async (page, projectPath) => {
     timeout: 90_000,
   });
   await page.locator("#project-path").fill(projectPath);
+  await page.locator("#project-harness-adapter")
+    .selectOption("conformance-harness-adapter-v1");
   await page.locator("#open-project").click();
   await page.waitForSelector("#open-project:not([disabled])", { timeout: 90_000 });
   if (await page.locator("#launch-harness").isDisabled()) {

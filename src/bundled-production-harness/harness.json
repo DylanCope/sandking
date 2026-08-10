@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "name": "Sand-King Sandcastle Harness",
+  "compatibility": {
+    "adapterId": "sandcastle-harness-adapter-v1",
+    "adapterProtocol": "1.0.0",
+    "entryPoint": "adapters/sandcastle.mjs"
+  }
+}

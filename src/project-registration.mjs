@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { access, mkdir, realpath, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
@@ -11,6 +11,7 @@ import {
   invokePinnedHarnessAdapter,
   legacyConformanceHarnessLaunchParametersDeclaration as legacyConformanceLaunchParameters,
   loadPinnedHarnessAdapter,
+  sandcastleHarnessLaunchParametersDeclaration as sandcastleLaunchParameters,
 } from "./harness-adapter-protocol.mjs";
 import {
   CONFORMANCE_HARNESS_ADAPTER_ID,
@@ -18,6 +19,10 @@ import {
   harnessAdapterIdSchema,
 } from "./harness-adapter-identity.mjs";
 import { readJson, writePrivateJson } from "./private-state.mjs";
+import {
+  ProductionHarnessSeedError,
+  initializeProductionHarnessWorkspace,
+} from "./production-harness-seed.mjs";
 
 const execFileAsync = promisify(execFile);
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -173,6 +178,13 @@ export const projectPreparationProjectionSchema = z.object({
     permittedTestDouble: z.literal(true),
     launchParameters: harnessLaunchParametersDeclarationSchema,
   }).strict(),
+  productionHarness: z.object({
+    name: z.literal("Sand-King Sandcastle Harness"),
+    adapterId: z.literal(SANDCASTLE_HARNESS_ADAPTER_ID),
+    permittedTestDouble: z.literal(false),
+    launchParameters: harnessLaunchParametersDeclarationSchema,
+  }).strict(),
+  defaultHarnessAdapterId: z.literal(SANDCASTLE_HARNESS_ADAPTER_ID),
   current: z.object({
     projectId: projectIdSchema,
     displayName: z.string().min(1).max(255),
@@ -318,6 +330,10 @@ const failureGuidance = Object.freeze({
   harness_pin_missing: ["select_immutable_revision"],
   harness_pin_invalid: ["select_registered_immutable_revision"],
   harness_workspace_invalid: ["repair_or_reregister_harness_workspace"],
+  harness_seed_missing: ["repair_or_reinstall_bundled_harness_seed"],
+  harness_seed_provenance_invalid: ["repair_or_reinstall_bundled_harness_seed"],
+  harness_dependency_lock_invalid: ["repair_or_reinstall_bundled_harness_seed"],
+  harness_skill_lock_invalid: ["repair_or_reinstall_bundled_harness_seed"],
 });
 
 /**
@@ -783,6 +799,13 @@ export const projectPreparationProjection = (project = null, harness = null) => 
       permittedTestDouble: true,
       launchParameters: conformanceLaunchParameters,
     },
+    productionHarness: {
+      name: "Sand-King Sandcastle Harness",
+      adapterId: SANDCASTLE_HARNESS_ADAPTER_ID,
+      permittedTestDouble: false,
+      launchParameters: sandcastleLaunchParameters,
+    },
+    defaultHarnessAdapterId: SANDCASTLE_HARNESS_ADAPTER_ID,
     current: project ? {
       projectId: project.projectId,
       displayName: project.displayName,
@@ -818,6 +841,7 @@ export const projectPreparationProjection = (project = null, harness = null) => 
  * @param {{
  *   dataDir: string,
  *   recordAudit: (action: string, outcome: "accepted" | "rejected" | "observed", details?: Record<string, unknown>, auditId?: string) => Promise<string>,
+ *   productionSeedRoot?: string,
  * }} options
  */
 export const createProjectRegistry = async (options) => {
@@ -1109,10 +1133,15 @@ export const createProjectRegistry = async (options) => {
     return response;
   });
 
+  /** @param {z.infer<typeof harnessAdapterIdSchema>} adapterId */
+  const readRegisteredHarness = async (adapterId) => {
+    const state = await readHarnessState(options.dataDir);
+    return state.harnesses.find((candidate) => candidate.adapterId === adapterId) ?? null;
+  };
+
   /** @param {{requestId: string}} request */
   const inspectConformanceHarness = async (request) => {
-    const state = await readHarnessState(options.dataDir);
-    const harness = state.harnesses[0] ?? null;
+    const harness = await readRegisteredHarness(CONFORMANCE_HARNESS_ADAPTER_ID);
     return {
       type: "harness.conformance.inspect.result",
       requestId: request.requestId,
@@ -1122,9 +1151,32 @@ export const createProjectRegistry = async (options) => {
     };
   };
 
-  /** @param {{requestId: string, name: string, authorizationClass: string, idempotencyKey: string, expectedRevision: number}} request */
-  const registerConformanceHarness = (request) => withMutationLock(async () => {
-    const action = "harness.conformance.register";
+  /** @param {{requestId: string}} request */
+  const inspectSandcastleHarness = async (request) => {
+    const harness = await readRegisteredHarness(SANDCASTLE_HARNESS_ADAPTER_ID);
+    return {
+      type: "harness.sandcastle.inspect.result",
+      requestId: request.requestId,
+      code: harness ? "sandcastle_harness_registered" : "sandcastle_harness_unregistered",
+      actualRevision: harness?.revision ?? 0,
+      harness: harness ? publicHarness(harness) : null,
+    };
+  };
+
+  /**
+   * @param {{requestId: string, name: string, authorizationClass: string, idempotencyKey: string, expectedRevision: number}} request
+   * @param {{
+   *   action: "harness.conformance.register" | "harness.sandcastle.register",
+   *   adapterId: z.infer<typeof harnessAdapterIdSchema>,
+   *   name: string,
+   *   kind: "conformance" | "production",
+   *   responseType: "harness.conformance.register.result" | "harness.sandcastle.register.result",
+   *   registeredCode: "conformance_harness_registered" | "sandcastle_harness_registered",
+   *   reusedCode: "conformance_harness_registration_reused" | "sandcastle_harness_registration_reused",
+   * }} descriptor
+   */
+  const registerBundledHarness = (request, descriptor) => withMutationLock(async () => {
+    const action = descriptor.action;
     const authorizationClass = "host_local_harness_registration";
     const state = await readHarnessState(options.dataDir);
     const keyValid = typeof request.idempotencyKey === "string"
@@ -1133,6 +1185,7 @@ export const createProjectRegistry = async (options) => {
     const keyHash = keyValid ? idempotencyHash(request.idempotencyKey) : null;
     const requestFingerprint = fingerprint({
       name: request.name,
+      adapterId: descriptor.adapterId,
       authorizationClass: request.authorizationClass,
       expectedRevision: request.expectedRevision,
     });
@@ -1177,13 +1230,15 @@ export const createProjectRegistry = async (options) => {
         idempotentReplay: true,
       };
     }
-    const actualRevision = state.harnesses[0]?.revision ?? 0;
+    const registeredHarness = state.harnesses.find((candidate) =>
+      candidate.adapterId === descriptor.adapterId);
+    const actualRevision = registeredHarness?.revision ?? 0;
     if (
       request.authorizationClass !== authorizationClass
       || !keyHash
       || !Number.isSafeInteger(request.expectedRevision)
       || request.expectedRevision < 0
-      || request.name !== "Sand-King Conformance Harness"
+      || request.name !== descriptor.name
     ) {
       const auditId = await options.recordAudit(action, "rejected", {
         code: "mutation_contract_invalid",
@@ -1233,11 +1288,12 @@ export const createProjectRegistry = async (options) => {
     let harness;
     /** @type {"accepted" | "observed"} */
     let outcome = "accepted";
-    let code = "conformance_harness_registered";
-    if (state.harnesses[0]) {
-      harness = state.harnesses[0];
+    /** @type {string} */
+    let code = descriptor.registeredCode;
+    if (registeredHarness) {
+      harness = registeredHarness;
       outcome = "observed";
-      code = "conformance_harness_registration_reused";
+      code = descriptor.reusedCode;
     } else {
       const harnessId = `harness-${randomBytes(12).toString("hex")}`;
       const stateRoot = resolve(options.dataDir);
@@ -1246,37 +1302,75 @@ export const createProjectRegistry = async (options) => {
         `${basename(stateRoot)}-harness-workspaces`,
         harnessId,
       );
-      const immutableRevision = await initializeConformanceWorkspace(workspacePath);
-      const pinnedAdapter = await loadPinnedHarnessAdapter({
-        workspacePath,
-        pinnedRevision: immutableRevision,
-      });
-      const probed = await invokePinnedHarnessAdapter(pinnedAdapter, ["probe"]);
-      const probe = harnessAdapterProbeSchema.safeParse(probed.message);
-      if (
-        !probe.success
-        || probe.data.adapterId !== pinnedAdapter.compatibility.adapterId
-        || probe.data.adapterProtocol !== pinnedAdapter.compatibility.adapterProtocol
-      ) {
-        throw new Error("harness_adapter_protocol_invalid");
+      try {
+        const immutableRevision = descriptor.kind === "conformance"
+          ? await initializeConformanceWorkspace(workspacePath)
+          : (await initializeProductionHarnessWorkspace(workspacePath, {
+              sourceRoot: options.productionSeedRoot,
+            })).revision;
+        const pinnedAdapter = await loadPinnedHarnessAdapter({
+          workspacePath,
+          pinnedRevision: immutableRevision,
+        });
+        const probed = await invokePinnedHarnessAdapter(pinnedAdapter, ["probe"]);
+        const probe = harnessAdapterProbeSchema.safeParse(probed.message);
+        if (
+          !probe.success
+          || probe.data.adapterId !== descriptor.adapterId
+          || probe.data.adapterId !== pinnedAdapter.compatibility.adapterId
+          || probe.data.adapterProtocol !== pinnedAdapter.compatibility.adapterProtocol
+        ) {
+          throw new Error("harness_adapter_protocol_invalid");
+        }
+        harness = storedHarnessSchema.parse({
+          harnessId,
+          revision: 1,
+          name: request.name,
+          adapterId: descriptor.adapterId,
+          kind: descriptor.kind,
+          immutableRevision,
+          launchParameters: probe.data.launchParameters,
+          workspace: {
+            kind: "harness-workspace",
+            versionControl: "git",
+            independent: true,
+            headRevision: immutableRevision,
+          },
+          workspacePath,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        await rm(workspacePath, { recursive: true, force: true });
+        const seedError = error instanceof ProductionHarnessSeedError
+          ? error
+          : descriptor.kind === "production"
+            ? new ProductionHarnessSeedError("harness_seed_missing")
+            : null;
+        if (seedError) {
+          const auditId = await options.recordAudit(action, "rejected", {
+            code: seedError.code,
+            authorizationClass,
+            idempotencyKeyHash: keyHash,
+            expectedRevision: request.expectedRevision,
+            actualRevision,
+            projectFileWrite: false,
+            workspaceWrite: false,
+            falselyReadyHarnessRetained: false,
+          });
+          return operationFailure({
+            requestId: request.requestId,
+            operation: action,
+            code: seedError.code,
+            authorizationClass,
+            idempotencyKeyHash: keyHash,
+            expectedRevision: request.expectedRevision,
+            actualRevision,
+            auditId,
+            retryable: false,
+          });
+        }
+        throw error;
       }
-      harness = storedHarnessSchema.parse({
-        harnessId,
-        revision: 1,
-        name: request.name,
-        adapterId: CONFORMANCE_HARNESS_ADAPTER_ID,
-        kind: "conformance",
-        immutableRevision,
-        launchParameters: probe.data.launchParameters,
-        workspace: {
-          kind: "harness-workspace",
-          versionControl: "git",
-          independent: true,
-          headRevision: immutableRevision,
-        },
-        workspacePath,
-        createdAt: new Date().toISOString(),
-      });
     }
     const auditId = await options.recordAudit(action, outcome, {
       authorizationClass,
@@ -1291,7 +1385,7 @@ export const createProjectRegistry = async (options) => {
       executionStateOutsideWorkspace: true,
     });
     const response = {
-      type: "harness.conformance.register.result",
+      type: descriptor.responseType,
       requestId: request.requestId,
       code,
       authorizationClass,
@@ -1302,7 +1396,7 @@ export const createProjectRegistry = async (options) => {
       auditId,
       harness: publicHarness(harness),
     };
-    if (state.harnesses.length === 0) {
+    if (!registeredHarness) {
       state.harnesses.push(harness);
     }
     state.registrationOutcomes.push({
@@ -1313,6 +1407,28 @@ export const createProjectRegistry = async (options) => {
     state.registrationOutcomes = state.registrationOutcomes.slice(-256);
     await writePrivateJson(harnessStatePath(options.dataDir), state);
     return response;
+  });
+
+  /** @param {{requestId: string, name: string, authorizationClass: string, idempotencyKey: string, expectedRevision: number}} request */
+  const registerConformanceHarness = (request) => registerBundledHarness(request, {
+    action: "harness.conformance.register",
+    adapterId: CONFORMANCE_HARNESS_ADAPTER_ID,
+    name: "Sand-King Conformance Harness",
+    kind: "conformance",
+    responseType: "harness.conformance.register.result",
+    registeredCode: "conformance_harness_registered",
+    reusedCode: "conformance_harness_registration_reused",
+  });
+
+  /** @param {{requestId: string, name: string, authorizationClass: string, idempotencyKey: string, expectedRevision: number}} request */
+  const registerSandcastleHarness = (request) => registerBundledHarness(request, {
+    action: "harness.sandcastle.register",
+    adapterId: SANDCASTLE_HARNESS_ADAPTER_ID,
+    name: "Sand-King Sandcastle Harness",
+    kind: "production",
+    responseType: "harness.sandcastle.register.result",
+    registeredCode: "sandcastle_harness_registered",
+    reusedCode: "sandcastle_harness_registration_reused",
   });
 
   /** @param {{requestId: string, projectId: string, harnessId: string, immutableRevision: string, boundedConfiguration: unknown, authorizationClass: string, idempotencyKey: string, expectedRevision: number}} request */
@@ -1585,6 +1701,9 @@ export const createProjectRegistry = async (options) => {
     registerProject,
     inspectConformanceHarness,
     registerConformanceHarness,
+    inspectSandcastleHarness,
+    registerSandcastleHarness,
+    pinHarness: pinConformanceHarness,
     pinConformanceHarness,
     loadLaunchContext,
   };

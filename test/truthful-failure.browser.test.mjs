@@ -84,6 +84,8 @@ test("one-action Cockpit launch shows a truthful Harness failure", async () => {
         timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
+      await page.locator("#project-harness-adapter")
+        .selectOption("conformance-harness-adapter-v1");
       await page.locator("#open-project").click();
       await page.waitForSelector("#launch-harness:not([disabled])", { timeout: 90_000 });
       await page.locator("#harness-launch-parameter-issueNumber").fill("999999999");
@@ -342,6 +344,8 @@ test("accepted Cockpit Project preparation replays its public outcome after Host
         timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
+      await page.locator("#project-harness-adapter")
+        .selectOption("conformance-harness-adapter-v1");
       const acceptedResponsePromise = page.waitForResponse((candidate) =>
         candidate.request().method() === "POST"
         && candidate.url().endsWith("/projects/open"));
@@ -511,6 +515,8 @@ test("Host loss after accepted Project registration preserves its identity and e
         timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
+      await page.locator("#project-harness-adapter")
+        .selectOption("conformance-harness-adapter-v1");
 
       const projectResponse = page.waitForResponse((candidate) =>
         candidate.request().method() === "POST"
