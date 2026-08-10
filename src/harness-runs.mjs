@@ -19,12 +19,16 @@ import {
   loadPinnedHarnessAdapter,
   readHarnessAdapterFrame,
 } from "./harness-adapter-protocol.mjs";
-import { harnessAdapterIdSchema } from "./harness-adapter-identity.mjs";
+import {
+  SANDCASTLE_HARNESS_ADAPTER_ID,
+  harnessAdapterIdSchema,
+} from "./harness-adapter-identity.mjs";
 import { sendHarnessCancellationRequest } from "./harness-process-control.mjs";
 import {
   launchParametersSchema,
   validateHarnessLaunch,
 } from "./harness-launch.mjs";
+import { productionHarnessPreparationSchema } from "./production-harness-preparation.mjs";
 import {
   ensurePrivateDirectory,
   PRIVATE_FILE_MODE,
@@ -125,6 +129,9 @@ export const harnessRunOutcomeSchema = z.object({
     "conformance_run_succeeded",
     "conformance_run_failed",
     "conformance_run_cancelled",
+    "harness_run_succeeded",
+    "harness_run_failed",
+    "harness_run_cancelled",
     "harness_result_incomplete",
     "harness_adapter_protocol_invalid",
     "harness_adapter_start_failed",
@@ -364,6 +371,13 @@ export const harnessRunExecutionSnapshotSchema = z.object({
   createdAt: z.string().datetime(),
   credentialCapabilityReferences: z.array(credentialCapabilityReferenceSchema)
     .max(8).nullable(),
+  productionHarness: z.object({
+    skillSetLockDigest: productionHarnessPreparationSchema.shape.skillSetLockDigest,
+    resolvedSkills: productionHarnessPreparationSchema.shape.resolvedSkills,
+    executionRuntimeInputs:
+      productionHarnessPreparationSchema.shape.executionRuntimeInputs,
+    projectionDigest: digestSchema,
+  }).strict().nullable().default(null),
   launchAuditId: auditIdSchema,
 }).strict();
 
@@ -772,6 +786,7 @@ const migrateExecutionSnapshot = (run) => harnessRunExecutionSnapshotSchema.pars
   },
   createdAt: run.createdAt,
   credentialCapabilityReferences: null,
+  productionHarness: null,
   launchAuditId: "launchAuditId" in run ? run.launchAuditId : run.startAuditId,
 });
 
@@ -1135,6 +1150,10 @@ const superviseHarnessAdapter = async (run, context, observer) => {
     harnessRunId: run.harnessRunId,
     parameters: context.parameters,
   }), "utf8").toString("base64url");
+  const adapterWorkingDirectory = run.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+    && typeof context.productionHarnessProjectionPath === "string"
+    ? context.productionHarnessProjectionPath
+    : context.harnessWorkspacePath;
   const windowsBarrierDirectory = process.platform === "win32"
     ? await mkdtemp(join(tmpdir(), "sandking-harness-job-"))
     : null;
@@ -1162,12 +1181,12 @@ const superviseHarnessAdapter = async (run, context, observer) => {
   const posixProcessTree = process.platform === "win32"
     ? null
       : spawnPosixProcessTree(process.execPath, adapterArgs, {
-          cwd: context.harnessWorkspacePath,
+          cwd: adapterWorkingDirectory,
           env: { LANG: "C.UTF-8" },
           hostLossTerminationEvidencePath: context.hostLossTerminationEvidencePath,
       });
   const child = posixProcessTree?.child ?? spawn(process.execPath, adapterArgs, {
-    cwd: context.harnessWorkspacePath,
+    cwd: adapterWorkingDirectory,
     env: {
       LANG: "C.UTF-8",
       ...(windowsBarrierMarker
@@ -1289,6 +1308,7 @@ const superviseHarnessAdapter = async (run, context, observer) => {
       if (
         message.type === "harness.adapter.probe"
         || message.type === "harness.launch.prepared"
+        || message.type === "harness.launch.failure"
       ) {
         terminateProtocolInvalidAdapter();
         continue;
@@ -2482,10 +2502,16 @@ export const createHarnessRunManager = async (options) => {
           ? "harness_adapter_protocol_invalid"
           : validTerminal
             ? terminal.status === "succeeded"
-              ? "conformance_run_succeeded"
+              ? initialRun.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+                ? "harness_run_succeeded"
+                : "conformance_run_succeeded"
               : terminal.status === "failed"
-                ? "conformance_run_failed"
-                : "conformance_run_cancelled"
+                ? initialRun.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+                  ? "harness_run_failed"
+                  : "conformance_run_failed"
+                : initialRun.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+                  ? "harness_run_cancelled"
+                  : "conformance_run_cancelled"
             : "harness_result_incomplete";
       let incompleteResult = !validTerminal;
       let acceptedTerminal = validTerminal ? terminal : null;
@@ -2542,7 +2568,9 @@ export const createHarnessRunManager = async (options) => {
           completedAt = now().toISOString();
           const validCancellationTerminal = validTerminal && terminal.status === "cancelled";
           status = "cancelled";
-          code = "conformance_run_cancelled";
+          code = initialRun.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+            ? "harness_run_cancelled"
+            : "conformance_run_cancelled";
           incompleteResult = !validCancellationTerminal
             || cancellationTermination.forcedTerminationSentAt !== null;
           acceptedTerminal = validCancellationTerminal ? terminal : null;
@@ -2744,6 +2772,8 @@ export const createHarnessRunManager = async (options) => {
           "harness_skill_integrity_mismatch",
           "harness_projection_collision",
           "harness_projection_failed",
+          "harness_execution_runtime_unavailable",
+          "harness_worker_provider_unavailable",
           "bounded_configuration_invalid",
           "harness_capability_unsupported",
           "harness_adapter_protocol_invalid",
@@ -2765,6 +2795,8 @@ export const createHarnessRunManager = async (options) => {
         "harness_skill_integrity_mismatch",
         "harness_projection_collision",
         "harness_projection_failed",
+        "harness_execution_runtime_unavailable",
+        "harness_worker_provider_unavailable",
       ]);
       const auditId = await options.recordAudit("harness.run.launch", "rejected", {
         code: failureCode,
@@ -2853,6 +2885,21 @@ export const createHarnessRunManager = async (options) => {
         },
         createdAt,
         credentialCapabilityReferences: prepared.suppliedCapabilities,
+        productionHarness: context.project.harness.adapterId
+          === SANDCASTLE_HARNESS_ADAPTER_ID
+          && context.project.harness.preparation
+          ? {
+              skillSetLockDigest:
+                context.project.harness.preparation.skillSetLockDigest,
+              resolvedSkills: structuredClone(
+                context.project.harness.preparation.resolvedSkills,
+              ),
+              executionRuntimeInputs: structuredClone(
+                context.project.harness.preparation.executionRuntimeInputs,
+              ),
+              projectionDigest: context.project.harness.preparation.projection.digest,
+            }
+          : null,
         launchAuditId: auditId,
       },
       events: [],

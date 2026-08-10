@@ -198,6 +198,23 @@ export const harnessPreparedEnvelopeSchema = z.object({
   }).strict(),
 }).strict();
 
+export const harnessPreparationFailureEnvelopeSchema = z.object({
+  type: z.literal("harness.launch.failure"),
+  adapterProtocol: adapterProtocolSchema,
+  adapterId: harnessAdapterIdSchema,
+  code: z.enum([
+    "harness_execution_runtime_unavailable",
+    "harness_worker_provider_unavailable",
+  ]),
+  retryable: z.literal(true),
+  sanitizedExplanation: z.string().min(1).max(512),
+  sideEffects: z.object({
+    delegatedWorkStarted: z.literal(false),
+    projectWrite: z.literal(false),
+    harnessWorkspaceWrite: z.literal(false),
+  }).strict(),
+}).strict();
+
 export const harnessReadyEnvelopeSchema = z.object({
   type: z.literal("harness.run.ready"),
   adapterProtocol: adapterProtocolSchema,
@@ -247,6 +264,7 @@ export const harnessTerminalEnvelopeSchema = z.object({
 export const harnessAdapterMessageSchema = z.union([
   harnessAdapterProbeSchema,
   harnessPreparedEnvelopeSchema,
+  harnessPreparationFailureEnvelopeSchema,
   harnessReadyEnvelopeSchema,
   harnessProgressEnvelopeSchema,
   harnessTerminalEnvelopeSchema,
@@ -333,15 +351,20 @@ export const loadPinnedHarnessAdapter = async ({ workspacePath, pinnedRevision }
  * Invoke the exact pinned adapter bytes across the framed protocol channel.
  * @param {Awaited<ReturnType<typeof loadPinnedHarnessAdapter>>} pinnedAdapter
  * @param {string[]} invocationArgs
+ * @param {{workingDirectory?: string}} [options]
  */
-export const invokePinnedHarnessAdapter = async (pinnedAdapter, invocationArgs) => {
+export const invokePinnedHarnessAdapter = async (
+  pinnedAdapter,
+  invocationArgs,
+  options = {},
+) => {
   const child = spawn(process.execPath, [
     "--input-type=module",
     "--eval", pinnedAdapter.pinnedEntryPointSource,
     pinnedAdapter.compatibility.entryPoint,
     ...invocationArgs,
   ], {
-    cwd: pinnedAdapter.workspacePath,
+    cwd: options.workingDirectory ?? pinnedAdapter.workspacePath,
     env: { LANG: "C.UTF-8" },
     stdio: ["ignore", "pipe", "pipe", "pipe"],
   });

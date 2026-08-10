@@ -1409,6 +1409,8 @@ const renderHarnessRun = (observation) => {
     "data-adapter-id": snapshot.adapter.adapterId,
     "data-adapter-protocol": snapshot.adapter.protocol,
     "data-adapter-entry-point": snapshot.adapter.entryPoint,
+    "data-production-skill-lock": snapshot.productionHarness?.skillSetLockDigest ?? "",
+    "data-production-projection-digest": snapshot.productionHarness?.projectionDigest ?? "",
   });
   executionFacts.append(
     element("h3", {}, "Immutable execution facts"),
@@ -1433,6 +1435,31 @@ const renderHarnessRun = (observation) => {
     element("p", { "data-execution-launch-audit-id": snapshot.launchAuditId },
       `Launch audit: ${snapshot.launchAuditId}`),
   );
+  if (snapshot.productionHarness) {
+    executionFacts.append(
+      element("p", {
+        "data-execution-production-skill-lock": snapshot.productionHarness.skillSetLockDigest,
+      }, `Locked production skills: ${snapshot.productionHarness.skillSetLockDigest}`),
+      element("p", {
+        "data-execution-production-resolved-skills": snapshot.productionHarness.resolvedSkills
+          .map(({ identity, revision }) => `${identity}@${revision}`)
+          .join(","),
+      }, "Resolved production skills: " + snapshot.productionHarness.resolvedSkills
+        .map(({ identity, revision }) => `${identity}@${revision}`)
+        .join(", ")),
+      element("p", {
+        "data-execution-production-runtime-inputs": snapshot.productionHarness
+          .executionRuntimeInputs
+          .map(({ identity, version }) => `${identity}@${version}`)
+          .join(","),
+      }, "Production runtime inputs: " + snapshot.productionHarness.executionRuntimeInputs
+        .map(({ identity, version }) => `${identity}@${version}`)
+        .join(", ")),
+      element("p", {
+        "data-execution-production-projection": snapshot.productionHarness.projectionDigest,
+      }, `Prepared projection: ${snapshot.productionHarness.projectionDigest}`),
+    );
+  }
   section.append(executionFacts);
   const events = element("ol", {
     id: "harness-run-events",

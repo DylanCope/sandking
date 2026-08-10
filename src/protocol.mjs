@@ -447,6 +447,8 @@ export const harnessRunLaunchFailureSchema = z.object({
     "harness_skill_integrity_mismatch",
     "harness_projection_collision",
     "harness_projection_failed",
+    "harness_execution_runtime_unavailable",
+    "harness_worker_provider_unavailable",
     "harness_capability_unsupported",
     "harness_adapter_protocol_invalid",
     "harness_preparation_side_effect_detected",

@@ -30,9 +30,9 @@ const sourceUrlSchema = z.url().refine((value) => {
 });
 
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
-const SAND_KING_SEED_REVISION = "0a602896e4063dce7b390b3a514e34cfe36b46c1";
+const SAND_KING_SEED_REVISION = "e239c0ec5a3db8b6e41b99ce62022f1dff34cd9d";
 const SAND_KING_SEED_SOURCE_INTEGRITY =
-  "sha256:aa935016db68d05f4273f21ab42eb5a2ba2a966cea4a75ae1b7c589d589a7451";
+  "sha256:ab9bdce676dd01cb0fb916b1da70edf35a2e98f61388f99c3fe9dee3c2cc0147";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -139,9 +139,20 @@ export const productionHarnessSkillLockSchema = z.object({
 
 const productionSeedFileContract = Object.freeze([
   { path: ".gitignore", sourcePath: "gitignore", source: "seed", executable: false },
+  {
+    path: ".sandcastle/controlled-worker-fixture.mjs",
+    sourcePath: "src/production-sandcastle-adapter/controlled-worker-fixture.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
+    path: "adapters/sandcastle.mjs",
+    sourcePath: "src/production-sandcastle-adapter/sandcastle.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
   ...[
     "README.md",
-    "adapters/sandcastle.mjs",
     "harness.json",
     "package-lock.json",
     "package.json",

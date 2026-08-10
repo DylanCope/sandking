@@ -5,6 +5,7 @@ import {
   harnessAdapterEntryPointSchema,
   harnessAdapterProbeSchema,
   harnessLaunchParametersDeclarationSchema,
+  harnessPreparationFailureEnvelopeSchema,
   harnessPreparedEnvelopeSchema,
   invokePinnedHarnessAdapter,
   loadPinnedHarnessAdapter,
@@ -151,7 +152,23 @@ export const validateHarnessLaunch = async (context, parameters) => {
   const preparedInvocation = await invokePinnedHarnessAdapter(
     pinnedAdapter,
     ["prepare", encodedParameters],
+    typeof context.productionHarnessProjectionPath === "string"
+      ? { workingDirectory: context.productionHarnessProjectionPath }
+      : {},
   );
+  const parsedPreparationFailure = harnessPreparationFailureEnvelopeSchema.safeParse(
+    preparedInvocation.message,
+  );
+  if (parsedPreparationFailure.success) {
+    const failure = parsedPreparationFailure.data;
+    if (
+      failure.adapterId !== preparedInvocation.compatibility.adapterId
+      || failure.adapterProtocol !== preparedInvocation.compatibility.adapterProtocol
+    ) {
+      throw new Error("harness_adapter_protocol_invalid");
+    }
+    throw new Error(failure.code);
+  }
   if (
     preparedInvocation.message
     && typeof preparedInvocation.message === "object"
