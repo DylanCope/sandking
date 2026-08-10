@@ -1012,6 +1012,7 @@ test("startup retains recovery-required truth when accepted cancellation termina
 
 test("restart arbitrates a signal dispatched before its durable publication", async () => {
   const fixture = await createFixture("sandking-harness-run-cancel-after-signal-dispatch-");
+  let manager;
   let reportSignalDispatched;
   let releaseSignalDispatch;
   const signalDispatched = new Promise((resolve) => {
@@ -1022,7 +1023,7 @@ test("restart arbitrates a signal dispatched before its durable publication", as
   });
   let signalDispatchCount = 0;
   try {
-    const manager = await createHarnessRunManager({
+    manager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId,
       recordAudit: fixture.recordAudit,
@@ -1099,13 +1100,14 @@ test("restart arbitrates a signal dispatched before its durable publication", as
     );
   } finally {
     releaseSignalDispatch?.();
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await manager?.waitForIdle();
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
 test("cooperative signal publication is durable before restart terminal arbitration", async () => {
   const fixture = await createFixture("sandking-harness-run-cancel-signal-publication-");
+  let manager;
   let reportSignalPublication;
   let releaseSignalPublication;
   const signalPublished = new Promise((resolve) => {
@@ -1114,13 +1116,9 @@ test("cooperative signal publication is durable before restart terminal arbitrat
   const signalPublicationRelease = new Promise((resolve) => {
     releaseSignalPublication = resolve;
   });
-  let reportBackgroundConfirmation;
-  const backgroundConfirmation = new Promise((resolve) => {
-    reportBackgroundConfirmation = resolve;
-  });
   let signalPublicationCount = 0;
   try {
-    const manager = await createHarnessRunManager({
+    manager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId,
       recordAudit: fixture.recordAudit,
@@ -1131,10 +1129,6 @@ test("cooperative signal publication is durable before restart terminal arbitrat
           signalPublicationCount += 1;
           reportSignalPublication?.();
           await signalPublicationRelease;
-        }
-        if (point
-          === "harness_run_cancellation.termination_confirmation.after_state_commit") {
-          reportBackgroundConfirmation?.();
         }
       },
     });
@@ -1203,17 +1197,14 @@ test("cooperative signal publication is durable before restart terminal arbitrat
     );
   } finally {
     releaseSignalPublication?.();
-    await Promise.race([
-      backgroundConfirmation,
-      new Promise((resolve) => setTimeout(resolve, 2_000)),
-    ]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await manager?.waitForIdle();
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
 test("retained termination confirmation finalizes accepted cancellation exactly once after restart", async () => {
   const fixture = await createFixture("sandking-harness-run-cancel-confirmation-restart-");
+  let manager;
   let reportConfirmationCommit;
   let releaseConfirmationCommit;
   const confirmationCommitted = new Promise((resolve) => {
@@ -1223,7 +1214,7 @@ test("retained termination confirmation finalizes accepted cancellation exactly 
     releaseConfirmationCommit = resolve;
   });
   try {
-    const manager = await createHarnessRunManager({
+    manager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId,
       recordAudit: fixture.recordAudit,
@@ -1294,13 +1285,14 @@ test("retained termination confirmation finalizes accepted cancellation exactly 
     );
   } finally {
     releaseConfirmationCommit?.();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await manager?.waitForIdle();
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
 test("forced signal publication survives restart without a second escalation", async () => {
   const fixture = await createFixture("sandking-harness-run-cancel-forced-signal-restart-");
+  let manager;
   let reportForcedSignalCommit;
   let releaseForcedSignalCommit;
   const forcedSignalCommitted = new Promise((resolve) => {
@@ -1309,13 +1301,9 @@ test("forced signal publication survives restart without a second escalation", a
   const forcedSignalCommitRelease = new Promise((resolve) => {
     releaseForcedSignalCommit = resolve;
   });
-  let reportForcedBackgroundConfirmation;
-  const forcedBackgroundConfirmation = new Promise((resolve) => {
-    reportForcedBackgroundConfirmation = resolve;
-  });
   let forcedSignalPublicationCount = 0;
   try {
-    const manager = await createHarnessRunManager({
+    manager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId,
       recordAudit: fixture.recordAudit,
@@ -1326,10 +1314,6 @@ test("forced signal publication survives restart without a second escalation", a
           forcedSignalPublicationCount += 1;
           reportForcedSignalCommit?.();
           await forcedSignalCommitRelease;
-        }
-        if (point
-          === "harness_run_cancellation.termination_confirmation.after_state_commit") {
-          reportForcedBackgroundConfirmation?.();
         }
       },
     });
@@ -1391,11 +1375,7 @@ test("forced signal publication survives restart without a second escalation", a
     );
   } finally {
     releaseForcedSignalCommit?.();
-    await Promise.race([
-      forcedBackgroundConfirmation,
-      new Promise((resolve) => setTimeout(resolve, 2_000)),
-    ]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await manager?.waitForIdle();
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
