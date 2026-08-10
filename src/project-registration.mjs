@@ -1029,6 +1029,30 @@ export const createProjectRegistry = async (options) => {
   };
 
   /**
+   * Re-resolve a retained Project before any operation can prepare or pin it.
+   * The canonical path is only a lookup key; the retained filesystem identity
+   * remains the authority for whether that path is still the same Project.
+   * @param {z.infer<typeof projectStateSchema> | z.infer<typeof legacyProjectStateSchema>} projectState
+   * @param {z.infer<typeof legacyStoredProjectSchema>} project
+   */
+  const requireRegisteredProjectLocation = async (projectState, project) => {
+    const location = await resolveProjectLocation(
+      projectState,
+      project.canonicalPath,
+      options.dataDir,
+    );
+    if (location.kind === "failure") throw new Error(location.code);
+    if (
+      location.kind !== "registered"
+      || !location.project
+      || location.project.projectId !== project.projectId
+    ) {
+      throw new Error("project_path_conflict");
+    }
+    return location;
+  };
+
+  /**
    * Lazily upgrade only the selected schema-v1 production Project. A broken
    * retained registration therefore cannot make unrelated registrations
    * unavailable, while every public success still carries verified readiness.
@@ -1037,12 +1061,10 @@ export const createProjectRegistry = async (options) => {
    * @param {z.infer<typeof legacyStoredProjectSchema>} project
    */
   const prepareRetainedProductionProject = async (projectState, harnessState, project) => {
-    if (
-      project.harness?.adapterId !== SANDCASTLE_HARNESS_ADAPTER_ID
-      || project.harness.preparation
-    ) {
+    if (project.harness?.adapterId !== SANDCASTLE_HARNESS_ADAPTER_ID) {
       return project;
     }
+    await requireRegisteredProjectLocation(projectState, project);
     const harness = harnessState.harnesses.find((candidate) =>
       candidate.harnessId === project.harness?.harnessId);
     if (!harness) throw new Error("harness_not_found");
@@ -1058,6 +1080,12 @@ export const createProjectRegistry = async (options) => {
       workspacePath: harness.workspacePath,
       pinnedRevision: harness.immutableRevision,
     });
+    if (project.harness.preparation) {
+      if (JSON.stringify(project.harness.preparation) !== JSON.stringify(preparation)) {
+        throw new Error("harness_pin_invalid");
+      }
+      return project;
+    }
     project.harness = {
       ...project.harness,
       preparation: productionHarnessPreparationSchema.parse(preparation),
@@ -1089,7 +1117,6 @@ export const createProjectRegistry = async (options) => {
     if (
       location.kind === "registered"
       && location.project?.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
-      && !location.project.harness.preparation
     ) {
       try {
         await prepareRetainedProductionProject(
@@ -1813,15 +1840,13 @@ export const createProjectRegistry = async (options) => {
           retryable: false,
         });
       }
-      if (
-        project?.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
-        && !project.harness.preparation
-      ) {
-        try {
+      try {
+        if (project) await requireRegisteredProjectLocation(projectState, project);
+        if (project?.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID) {
           await prepareRetainedProductionProject(projectState, harnessState, project);
-        } catch (error) {
-          return rejectPreparation(error);
         }
+      } catch (error) {
+        return rejectPreparation(error);
       }
       existing.requestFingerprint = requestFingerprint;
       await writeProjectState(options.dataDir, projectState);
@@ -1910,6 +1935,12 @@ export const createProjectRegistry = async (options) => {
         actualRevision,
         auditId,
       });
+    }
+
+    try {
+      await requireRegisteredProjectLocation(projectState, project);
+    } catch (error) {
+      return rejectPreparation(error);
     }
 
     let productionPreparation = null;

@@ -1638,7 +1638,13 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       request.idempotencyKey,
       "project.register",
     ),
-    expectedRevision: request.expectedRevision,
+    // A fresh Runtime has no Project revision to expose in its bootstrap
+    // document. Let an ordinary open adopt the revision discovered by the
+    // immediately preceding inspection, while preserving the caller's CAS
+    // whenever this Runtime has already observed a Project.
+    expectedRevision: currentProjectPreparation.current === null && inspectedProject
+      ? inspectedProject.revision
+      : request.expectedRevision,
   });
   if (projectRegistration.type === "project.operation.failure") {
     return retainProjectPreparation({
@@ -1652,7 +1658,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
   // An idempotent registration replay returns its original revisioned outcome;
   // the preceding inspection remains the current canonical Project snapshot.
   let project = inspectedProject ?? projectRegistration.project;
-  currentProjectPreparation = projectPreparationProjection(project);
+  currentProjectPreparation = projectPreparationProjection(project, harness);
   currentProjectPath = project.canonicalPath;
 
   try {

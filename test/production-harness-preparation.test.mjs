@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -454,6 +454,129 @@ test("retained main-era production registrations prepare and replay after restar
     );
     assert.equal(
       (await execFileAsync("git", ["-C", fixture.projectPath, "status", "--porcelain=v1"])).stdout,
+      "",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("ordinary registration readiness revalidates retained production projection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-readiness-revalidation-"));
+
+  try {
+    const fixture = await createFixture(root, "readiness-revalidation");
+    const prepared = await fixture.pin("prepare-before-readiness-drift");
+    const projectionPath = join(
+      fixture.projectPath,
+      ...prepared.project.harness.preparation.projection.path.split("/"),
+    );
+    const workerEnvironmentPath = join(projectionPath, "worker-environment.json");
+    const originalWorkerEnvironment = await readFile(workerEnvironmentPath, "utf8");
+    await writeFile(
+      workerEnvironmentPath,
+      `${originalWorkerEnvironment}\n{"ambient":"enabled"}\n`,
+    );
+
+    const driftedInspection = await fixture.registry.inspectProject({
+      requestId: "inspect-drifted-production-project",
+      path: fixture.projectPath,
+    });
+    assert.equal(driftedInspection.type, "project.operation.failure");
+    assert.equal(driftedInspection.operation, "project.inspect");
+    assert.equal(driftedInspection.code, "harness_projection_collision");
+    assert.equal(driftedInspection.prohibitedSideEffects.projectFileWrite, false);
+
+    const driftedRegistration = await fixture.registry.registerProject({
+      requestId: "reopen-drifted-production-project",
+      path: fixture.projectPath,
+      configuration: fixture.project.project.configuration,
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "reopen-drifted-production-project",
+      expectedRevision: prepared.project.revision,
+    });
+    assert.equal(driftedRegistration.type, "project.operation.failure");
+    assert.equal(driftedRegistration.operation, "project.register");
+    assert.equal(driftedRegistration.code, "harness_projection_collision");
+    assert.equal(driftedRegistration.prohibitedSideEffects.projectFileWrite, false);
+
+    const driftedPinReplay = await fixture.pin("replay-pin-with-readiness-drift");
+    assert.equal(driftedPinReplay.type, "project.operation.failure");
+    assert.equal(driftedPinReplay.operation, "project.harness.pin");
+    assert.equal(driftedPinReplay.code, "harness_projection_collision");
+    assert.equal(driftedPinReplay.prohibitedSideEffects.harnessPinWrite, false);
+
+    await writeFile(workerEnvironmentPath, originalWorkerEnvironment);
+    const recoveredInspection = await fixture.registry.inspectProject({
+      requestId: "inspect-recovered-production-project",
+      path: fixture.projectPath,
+    });
+    assert.equal(recoveredInspection.type, "project.inspect.result");
+    assert.equal(recoveredInspection.project.readiness.launchRequest, "ready");
+    assert.equal(recoveredInspection.project.harness.preparation.status, "ready");
+
+    const recoveredRegistration = await fixture.registry.registerProject({
+      requestId: "reopen-recovered-production-project",
+      path: fixture.projectPath,
+      configuration: fixture.project.project.configuration,
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "reopen-recovered-production-project",
+      expectedRevision: prepared.project.revision,
+    });
+    assert.equal(recoveredRegistration.type, "project.register.result");
+    assert.equal(recoveredRegistration.code, "project_registration_reused");
+    assert.equal(recoveredRegistration.project.readiness.launchRequest, "ready");
+
+    const recoveredPinReplay = await fixture.pin("replay-pin-after-readiness-recovery");
+    assert.equal(recoveredPinReplay.type, "project.harness.pin.result");
+    assert.equal(recoveredPinReplay.idempotentReplay, true);
+    assert.equal(recoveredPinReplay.project.harness.preparation.status, "ready");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("production pinning rejects a replacement repository before projection writes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-replaced-project-"));
+
+  try {
+    const fixture = await createFixture(root, "replaced-project");
+    const movedProjectPath = join(root, "registered-project-moved");
+    await rename(fixture.projectPath, movedProjectPath);
+    await execFileAsync("git", [
+      "init", "--quiet", "--initial-branch=main", fixture.projectPath,
+    ]);
+    await writeFile(
+      join(fixture.projectPath, "README.md"),
+      "unrelated replacement repository content\n",
+    );
+    await commitProject(fixture.projectPath);
+    const replacementExcludePath = join(fixture.projectPath, ".git", "info", "exclude");
+    const replacementExcludeBefore = await readFile(replacementExcludePath, "utf8");
+    const projectStateBefore = await readFile(
+      join(fixture.dataDir, "project-registrations.json"),
+      "utf8",
+    );
+
+    const rejected = await fixture.pin("pin-replacement-repository");
+    assert.equal(rejected.type, "project.operation.failure");
+    assert.equal(rejected.operation, "project.harness.pin");
+    assert.equal(rejected.code, "project_path_replaced");
+    assert.equal(rejected.prohibitedSideEffects.projectFileWrite, false);
+    assert.equal(rejected.prohibitedSideEffects.harnessPinWrite, false);
+    assert.equal(
+      await readFile(replacementExcludePath, "utf8"),
+      replacementExcludeBefore,
+    );
+    assert.equal((await readdir(fixture.projectPath)).includes(".sandking"), false);
+    assert.equal(
+      await readFile(join(fixture.dataDir, "project-registrations.json"), "utf8"),
+      projectStateBefore,
+    );
+    assert.equal(
+      (await execFileAsync("git", [
+        "-C", fixture.projectPath, "status", "--porcelain=v1",
+      ])).stdout,
       "",
     );
   } finally {

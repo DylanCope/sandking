@@ -100,6 +100,20 @@ test("ordinary Cockpit Project registration defaults to the production Sandcastl
     assert.match(await readiness.textContent(), /Production preparation: ready/);
     assert.match(await readiness.textContent(), /openai\.codex-cli@0\.146\.0/);
 
+    const reopenResponsePromise = page.waitForResponse((response) =>
+      response.request().method() === "POST"
+      && response.url().endsWith("/projects/open"));
+    await page.locator("#open-project").click();
+    const reopenResponse = await reopenResponsePromise;
+    const reopenOutcome = await reopenResponse.json();
+    assert.equal(reopenResponse.status(), 200);
+    assert.equal(reopenOutcome.code, "project_ready");
+    assert.equal(reopenOutcome.project.projectId, projectId);
+    assert.equal(reopenOutcome.project.harness.harnessId, harnessId);
+    assert.equal(reopenOutcome.project.harness.pinnedRevision, pinnedRevision);
+    assert.equal(reopenOutcome.project.readiness.launchRequest, "ready");
+    assert.equal(reopenOutcome.project.harness.preparation.status, "ready");
+
     const projectState = JSON.parse(await readFile(
       join(dataDir, "project-registrations.json"),
       "utf8",
@@ -149,6 +163,55 @@ test("ordinary Cockpit Project registration defaults to the production Sandcastl
       "",
     );
     await context.close();
+    await browser.close();
+
+    const stopped = JSON.parse((await execFileAsync(installed.command, [
+      "stop", "--data-dir", dataDir, "--json",
+    ], { cwd: executionDirectory, env: environment })).stdout);
+    assert.equal(stopped.stopped, true);
+    const restartedRuntime = JSON.parse((await execFileAsync(installed.command, [
+      "launch",
+      "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
+      "--json",
+      "--no-open",
+    ], { cwd: executionDirectory, env: environment })).stdout);
+    assert.notEqual(restartedRuntime.runtime.runtimeId, runtime.runtime.runtimeId);
+    assert.equal(restartedRuntime.host.hostId, runtime.host.hostId);
+
+    browser = await launchBrowser({ niceAdjustment: 10 });
+    const restartedContext = await browser.newContext();
+    const restartedPage = await restartedContext.newPage();
+    await restartedPage.goto(restartedRuntime.bootstrapUrl, { waitUntil: "domcontentloaded" });
+    await restartedPage.waitForSelector(
+      "#project-preparation[data-explicit-path-only='true']",
+      { timeout: 90_000 },
+    );
+    await restartedPage.locator("#project-path").fill(projectPath);
+    const restartedReopenResponsePromise = restartedPage.waitForResponse((response) =>
+      response.request().method() === "POST"
+      && response.url().endsWith("/projects/open"));
+    await restartedPage.locator("#open-project").click();
+    const restartedReopenResponse = await restartedReopenResponsePromise;
+    const restartedReopenOutcome = await restartedReopenResponse.json();
+    assert.equal(
+      restartedReopenResponse.status(),
+      200,
+      JSON.stringify(restartedReopenOutcome),
+    );
+    assert.equal(restartedReopenOutcome.code, "project_ready");
+    await restartedPage.waitForSelector(
+      `#project-readiness[data-project-id='${projectId}']`
+        + "[data-harness-launch-ready='true']"
+        + `[data-harness-id='${harnessId}']`
+        + `[data-harness-pin='${pinnedRevision}']`,
+      { timeout: 90_000 },
+    );
+    assert.match(
+      await restartedPage.locator("#project-feedback").textContent(),
+      /Sand-King Sandcastle Harness are ready to launch/,
+    );
+    await restartedContext.close();
   } finally {
     await browser?.close().catch(() => undefined);
     await execFileAsync(installed.command, [
