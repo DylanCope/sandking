@@ -42,13 +42,13 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:ccee4a777d369058c5283ed58357cc379751b4a0e5b3a7dea9ee34506171a034",
+      "integrity": "sha256:28f10857f16e46cc3dba0365c611ea673d8eaaa190cc3bc0fe24866b3292c8ab",
       "executable": false
     },
     {
       "path": "skills.lock.json",
       "source": "seed",
-      "integrity": "sha256:7bc8f84409701fb5abc8e167d64ea17d586c53a7c5125ddef6b93d333ddc9729",
+      "integrity": "sha256:9a2d7f6820a750aed5c2c3a6e71f81ff88621eaba7b1b8c7598856973b020207",
       "executable": false
     },
     {

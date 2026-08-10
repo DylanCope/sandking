@@ -30,6 +30,7 @@ const sourceUrlSchema = z.url().refine((value) => {
 });
 
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
+const SAND_KING_SEED_REVISION = "0a602896e4063dce7b390b3a514e34cfe36b46c1";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -65,7 +66,7 @@ export const productionHarnessProvenanceSchema = z.object({
   seedVersion: z.literal("sandking-sandcastle-harness-v1"),
   sandKing: z.object({
     repository: z.literal(SAND_KING_REPOSITORY),
-    revision: commitSchema,
+    revision: z.literal(SAND_KING_SEED_REVISION),
   }).strict(),
   sandcastle: z.object({
     repository: z.literal(SANDCASTLE_REPOSITORY),
@@ -121,21 +122,60 @@ export const productionHarnessSkillLockSchema = z.object({
   }).strict()).min(1).max(16),
 }).strict();
 
-const requiredSeedPaths = Object.freeze([
-  ".gitignore",
-  "README.md",
-  "adapters/sandcastle.mjs",
-  "harness.json",
-  "package-lock.json",
-  "package.json",
-  "provenance.json",
-  "skills.lock.json",
-  ".sandcastle/Dockerfile",
-  ".sandcastle/implement-prompt.md",
-  ".sandcastle/main.mts",
-  ".sandcastle/plan-prompt.md",
-  ".sandcastle/pr-review-prompt.md",
+const productionSeedFileContract = Object.freeze([
+  { path: ".gitignore", sourcePath: "gitignore", source: "seed", executable: false },
+  ...[
+    "README.md",
+    "adapters/sandcastle.mjs",
+    "harness.json",
+    "package-lock.json",
+    "package.json",
+    "provenance.json",
+    "skills.lock.json",
+  ].map((path) => ({ path, sourcePath: undefined, source: "seed", executable: false })),
+  ...[
+    ".sandcastle/CODING_STANDARDS.md",
+    ".sandcastle/Dockerfile",
+    ".sandcastle/delivery-adapters.mjs",
+    ".sandcastle/implement-prompt.md",
+    ".sandcastle/issue-delivery.mjs",
+    ".sandcastle/list-planner-candidates.mjs",
+    ".sandcastle/main.mts",
+    ".sandcastle/plan-prompt.md",
+    ".sandcastle/pr-review-prompt.md",
+    ".sandcastle/pr-review-runner.mjs",
+    ".sandcastle/resilience.mjs",
+    ".sandcastle/run-scope.mjs",
+    ".sandcastle/sandbox-settings.mjs",
+  ].map((path) => ({
+    path,
+    sourcePath: undefined,
+    source: "sandking-package",
+    executable: false,
+  })),
+  {
+    path: ".sandcastle/install-codex-auth.sh",
+    sourcePath: undefined,
+    source: "sandking-package",
+    executable: true,
+  },
 ]);
+
+const workerVisibleSkillContract = Object.freeze([
+  {
+    identity: "sandking.issue-implementation",
+    path: ".sandcastle/implement-prompt.md",
+  },
+  {
+    identity: "sandking.issue-planning",
+    path: ".sandcastle/plan-prompt.md",
+  },
+  {
+    identity: "sandking.pull-request-review",
+    path: ".sandcastle/pr-review-prompt.md",
+  },
+]);
+const PRODUCTION_WORKER_SKILL_BUNDLE = "sandking.production-worker-skills";
 
 /** @param {Buffer | string} value */
 const sha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -170,6 +210,23 @@ const parseJson = (path, code) => {
   }
 };
 
+/** @param {Map<string, Buffer>} files */
+const findWorkerVisibleSkillPaths = (files) => {
+  const paths = new Set();
+  for (const [path, source] of files) {
+    if (!/^\.sandcastle\/.*\.m[jt]s$/.test(path)) continue;
+    for (const match of source.toString("utf8").matchAll(
+      /\bpromptFile\s*:\s*["']\.\/([^"']+)["']/g,
+    )) {
+      if (!relativeFileSchema.safeParse(match[1]).success) {
+        throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
+      }
+      paths.add(match[1]);
+    }
+  }
+  return paths;
+};
+
 /**
  * @param {Map<string, Buffer>} files
  * @param {z.infer<typeof productionHarnessSkillLockSchema>} lock
@@ -177,10 +234,12 @@ const parseJson = (path, code) => {
  */
 const validateSkillInventory = (files, lock, provenance) => {
   const skills = new Map(lock.skills.map((skill) => [skill.identity, skill]));
+  const skillsByPath = new Map(lock.skills.map((skill) => [skill.source.path, skill]));
   const bundles = new Map(lock.bundles.map((bundle) => [bundle.identity, bundle]));
   const plugins = new Map(lock.plugins.map((plugin) => [plugin.identity, plugin]));
   if (
     skills.size !== lock.skills.length
+    || skillsByPath.size !== lock.skills.length
     || bundles.size !== lock.bundles.length
     || plugins.size !== lock.plugins.length
   ) {
@@ -234,6 +293,22 @@ const validateSkillInventory = (files, lock, provenance) => {
       }
     }
   }
+  const workerVisiblePaths = findWorkerVisibleSkillPaths(files);
+  if ([...workerVisiblePaths].some((path) => !skillsByPath.has(path))) {
+    throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
+  }
+  const productionBundleSkills = expandedBundleSkills(PRODUCTION_WORKER_SKILL_BUNDLE);
+  for (const expected of workerVisibleSkillContract) {
+    const skill = skills.get(expected.identity);
+    if (
+      !skill
+      || skill.source.path !== expected.path
+      || !workerVisiblePaths.has(expected.path)
+      || !productionBundleSkills.has(expected.identity)
+    ) {
+      throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
+    }
+  }
   const codexRuntime = lock.executionRuntimeInputs.find((input) =>
     input.identity === "openai.codex-cli");
   if (
@@ -247,26 +322,88 @@ const validateSkillInventory = (files, lock, provenance) => {
   }
 };
 
+/** @param {Record<string, unknown>} packages @param {string} packagePath @param {string} name */
+const resolveLockedDependency = (packages, packagePath, name) => {
+  let current = packagePath;
+  while (current) {
+    const nested = `${current}/node_modules/${name}`;
+    if (Object.hasOwn(packages, nested)) return nested;
+    const parentMarker = current.lastIndexOf("/node_modules/");
+    current = parentMarker < 0 ? "" : current.slice(0, parentMarker);
+  }
+  const topLevel = `node_modules/${name}`;
+  return Object.hasOwn(packages, topLevel) ? topLevel : null;
+};
+
 /** @param {Record<string, any>} lock @param {Record<string, string>} dependencies */
 const validateDependencyLock = (lock, dependencies) => {
   if (
     lock?.lockfileVersion !== 3
+    || lock?.requires !== true
+    || !lock.packages
+    || typeof lock.packages !== "object"
+    || Array.isArray(lock.packages)
     || lock?.packages?.[""]?.dependencies == null
     || JSON.stringify(lock.packages[""].dependencies) !== JSON.stringify(dependencies)
   ) {
     throw new ProductionHarnessSeedError("harness_dependency_lock_invalid");
   }
+  const dependencyGraph = new Map();
   for (const [path, entry] of Object.entries(lock.packages)) {
-    if (path === "") continue;
     if (
       !entry
       || typeof entry !== "object"
-      || !exactVersionSchema.safeParse(entry.version).success
-      || !sourceUrlSchema.safeParse(entry.resolved).success
-      || !packageIntegritySchema.safeParse(entry.integrity).success
+      || Array.isArray(entry)
+      || (path !== "" && !path.startsWith("node_modules/"))
+      || (path !== "" && !exactVersionSchema.safeParse(entry.version).success)
+      || (path !== "" && !sourceUrlSchema.safeParse(entry.resolved).success)
+      || (path !== "" && !packageIntegritySchema.safeParse(entry.integrity).success)
     ) {
       throw new ProductionHarnessSeedError("harness_dependency_lock_invalid");
     }
+    const resolvedDependencies = new Set();
+    for (const field of ["dependencies", "optionalDependencies"]) {
+      const declared = entry[field] ?? {};
+      if (!declared || typeof declared !== "object" || Array.isArray(declared)) {
+        throw new ProductionHarnessSeedError("harness_dependency_lock_invalid");
+      }
+      for (const [name, requested] of Object.entries(declared)) {
+        const resolved = typeof requested === "string"
+          ? resolveLockedDependency(lock.packages, path, name)
+          : null;
+        if (!resolved) {
+          throw new ProductionHarnessSeedError("harness_dependency_lock_invalid");
+        }
+        resolvedDependencies.add(resolved);
+      }
+    }
+    const peers = entry.peerDependencies ?? {};
+    if (!peers || typeof peers !== "object" || Array.isArray(peers)) {
+      throw new ProductionHarnessSeedError("harness_dependency_lock_invalid");
+    }
+    for (const [name, requested] of Object.entries(peers)) {
+      if (entry.peerDependenciesMeta?.[name]?.optional === true) continue;
+      const resolved = typeof requested === "string"
+        ? resolveLockedDependency(lock.packages, path, name)
+        : null;
+      if (!resolved) {
+        throw new ProductionHarnessSeedError("harness_dependency_lock_invalid");
+      }
+      resolvedDependencies.add(resolved);
+    }
+    dependencyGraph.set(path, resolvedDependencies);
+  }
+  const reachable = new Set([""]);
+  const pending = [""];
+  while (pending.length > 0) {
+    for (const path of dependencyGraph.get(pending.shift()) ?? []) {
+      if (reachable.has(path)) continue;
+      reachable.add(path);
+      pending.push(path);
+    }
+  }
+  if (reachable.size !== Object.keys(lock.packages).length) {
+    throw new ProductionHarnessSeedError("harness_dependency_lock_invalid");
   }
   const sandcastle = lock.packages["node_modules/@ai-hero/sandcastle"];
   if (
@@ -294,10 +431,17 @@ export const loadProductionHarnessSeed = async (options = {}) => {
   } catch {
     throw new ProductionHarnessSeedError("harness_seed_missing");
   }
-  const manifestPaths = new Set(manifest.files.map((file) => file.path));
+  const manifestFiles = new Map(manifest.files.map((file) => [file.path, file]));
   if (
-    manifestPaths.size !== manifest.files.length
-    || requiredSeedPaths.some((path) => !manifestPaths.has(path))
+    manifestFiles.size !== manifest.files.length
+    || manifestFiles.size !== productionSeedFileContract.length
+    || productionSeedFileContract.some((expected) => {
+      const actual = manifestFiles.get(expected.path);
+      return !actual
+        || actual.source !== expected.source
+        || actual.sourcePath !== expected.sourcePath
+        || actual.executable !== expected.executable;
+    })
   ) {
     throw new ProductionHarnessSeedError("harness_seed_missing");
   }

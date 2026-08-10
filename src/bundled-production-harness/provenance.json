@@ -3,7 +3,7 @@
   "seedVersion": "sandking-sandcastle-harness-v1",
   "sandKing": {
     "repository": "https://github.com/DylanCope/sandking.git",
-    "revision": "606ec57970e3468f48b8251ef651d8a710d20a93"
+    "revision": "0a602896e4063dce7b390b3a514e34cfe36b46c1"
   },
   "sandcastle": {
     "repository": "https://github.com/mattpocock/sandcastle.git",

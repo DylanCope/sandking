@@ -31,6 +31,14 @@ const rewriteLockedSeedJson = async (sourceRoot, relativePath, transform) => {
   await rewriteLockedSeedFile(sourceRoot, relativePath, source);
 };
 
+const removeLockedSeedFile = async (sourceRoot, relativePath) => {
+  await rm(join(sourceRoot, relativePath));
+  const manifestPath = join(sourceRoot, "seed-manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.files = manifest.files.filter((file) => file.path !== relativePath);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+};
+
 test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-harness-seed-"));
   const firstDataDir = join(root, "first-host-state");
@@ -95,7 +103,26 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
       "utf8",
     ));
     assert.equal(provenance.sandKing.repository, "https://github.com/DylanCope/sandking.git");
-    assert.match(provenance.sandKing.revision, /^[a-f0-9]{40}$/);
+    assert.equal(
+      provenance.sandKing.revision,
+      "0a602896e4063dce7b390b3a514e34cfe36b46c1",
+    );
+    const seedManifest = JSON.parse(await readFile(
+      join(workspacePath, "seed-manifest.json"),
+      "utf8",
+    ));
+    for (const file of seedManifest.files.filter(({ source }) =>
+      source === "sandking-package")) {
+      const sourcePath = file.sourcePath ?? file.path;
+      const sourceAtRevision = (await execFileAsync("git", [
+        "show", `${provenance.sandKing.revision}:${sourcePath}`,
+      ])).stdout;
+      assert.equal(
+        `sha256:${createHash("sha256").update(sourceAtRevision).digest("hex")}`,
+        file.integrity,
+        `${file.path} must originate at the recorded Sand-King revision`,
+      );
+    }
     assert.deepEqual(provenance.sandcastle, {
       repository: "https://github.com/mattpocock/sandcastle.git",
       revision: "e99f832f26dc9d245c019a9ddd19fa5dee792427",
@@ -198,7 +225,7 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
   }
 });
 
-test("invalid production seed inputs fail truthfully without retaining a ready Harness", async () => {
+test("invalid production seed inputs fail truthfully without retaining a ready Harness", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "sandking-invalid-production-seed-"));
   const validSeed = join(root, "valid-materialized-seed");
 
@@ -209,6 +236,14 @@ test("invalid production seed inputs fail truthfully without retaining a ready H
         name: "missing-content",
         code: "harness_seed_missing",
         mutate: (sourceRoot) => rm(join(sourceRoot, "harness.json")),
+      },
+      {
+        name: "missing-runtime-import",
+        code: "harness_seed_missing",
+        mutate: (sourceRoot) => removeLockedSeedFile(
+          sourceRoot,
+          ".sandcastle/issue-delivery.mjs",
+        ),
       },
       {
         name: "invalid-adapter",
@@ -231,6 +266,20 @@ test("invalid production seed inputs fail truthfully without retaining a ready H
         ),
       },
       {
+        name: "unrelated-sand-king-provenance",
+        code: "harness_seed_provenance_invalid",
+        mutate: async (sourceRoot) => {
+          await rewriteLockedSeedJson(sourceRoot, "provenance.json", (value) => {
+            value.sandKing.revision = "606ec57970e3468f48b8251ef651d8a710d20a93";
+          });
+          await rewriteLockedSeedJson(sourceRoot, "skills.lock.json", (value) => {
+            for (const skill of value.skills) {
+              skill.source.revision = "606ec57970e3468f48b8251ef651d8a710d20a93";
+            }
+          });
+        },
+      },
+      {
         name: "incomplete-dependency-lock",
         code: "harness_dependency_lock_invalid",
         mutate: (sourceRoot) => rewriteLockedSeedJson(
@@ -238,6 +287,17 @@ test("invalid production seed inputs fail truthfully without retaining a ready H
           "package-lock.json",
           (value) => {
             delete value.packages["node_modules/@ai-hero/sandcastle"].integrity;
+          },
+        ),
+      },
+      {
+        name: "missing-transitive-dependency",
+        code: "harness_dependency_lock_invalid",
+        mutate: (sourceRoot) => rewriteLockedSeedJson(
+          sourceRoot,
+          "package-lock.json",
+          (value) => {
+            delete value.packages["node_modules/@clack/prompts"];
           },
         ),
       },
@@ -252,46 +312,64 @@ test("invalid production seed inputs fail truthfully without retaining a ready H
           },
         ),
       },
+      {
+        name: "missing-worker-visible-skill",
+        code: "harness_skill_lock_invalid",
+        mutate: (sourceRoot) => rewriteLockedSeedJson(
+          sourceRoot,
+          "skills.lock.json",
+          (value) => {
+            value.skills = value.skills.filter(({ identity }) =>
+              identity !== "sandking.pull-request-review");
+            for (const bundle of value.bundles) {
+              bundle.skills = bundle.skills.filter((identity) =>
+                identity !== "sandking.pull-request-review");
+            }
+          },
+        ),
+      },
     ];
 
     for (const fixture of cases) {
-      const sourceRoot = join(root, `${fixture.name}-source`);
-      const dataDir = join(root, `${fixture.name}-state`);
-      await cp(validSeed, sourceRoot, { recursive: true });
-      await fixture.mutate(sourceRoot);
-      const audits = [];
-      const registry = await createProjectRegistry({
-        dataDir,
-        productionSeedRoot: sourceRoot,
-        recordAudit: async (action, outcome, details) => {
-          audits.push({ action, outcome, details });
-          return `audit-${String(audits.length).padStart(24, "0")}`;
-        },
+      await t.test(fixture.name, async () => {
+        const sourceRoot = join(root, `${fixture.name}-source`);
+        const dataDir = join(root, `${fixture.name}-state`);
+        await cp(validSeed, sourceRoot, { recursive: true });
+        await fixture.mutate(sourceRoot);
+        const audits = [];
+        const registry = await createProjectRegistry({
+          dataDir,
+          productionSeedRoot: sourceRoot,
+          recordAudit: async (action, outcome, details) => {
+            audits.push({ action, outcome, details });
+            return `audit-${String(audits.length).padStart(24, "0")}`;
+          },
+        });
+        const outcome = await registry.registerSandcastleHarness({
+          requestId: `register-${fixture.name}`,
+          name: "Sand-King Sandcastle Harness",
+          authorizationClass: "host_local_harness_registration",
+          idempotencyKey: `register-${fixture.name}`,
+          expectedRevision: 0,
+        });
+        assert.equal(outcome.type, "project.operation.failure");
+        assert.equal(outcome.operation, "harness.sandcastle.register");
+        assert.equal(outcome.code, fixture.code);
+        assert.equal(outcome.retryable, false);
+        assert.equal(outcome.prohibitedSideEffects.projectFileWrite, false);
+        assert.equal(outcome.prohibitedSideEffects.harnessWorkspaceWrite, false);
+        assert.equal(
+          (await registry.inspectSandcastleHarness({ requestId: `inspect-${fixture.name}` }))
+            .harness,
+          null,
+        );
+        assert.equal(audits.at(-1).details.falselyReadyHarnessRetained, false);
+        assert.deepEqual(
+          await readdir(join(root, `${fixture.name}-state-harness-workspaces`))
+            .catch((error) => error?.code === "ENOENT" ? [] : Promise.reject(error)),
+          [],
+        );
       });
-      const outcome = await registry.registerSandcastleHarness({
-        requestId: `register-${fixture.name}`,
-        name: "Sand-King Sandcastle Harness",
-        authorizationClass: "host_local_harness_registration",
-        idempotencyKey: `register-${fixture.name}`,
-        expectedRevision: 0,
-      });
-      assert.equal(outcome.type, "project.operation.failure");
-      assert.equal(outcome.operation, "harness.sandcastle.register");
-      assert.equal(outcome.code, fixture.code);
-      assert.equal(outcome.retryable, false);
-      assert.equal(outcome.prohibitedSideEffects.projectFileWrite, false);
-      assert.equal(outcome.prohibitedSideEffects.harnessWorkspaceWrite, false);
-      assert.equal(
-        (await registry.inspectSandcastleHarness({ requestId: `inspect-${fixture.name}` }))
-          .harness,
-        null,
-      );
-      assert.equal(audits.at(-1).details.falselyReadyHarnessRetained, false);
-      assert.deepEqual(
-        await readdir(join(root, `${fixture.name}-state-harness-workspaces`))
-          .catch((error) => error?.code === "ENOENT" ? [] : Promise.reject(error)),
-        [],
-      );
     }
   } finally {
     await rm(root, { recursive: true, force: true });
