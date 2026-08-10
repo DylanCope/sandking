@@ -1,0 +1,1255 @@
+{
+  "schemaVersion": 2,
+  "issue": 164,
+  "parentPrd": 165,
+  "sourceIssue": {
+    "githubBodyUtf8Sha256": "38039912caeb744c5718f397b97161e19b73754a15c7816d7d3dd5afe2be3555"
+  },
+  "sourcePrd": {
+    "issue": 165,
+    "githubBodyUtf8Sha256": "a99ed44bf55d31f18693f2d3cf72854598928f65ffc963ecee7d47ea485c7367"
+  },
+  "sourceSpecification": {
+    "issue": 158,
+    "githubBodyUtf8Sha256": "2b3d280284b113dd7c874a37a9633f7d98231b44abdaa6c1792564c9ba882b96",
+    "parentApprovedBodySha256": "032dfb83b75dab2f90d5c6380985e1fe1cbd2e41187ac0766d10a67eb738acda",
+    "parentApprovedHashBasis": "GitHub body UTF-8 with leading and trailing whitespace trimmed",
+    "parentApprovedBaselineCommit": "ca06fb7906dca384c8a1ff49114d701df9e925b6"
+  },
+  "generatedFromCommit": "6459cd6d5acc5f66b94ed9c53ab381d1a001bca5",
+  "recordedAt": "2026-08-10T01:28:33.235Z",
+  "verificationCommands": [
+    [
+      "npm",
+      "run",
+      "typecheck"
+    ],
+    [
+      "node",
+      "--test",
+      "--test-concurrency=1",
+      "test/issue-164-acceptance-evidence.test.mjs",
+      "test/protocol.test.mjs",
+      "test/browser-protocol.test.mjs",
+      "test/harness-adapter-protocol.test.mjs",
+      "test/harness-run.test.mjs",
+      "test/harness-process-control.test.mjs",
+      "test/host-loss-termination-evidence.test.mjs",
+      "test/posix-process-tree.test.mjs",
+      "test/windows-process-tree.test.mjs",
+      "test/darwin-process-tree.test.mjs",
+      "test/security-boundary.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "--test-concurrency=1",
+      "test/harness-run.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "--test-concurrency=1",
+      "test/host-death-reconciliation.browser.test.mjs"
+    ],
+    [
+      "node",
+      "--test",
+      "--test-concurrency=1",
+      "test/canonical-boundary-recovery.browser.test.mjs"
+    ]
+  ],
+  "scenarioResults": [
+    {
+      "schemaVersion": 1,
+      "id": "durable-execution/reconciles-host-death-mid-run",
+      "scenarioVersion": "1.0.0",
+      "softwareVersion": "0.1.0",
+      "passed": true,
+      "packagedPublicSeam": {
+        "command": "sandking",
+        "installed": true,
+        "launchedOutsideCheckout": true,
+        "tarballSha256": "9f0e4773460676fe56dd7fa604ae0aa14f5730cfbd438a9ae475a70931fbce5b",
+        "transport": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host"
+      },
+      "identities": {
+        "hostId": "host-6b9e7a3c866b33c40dc241bb",
+        "projectId": "project-afdb6733dd256d22619454e2",
+        "harnessId": "harness-0a62641b03983d3059d6270a",
+        "harnessRunId": "harness-run-4b529991c9babedfa85b7b12",
+        "harnessPinnedCommit": "9aedd195ea310c07118a4e9a45149341d1ba65bd"
+      },
+      "adapter": {
+        "identity": "conformance-harness-adapter-v1",
+        "protocol": "1.0.0",
+        "entryPoint": "adapters/conformance.mjs"
+      },
+      "eventReferences": [
+        {
+          "eventId": "harness-event-f0f5c5e4d12230e94057a773",
+          "sequence": 1,
+          "type": "harness_run_created",
+          "outcomeReference": null
+        },
+        {
+          "eventId": "harness-event-9b2ffda6840260925f85c974",
+          "sequence": 2,
+          "type": "harness_adapter_ready",
+          "outcomeReference": null
+        },
+        {
+          "eventId": "harness-event-84883d371adfc76e9ee968f4",
+          "sequence": 3,
+          "type": "harness_progress_published",
+          "outcomeReference": null
+        },
+        {
+          "eventId": "harness-event-93c5bd6a7c675933f41f3d54",
+          "sequence": 4,
+          "type": "harness_run_failed",
+          "outcomeReference": "harness-outcome-5cf5406de2d6782124f70969"
+        }
+      ],
+      "auditReferences": [
+        {
+          "auditId": "audit-09a5dec35bb785dd2df3f4e0",
+          "action": "harness.run.launch",
+          "outcome": "accepted"
+        },
+        {
+          "auditId": "audit-1e92f7d6ba426df9779b82f4",
+          "action": "harness.adapter.start",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-c83ff17f68ce2563107634af",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-ac99dc01d08aebc795b3872a",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-94dab48233a6747bb9f5af9e",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-26e3882028a3b81197567962",
+          "action": "harness.run.outcome",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-67a6c7c097255f28880e1727",
+          "action": "harness.run.reconcile",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-558b2d1d52fd0dfd6a3d09b5",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-e8cc6a24979938d14f804e51",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-97b0a8df5e0c85d9325e8f96",
+          "action": "harness.run.launch",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-82b1f55506655698237405fa",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-b7380bf1ff53d147c6af1bbd",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        }
+      ],
+      "retryKeyHashes": [
+        "sha256:8651d40cc31408eab6617ee222f4e9d9996c4ade20839d45dca39c6bfe53518d",
+        "sha256:e04a4ddef37b2cfc41461dd0034962aacda73c38ee251cbaeea373b5246f6f80",
+        "sha256:b256d5952520231d27a79535f4ba70d3f7984c0617660e7a4ed4dcbd382382fc",
+        "sha256:1fb06a3a054121cae184a9aa2da4c0efe85d76d79336e16789bfa0fe0a6ba15b",
+        "sha256:726fe9aa6ba12b7f81fa4ffae1e16bf35530a7f1171496650965b122845b01ff",
+        "sha256:ccc7b70cef218d13d5e531648f097370b010b88a6cbf35ed2bdcccc7216f3988",
+        "sha256:9fa6adf65f02ef3dcd5532fd9abb1f68a6aa9de4f5a342e826b6e72b8864a776",
+        "sha256:f276fd4bb9b0e3b3555fc6f29bda26b46e8082e081f7d3037e499c0e80feec5e",
+        "sha256:a11eebe2f550f1e06d5b78dc4667401b157c3666cfc74339bc435228a63ec446",
+        "sha256:f5ae2b67fba222c476a69cdc197f72279b980e8e1c0f03ea5304e18bf4c0eff2",
+        "sha256:7ac81e8b931706970b6be07f8916b5561e5d82e8719ff567b60f457a373d716a",
+        "sha256:dc07ffd2f948206d1bba84643e90d6d77840bf2fdb584223f22c267ebe642c9e",
+        "sha256:c03480d603264c6a8d5dd03b722683846ed4461deeb956095633ebfd239058be",
+        "sha256:c041c86d0c7eb8beb1e148166186f738244b6c59ebf402f0b6e2e785499f9177",
+        "sha256:39bfdcac295e128c42edafd8b244b98fb882e48c2b029c3d3565c8a2619e4ed9",
+        "sha256:e1bc87c0d461dc86a3a786eac151431bf1198a55395195aa6a90c5fa8f391b1b"
+      ],
+      "faultPoint": "real_host_sigkill_after_active_publication",
+      "reconciliationDecision": "finalize_failed_incomplete",
+      "terminalEnvelopeValidation": {
+        "adapterReadyObserved": true,
+        "validTerminalEnvelopeCount": 0,
+        "exactlyOne": false,
+        "adapterChannelClosedObserved": false,
+        "processExitObserved": false
+      },
+      "typedOutcome": {
+        "outcomeId": "harness-outcome-5cf5406de2d6782124f70969",
+        "status": "failed",
+        "code": "host_daemon_interrupted",
+        "incompleteResult": true,
+        "terminalEnvelope": null
+      },
+      "sanitizedDiagnosticRanges": [
+        {
+          "streamId": "harness-log-5dbe33abf672c2cd168f0976",
+          "producer": "stdout",
+          "range": {
+            "start": 0,
+            "end": 52
+          },
+          "explicitRetrievalRequired": true
+        },
+        {
+          "streamId": "harness-log-9d33cf1ee166625bed9be509",
+          "producer": "stderr",
+          "range": {
+            "start": 0,
+            "end": 62
+          },
+          "explicitRetrievalRequired": true
+        }
+      ],
+      "invariantAssertions": {
+        "sameRunIdentity": true,
+        "immutableExecutionSnapshot": true,
+        "orderedHistoryPreserved": true,
+        "oneTerminalOutcome": true,
+        "sameKeyReplayDidNotStartAdapter": true,
+        "originalProcessTreeTerminated": true,
+        "projectContentsUnchanged": true
+      },
+      "securityAssertions": {
+        "credentialFixtureAbsent": true,
+        "rawRetryKeyAbsent": true,
+        "unrestrictedProcessHandleAbsent": true,
+        "environmentDumpAbsent": true,
+        "trackedProjectChangeAbsent": true
+      }
+    },
+    {
+      "id": "durable-execution/cancels-across-host-restart",
+      "scenarioVersion": "1.0.0",
+      "softwareVersion": "0.1.0",
+      "passed": true,
+      "executableEvidence": [
+        "test/host-death-reconciliation.browser.test.mjs:packaged Cockpit continues accepted cancellation after real Host death",
+        "test/harness-run.test.mjs:cancellation fault and restart matrix"
+      ],
+      "typedResults": [
+        "harness_run_cancellation_accepted",
+        "cancelled",
+        "recovery_required"
+      ],
+      "faultPoints": [
+        "harness_run_cancellation.before_commit",
+        "harness_run_cancellation.after_state_commit",
+        "harness_run_cancellation.after_commit",
+        "harness_run_cancellation.cooperative_signal.before_dispatch",
+        "harness_run_cancellation.cooperative_signal.after_dispatch",
+        "harness_run_cancellation.cooperative_signal.after_state_commit",
+        "harness_run_cancellation.forced_signal.before_dispatch",
+        "harness_run_cancellation.forced_signal.after_dispatch",
+        "harness_run_cancellation.forced_signal.after_state_commit",
+        "harness_run_cancellation.termination_confirmation.before_commit",
+        "harness_run_cancellation.termination_confirmation.after_state_commit"
+      ],
+      "invariantAssertions": {
+        "acceptancePrecedesSignal": true,
+        "acceptedCancellationSurvivesRestart": true,
+        "sameKeyReplaysWithoutSecondSignal": true,
+        "cancellationRequiresTerminationProof": true,
+        "noProjectWrite": true
+      }
+    },
+    {
+      "id": "durable-execution/completion-wins-cancellation-race",
+      "scenarioVersion": "1.0.0",
+      "softwareVersion": "0.1.0",
+      "passed": true,
+      "executableEvidence": [
+        "test/harness-run.test.mjs:a valid terminal outcome committed before cancellation remains the one outcome",
+        "test/harness-run.test.mjs:cancellation accepted before terminal commit wins the serialized race"
+      ],
+      "typedResults": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "harness_run_not_cancellable"
+      ],
+      "invariantAssertions": {
+        "completionAcceptedFirstWins": true,
+        "cancellationAcceptedFirstUsesBoundedTermination": true,
+        "oneTerminalEvent": true,
+        "oneStructuredOutcome": true,
+        "noEntityRevisionPrecondition": true
+      }
+    },
+    {
+      "id": "durable-execution/exposes-uncertain-supervision-for-recovery",
+      "scenarioVersion": "1.0.0",
+      "softwareVersion": "0.1.0",
+      "passed": true,
+      "executableEvidence": [
+        "test/host-death-reconciliation.browser.test.mjs:packaged Cockpit resolves uncertain Host-loss supervision through bounded recovery",
+        "test/harness-run.test.mjs:recovery durability and identity-bound action matrix"
+      ],
+      "typedResults": [
+        "harness_process_termination_unconfirmed",
+        "harness_recovery_rechecked",
+        "harness_recovery_finalized",
+        "host_daemon_interrupted"
+      ],
+      "invariantAssertions": {
+        "initialUncertaintyImmutable": true,
+        "publicFactsSanitized": true,
+        "unrelatedProcessCannotBeTargeted": true,
+        "recoveryReplayIdempotent": true,
+        "noReplacementWork": true
+      }
+    },
+    {
+      "id": "durable-execution/recovers-every-canonical-boundary",
+      "scenarioVersion": "1.0.0",
+      "softwareVersion": "0.1.0",
+      "passed": true,
+      "executableEvidence": [
+        "test/issue-164-acceptance-evidence.test.mjs",
+        "test/protocol.test.mjs",
+        "test/browser-protocol.test.mjs",
+        "test/harness-adapter-protocol.test.mjs",
+        "test/harness-run.test.mjs",
+        "test/harness-process-control.test.mjs",
+        "test/host-loss-termination-evidence.test.mjs",
+        "test/posix-process-tree.test.mjs",
+        "test/windows-process-tree.test.mjs",
+        "test/darwin-process-tree.test.mjs",
+        "test/security-boundary.test.mjs",
+        "test/harness-run.browser.test.mjs",
+        "test/host-death-reconciliation.browser.test.mjs",
+        "test/canonical-boundary-recovery.browser.test.mjs"
+      ],
+      "boundaryResults": [
+        {
+          "boundary": "run creation and retained launch outcome",
+          "atomicPublication": "one Host-private snapshot binds run, immutable execution snapshot, created event, key hash, request fingerprint, and typed launch result",
+          "faultPoints": [
+            "harness_run_launch.before_commit",
+            "harness_run_launch.after_state_commit",
+            "harness_run_launch.after_commit"
+          ],
+          "pointResults": [
+            {
+              "boundary": "run creation and retained launch outcome",
+              "faultPoint": "harness_run_launch.before_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "absent",
+                  "eventCount": 0,
+                  "outcomeCode": null,
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "succeeded",
+                  "eventCount": 4,
+                  "outcomeCode": "conformance_run_succeeded",
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "run creation and retained launch outcome",
+              "faultPoint": "harness_run_launch.after_state_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "failed",
+                  "eventCount": 2,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "failed",
+                  "eventCount": 2,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "run creation and retained launch outcome",
+              "faultPoint": "harness_run_launch.after_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "failed",
+                  "eventCount": 2,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "failed",
+                  "eventCount": 2,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resume"
+                }
+              }
+            }
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "lifecycle event and current-view publication",
+          "atomicPublication": "adapter readiness facts, running view, revision, and ordered readiness event",
+          "faultPoints": [
+            "harness_run_lifecycle.adapter_ready.before_commit",
+            "harness_run_lifecycle.adapter_ready.after_state_commit"
+          ],
+          "pointResults": [
+            {
+              "boundary": "lifecycle event and current-view publication",
+              "faultPoint": "harness_run_lifecycle.adapter_ready.before_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "failed",
+                  "eventCount": 2,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": null
+              }
+            },
+            {
+              "boundary": "lifecycle event and current-view publication",
+              "faultPoint": "harness_run_lifecycle.adapter_ready.after_state_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "failed",
+                  "eventCount": 3,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": null
+              }
+            }
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "terminal-envelope acceptance and terminal outcome",
+          "atomicPublication": "terminal-envelope validation, typed outcome, current terminal view, and one terminal event",
+          "faultPoints": [
+            "harness_run_terminal_envelope.before_commit",
+            "harness_run_outcome.before_commit",
+            "harness_run_terminal_envelope.after_state_commit",
+            "harness_run_outcome.after_state_commit"
+          ],
+          "pointResults": [
+            {
+              "boundary": "terminal-envelope acceptance and terminal outcome",
+              "faultPoint": "harness_run_terminal_envelope.before_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "failed",
+                  "eventCount": 4,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": null
+              }
+            },
+            {
+              "boundary": "terminal-envelope acceptance and terminal outcome",
+              "faultPoint": "harness_run_outcome.before_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "failed",
+                  "eventCount": 4,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": null
+              }
+            },
+            {
+              "boundary": "terminal-envelope acceptance and terminal outcome",
+              "faultPoint": "harness_run_terminal_envelope.after_state_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "succeeded",
+                  "eventCount": 4,
+                  "outcomeCode": "conformance_run_succeeded",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": null
+              }
+            },
+            {
+              "boundary": "terminal-envelope acceptance and terminal outcome",
+              "faultPoint": "harness_run_outcome.after_state_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "succeeded",
+                  "eventCount": 4,
+                  "outcomeCode": "conformance_run_succeeded",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": null
+              }
+            }
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "cancellation acceptance",
+          "atomicPublication": "cancelling view, accepted event, cancellation facts, key fingerprint, and typed retained result",
+          "faultPoints": [
+            "harness_run_cancellation.before_commit",
+            "harness_run_cancellation.after_state_commit",
+            "harness_run_cancellation.after_commit"
+          ],
+          "pointResults": [
+            {
+              "boundary": "cancellation acceptance",
+              "faultPoint": "harness_run_cancellation.before_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "failed",
+                  "eventCount": 4,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "failed",
+                  "eventCount": 4,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "cancellation acceptance",
+              "faultPoint": "harness_run_cancellation.after_state_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "cancellation acceptance",
+              "faultPoint": "harness_run_cancellation.after_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resume"
+                }
+              }
+            }
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "cancellation signalling and termination",
+          "atomicPublication": "signal intent/effect observation followed by complete-tree termination confirmation",
+          "faultPoints": [
+            "harness_run_cancellation.cooperative_signal.before_dispatch",
+            "harness_run_cancellation.cooperative_signal.after_dispatch",
+            "harness_run_cancellation.cooperative_signal.after_state_commit",
+            "harness_run_cancellation.forced_signal.before_dispatch",
+            "harness_run_cancellation.forced_signal.after_dispatch",
+            "harness_run_cancellation.forced_signal.after_state_commit",
+            "harness_run_cancellation.termination_confirmation.before_commit",
+            "harness_run_cancellation.termination_confirmation.after_state_commit"
+          ],
+          "pointResults": [
+            {
+              "boundary": "cancellation signalling and termination",
+              "faultPoint": "harness_run_cancellation.cooperative_signal.before_dispatch",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "cancellation signalling and termination",
+              "faultPoint": "harness_run_cancellation.cooperative_signal.after_dispatch",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "cancellation signalling and termination",
+              "faultPoint": "harness_run_cancellation.cooperative_signal.after_state_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "cancellation signalling and termination",
+              "faultPoint": "harness_run_cancellation.forced_signal.before_dispatch",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "cancellation signalling and termination",
+              "faultPoint": "harness_run_cancellation.forced_signal.after_dispatch",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "cancellation signalling and termination",
+              "faultPoint": "harness_run_cancellation.forced_signal.after_state_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "cancellation signalling and termination",
+              "faultPoint": "harness_run_cancellation.termination_confirmation.before_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "cancellation signalling and termination",
+              "faultPoint": "harness_run_cancellation.termination_confirmation.after_state_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "cancelled",
+                  "eventCount": 5,
+                  "outcomeCode": "conformance_run_cancelled",
+                  "observationMode": "resume"
+                }
+              }
+            }
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "restart reconciliation",
+          "atomicPublication": "truthful failed/cancelled/recovery_required view, minimum ordered event, outcome or recovery facts, and repairable audits",
+          "faultPoints": [
+            "harness_run_reconciliation.before_commit",
+            "harness_run_reconciliation.after_state_commit",
+            "harness_run_reconciliation.after_commit"
+          ],
+          "pointResults": [
+            {
+              "boundary": "restart reconciliation",
+              "faultPoint": "harness_run_reconciliation.before_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "failed",
+                  "eventCount": 4,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": null
+              }
+            },
+            {
+              "boundary": "restart reconciliation",
+              "faultPoint": "harness_run_reconciliation.after_state_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "failed",
+                  "eventCount": 4,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": null
+              }
+            },
+            {
+              "boundary": "restart reconciliation",
+              "faultPoint": "harness_run_reconciliation.after_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "failed",
+                  "eventCount": 4,
+                  "outcomeCode": "host_daemon_interrupted",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": null
+              }
+            }
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "recovery intent and action",
+          "atomicPublication": "hashed recovery intent precedes bounded identity-safe action; result publication binds current facts and typed replay",
+          "faultPoints": [
+            "harness_run_recovery.before_intent_commit",
+            "harness_run_recovery.after_intent_commit",
+            "harness_run_recovery.before_action",
+            "harness_run_recovery.after_action",
+            "harness_run_recovery.before_result_commit",
+            "harness_run_recovery.after_state_commit",
+            "harness_run_recovery.after_commit"
+          ],
+          "pointResults": [
+            {
+              "boundary": "recovery intent and action",
+              "faultPoint": "harness_run_recovery.before_intent_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "recovery intent and action",
+              "faultPoint": "harness_run_recovery.after_intent_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "recovery intent and action",
+              "faultPoint": "harness_run_recovery.before_action",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "recovery intent and action",
+              "faultPoint": "harness_run_recovery.after_action",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "recovery intent and action",
+              "faultPoint": "harness_run_recovery.before_result_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "recovery intent and action",
+              "faultPoint": "harness_run_recovery.after_state_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resume"
+                }
+              }
+            },
+            {
+              "boundary": "recovery intent and action",
+              "faultPoint": "harness_run_recovery.after_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": {
+                  "status": "recovery_required",
+                  "eventCount": 4,
+                  "outcomeCode": null,
+                  "observationMode": "resume"
+                }
+              }
+            }
+          ],
+          "passed": true
+        },
+        {
+          "boundary": "legacy-state migration",
+          "atomicPublication": "all schemas v1-v7 converge through one deterministic schema-v8 snapshot and idempotent audit repair seam",
+          "faultPoints": [
+            "harness_run_migration.before_commit",
+            "harness_run_migration.after_state_commit",
+            "harness_run_migration.after_commit"
+          ],
+          "pointResults": [
+            {
+              "boundary": "legacy-state migration",
+              "faultPoint": "harness_run_migration.before_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "succeeded",
+                  "eventCount": 4,
+                  "outcomeCode": "conformance_run_succeeded",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": null
+              }
+            },
+            {
+              "boundary": "legacy-state migration",
+              "faultPoint": "harness_run_migration.after_state_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "succeeded",
+                  "eventCount": 4,
+                  "outcomeCode": "conformance_run_succeeded",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": null
+              }
+            },
+            {
+              "boundary": "legacy-state migration",
+              "faultPoint": "harness_run_migration.after_commit",
+              "injected": true,
+              "restarted": true,
+              "converged": true,
+              "passed": true,
+              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
+              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+              "cursorResynchronized": true,
+              "publicInspection": {
+                "afterRestart": {
+                  "status": "succeeded",
+                  "eventCount": 4,
+                  "outcomeCode": "conformance_run_succeeded",
+                  "observationMode": "resynchronize"
+                },
+                "afterReplay": null
+              }
+            }
+          ],
+          "passed": true
+        }
+      ],
+      "invariantAssertions": {
+        "preCommitEffectsUnclaimed": true,
+        "postCommitEffectsReplayable": true,
+        "currentViewMatchesOrderedHistory": true,
+        "immutableSnapshotsUnchanged": true,
+        "keyedMutationsNotDuplicated": true,
+        "terminalTruthUnique": true,
+        "migrationsRetrySafely": true,
+        "productionFaultApiAbsent": true,
+        "noEntityRevisionPrecondition": true
+      }
+    }
+  ],
+  "securityAssertions": {
+    "credentialFixturesAbsentFromAllSurfaces": true,
+    "rawRetryKeysAbsentFromAllSurfaces": true,
+    "unrestrictedProcessHandlesAbsentFromAllSurfaces": true,
+    "environmentDumpsAbsentFromAllSurfaces": true,
+    "trackedProjectChangesAbsentFromAllSurfaces": true,
+    "protocolFramesSanitized": true,
+    "immutableSnapshotsSanitized": true,
+    "eventsAndOutcomesSanitized": true,
+    "auditsAndDiagnosticsSanitized": true,
+    "browserModelsSanitized": true,
+    "retainedEvidenceSanitized": true
+  },
+  "prohibitedSideEffectAssertions": {
+    "inventedSuccess": false,
+    "duplicateMutation": false,
+    "lostAcknowledgedHistory": false,
+    "duplicateTerminalOutcome": false,
+    "projectWrite": false,
+    "automaticRelaunch": false
+  }
+}
