@@ -294,6 +294,35 @@ export function createGitHubDelivery({
       return { created: true, url: run("gh", args) };
     },
 
+    async getIssueClaimLedger({ issue }) {
+      const payload = JSON.parse(run("gh", [
+        "issue",
+        "view",
+        String(issue.id),
+        "--json",
+        "comments",
+      ]));
+      return payload.comments.flatMap(({ body }) =>
+        [...body.matchAll(/<!-- sandcastle-claim:([A-Za-z0-9_-]+) -->/g)]
+          .map((match) => JSON.parse(Buffer.from(match[1], "base64url").toString("utf8"))));
+    },
+
+    async postIssueClaimEvent({ issue, event }) {
+      const encoded = Buffer.from(JSON.stringify(event)).toString("base64url");
+      const heading = event.action === "claim"
+        ? `Sandcastle claim: \`${event.host}\` (pid ${event.pid}) is now delivering this issue on branch \`${event.branch}\`.`
+        : event.action === "override"
+          ? `Sandcastle claim override: \`${event.host}\` (pid ${event.pid}) is taking over from instance \`${event.overriddenInstanceId}\`. If that instance is still running, it will lose this issue's claim.`
+          : `Sandcastle claim released by instance \`${event.instanceId}\`.`;
+      run("gh", [
+        "issue",
+        "comment",
+        String(issue.id),
+        "--body",
+        [heading, "", `<!-- sandcastle-claim:${encoded} -->`].join("\n"),
+      ]);
+    },
+
     async getParentIssue(issueId) {
       const result = runResult("gh", [
         "api",

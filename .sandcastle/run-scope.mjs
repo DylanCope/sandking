@@ -1,7 +1,8 @@
-// --max-review-attempts is a separate, independent option (see
-// parseMaxReviewAttempts below) that this parser must tolerate without
-// folding it into the returned scope shape — it is recognized here only so
-// it doesn't trip the "Unknown option" guard below.
+// --max-review-attempts and --override-claim are separate, independent
+// options (see parseMaxReviewAttempts and parseOverrideClaimIssueIds below)
+// that this parser must tolerate without folding them into the returned
+// scope shape — they are recognized here only so they don't trip the
+// "Unknown option" guard below.
 export function parseRunScope(args) {
   let parentIssueId;
   let issueId;
@@ -26,6 +27,10 @@ export function parseRunScope(args) {
     } else if (argument === "--max-review-attempts") {
       index += 1;
     } else if (argument.startsWith("--max-review-attempts=")) {
+      // Value is embedded in this token; nothing further to skip.
+    } else if (argument === "--override-claim") {
+      index += 1;
+    } else if (argument.startsWith("--override-claim=")) {
       // Value is embedded in this token; nothing further to skip.
     } else {
       throw new Error(`Unknown option: ${argument}`);
@@ -73,6 +78,29 @@ export function parseMaxReviewAttempts(args) {
     throw new Error("--max-review-attempts requires a positive integer.");
   }
   return Number(value);
+}
+
+// --override-claim may be repeated to override more than one issue's claim
+// in a single run. Each value must be a positive GitHub issue number.
+export function parseOverrideClaimIssueIds(args) {
+  const issueIds = new Set();
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    let value;
+    if (argument === "--override-claim") {
+      value = args[index + 1];
+      index += 1;
+    } else if (argument.startsWith("--override-claim=")) {
+      value = argument.slice("--override-claim=".length);
+    } else {
+      continue;
+    }
+    if (!value || !/^[1-9]\d*$/.test(value)) {
+      throw new Error("--override-claim requires a positive GitHub issue number.");
+    }
+    issueIds.add(value);
+  }
+  return issueIds;
 }
 
 export async function createIssueScope({ issueId, github }) {

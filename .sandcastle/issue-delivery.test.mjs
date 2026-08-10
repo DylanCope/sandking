@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   completeIssueThroughPullRequest,
+  computeActiveClaim,
   DEFAULT_MAX_REVIEW_ATTEMPTS,
   deliverIssueThroughPullRequest,
+  getActiveIssueClaim,
   produceIssueBranch,
 } from "./issue-delivery.mjs";
 
@@ -525,6 +527,297 @@ test("a rerun resumes an existing open issue PR instead of creating a new branch
   ]);
 });
 
+test("computeActiveClaim replays claim/release/override events to find the current holder", () => {
+  assert.equal(computeActiveClaim([]), null);
+
+  assert.deepEqual(
+    computeActiveClaim([
+      { action: "claim", instanceId: "host-a", at: "1" },
+    ]),
+    { action: "claim", instanceId: "host-a", at: "1" },
+  );
+
+  assert.equal(
+    computeActiveClaim([
+      { action: "claim", instanceId: "host-a", at: "1" },
+      { action: "release", instanceId: "host-a", at: "2" },
+    ]),
+    null,
+  );
+
+  // First claim wins; a second claim from a different instance while one is
+  // already active is ignored rather than replacing the holder.
+  assert.deepEqual(
+    computeActiveClaim([
+      { action: "claim", instanceId: "host-a", at: "1" },
+      { action: "claim", instanceId: "host-b", at: "2" },
+    ]),
+    { action: "claim", instanceId: "host-a", at: "1" },
+  );
+
+  assert.equal(
+    computeActiveClaim([
+      { action: "claim", instanceId: "host-a", at: "1" },
+      { action: "override", instanceId: "host-b", overriddenInstanceId: "host-a", at: "2" },
+    ]),
+    null,
+  );
+});
+
+test("a delivery without an instance never touches claiming", async () => {
+  const repository = createFakeRepository("main-no-claim-base");
+  const github = createFakeGitHub();
+
+  await deliverIssueThroughPullRequest({
+    issue: { id: "170", title: "Deliver without claim awareness" },
+    repository,
+    github,
+    worker: {
+      async implement({ branch }) {
+        repository.commit(branch, "implementation");
+      },
+    },
+    reviewer: {
+      async evaluatePullRequest() {
+        return { approved: true, findings: [] };
+      },
+    },
+  });
+
+  assert.deepEqual(github.inspectClaimLedger("170"), []);
+});
+
+test("a delivery claims the issue before working on it and releases the claim on completion", async () => {
+  const repository = createFakeRepository("main-claim-base");
+  const github = createFakeGitHub();
+  const instance = { id: "devbox", host: "devbox", pid: 111 };
+
+  await deliverIssueThroughPullRequest({
+    issue: { id: "171", title: "Deliver with claim awareness" },
+    repository,
+    github,
+    instance,
+    worker: {
+      async implement({ branch }) {
+        repository.commit(branch, "implementation");
+      },
+    },
+    reviewer: {
+      async evaluatePullRequest() {
+        return { approved: true, findings: [] };
+      },
+    },
+  });
+
+  const ledger = github.inspectClaimLedger("171");
+  assert.equal(ledger.length, 2);
+  assert.equal(ledger[0].action, "claim");
+  assert.equal(ledger[0].instanceId, "devbox");
+  assert.equal(ledger[1].action, "release");
+  assert.equal(ledger[1].instanceId, "devbox");
+  assert.equal(await getActiveIssueClaim({ issue: { id: "171" }, github }), null);
+});
+
+test("a delivery releases its claim even when the review budget is exhausted", async () => {
+  const repository = createFakeRepository("main-claim-failure-base");
+  const github = createFakeGitHub({ pullRequestDiffs: ["unchanged diff"] });
+  const instance = { id: "devbox", host: "devbox", pid: 111 };
+
+  await assert.rejects(
+    deliverIssueThroughPullRequest({
+      issue: { id: "172", title: "Deliver a doomed change" },
+      repository,
+      github,
+      instance,
+      worker: {
+        async implement({ branch }) {
+          repository.commit(branch, "implementation");
+        },
+      },
+      reviewer: {
+        async evaluatePullRequest() {
+          return { approved: false, findings: ["Unresolved"] };
+        },
+      },
+    }),
+    /unchanged after 3 worker attempts/,
+  );
+
+  assert.equal(await getActiveIssueClaim({ issue: { id: "172" }, github }), null);
+});
+
+test("a second instance skips an issue already claimed and never invokes the worker", async () => {
+  const repository = createFakeRepository("main-skip-base");
+  const github = createFakeGitHub();
+  await github.postIssueClaimEvent({
+    issue: { id: "173" },
+    event: {
+      action: "claim",
+      instanceId: "laptop",
+      host: "laptop",
+      pid: 222,
+      branch: "sandcastle/issue-173",
+      at: "2026-08-09T10:00:00.000Z",
+    },
+  });
+  let workerCalls = 0;
+
+  const result = await deliverIssueThroughPullRequest({
+    issue: { id: "173", title: "Already claimed elsewhere" },
+    repository,
+    github,
+    instance: { id: "devbox", host: "devbox", pid: 111 },
+    worker: {
+      async implement() {
+        workerCalls += 1;
+      },
+    },
+    reviewer: {
+      async evaluatePullRequest() {
+        return { approved: true, findings: [] };
+      },
+    },
+  });
+
+  assert.deepEqual(result, {
+    skipped: true,
+    reason: "claimed",
+    claim: {
+      action: "claim",
+      instanceId: "laptop",
+      host: "laptop",
+      pid: 222,
+      branch: "sandcastle/issue-173",
+      at: "2026-08-09T10:00:00.000Z",
+    },
+  });
+  assert.equal(workerCalls, 0);
+});
+
+test("completeIssueThroughPullRequest returns a skipped result without merging when claimed elsewhere", async () => {
+  const repository = createFakeRepository("main-skip-complete-base");
+  const github = createFakeGitHub();
+  await github.postIssueClaimEvent({
+    issue: { id: "174" },
+    event: {
+      action: "claim",
+      instanceId: "laptop",
+      host: "laptop",
+      pid: 222,
+      branch: "sandcastle/issue-174",
+      at: "2026-08-09T10:00:00.000Z",
+    },
+  });
+
+  const result = await completeIssueThroughPullRequest({
+    issue: { id: "174", title: "Already claimed elsewhere" },
+    repository,
+    github,
+    instance: { id: "devbox", host: "devbox", pid: 111 },
+    worker: { async implement() {} },
+    reviewer: {
+      async evaluatePullRequest() {
+        return { approved: true, findings: [] };
+      },
+    },
+  });
+
+  assert.equal(result.skipped, true);
+  assert.equal(github.inspectIssue("174").state, "open");
+});
+
+test("the same instance resuming its own claim is never blocked", async () => {
+  const repository = createFakeRepository("main-self-claim-base", {
+    "sandcastle/issue-175": ["earlier work"],
+  });
+  const github = createFakeGitHub({
+    openPullRequest: {
+      number: 80,
+      base: "main",
+      head: "sandcastle/issue-175",
+      url: "https://github.test/pull/80",
+    },
+  });
+  await github.postIssueClaimEvent({
+    issue: { id: "175" },
+    event: {
+      action: "claim",
+      instanceId: "devbox",
+      host: "devbox",
+      pid: 999,
+      branch: "sandcastle/issue-175",
+      at: "2026-08-09T09:00:00.000Z",
+    },
+  });
+
+  const result = await deliverIssueThroughPullRequest({
+    issue: { id: "175", title: "Resume my own claim" },
+    repository,
+    github,
+    instance: { id: "devbox", host: "devbox", pid: 111 },
+    worker: { async implement() {} },
+    reviewer: {
+      async evaluatePullRequest() {
+        return { approved: true, findings: [] };
+      },
+    },
+  });
+
+  assert.equal(result.skipped, undefined);
+  assert.equal(result.review.approved, true);
+});
+
+test("an explicit override claims through another instance's claim and records who was overridden", async () => {
+  const repository = createFakeRepository("main-override-base");
+  const github = createFakeGitHub();
+  await github.postIssueClaimEvent({
+    issue: { id: "176" },
+    event: {
+      action: "claim",
+      instanceId: "devbox",
+      host: "devbox",
+      pid: 999,
+      branch: "sandcastle/issue-176",
+      at: "2026-08-09T09:00:00.000Z",
+    },
+  });
+
+  const result = await deliverIssueThroughPullRequest({
+    issue: { id: "176", title: "Take over a crashed instance's claim" },
+    repository,
+    github,
+    instance: { id: "laptop", host: "laptop", pid: 222 },
+    overrideClaim: true,
+    worker: {
+      async implement({ branch }) {
+        repository.commit(branch, "implementation");
+      },
+    },
+    reviewer: {
+      async evaluatePullRequest() {
+        return { approved: true, findings: [] };
+      },
+    },
+  });
+
+  assert.equal(result.skipped, undefined);
+  assert.deepEqual(result.overriddenClaim, {
+    action: "claim",
+    instanceId: "devbox",
+    host: "devbox",
+    pid: 999,
+    branch: "sandcastle/issue-176",
+    at: "2026-08-09T09:00:00.000Z",
+  });
+
+  const ledger = github.inspectClaimLedger("176");
+  assert.deepEqual(
+    ledger.map((event) => event.action),
+    ["claim", "override", "claim", "release"],
+  );
+  assert.equal(ledger[3].instanceId, "laptop");
+});
+
 function createFakeRepository(remoteMain, existingBranches = {}) {
   const branches = new Map();
   const resumedBranches = [];
@@ -586,8 +879,22 @@ function createFakeGitHub({
   );
   let diffRead = 0;
   const followUps = [];
+  const claimEvents = [];
 
   return {
+    async getIssueClaimLedger({ issue }) {
+      return claimEvents
+        .filter((event) => event.issueId === issue.id)
+        .map(({ issueId: _issueId, ...event }) => event);
+    },
+    async postIssueClaimEvent({ issue, event }) {
+      claimEvents.push({ issueId: issue.id, ...event });
+    },
+    inspectClaimLedger(issueId) {
+      return claimEvents
+        .filter((event) => event.issueId === issueId)
+        .map(({ issueId: _issueId, ...event }) => structuredClone(event));
+    },
     async findOpenPullRequest() {
       if (!openPullRequest) return null;
       pullRequests.set(openPullRequest.number, {

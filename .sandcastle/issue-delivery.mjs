@@ -38,6 +38,100 @@ function roundContextMessage(reviewAttempt, maxReviewAttempts) {
     : "";
 }
 
+// --- Issue claiming ----------------------------------------------------
+//
+// Stops two Harness instances (e.g. a devbox run and a laptop run with
+// overlapping scope) from delivering the same issue at once. A claim is an
+// append-only event ledger of comments on the GitHub issue itself, replayed
+// to find the current holder — the same pattern as the PR review ledger
+// above, just scoped to the issue rather than the pull request.
+//
+// Claiming is opt-in: a `github` adapter without `getIssueClaimLedger`, or a
+// call that omits `instance`, behaves exactly as before this feature existed.
+
+export function computeActiveClaim(claimLedger) {
+  let active = null;
+  for (const event of claimLedger) {
+    if (event.action === "claim") {
+      if (!active) active = event;
+      // else: another instance already holds the claim; first-claim-wins
+      // for events racing within the same read/post/re-check window.
+    } else if (event.action === "release" && active?.instanceId === event.instanceId) {
+      active = null;
+    } else if (event.action === "override") {
+      active = null;
+    }
+  }
+  return active;
+}
+
+export async function getActiveIssueClaim({ issue, github }) {
+  if (!github.getIssueClaimLedger) return null;
+  return computeActiveClaim(await github.getIssueClaimLedger({ issue }));
+}
+
+async function acquireIssueClaim({ issue, github, instance, overrideClaim }) {
+  if (!github.getIssueClaimLedger || !instance) {
+    return { acquired: true, release: async () => {} };
+  }
+
+  const before = await getActiveIssueClaim({ issue, github });
+  let overriddenClaim;
+  if (before && before.instanceId !== instance.id) {
+    if (!overrideClaim) {
+      return { acquired: false, existing: before };
+    }
+    overriddenClaim = before;
+    await github.postIssueClaimEvent({
+      issue,
+      event: {
+        action: "override",
+        instanceId: instance.id,
+        host: instance.host,
+        pid: instance.pid,
+        overriddenInstanceId: before.instanceId,
+        at: new Date().toISOString(),
+      },
+    });
+  }
+
+  await github.postIssueClaimEvent({
+    issue,
+    event: {
+      action: "claim",
+      instanceId: instance.id,
+      host: instance.host,
+      pid: instance.pid,
+      branch: issue.branch,
+      at: new Date().toISOString(),
+    },
+  });
+
+  // Re-check after posting: GitHub comments give no compare-and-swap, so a
+  // concurrent claim from another instance may have landed in between. First
+  // claim in the replayed ledger wins; the loser backs off here instead of
+  // proceeding to a full implement-and-review cycle it will have to discard.
+  const after = await getActiveIssueClaim({ issue, github });
+  if (after?.instanceId !== instance.id) {
+    return { acquired: false, existing: after };
+  }
+
+  return {
+    acquired: true,
+    overriddenClaim,
+    async release() {
+      await github.postIssueClaimEvent({
+        issue,
+        event: {
+          action: "release",
+          instanceId: instance.id,
+          at: new Date().toISOString(),
+        },
+      });
+    },
+  };
+}
+
 export async function produceIssueBranch({ issue, repository, worker }) {
   const branch = `sandcastle/issue-${issue.id}`;
   const baseCommit = await repository.synchronizeMain();
@@ -55,6 +149,37 @@ export async function deliverIssueThroughPullRequest({
   github,
   reviewer,
   maxReviewAttempts = DEFAULT_MAX_REVIEW_ATTEMPTS,
+  instance,
+  overrideClaim = false,
+}) {
+  const claim = await acquireIssueClaim({ issue, github, instance, overrideClaim });
+  if (!claim.acquired) {
+    return { skipped: true, reason: "claimed", claim: claim.existing };
+  }
+
+  try {
+    return await deliverClaimedIssueThroughPullRequest({
+      issue,
+      repository,
+      worker,
+      github,
+      reviewer,
+      maxReviewAttempts,
+      overriddenClaim: claim.overriddenClaim,
+    });
+  } finally {
+    await claim.release();
+  }
+}
+
+async function deliverClaimedIssueThroughPullRequest({
+  issue,
+  repository,
+  worker,
+  github,
+  reviewer,
+  maxReviewAttempts,
+  overriddenClaim,
 }) {
   const existingPullRequest = await github.findOpenPullRequest({ issue });
   const branchResult = existingPullRequest
@@ -153,11 +278,15 @@ export async function deliverIssueThroughPullRequest({
     branchResult.headCommit = await repository.pushBranch(branchResult.branch);
   }
 
-  return { ...branchResult, pullRequest, review };
+  return { ...branchResult, pullRequest, review, overriddenClaim };
 }
 
 export async function completeIssueThroughPullRequest(options) {
   const delivery = await deliverIssueThroughPullRequest(options);
+  if (delivery.skipped) {
+    return delivery;
+  }
+
   const checks = await options.github.waitForPullRequestChecks({
     pullRequest: delivery.pullRequest,
   });

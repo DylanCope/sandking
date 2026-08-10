@@ -4,6 +4,7 @@ import {
   createIssueScope,
   createParentScope,
   parseMaxReviewAttempts,
+  parseOverrideClaimIssueIds,
   parseRunScope,
   selectScopedIssues,
 } from "./run-scope.mjs";
@@ -59,6 +60,49 @@ test("invalid --max-review-attempts values fail before a Harness run starts", ()
   assert.throws(
     () => parseMaxReviewAttempts(["--max-review-attempts", "-5"]),
     /positive integer/,
+  );
+});
+
+test("parseRunScope tolerates --override-claim without folding it into the scope", () => {
+  assert.deepEqual(
+    parseRunScope(["--parent", "165", "--override-claim", "162"]),
+    { parentIssueId: "165" },
+  );
+  assert.deepEqual(
+    parseRunScope(["--override-claim=162", "--issue", "152"]),
+    { issueId: "152" },
+  );
+  assert.equal(parseRunScope(["--override-claim", "162"]), null);
+});
+
+test("--override-claim collects one or more positive GitHub issue numbers", () => {
+  assert.deepEqual(parseOverrideClaimIssueIds([]), new Set());
+  assert.deepEqual(
+    parseOverrideClaimIssueIds(["--override-claim", "162"]),
+    new Set(["162"]),
+  );
+  assert.deepEqual(
+    parseOverrideClaimIssueIds(["--override-claim=162"]),
+    new Set(["162"]),
+  );
+  assert.deepEqual(
+    parseOverrideClaimIssueIds([
+      "--override-claim", "162",
+      "--parent", "165",
+      "--override-claim", "163",
+    ]),
+    new Set(["162", "163"]),
+  );
+});
+
+test("invalid --override-claim values fail before a Harness run starts", () => {
+  assert.throws(
+    () => parseOverrideClaimIssueIds(["--override-claim", "not-a-number"]),
+    /positive GitHub issue number/,
+  );
+  assert.throws(
+    () => parseOverrideClaimIssueIds(["--override-claim"]),
+    /positive GitHub issue number/,
   );
 });
 

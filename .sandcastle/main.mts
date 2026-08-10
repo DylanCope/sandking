@@ -18,10 +18,22 @@
 // request may use before delivery gives up on it (default: see
 // DEFAULT_MAX_REVIEW_ATTEMPTS in issue-delivery.mjs). Applies per issue, not
 // per run — a resumed PR's existing review ledger still counts toward it.
+//
+// Each run claims an issue (a comment on the GitHub issue itself) before
+// delivering it, and releases the claim when delivery finishes, so a second
+// Harness instance running concurrently (e.g. on another machine) with
+// overlapping scope skips issues this run already holds instead of racing
+// it. Claims are keyed by hostname, so relaunching on the same machine
+// always resumes your own claim without friction. To take over an issue
+// claimed by a different, presumed-dead instance, pass
+// --override-claim <issueId> (repeatable) — verify that instance really
+// isn't still running before doing this, since claims aren't released on a
+// crash.
 
 import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { execFileSync } from "node:child_process";
+import os from "node:os";
 import { z } from "zod";
 import {
   createGitHubDelivery,
@@ -30,6 +42,7 @@ import {
 import {
   completeIssueThroughPullRequest,
   DEFAULT_MAX_REVIEW_ATTEMPTS,
+  getActiveIssueClaim,
 } from "./issue-delivery.mjs";
 import { runPullRequestReview } from "./pr-review-runner.mjs";
 import {
@@ -42,6 +55,7 @@ import {
   createIssueScope,
   createParentScope,
   parseMaxReviewAttempts,
+  parseOverrideClaimIssueIds,
   parseRunScope,
   selectScopedIssues,
 } from "./run-scope.mjs";
@@ -122,6 +136,8 @@ const github = createGitHubDelivery();
 const scopeOptions = parseRunScope(process.argv.slice(2));
 const maxReviewAttempts =
   parseMaxReviewAttempts(process.argv.slice(2)) ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
+const overrideClaimIssueIds = parseOverrideClaimIssueIds(process.argv.slice(2));
+const instance = { id: os.hostname(), host: os.hostname(), pid: process.pid };
 const runScope = scopeOptions
   ? "issueId" in scopeOptions
     ? await createIssueScope({ issueId: scopeOptions.issueId, github })
@@ -139,6 +155,12 @@ if (runScope && scopeOptions) {
   );
 }
 console.log(`Review-attempt budget per issue: ${maxReviewAttempts}.`);
+console.log(`Harness instance: ${instance.host} (pid ${instance.pid}).`);
+if (overrideClaimIssueIds.size > 0) {
+  console.log(
+    `Will override existing claims on: ${[...overrideClaimIssueIds].map((id) => `#${id}`).join(", ")}.`,
+  );
+}
 
 const runIssueWorker = async (
   issue: z.infer<typeof planSchema>["issues"][number],
@@ -295,12 +317,23 @@ const main = async () => {
 
   let deliveryFailed = false;
   for (const issue of issues) {
+    const overrideClaim = overrideClaimIssueIds.has(issue.id);
+    if (overrideClaim) {
+      const existingClaim = await getActiveIssueClaim({ issue, github });
+      if (existingClaim && existingClaim.instanceId !== instance.id) {
+        console.warn(
+          `  ⚠ Overriding existing claim on issue #${issue.id}: held by ${existingClaim.host} (pid ${existingClaim.pid}, claimed ${existingClaim.at}). Verify that instance is not still running before proceeding.`,
+        );
+      }
+    }
     try {
       const result = await completeIssueThroughPullRequest({
         issue,
         repository,
         github,
         maxReviewAttempts,
+        instance,
+        overrideClaim,
         worker: {
           implement: ({
             branch,
@@ -324,6 +357,12 @@ const main = async () => {
           }) => runPullRequestReviewer(issue, pullRequest, reviewLedger),
         },
       });
+      if (result.skipped) {
+        console.log(
+          `  ⏭ Issue #${issue.id} is already claimed by ${result.claim.host} (pid ${result.claim.pid}, claimed ${result.claim.at}). Skipping this iteration. Use --override-claim ${issue.id} to take over if that instance has crashed.`,
+        );
+        continue;
+      }
       console.log(
         `  ✓ Issue #${issue.id} merged through ${result.pullRequest.url}`,
       );
