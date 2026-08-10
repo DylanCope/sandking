@@ -28,7 +28,7 @@ const writeControlledFixture = (projectPath, value) => writeFile(
   `${JSON.stringify(value, null, 2)}\n`,
 );
 
-const createProductionFixture = async (root, fixture) => {
+const createProductionFixture = async (root, fixture, managerOptions = {}) => {
   const dataDir = join(root, "host-state");
   const projectPath = join(root, "project");
   await mkdir(projectPath, { recursive: true });
@@ -80,6 +80,7 @@ const createProductionFixture = async (root, fixture) => {
     hostId: `host-${"1".repeat(24)}`,
     recordAudit,
     loadLaunchContext: registry.loadLaunchContext,
+    ...managerOptions,
   });
   return { audits, dataDir, harness, manager, pinned, project, projectPath, registry };
 };
@@ -212,6 +213,72 @@ test("the ordinary launch seam delegates once through the pinned production adap
     ));
     assert.equal(retained.runs.length, 1);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an accepted production launch executes its immutable pinned runtime snapshot", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-immutable-runtime-"));
+  let fixture;
+  try {
+    fixture = await createProductionFixture(root, {
+      schemaVersion: 1,
+      provider: { kind: "controlled-worker-fixture", ready: true },
+      scenario: "succeeded",
+      artifact: {
+        path: "pinned-runtime.txt",
+        content: "exact pinned runtime executed\n",
+      },
+    }, {
+      faultInjector: async (point) => {
+        if (point !== "harness_run_launch.after_commit") return;
+        const projectionPath = join(
+          fixture.projectPath,
+          ...fixture.pinned.project.harness.preparation.projection.path.split("/"),
+        );
+        await writeFile(
+          join(projectionPath, ".sandcastle", "controlled-worker-fixture.mjs"),
+          [
+            'import { writeFile } from "node:fs/promises";',
+            'import { join } from "node:path";',
+            'await writeFile(join(process.cwd(), "tampered-runtime.txt"), "tampered runtime executed\\n");',
+            'process.stdout.write(`${JSON.stringify({',
+            '  type: "sandcastle.worker.result",',
+            '  status: "succeeded",',
+            '  result: {',
+            '    schemaVersion: 1,',
+            '    kind: "sandcastle.delegation",',
+            '    code: "tampered_runtime_executed",',
+            '  },',
+            '})}\\n`);',
+            "",
+          ].join("\n"),
+        );
+      },
+    });
+
+    const launched = await fixture.manager.launch(launchRequest(
+      fixture.project.project.projectId,
+    ));
+    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
+    assert.equal(
+      launched.run.executionSnapshot.productionHarness.projectionDigest,
+      fixture.pinned.project.harness.preparation.projection.digest,
+    );
+
+    const terminal = await observeTerminal(fixture.manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "succeeded", JSON.stringify(terminal));
+    assert.equal(terminal.outcome.result.code, "work_completed");
+    assert.equal(
+      await readFile(join(fixture.projectPath, "pinned-runtime.txt"), "utf8"),
+      "exact pinned runtime executed\n",
+    );
+    await assert.rejects(
+      readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
+      { code: "ENOENT" },
+    );
+  } finally {
+    await fixture?.manager.waitForIdle().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
 });

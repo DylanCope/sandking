@@ -28,7 +28,10 @@ import {
   launchParametersSchema,
   validateHarnessLaunch,
 } from "./harness-launch.mjs";
-import { productionHarnessPreparationSchema } from "./production-harness-preparation.mjs";
+import {
+  materializeProductionHarnessExecutionSnapshot,
+  productionHarnessPreparationSchema,
+} from "./production-harness-preparation.mjs";
 import {
   ensurePrivateDirectory,
   PRIVATE_FILE_MODE,
@@ -1150,9 +1153,16 @@ const superviseHarnessAdapter = async (run, context, observer) => {
     harnessRunId: run.harnessRunId,
     parameters: context.parameters,
   }), "utf8").toString("base64url");
-  const adapterWorkingDirectory = run.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
-    && typeof context.productionHarnessProjectionPath === "string"
-    ? context.productionHarnessProjectionPath
+  const preparedProductionHarness = run.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+    && context.project?.harness?.preparation;
+  if (
+    preparedProductionHarness
+    && typeof context.productionHarnessExecutionPath !== "string"
+  ) {
+    throw new Error("harness_adapter_start_failed");
+  }
+  const adapterWorkingDirectory = preparedProductionHarness
+    ? context.productionHarnessExecutionPath
     : context.harnessWorkspacePath;
   const windowsBarrierDirectory = process.platform === "win32"
     ? await mkdtemp(join(tmpdir(), "sandking-harness-job-"))
@@ -2782,6 +2792,38 @@ export const createHarnessRunManager = async (options) => {
       }
     }
 
+    let harnessRunId = null;
+    let productionHarnessExecutionPath = null;
+    if (!code && context && prepared && parameters.success && idempotencyKeyHash) {
+      harnessRunId = `harness-run-${randomBytes(12).toString("hex")}`;
+      if (
+        context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+        && context.project.harness.preparation
+      ) {
+        const logsDirectory = join(options.dataDir, "harness-runs", harnessRunId);
+        productionHarnessExecutionPath = join(logsDirectory, "execution");
+        try {
+          if (typeof context.productionHarnessProjectionPath !== "string") {
+            throw new Error("harness_projection_failed");
+          }
+          await materializeProductionHarnessExecutionSnapshot({
+            sourcePath: context.productionHarnessProjectionPath,
+            destinationPath: productionHarnessExecutionPath,
+            projectPath: context.project.canonicalPath,
+            preparation: context.project.harness.preparation,
+          });
+        } catch (error) {
+          const typedCode = error instanceof Error ? error.message : "";
+          code = new Set([
+            "harness_projection_collision",
+            "harness_projection_failed",
+          ]).has(typedCode) ? typedCode : "harness_projection_failed";
+          productionHarnessExecutionPath = null;
+          await rm(logsDirectory, { recursive: true, force: true }).catch(() => undefined);
+        }
+      }
+    }
+
     if (code || !context || !prepared || !parameters.success || !idempotencyKeyHash) {
       const failureCode = code ?? "mutation_contract_invalid";
       const retryablePreparationFailures = new Set([
@@ -2832,7 +2874,7 @@ export const createHarnessRunManager = async (options) => {
       return response;
     }
 
-    const harnessRunId = `harness-run-${randomBytes(12).toString("hex")}`;
+    harnessRunId ??= `harness-run-${randomBytes(12).toString("hex")}`;
     const createdAt = now().toISOString();
     const auditId = `audit-${randomBytes(12).toString("hex")}`;
     const run = storedRunSchema.parse({
@@ -2970,6 +3012,7 @@ export const createHarnessRunManager = async (options) => {
       const operation = supervise(structuredClone(run), {
         ...context,
         parameters: structuredClone(parameters.data),
+        productionHarnessExecutionPath,
         cancellationGraceMs,
         hostLossTerminationEvidencePath: join(
           options.dataDir,
