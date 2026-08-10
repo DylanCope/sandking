@@ -5,8 +5,8 @@ import { projectPreparationProjectionSchema } from "./project-registration.mjs";
 import {
   harnessRunEventSchema,
   harnessRunOutcomeSchema,
-  harnessRunOutcomeAdapterIdentityAgrees,
   harnessRunSchema,
+  requireHarnessRunOutcomeAdapterIdentityAgreement,
 } from "./harness-runs.mjs";
 import { launchParametersSchema } from "./harness-launch.mjs";
 import {
@@ -152,18 +152,7 @@ const harnessRunObservationProjectionSchema = z.object({
     adapterChannelClosedObserved: z.boolean(),
     processExitObserved: z.boolean(),
   }).strict().nullable(),
-}).strict().superRefine((observation, context) => {
-  if (
-    observation.run
-    && !harnessRunOutcomeAdapterIdentityAgrees(observation.run, observation.outcome)
-  ) {
-    context.addIssue({
-      code: "custom",
-      message: "Harness run and outcome adapter identities disagree",
-      path: ["outcome", "terminalEnvelope"],
-    });
-  }
-});
+}).strict().superRefine(requireHarnessRunOutcomeAdapterIdentityAgreement);
 
 export const browserHelloSchema = z.object({
   type: z.literal("browser.hello"),

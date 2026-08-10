@@ -369,7 +369,7 @@ export const harnessRunExecutionSnapshotSchema = z.object({
 
 /**
  * @param {{adapterId: string, adapterProtocol: string}} run
- * @param {{terminalEnvelope?: {adapterId: string, adapterProtocol: string} | null} | null} outcome
+ * @param {{terminalEnvelope?: {adapterId: string, adapterProtocol: string} | null} | null | undefined} outcome
  */
 export const harnessRunOutcomeAdapterIdentityAgrees = (run, outcome) =>
   !outcome?.terminalEnvelope
@@ -377,6 +377,26 @@ export const harnessRunOutcomeAdapterIdentityAgrees = (run, outcome) =>
     outcome.terminalEnvelope.adapterId === run.adapterId
     && outcome.terminalEnvelope.adapterProtocol === run.adapterProtocol
   );
+
+/**
+ * Apply the run/outcome adapter invariant to any public composite that carries
+ * those two fields. Keeping the refinement here prevents retained, Host, and
+ * browser schemas from drifting into different identity rules.
+ * @param {{run?: {adapterId: string, adapterProtocol: string} | null, outcome?: {terminalEnvelope?: {adapterId: string, adapterProtocol: string} | null} | null}} composite
+ * @param {import("zod").RefinementCtx} context
+ */
+export const requireHarnessRunOutcomeAdapterIdentityAgreement = (composite, context) => {
+  if (
+    composite.run
+    && !harnessRunOutcomeAdapterIdentityAgrees(composite.run, composite.outcome)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Harness run and outcome adapter identities disagree",
+      path: ["outcome", "terminalEnvelope"],
+    });
+  }
+};
 
 const previousCurrentHarnessRunSchema = previousHarnessRunSchema.extend({
   executionSnapshot: harnessRunExecutionSnapshotSchema,
@@ -427,13 +447,7 @@ const requireConsistentRetainedAdapterIdentity = (run, context) => {
       path: ["executionSnapshot", "adapter"],
     });
   }
-  if (!harnessRunOutcomeAdapterIdentityAgrees(run, run.outcome)) {
-    context.addIssue({
-      code: "custom",
-      message: "retained Harness terminal identity disagrees",
-      path: ["outcome", "terminalEnvelope"],
-    });
-  }
+  requireHarnessRunOutcomeAdapterIdentityAgreement({ run, outcome: run.outcome }, context);
 };
 
 export const harnessRunSchema = z.union([
@@ -463,7 +477,7 @@ const previousLegacyStoredRunSchema = previousLegacyHarnessRunSchema
 const previousStoredRunSchema = z.union([
   previousCurrentStoredRunSchema,
   previousLegacyStoredRunSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 const previousCurrentStoredRunWithSnapshotSchema = previousCurrentHarnessRunSchema
   .extend(previousStoredRunFields).strict();
 const previousLegacyStoredRunWithSnapshotSchema = previousLegacyHarnessRunWithSnapshotSchema
@@ -471,7 +485,7 @@ const previousLegacyStoredRunWithSnapshotSchema = previousLegacyHarnessRunWithSn
 const previousStoredRunWithSnapshotSchema = z.union([
   previousCurrentStoredRunWithSnapshotSchema,
   previousLegacyStoredRunWithSnapshotSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 const previousCurrentStoredRunWithCancellationSchema =
   previousCurrentHarnessRunWithCancellationSchema.extend(previousStoredRunFields).strict();
 const previousLegacyStoredRunWithCancellationSchema =
@@ -479,7 +493,7 @@ const previousLegacyStoredRunWithCancellationSchema =
 const previousStoredRunWithCancellationSchema = z.union([
   previousCurrentStoredRunWithCancellationSchema,
   previousLegacyStoredRunWithCancellationSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 const currentStoredRunSchema = currentHarnessRunSchema.extend(storedRunFields).strict();
 const legacyStoredRunSchema = legacyHarnessRunSchema.extend(storedRunFields).strict();
 const storedRunSchema = z.union([
@@ -493,7 +507,7 @@ const previousV7LegacyStoredRunSchema = previousV7LegacyHarnessRunSchema
 const previousV7StoredRunSchema = z.union([
   previousV7CurrentStoredRunSchema,
   previousV7LegacyStoredRunSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 const previousCurrentStoredRunWithHostLossReconciliationSchema =
   previousV7CurrentHarnessRunSchema.extend(previousStoredRunFields).strict();
 const previousLegacyStoredRunWithHostLossReconciliationSchema =
@@ -501,7 +515,7 @@ const previousLegacyStoredRunWithHostLossReconciliationSchema =
 const previousStoredRunWithHostLossReconciliationSchema = z.union([
   previousCurrentStoredRunWithHostLossReconciliationSchema,
   previousLegacyStoredRunWithHostLossReconciliationSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 const retainedOutcomeSchema = z.object({
   idempotencyKeyHash: digestSchema,
   requestFingerprint: digestSchema,
@@ -569,7 +583,8 @@ const previousStateSchema = z.object({
 }).strict();
 const legacyStateSchema = z.object({
   schemaVersion: z.literal(1),
-  runs: z.array(previousLegacyStoredRunSchema),
+  runs: z.array(previousLegacyStoredRunSchema
+    .superRefine(requireConsistentRetainedAdapterIdentity)),
   startOutcomes: z.array(retainedOutcomeSchema),
 }).strict();
 

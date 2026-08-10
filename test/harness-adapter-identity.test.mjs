@@ -249,6 +249,15 @@ const runtimeHarnessRunObservation = (observation) => ({
   },
 });
 
+const runtimeHarnessRunRecoveryResult = (observation) => ({
+  channel: "control",
+  message: {
+    type: "runtime.harness-run.recover-result",
+    requestId: "runtime-recover-bundled-adapter-identity",
+    outcome: harnessRunRecoveryResult(observation),
+  },
+});
+
 test("Project, retained run, and browser-boundary models preserve either bundled identity", () => {
   for (const [adapterId, kind] of [
     [CONFORMANCE_HARNESS_ADAPTER_ID, "conformance"],
@@ -351,6 +360,9 @@ test("retained and public composite models preserve agreements and reject every 
       new PassThrough(),
       harnessRunRecoveryResult(observation),
     ));
+    assert.equal(runtimeControlEnvelopeSchema.safeParse(
+      runtimeHarnessRunRecoveryResult(observation),
+    ).success, true);
   }
 
   for (const [retainedAdapterId, nestedAdapterId, nestedKind] of [
@@ -398,6 +410,9 @@ test("retained and public composite models preserve agreements and reject every 
       () => writeFrame(new PassThrough(), harnessRunRecoveryResult(observation)),
       (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
     );
+    assert.equal(runtimeControlEnvelopeSchema.safeParse(
+      runtimeHarnessRunRecoveryResult(observation),
+    ).success, false);
   }
 });
 

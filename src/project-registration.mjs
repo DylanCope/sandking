@@ -127,7 +127,7 @@ export const harnessRegistrationSchema = z.discriminatedUnion("adapterId", [
  * @param {z.infer<typeof projectHarnessLinkSchema>} projectHarness
  * @param {z.infer<typeof harnessRegistrationSchema>} harness
  */
-export const harnessRegistrationMatchesProjectLink = (projectHarness, harness) =>
+export const projectHarnessAdapterIdentityAgrees = (projectHarness, harness) =>
   projectHarness.harnessId === harness.harnessId
   && projectHarness.adapterId === harness.adapterId;
 
@@ -767,7 +767,7 @@ export const projectPreparationProjection = (project = null, harness = null) => 
   if (
     project?.harness
     && harness
-    && !harnessRegistrationMatchesProjectLink(project.harness, harness)
+    && !projectHarnessAdapterIdentityAgrees(project.harness, harness)
   ) {
     throw new Error("Project and Harness adapter identities disagree");
   }

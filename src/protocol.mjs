@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
-  harnessRegistrationMatchesProjectLink,
+  projectHarnessAdapterIdentityAgrees,
   harnessRegistrationSchema,
   projectRegistrationSchema,
 } from "./project-registration.mjs";
 import {
   harnessRunEventSchema,
   harnessRunOutcomeSchema,
-  harnessRunOutcomeAdapterIdentityAgrees,
+  requireHarnessRunOutcomeAdapterIdentityAgreement,
   harnessRunRecoveryActionSchema,
   harnessRunRecoverySchema,
   harnessRunSchema,
@@ -291,7 +291,7 @@ const projectHarnessPinResultSchema = z.object({
 }).strip().superRefine((result, context) => {
   if (
     !result.project.harness
-    || !harnessRegistrationMatchesProjectLink(result.project.harness, result.harness)
+    || !projectHarnessAdapterIdentityAgrees(result.project.harness, result.harness)
   ) {
     context.addIssue({
       code: "custom",
@@ -502,15 +502,7 @@ export const harnessRunRecoverResultSchema = z.object({
   run: harnessRunSchema,
   recovery: harnessRunRecoverySchema.nullable(),
   outcome: harnessRunOutcomeSchema.nullable(),
-}).strip().superRefine((result, context) => {
-  if (!harnessRunOutcomeAdapterIdentityAgrees(result.run, result.outcome)) {
-    context.addIssue({
-      code: "custom",
-      message: "Harness run and outcome adapter identities disagree",
-      path: ["outcome", "terminalEnvelope"],
-    });
-  }
-});
+}).strip().superRefine(requireHarnessRunOutcomeAdapterIdentityAgreement);
 export const harnessRunRecoverFailureSchema = z.object({
   type: z.literal("harness.run.recover.failure"),
   requestId: identifierSchema,
@@ -664,18 +656,7 @@ const harnessRunObserveResultSchema = z.object({
   outcome: harnessRunOutcomeSchema.nullable(),
   logStreams: z.array(harnessLogStreamProjectionSchema).max(2),
   terminalEnvelopeValidation: terminalEnvelopeValidationSchema.nullable(),
-}).strip().superRefine((observation, context) => {
-  if (
-    observation.run
-    && !harnessRunOutcomeAdapterIdentityAgrees(observation.run, observation.outcome)
-  ) {
-    context.addIssue({
-      code: "custom",
-      message: "Harness run and outcome adapter identities disagree",
-      path: ["outcome", "terminalEnvelope"],
-    });
-  }
-});
+}).strip().superRefine(requireHarnessRunOutcomeAdapterIdentityAgreement);
 const harnessRunLogsGetSchema = z.object({
   type: z.literal("harness.run.logs.get"),
   requestId: identifierSchema,
