@@ -190,11 +190,13 @@ export const projectHarnessAdapterIdentityAgrees = (projectHarness, harness) =>
   projectHarness.harnessId === harness.harnessId
   && projectHarness.adapterId === harness.adapterId;
 
-const storedProjectSchema = retainedProjectRegistrationSchema.extend({
+const storedProjectFields = {
   filesystemIdentityDigest: digestSchema,
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
-});
+};
+const storedProjectSchema = projectRegistrationSchema.extend(storedProjectFields);
+const legacyStoredProjectSchema = retainedProjectRegistrationSchema.extend(storedProjectFields);
 const storedHarnessFields = {
   workspacePath: pathSchema,
   createdAt: z.string().datetime(),
@@ -214,9 +216,12 @@ const projectStateSchema = z.object({
   registrationOutcomes: z.array(outcomeSchema).max(256),
   pinOutcomes: z.array(outcomeSchema).max(256),
 }).strict();
-const legacyProjectStateSchema = projectStateSchema.extend({
+const legacyProjectStateSchema = z.object({
   schemaVersion: z.literal(1),
-});
+  projects: z.array(legacyStoredProjectSchema).max(256),
+  registrationOutcomes: z.array(outcomeSchema).max(256),
+  pinOutcomes: z.array(outcomeSchema).max(256),
+}).strict();
 const harnessStateSchema = z.object({
   schemaVersion: z.literal(1),
   harnesses: z.array(storedHarnessSchema).max(32),
@@ -364,7 +369,26 @@ const readProjectState = async (dataDir) => {
   if (!parsed.success) {
     throw new Error("project_registration_state_invalid");
   }
-  return projectStateSchema.parse({ ...parsed.data, schemaVersion: 2 });
+  return parsed.data;
+};
+/**
+ * Promote retained state only when every production Project satisfies the
+ * schema-v2 preparation invariant. Unrelated writes keep partial migrations
+ * in their truthful schema-v1 envelope.
+ * @param {string} dataDir
+ * @param {z.infer<typeof projectStateSchema> | z.infer<typeof legacyProjectStateSchema>} state
+ */
+const writeProjectState = async (dataDir, state) => {
+  const current = projectStateSchema.safeParse({ ...state, schemaVersion: 2 });
+  if (current.success) {
+    await writePrivateJson(projectStatePath(dataDir), current.data);
+    return;
+  }
+  const legacy = legacyProjectStateSchema.safeParse({ ...state, schemaVersion: 1 });
+  if (!legacy.success) {
+    throw new Error("project_registration_state_invalid");
+  }
+  await writePrivateJson(projectStatePath(dataDir), legacy.data);
 };
 /** @param {string} dataDir */
 const readHarnessState = async (dataDir) => {
@@ -381,8 +405,8 @@ const readHarnessState = async (dataDir) => {
  * Add schema-v2 preparation metadata only to retained success envelopes for
  * the same production pin. Historical registration and pin responses keep
  * their accepted Project snapshots and request fingerprints.
- * @param {z.infer<typeof projectStateSchema>} state
- * @param {z.infer<typeof storedProjectSchema>} project
+ * @param {z.infer<typeof projectStateSchema> | z.infer<typeof legacyProjectStateSchema>} state
+ * @param {z.infer<typeof legacyStoredProjectSchema>} project
  */
 const refreshRetainedProjectReferences = (state, project) => {
   if (
@@ -528,7 +552,7 @@ const canonicalManagedPath = async (path) => realpath(path).catch(async () => {
 /**
  * Resolve only the supplied path. The function never enumerates a parent or
  * sibling directory; stored filesystem evidence is the only cross-registration lookup.
- * @param {z.infer<typeof projectStateSchema>} state
+ * @param {z.infer<typeof projectStateSchema> | z.infer<typeof legacyProjectStateSchema>} state
  * @param {unknown} selectedPath
  * @param {string} dataDir
  */
@@ -1008,9 +1032,9 @@ export const createProjectRegistry = async (options) => {
    * Lazily upgrade only the selected schema-v1 production Project. A broken
    * retained registration therefore cannot make unrelated registrations
    * unavailable, while every public success still carries verified readiness.
-   * @param {z.infer<typeof projectStateSchema>} projectState
+   * @param {z.infer<typeof projectStateSchema> | z.infer<typeof legacyProjectStateSchema>} projectState
    * @param {z.infer<typeof harnessStateSchema>} harnessState
-   * @param {z.infer<typeof storedProjectSchema>} project
+   * @param {z.infer<typeof legacyStoredProjectSchema>} project
    */
   const prepareRetainedProductionProject = async (projectState, harnessState, project) => {
     if (
@@ -1039,7 +1063,7 @@ export const createProjectRegistry = async (options) => {
       preparation: productionHarnessPreparationSchema.parse(preparation),
     };
     refreshRetainedProjectReferences(projectState, project);
-    await writePrivateJson(projectStatePath(options.dataDir), projectState);
+    await writeProjectState(options.dataDir, projectState);
     return project;
   };
 
@@ -1121,7 +1145,7 @@ export const createProjectRegistry = async (options) => {
       authorizationClass: request.authorizationClass,
       expectedRevision: request.expectedRevision,
     });
-    /** @param {unknown} error @param {z.infer<typeof storedProjectSchema>} project */
+    /** @param {unknown} error @param {z.infer<typeof legacyStoredProjectSchema>} project */
     const rejectPreparation = async (error, project) => {
       const code = preparationFailureCode(error);
       const auditId = await options.recordAudit(action, "rejected", {
@@ -1192,7 +1216,7 @@ export const createProjectRegistry = async (options) => {
         } catch (error) {
           return rejectPreparation(error, retainedProject);
         }
-        await writePrivateJson(projectStatePath(options.dataDir), state);
+        await writeProjectState(options.dataDir, state);
       }
       await options.recordAudit(action, "observed", {
         authorizationClass,
@@ -1356,7 +1380,7 @@ export const createProjectRegistry = async (options) => {
         response,
       });
       state.registrationOutcomes = state.registrationOutcomes.slice(-256);
-      await writePrivateJson(projectStatePath(options.dataDir), state);
+      await writeProjectState(options.dataDir, state);
       return response;
     }
 
@@ -1408,7 +1432,7 @@ export const createProjectRegistry = async (options) => {
       response,
     });
     state.registrationOutcomes = state.registrationOutcomes.slice(-256);
-    await writePrivateJson(projectStatePath(options.dataDir), state);
+    await writeProjectState(options.dataDir, state);
     return response;
   });
 
@@ -1800,7 +1824,7 @@ export const createProjectRegistry = async (options) => {
         }
       }
       existing.requestFingerprint = requestFingerprint;
-      await writePrivateJson(projectStatePath(options.dataDir), projectState);
+      await writeProjectState(options.dataDir, projectState);
       await options.recordAudit(action, "observed", {
         authorizationClass,
         idempotencyKeyHash: keyHash,
@@ -2006,7 +2030,7 @@ export const createProjectRegistry = async (options) => {
       response,
     });
     projectState.pinOutcomes = projectState.pinOutcomes.slice(-256);
-    await writePrivateJson(projectStatePath(options.dataDir), projectState);
+    await writeProjectState(options.dataDir, projectState);
     return response;
   });
 

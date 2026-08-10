@@ -340,6 +340,21 @@ test("retained main-era production registrations prepare and replay after restar
     });
     assert.equal(unaffected.code, "project_registered");
     assert.equal(unaffected.project.projectId, otherProject.project.projectId);
+    const reusedUnaffected = await restarted.registerProject({
+      requestId: "reuse-unaffected-project",
+      path: otherProjectPath,
+      configuration: {
+        issueWorkflow: { provider: "github", kind: "issues" },
+        checks: [{ checkId: "test", command: "npm test" }],
+      },
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "reuse-unaffected-project",
+      expectedRevision: otherProject.project.revision,
+    });
+    assert.equal(reusedUnaffected.code, "project_registration_reused");
+    const partiallyMigratedState = JSON.parse(await readFile(projectStatePath, "utf8"));
+    assert.equal(partiallyMigratedState.schemaVersion, 1);
+    assert.equal(partiallyMigratedState.projects[0].harness.preparation, undefined);
     const migratedInspection = await restarted.inspectProject({
       requestId: "inspect-retained-production-project",
       path: fixture.projectPath,
