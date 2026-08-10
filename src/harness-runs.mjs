@@ -1719,8 +1719,10 @@ export const createHarnessRunManager = async (options) => {
         previousStatus: interruption?.previousStatus ?? recovery?.previousStatus
           ?? cancellationReconciliation?.previousStatus,
         status: recovery ? "recovery_required" : run.outcome?.status ?? run.status,
-        outcomeReference: run.outcome?.outcomeId,
-        incompleteResult: run.outcome?.incompleteResult,
+        ...(run.outcome ? {
+          outcomeReference: run.outcome.outcomeId,
+          incompleteResult: run.outcome.incompleteResult,
+        } : {}),
         terminationEvidence: recovery
           ? "unconfirmed"
           : cancellationReconciliation?.terminationEvidence ?? "confirmed",

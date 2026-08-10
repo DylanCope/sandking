@@ -103,13 +103,33 @@ try {
     join(resultDirectory, "canonical-boundary-results.json"),
     "utf8",
   ));
+  const managerBoundaryExecution = JSON.parse(await readFile(
+    join(resultDirectory, "canonical-boundary-manager-results.json"),
+    "utf8",
+  ));
   const declaredFaultPoints = manifest.verification.faultMatrix.flatMap((boundary) =>
     boundary.faultPoints.map((faultPoint) => ({
       boundary: boundary.boundary,
       faultPoint,
     })));
   if (
-    canonicalBoundaryExecution.schemaVersion !== 1
+    managerBoundaryExecution.schemaVersion !== 1
+    || managerBoundaryExecution.issue !== 164
+    || JSON.stringify(managerBoundaryExecution.results.map((result) => ({
+      boundary: result.boundary,
+      faultPoint: result.faultPoint,
+    }))) !== JSON.stringify(declaredFaultPoints)
+    || !managerBoundaryExecution.results.every((result) =>
+      result.injected === true
+      && result.restarted === true
+      && result.converged === true
+      && result.passed === true
+      && /^test\/harness-run\.test\.mjs:/.test(result.executableEvidence))
+  ) {
+    throw new Error("issue_164_manager_boundary_results_invalid");
+  }
+  if (
+    canonicalBoundaryExecution.schemaVersion !== 2
     || canonicalBoundaryExecution.issue !== 164
     || JSON.stringify(canonicalBoundaryExecution.results.map((result) => ({
       boundary: result.boundary,
@@ -120,7 +140,12 @@ try {
       && result.restarted === true
       && result.converged === true
       && result.passed === true
-      && /^test\/harness-run\.test\.mjs:/.test(result.executableEvidence))
+      && result.cursorResynchronized === true
+      && result.packagedPublicSeam
+        === "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host"
+      && /^test\/canonical-boundary-recovery\.browser\.test\.mjs:/.test(
+        result.executableEvidence,
+      ))
   ) {
     throw new Error("issue_164_canonical_boundary_results_invalid");
   }

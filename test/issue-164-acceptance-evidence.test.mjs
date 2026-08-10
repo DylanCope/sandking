@@ -22,6 +22,8 @@ const scenarioIds = [
   "durable-execution/exposes-uncertain-supervision-for-recovery",
   "durable-execution/recovers-every-canonical-boundary",
 ];
+const canonicalBoundaryBrowserSuite =
+  "test/canonical-boundary-recovery.browser.test.mjs";
 
 test("issue 164 manifest qualifies all five durable-execution scenarios", () => {
   assert.equal(manifest.schemaVersion, 2);
@@ -63,6 +65,10 @@ test("issue 164 merge gate maps every canonical durability boundary to executabl
     assert.ok(boundary.faultPoints.some((point) => point.includes("before")));
     assert.ok(boundary.faultPoints.some((point) => point.includes("after")));
     assert.ok(boundary.executableEvidence.every((path) => path.startsWith("test/")));
+    assert.ok(
+      boundary.executableEvidence.includes(canonicalBoundaryBrowserSuite),
+      `${boundary.boundary} must be inspected through the packaged Cockpit`,
+    );
   }
   const commandText = JSON.stringify(manifest.verification.commands);
   for (const suite of [
@@ -71,6 +77,7 @@ test("issue 164 merge gate maps every canonical durability boundary to executabl
     "test/harness-run.test.mjs",
     "test/host-loss-termination-evidence.test.mjs",
     "test/security-boundary.test.mjs",
+    canonicalBoundaryBrowserSuite,
     "test/host-death-reconciliation.browser.test.mjs",
   ]) {
     assert.match(commandText, new RegExp(suite.replaceAll(".", "\\.")));
@@ -196,6 +203,11 @@ test("retained issue 164 evidence identifies a current sanitized packaged qualif
       result.injected === true
       && result.restarted === true
       && result.converged === true
-      && result.passed === true), declaredBoundary.boundary);
+      && result.passed === true
+      && result.cursorResynchronized === true
+      && result.executableEvidence.startsWith(`${canonicalBoundaryBrowserSuite}:`)
+      && result.packagedPublicSeam
+        === "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host"),
+    declaredBoundary.boundary);
   }
 });

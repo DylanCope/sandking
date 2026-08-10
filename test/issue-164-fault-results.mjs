@@ -42,7 +42,7 @@ export const retainIssue164FaultPointResults = async () => {
   if (resultDirectory) {
     await mkdir(resultDirectory, { recursive: true, mode: 0o700 });
     await writeFile(
-      join(resultDirectory, "canonical-boundary-results.json"),
+      join(resultDirectory, "canonical-boundary-manager-results.json"),
       `${JSON.stringify({ schemaVersion: 1, issue: 164, results }, null, 2)}\n`,
       { mode: 0o600 },
     );

@@ -7,6 +7,7 @@ import { instrumentHostModeRuntime } from "./host-mode-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 const sourceRoot = new URL("..", import.meta.url);
+const pristineInstalledHostSources = new Map();
 
 /** @param {string} root */
 export const installCurrentPackage = async (root) => {
@@ -61,6 +62,49 @@ export const pauseInstalledHostAtHarnessRunFault = async (installed, faultPoint)
     + "        process.kill(process.pid, \"SIGSTOP\");\n"
     + "      }\n"
     + "    },\n");
+  await writeFile(localHostPath, instrumented, { mode: 0o755 });
+};
+
+/**
+ * Add a one-shot deterministic process pause to a temporary installed test
+ * copy. A private marker makes startup boundaries retryable after the stopped
+ * Host is killed. Repeated calls restore the pristine packed Host before
+ * selecting the next point.
+ * @param {{packageDirectory: string}} installed
+ * @param {string} faultPoint
+ * @param {string} markerPath
+ */
+export const pauseInstalledHostOnceAtHarnessRunFault = async (
+  installed,
+  faultPoint,
+  markerPath,
+) => {
+  const localHostPath = join(installed.packageDirectory, "src", "local-host.mjs");
+  let source = pristineInstalledHostSources.get(localHostPath);
+  if (!source) {
+    source = await readFile(localHostPath, "utf8");
+    pristineInstalledHostSources.set(localHostPath, source);
+  }
+  const importAnchor = 'import { readFile } from "node:fs/promises";\n';
+  const managerAnchor = "    loadLaunchContext: projectRegistry.loadLaunchContext,\n";
+  if (
+    source.split(importAnchor).length !== 2
+    || source.split(managerAnchor).length !== 2
+  ) {
+    throw new Error("installed_host_one_shot_fault_instrumentation_anchor_invalid");
+  }
+  const instrumented = source
+    .replace(importAnchor, 'import { readFile, writeFile } from "node:fs/promises";\n')
+    .replace(managerAnchor, `${managerAnchor}    faultInjector: async (point) => {\n`
+      + `      if (point !== ${JSON.stringify(faultPoint)}) return;\n`
+      + "      try {\n"
+      + `        await writeFile(${JSON.stringify(markerPath)}, point, { flag: "wx", mode: 0o600 });\n`
+      + "      } catch (error) {\n"
+      + '        if (error?.code === "EEXIST") return;\n'
+      + "        throw error;\n"
+      + "      }\n"
+      + '      process.kill(process.pid, "SIGSTOP");\n'
+      + "    },\n");
   await writeFile(localHostPath, instrumented, { mode: 0o755 });
 };
 

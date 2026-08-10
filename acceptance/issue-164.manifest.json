@@ -200,8 +200,8 @@
         "#164 deterministic fault, migration, protocol, state, security, and packaged-browser merge gate"
       ],
       "environmentAndTransport": [
-        "test-only deterministic fault callback inside the Host-private manager",
-        "typed framed Host and browser contracts plus packaged loopback Cockpit",
+        "test-only deterministic fault callback instrumented only into a temporary npm-packed Host copy",
+        "packaged loopback Cockpit through the authenticated browser, Controller-runtime, and framed local-Host boundaries",
         "supported Linux, Windows, and macOS process supervision suites"
       ],
       "initialState": [
@@ -234,6 +234,7 @@
       "retainedEvidence": [
         "acceptance/evidence/issue-164.json#scenarioResults[4]",
         "test/issue-164-acceptance-evidence.test.mjs",
+        "test/canonical-boundary-recovery.browser.test.mjs",
         "test/harness-run.test.mjs",
         "test/protocol.test.mjs",
         "test/browser-protocol.test.mjs"
@@ -250,7 +251,10 @@
           "harness_run_launch.after_state_commit",
           "harness_run_launch.after_commit"
         ],
-        "executableEvidence": ["test/harness-run.test.mjs"]
+        "executableEvidence": [
+          "test/harness-run.test.mjs",
+          "test/canonical-boundary-recovery.browser.test.mjs"
+        ]
       },
       {
         "boundary": "lifecycle event and current-view publication",
@@ -259,7 +263,10 @@
           "harness_run_lifecycle.adapter_ready.before_commit",
           "harness_run_lifecycle.adapter_ready.after_state_commit"
         ],
-        "executableEvidence": ["test/harness-run.test.mjs"]
+        "executableEvidence": [
+          "test/harness-run.test.mjs",
+          "test/canonical-boundary-recovery.browser.test.mjs"
+        ]
       },
       {
         "boundary": "terminal-envelope acceptance and terminal outcome",
@@ -270,7 +277,11 @@
           "harness_run_terminal_envelope.after_state_commit",
           "harness_run_outcome.after_state_commit"
         ],
-        "executableEvidence": ["test/harness-run.test.mjs", "test/harness-adapter-protocol.test.mjs"]
+        "executableEvidence": [
+          "test/harness-run.test.mjs",
+          "test/harness-adapter-protocol.test.mjs",
+          "test/canonical-boundary-recovery.browser.test.mjs"
+        ]
       },
       {
         "boundary": "cancellation acceptance",
@@ -280,7 +291,10 @@
           "harness_run_cancellation.after_state_commit",
           "harness_run_cancellation.after_commit"
         ],
-        "executableEvidence": ["test/harness-run.test.mjs"]
+        "executableEvidence": [
+          "test/harness-run.test.mjs",
+          "test/canonical-boundary-recovery.browser.test.mjs"
+        ]
       },
       {
         "boundary": "cancellation signalling and termination",
@@ -299,7 +313,8 @@
           "test/harness-run.test.mjs",
           "test/posix-process-tree.test.mjs",
           "test/windows-process-tree.test.mjs",
-          "test/darwin-process-tree.test.mjs"
+          "test/darwin-process-tree.test.mjs",
+          "test/canonical-boundary-recovery.browser.test.mjs"
         ]
       },
       {
@@ -312,7 +327,8 @@
         ],
         "executableEvidence": [
           "test/harness-run.test.mjs",
-          "test/host-death-reconciliation.browser.test.mjs"
+          "test/host-death-reconciliation.browser.test.mjs",
+          "test/canonical-boundary-recovery.browser.test.mjs"
         ]
       },
       {
@@ -329,7 +345,8 @@
         ],
         "executableEvidence": [
           "test/harness-run.test.mjs",
-          "test/host-death-reconciliation.browser.test.mjs"
+          "test/host-death-reconciliation.browser.test.mjs",
+          "test/canonical-boundary-recovery.browser.test.mjs"
         ]
       },
       {
@@ -340,7 +357,10 @@
           "harness_run_migration.after_state_commit",
           "harness_run_migration.after_commit"
         ],
-        "executableEvidence": ["test/harness-run.test.mjs"]
+        "executableEvidence": [
+          "test/harness-run.test.mjs",
+          "test/canonical-boundary-recovery.browser.test.mjs"
+        ]
       }
     ],
     "commands": [
@@ -372,6 +392,12 @@
         "--test",
         "--test-concurrency=1",
         "test/host-death-reconciliation.browser.test.mjs"
+      ],
+      [
+        "node",
+        "--test",
+        "--test-concurrency=1",
+        "test/canonical-boundary-recovery.browser.test.mjs"
       ]
     ]
   }
