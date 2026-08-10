@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rename,
@@ -248,10 +249,63 @@ const verifyExistingProjection = async (targetPath, expectedFiles) => {
 /** @param {string} path */
 const readOptionalFile = async (path) => {
   try {
+    const details = await lstat(path);
+    if (!details.isFile() || details.isSymbolicLink() || details.nlink !== 1) {
+      throw new ProductionHarnessPreparationError("harness_projection_collision");
+    }
     return { exists: true, source: await readFile(path, "utf8") };
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
       return { exists: false, source: "" };
+    }
+    if (error instanceof ProductionHarnessPreparationError) throw error;
+    throw new ProductionHarnessPreparationError("harness_projection_failed");
+  }
+};
+
+/** @param {string} path @param {string} source */
+const replaceFile = async (path, source) => {
+  const temporaryPath = `${path}.sandking-${process.pid}-${randomBytes(6).toString("hex")}.tmp`;
+  let temporaryCreated = false;
+  try {
+    const handle = await open(temporaryPath, "wx", 0o600);
+    temporaryCreated = true;
+    try {
+      await handle.writeFile(source, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporaryPath, path);
+    temporaryCreated = false;
+  } catch (error) {
+    if (temporaryCreated) {
+      await rm(temporaryPath, { force: true }).catch(() => undefined);
+    }
+    throw error;
+  }
+};
+
+/** @param {string} path */
+const assertSafeFileParent = async (path) => {
+  const parent = dirname(path);
+  try {
+    const details = await lstat(parent);
+    if (!details.isDirectory() || details.isSymbolicLink()) {
+      throw new ProductionHarnessPreparationError("harness_projection_collision");
+    }
+  } catch (error) {
+    if (error instanceof ProductionHarnessPreparationError) throw error;
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      try {
+        const parentDetails = await lstat(dirname(parent));
+        if (!parentDetails.isDirectory() || parentDetails.isSymbolicLink()) {
+          throw new ProductionHarnessPreparationError("harness_projection_collision");
+        }
+        return;
+      } catch (parentError) {
+        if (parentError instanceof ProductionHarnessPreparationError) throw parentError;
+      }
     }
     throw new ProductionHarnessPreparationError("harness_projection_failed");
   }
@@ -260,7 +314,7 @@ const readOptionalFile = async (path) => {
 /** @param {string} path @param {{exists: boolean, source: string}} original */
 const restoreOptionalFile = async (path, original) => {
   if (original.exists) {
-    await writeFile(path, original.source, { mode: 0o600 });
+    await replaceFile(path, original.source);
   } else {
     await rm(path, { force: true });
   }
@@ -282,6 +336,12 @@ const assertSafeProjectionAncestors = async (projectRoot, projectionRelativePath
     try {
       const details = await lstat(current);
       if (!details.isDirectory() || details.isSymbolicLink()) {
+        throw new ProductionHarnessPreparationError("harness_projection_collision");
+      }
+      const ancestorRepositoryRoot = (await git(current, [
+        "rev-parse", "--show-toplevel",
+      ])).stdout.trim();
+      if (resolve(ancestorRepositoryRoot) !== projectRoot) {
         throw new ProductionHarnessPreparationError("harness_projection_collision");
       }
     } catch (error) {
@@ -600,7 +660,6 @@ export const prepareProductionHarness = async (options) => {
   if (!isInside(projectRoot, projectionPath)) {
     throw new ProductionHarnessPreparationError("harness_projection_collision");
   }
-  await assertSafeProjectionAncestors(projectRoot, projectionRelativePath);
   let repositoryRoot;
   try {
     repositoryRoot = (await git(projectRoot, ["rev-parse", "--show-toplevel"])).stdout.trim();
@@ -610,15 +669,21 @@ export const prepareProductionHarness = async (options) => {
   if (resolve(repositoryRoot) !== projectRoot) {
     throw new ProductionHarnessPreparationError("harness_projection_failed");
   }
+  await assertSafeProjectionAncestors(projectRoot, projectionRelativePath);
 
-  const trackedStateBefore = (await git(projectRoot, [
-    "status", "--porcelain=v1", "--untracked-files=no",
+  const workingTreeStateBefore = (await git(projectRoot, [
+    "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none",
   ])).stdout;
-  const trackedInventoryBefore = (await git(projectRoot, ["ls-files", "--stage"])).stdout;
-  const trackedCollision = (await git(projectRoot, [
-    "ls-files", "--", projectionRelativePath,
-  ])).stdout.trim();
-  if (trackedCollision) {
+  const trackedInventoryBefore = (await git(projectRoot, [
+    "ls-files", "--stage", "-z",
+  ])).stdout;
+  const trackedPaths = trackedInventoryBefore.split("\0")
+    .filter(Boolean)
+    .map((entry) => entry.slice(entry.indexOf("\t") + 1));
+  if (trackedPaths.some((trackedPath) =>
+    trackedPath === projectionRelativePath
+    || trackedPath.startsWith(`${projectionRelativePath}/`)
+    || projectionRelativePath.startsWith(`${trackedPath}/`))) {
     throw new ProductionHarnessPreparationError("harness_projection_collision");
   }
 
@@ -626,6 +691,7 @@ export const prepareProductionHarness = async (options) => {
     "rev-parse", "--git-path", "info/exclude",
   ])).stdout.trim();
   const gitExcludePath = resolve(projectRoot, gitExcludePathValue);
+  await assertSafeFileParent(gitExcludePath);
   const originalExclude = await readOptionalFile(gitExcludePath);
   const projectionIgnoreRule = `/${projectionRelativePath}/`;
   const stagingIgnoreRule = `/.sandking/harnesses/.prepare-${options.harnessId}-*/`;
@@ -641,7 +707,7 @@ export const prepareProductionHarness = async (options) => {
   try {
     await mkdir(dirname(gitExcludePath), { recursive: true, mode: 0o700 });
     if (nextExclude !== originalExclude.source) {
-      await writeFile(gitExcludePath, nextExclude, { mode: 0o600 });
+      await replaceFile(gitExcludePath, nextExclude);
     }
     await mkdir(dirname(projectionPath), { recursive: true, mode: 0o700 });
     const existingProjection = await verifyExistingProjection(projectionPath, projectedFiles);
@@ -668,9 +734,9 @@ export const prepareProductionHarness = async (options) => {
     }
     if (
       (await git(projectRoot, [
-        "status", "--porcelain=v1", "--untracked-files=no",
-      ])).stdout !== trackedStateBefore
-      || (await git(projectRoot, ["ls-files", "--stage"])).stdout
+        "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none",
+      ])).stdout !== workingTreeStateBefore
+      || (await git(projectRoot, ["ls-files", "--stage", "-z"])).stdout
         !== trackedInventoryBefore
     ) {
       throw new ProductionHarnessPreparationError("harness_projection_failed");

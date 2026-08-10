@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import {
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -576,6 +587,144 @@ test("production pinning rejects a replacement repository before projection writ
     assert.equal(
       (await execFileAsync("git", [
         "-C", fixture.projectPath, "status", "--porcelain=v1",
+      ])).stdout,
+      "",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("production pinning rejects aliased Git exclude files without mutating either Project", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-exclude-alias-"));
+
+  try {
+    for (const aliasKind of ["symbolic-link", "hard-link", "parent-symbolic-link"]) {
+      await t.test(aliasKind, async () => {
+        const fixture = await createFixture(root, `exclude-${aliasKind}`);
+        const unrelatedProjectPath = join(root, `unrelated-${aliasKind}-project`);
+        await execFileAsync("git", [
+          "init", "--quiet", "--initial-branch=main", unrelatedProjectPath,
+        ]);
+        const unrelatedTrackedPath = aliasKind === "parent-symbolic-link"
+          ? join(unrelatedProjectPath, "git-info", "exclude")
+          : join(unrelatedProjectPath, "README.md");
+        const unrelatedTrackedSource = `unrelated ${aliasKind} tracked content\n`;
+        await mkdir(join(unrelatedTrackedPath, ".."), { recursive: true });
+        await writeFile(unrelatedTrackedPath, unrelatedTrackedSource);
+        await commitProject(unrelatedProjectPath);
+
+        const infoPath = join(fixture.projectPath, ".git", "info");
+        const excludePath = join(fixture.projectPath, ".git", "info", "exclude");
+        const aliasPath = aliasKind === "parent-symbolic-link" ? infoPath : excludePath;
+        await rm(aliasPath, { recursive: true });
+        if (aliasKind === "symbolic-link") {
+          await symlink(unrelatedTrackedPath, excludePath);
+        } else if (aliasKind === "parent-symbolic-link") {
+          await symlink(join(unrelatedProjectPath, "git-info"), infoPath);
+        } else {
+          await link(unrelatedTrackedPath, excludePath);
+        }
+        const aliasBefore = await lstat(aliasPath);
+        const projectStateBefore = await readFile(
+          join(fixture.dataDir, "project-registrations.json"),
+          "utf8",
+        );
+
+        const rejected = await fixture.pin(`pin-${aliasKind}-exclude`);
+        assert.equal(rejected.type, "project.operation.failure");
+        assert.equal(rejected.operation, "project.harness.pin");
+        assert.equal(rejected.code, "harness_projection_collision");
+        assert.equal(rejected.prohibitedSideEffects.projectFileWrite, false);
+        assert.equal(rejected.prohibitedSideEffects.harnessPinWrite, false);
+        assert.equal(
+          await readFile(unrelatedTrackedPath, "utf8"),
+          unrelatedTrackedSource,
+        );
+        const aliasAfter = await lstat(aliasPath);
+        assert.equal(aliasAfter.dev, aliasBefore.dev);
+        assert.equal(aliasAfter.ino, aliasBefore.ino);
+        assert.equal(
+          await readFile(join(fixture.dataDir, "project-registrations.json"), "utf8"),
+          projectStateBefore,
+        );
+        assert.equal((await readdir(fixture.projectPath)).includes(".sandking"), false);
+        assert.equal(
+          (await execFileAsync("git", [
+            "-C", fixture.projectPath, "status", "--porcelain=v1",
+          ])).stdout,
+          "",
+        );
+        assert.equal(
+          (await execFileAsync("git", [
+            "-C", unrelatedProjectPath, "status", "--porcelain=v1",
+          ])).stdout,
+          "",
+        );
+      });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("production pinning rejects a tracked nested-repository ancestor before projection writes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-gitlink-collision-"));
+
+  try {
+    const fixture = await createFixture(root, "gitlink-collision");
+    const nestedProjectPath = join(fixture.projectPath, ".sandking", "harnesses");
+    await execFileAsync("git", [
+      "init", "--quiet", "--initial-branch=main", nestedProjectPath,
+    ]);
+    const nestedReadmePath = join(nestedProjectPath, "README.md");
+    const nestedReadme = "tracked nested Project content\n";
+    await writeFile(nestedReadmePath, nestedReadme);
+    await commitProject(nestedProjectPath);
+    await commitProject(fixture.projectPath);
+    const trackedInventoryBefore = (await execFileAsync("git", [
+      "-C", fixture.projectPath, "ls-files", "--stage",
+    ])).stdout;
+    assert.match(trackedInventoryBefore, /^160000 [a-f0-9]{40} 0\t\.sandking\/harnesses$/m);
+    const projectStateBefore = await readFile(
+      join(fixture.dataDir, "project-registrations.json"),
+      "utf8",
+    );
+
+    const rejected = await fixture.pin("pin-through-tracked-gitlink");
+    assert.equal(rejected.type, "project.operation.failure");
+    assert.equal(rejected.operation, "project.harness.pin");
+    assert.equal(rejected.code, "harness_projection_collision");
+    assert.equal(rejected.prohibitedSideEffects.projectFileWrite, false);
+    assert.equal(rejected.prohibitedSideEffects.harnessPinWrite, false);
+    assert.equal(await readFile(nestedReadmePath, "utf8"), nestedReadme);
+    await assert.rejects(
+      readFile(join(
+        nestedProjectPath,
+        fixture.harness.harness.harnessId,
+        "projection-manifest.json",
+      )),
+      { code: "ENOENT" },
+    );
+    assert.equal(
+      await readFile(join(fixture.dataDir, "project-registrations.json"), "utf8"),
+      projectStateBefore,
+    );
+    assert.equal(
+      (await execFileAsync("git", [
+        "-C", fixture.projectPath, "ls-files", "--stage",
+      ])).stdout,
+      trackedInventoryBefore,
+    );
+    assert.equal(
+      (await execFileAsync("git", [
+        "-C", fixture.projectPath, "status", "--porcelain=v1",
+      ])).stdout,
+      "",
+    );
+    assert.equal(
+      (await execFileAsync("git", [
+        "-C", nestedProjectPath, "status", "--porcelain=v1",
       ])).stdout,
       "",
     );
