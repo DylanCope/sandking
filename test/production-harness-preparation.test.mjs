@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,15 @@ import { createProjectRegistry } from "../src/project-registration.mjs";
 
 const execFileAsync = promisify(execFile);
 const recordAudit = async () => `audit-${"1".repeat(24)}`;
+
+const canonicalJson = (value) => {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+};
+const retainedMainPinFingerprint = (request) =>
+  `sha256:${createHash("sha256").update(canonicalJson(request)).digest("hex")}`;
 
 const commitProject = async (projectPath) => {
   await execFileAsync("git", ["-C", projectPath, "add", "--all"]);
@@ -58,7 +68,7 @@ const createFixture = async (root, name) => {
   const harnessState = JSON.parse(await readFile(harnessStatePath, "utf8"));
   const workspacePath = harnessState.harnesses[0].workspacePath;
   const originalRevision = harness.harness.immutableRevision;
-  const pin = (requestId) => registry.pinHarness({
+  const pin = (requestId, expectedRevision = 1) => registry.pinHarness({
     requestId,
     projectId: project.project.projectId,
     harnessId: harness.harness.harnessId,
@@ -68,7 +78,7 @@ const createFixture = async (root, name) => {
     },
     authorizationClass: "host_local_project_configuration",
     idempotencyKey: `${name}-preparation`,
-    expectedRevision: 1,
+    expectedRevision,
   });
   const setRegisteredRevision = async (revision) => {
     const state = JSON.parse(await readFile(harnessStatePath, "utf8"));
@@ -239,6 +249,196 @@ test("production preparation resolves the registered pin and projects only verif
     assert.deepEqual(retried.project.harness.preparation, prepared.project.harness.preparation);
     assert.equal(
       (await execFileAsync("git", ["-C", projectPath, "status", "--porcelain=v1"])).stdout,
+      "",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("retained main-era production registrations prepare and replay after restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-retained-production-registration-"));
+
+  try {
+    const fixture = await createFixture(root, "retained-production-registration");
+    const conformanceHarness = await fixture.registry.registerConformanceHarness({
+      requestId: "register-retained-conformance-harness",
+      name: "Sand-King Conformance Harness",
+      authorizationClass: "host_local_harness_registration",
+      idempotencyKey: "register-retained-conformance-harness",
+      expectedRevision: 0,
+    });
+    const conformancePin = await fixture.registry.pinHarness({
+      requestId: "retain-main-era-conformance-pin",
+      projectId: fixture.project.project.projectId,
+      harnessId: conformanceHarness.harness.harnessId,
+      boundedConfiguration: {
+        adapterProtocol: "1.0.0",
+        launchProfile: "delegated-work",
+      },
+      authorizationClass: "host_local_project_configuration",
+      idempotencyKey: "retained-main-era-conformance-pin",
+      expectedRevision: 1,
+    });
+    const pinned = await fixture.pin("retain-main-era-production-pin", 2);
+    const otherProjectPath = join(root, "other-project");
+    await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", otherProjectPath]);
+    await writeFile(join(otherProjectPath, "README.md"), "other tracked content\n");
+    await commitProject(otherProjectPath);
+    const otherProject = await fixture.registry.registerProject({
+      requestId: "register-other-project",
+      path: otherProjectPath,
+      configuration: {
+        issueWorkflow: { provider: "github", kind: "issues" },
+        checks: [{ checkId: "test", command: "npm test" }],
+      },
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "register-other-project",
+      expectedRevision: 0,
+    });
+
+    const projectStatePath = join(fixture.dataDir, "project-registrations.json");
+    const retainedMainState = JSON.parse(await readFile(projectStatePath, "utf8"));
+    retainedMainState.schemaVersion = 1;
+    delete retainedMainState.projects[0].harness.preparation;
+    delete retainedMainState.pinOutcomes[1].response.project.harness.preparation;
+    retainedMainState.pinOutcomes[0].requestFingerprint = retainedMainPinFingerprint({
+      projectId: fixture.project.project.projectId,
+      harnessId: conformanceHarness.harness.harnessId,
+      immutableRevision: conformanceHarness.harness.immutableRevision,
+      boundedConfiguration: {
+        adapterProtocol: "1.0.0",
+        launchProfile: "delegated-work",
+      },
+      authorizationClass: "host_local_project_configuration",
+      expectedRevision: 1,
+    });
+    retainedMainState.pinOutcomes[1].requestFingerprint = retainedMainPinFingerprint({
+      projectId: fixture.project.project.projectId,
+      harnessId: fixture.harness.harness.harnessId,
+      immutableRevision: fixture.harness.harness.immutableRevision,
+      boundedConfiguration: {
+        adapterProtocol: "1.0.0",
+        launchProfile: "delegated-work",
+      },
+      authorizationClass: "host_local_project_configuration",
+      expectedRevision: 2,
+    });
+    await writeFile(projectStatePath, `${JSON.stringify(retainedMainState, null, 2)}\n`);
+    await rm(join(
+      fixture.projectPath,
+      ...pinned.project.harness.preparation.projection.path.split("/"),
+    ), { recursive: true });
+
+    const restarted = await createProjectRegistry({
+      dataDir: fixture.dataDir,
+      recordAudit,
+    });
+    const unaffected = await restarted.inspectProject({
+      requestId: "inspect-unaffected-project",
+      path: otherProjectPath,
+    });
+    assert.equal(unaffected.code, "project_registered");
+    assert.equal(unaffected.project.projectId, otherProject.project.projectId);
+    const migratedInspection = await restarted.inspectProject({
+      requestId: "inspect-retained-production-project",
+      path: fixture.projectPath,
+    });
+    assert.equal(migratedInspection.code, "project_registered");
+    assert.equal(migratedInspection.project.revision, pinned.project.revision);
+    assert.equal(migratedInspection.project.harness.preparation.status, "ready");
+
+    const replayed = await restarted.pinHarness({
+      requestId: "replay-retained-main-era-pin",
+      projectId: fixture.project.project.projectId,
+      harnessId: fixture.harness.harness.harnessId,
+      boundedConfiguration: {
+        adapterProtocol: "1.0.0",
+        launchProfile: "delegated-work",
+      },
+      authorizationClass: "host_local_project_configuration",
+      idempotencyKey: "retained-production-registration-preparation",
+      expectedRevision: 2,
+    });
+    assert.equal(replayed.type, "project.harness.pin.result");
+    assert.equal(replayed.idempotentReplay, true);
+    assert.equal(replayed.auditId, pinned.auditId);
+    assert.equal(replayed.revision, pinned.revision);
+    assert.equal(replayed.project.harness.preparation.status, "ready");
+    assert.equal(
+      replayed.project.harness.preparation.harness.pinnedRevision,
+      fixture.harness.harness.immutableRevision,
+    );
+    const replayedConformancePin = await restarted.pinHarness({
+      requestId: "replay-retained-main-era-conformance-pin",
+      projectId: fixture.project.project.projectId,
+      harnessId: conformanceHarness.harness.harnessId,
+      boundedConfiguration: {
+        adapterProtocol: "1.0.0",
+        launchProfile: "delegated-work",
+      },
+      authorizationClass: "host_local_project_configuration",
+      idempotencyKey: "retained-main-era-conformance-pin",
+      expectedRevision: 1,
+    });
+    assert.equal(replayedConformancePin.type, "project.harness.pin.result");
+    assert.equal(replayedConformancePin.idempotentReplay, true);
+    assert.equal(replayedConformancePin.auditId, conformancePin.auditId);
+    assert.equal(
+      replayedConformancePin.project.harness.adapterId,
+      "conformance-harness-adapter-v1",
+    );
+
+    const launchContext = await restarted.loadLaunchContext(
+      fixture.project.project.projectId,
+    );
+    assert.deepEqual(
+      launchContext.project.harness.preparation,
+      replayed.project.harness.preparation,
+    );
+    assert.equal(
+      launchContext.productionHarnessProjectionPath,
+      join(
+        fixture.projectPath,
+        ...replayed.project.harness.preparation.projection.path.split("/"),
+      ),
+    );
+    const migratedState = JSON.parse(await readFile(projectStatePath, "utf8"));
+    assert.equal(migratedState.schemaVersion, 2);
+    assert.deepEqual(
+      migratedState.projects[0].harness.preparation,
+      replayed.project.harness.preparation,
+    );
+    assert.equal(
+      migratedState.pinOutcomes[1].requestFingerprint,
+      retainedMainPinFingerprint({
+        projectId: fixture.project.project.projectId,
+        harnessId: fixture.harness.harness.harnessId,
+        immutableRevision: fixture.harness.harness.immutableRevision,
+        boundedConfiguration: {
+          adapterProtocol: "1.0.0",
+          launchProfile: "delegated-work",
+        },
+        authorizationClass: "host_local_project_configuration",
+        expectedRevision: 2,
+      }),
+    );
+    assert.equal(
+      migratedState.pinOutcomes[0].requestFingerprint,
+      retainedMainPinFingerprint({
+        projectId: fixture.project.project.projectId,
+        harnessId: conformanceHarness.harness.harnessId,
+        immutableRevision: conformanceHarness.harness.immutableRevision,
+        boundedConfiguration: {
+          adapterProtocol: "1.0.0",
+          launchProfile: "delegated-work",
+        },
+        authorizationClass: "host_local_project_configuration",
+        expectedRevision: 1,
+      }),
+    );
+    assert.equal(
+      (await execFileAsync("git", ["-C", fixture.projectPath, "status", "--porcelain=v1"])).stdout,
       "",
     );
   } finally {

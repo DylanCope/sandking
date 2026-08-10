@@ -92,8 +92,20 @@ const projectHarnessLinkSchema = z.discriminatedUnion("adapterId", [
     preparation: productionHarnessPreparationSchema,
   }).strict(),
 ]);
+const retainedProjectHarnessLinkSchema = z.discriminatedUnion("adapterId", [
+  z.object({
+    ...projectHarnessLinkBaseShape,
+    adapterId: z.literal(CONFORMANCE_HARNESS_ADAPTER_ID),
+  }).strict(),
+  z.object({
+    ...projectHarnessLinkBaseShape,
+    adapterId: z.literal(SANDCASTLE_HARNESS_ADAPTER_ID),
+    // Schema-v1 production links predate retained preparation metadata.
+    preparation: productionHarnessPreparationSchema.optional(),
+  }).strict(),
+]);
 
-export const projectRegistrationSchema = z.object({
+const projectRegistrationBaseShape = {
   projectId: projectIdSchema,
   revision: z.number().int().positive(),
   displayName: z.string().min(1).max(255),
@@ -104,11 +116,14 @@ export const projectRegistrationSchema = z.object({
     detected: z.boolean(),
   }).strict(),
   configuration: projectConfigurationSchema,
-  harness: projectHarnessLinkSchema.nullable(),
   readiness: projectReadinessSchema,
-}).strict().superRefine((project, context) => {
+};
+
+/** @param {any} project @param {z.RefinementCtx} context */
+const preparationMatchesProjectPin = (project, context) => {
   if (
     project.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+    && project.harness.preparation
     && (
       project.harness.preparation.harness.harnessId !== project.harness.harnessId
       || project.harness.preparation.harness.adapterId !== project.harness.adapterId
@@ -121,7 +136,16 @@ export const projectRegistrationSchema = z.object({
       path: ["harness", "preparation"],
     });
   }
-});
+};
+
+export const projectRegistrationSchema = z.object({
+  ...projectRegistrationBaseShape,
+  harness: projectHarnessLinkSchema.nullable(),
+}).strict().superRefine(preparationMatchesProjectPin);
+const retainedProjectRegistrationSchema = z.object({
+  ...projectRegistrationBaseShape,
+  harness: retainedProjectHarnessLinkSchema.nullable(),
+}).strict().superRefine(preparationMatchesProjectPin);
 
 const harnessRegistrationBaseShape = {
   harnessId: harnessIdSchema,
@@ -166,7 +190,7 @@ export const projectHarnessAdapterIdentityAgrees = (projectHarness, harness) =>
   projectHarness.harnessId === harness.harnessId
   && projectHarness.adapterId === harness.adapterId;
 
-const storedProjectSchema = projectRegistrationSchema.extend({
+const storedProjectSchema = retainedProjectRegistrationSchema.extend({
   filesystemIdentityDigest: digestSchema,
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -185,11 +209,14 @@ const outcomeSchema = z.object({
   response: z.object({}).passthrough(),
 }).strict();
 const projectStateSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   projects: z.array(storedProjectSchema).max(256),
   registrationOutcomes: z.array(outcomeSchema).max(256),
   pinOutcomes: z.array(outcomeSchema).max(256),
 }).strict();
+const legacyProjectStateSchema = projectStateSchema.extend({
+  schemaVersion: z.literal(1),
+});
 const harnessStateSchema = z.object({
   schemaVersion: z.literal(1),
   harnesses: z.array(storedHarnessSchema).max(32),
@@ -256,7 +283,7 @@ export const projectPreparationProjectionSchema = z.object({
 }).strict();
 
 const initialProjectState = () => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   projects: [],
   registrationOutcomes: [],
   pinOutcomes: [],
@@ -307,6 +334,19 @@ const fingerprint = (value) => sha256(canonicalJson(value));
 /** @param {string} key */
 const idempotencyHash = (key) => sha256(key);
 
+/**
+ * @param {{projectId: unknown, harnessId: unknown, boundedConfiguration: unknown, authorizationClass: unknown, expectedRevision: unknown}} request
+ * @param {unknown} immutableRevision
+ */
+const pinRequestFingerprint = (request, immutableRevision) => fingerprint({
+  projectId: request.projectId,
+  harnessId: request.harnessId,
+  immutableRevision,
+  boundedConfiguration: request.boundedConfiguration,
+  authorizationClass: request.authorizationClass,
+  expectedRevision: request.expectedRevision,
+});
+
 /** @param {string} dataDir */
 const projectStatePath = (dataDir) => join(dataDir, "project-registrations.json");
 /** @param {string} dataDir */
@@ -319,13 +359,12 @@ const harnessWorkspaceRoot = (dataDir) => {
 
 /** @param {string} dataDir */
 const readProjectState = async (dataDir) => {
-  const parsed = projectStateSchema.safeParse(
-    await readJson(projectStatePath(dataDir), initialProjectState()),
-  );
+  const retained = await readJson(projectStatePath(dataDir), initialProjectState());
+  const parsed = z.union([projectStateSchema, legacyProjectStateSchema]).safeParse(retained);
   if (!parsed.success) {
     throw new Error("project_registration_state_invalid");
   }
-  return parsed.data;
+  return projectStateSchema.parse({ ...parsed.data, schemaVersion: 2 });
 };
 /** @param {string} dataDir */
 const readHarnessState = async (dataDir) => {
@@ -336,6 +375,42 @@ const readHarnessState = async (dataDir) => {
     throw new Error("harness_registry_state_invalid");
   }
   return parsed.data;
+};
+
+/**
+ * Add schema-v2 preparation metadata only to retained success envelopes for
+ * the same production pin. Historical registration and pin responses keep
+ * their accepted Project snapshots and request fingerprints.
+ * @param {z.infer<typeof projectStateSchema>} state
+ * @param {z.infer<typeof storedProjectSchema>} project
+ */
+const refreshRetainedProjectReferences = (state, project) => {
+  if (
+    project.harness?.adapterId !== SANDCASTLE_HARNESS_ADAPTER_ID
+    || !project.harness.preparation
+  ) {
+    return;
+  }
+  for (const outcome of [...state.registrationOutcomes, ...state.pinOutcomes]) {
+    const response = /** @type {any} */ (outcome.response);
+    const retainedProject = response.project;
+    const retainedHarness = retainedProject?.harness;
+    if (
+      retainedProject
+      && typeof retainedProject === "object"
+      && retainedProject.projectId === project.projectId
+      && retainedHarness
+      && typeof retainedHarness === "object"
+      && retainedHarness.harnessId === project.harness.harnessId
+      && retainedHarness.adapterId === project.harness.adapterId
+      && retainedHarness.pinnedRevision === project.harness.pinnedRevision
+    ) {
+      retainedProject.harness = {
+        ...retainedHarness,
+        preparation: structuredClone(project.harness.preparation),
+      };
+    }
+  }
 };
 
 const readinessWithoutHarness = () => projectReadinessSchema.parse({
@@ -922,8 +997,54 @@ export const createProjectRegistry = async (options) => {
     return current;
   };
 
+  /** @param {unknown} error */
+  const preparationFailureCode = (error) => {
+    if (error instanceof ProductionHarnessPreparationError) return error.code;
+    if (error instanceof Error && error.message in failureGuidance) return error.message;
+    return "harness_projection_failed";
+  };
+
+  /**
+   * Lazily upgrade only the selected schema-v1 production Project. A broken
+   * retained registration therefore cannot make unrelated registrations
+   * unavailable, while every public success still carries verified readiness.
+   * @param {z.infer<typeof projectStateSchema>} projectState
+   * @param {z.infer<typeof harnessStateSchema>} harnessState
+   * @param {z.infer<typeof storedProjectSchema>} project
+   */
+  const prepareRetainedProductionProject = async (projectState, harnessState, project) => {
+    if (
+      project.harness?.adapterId !== SANDCASTLE_HARNESS_ADAPTER_ID
+      || project.harness.preparation
+    ) {
+      return project;
+    }
+    const harness = harnessState.harnesses.find((candidate) =>
+      candidate.harnessId === project.harness?.harnessId);
+    if (!harness) throw new Error("harness_not_found");
+    if (
+      harness.adapterId !== SANDCASTLE_HARNESS_ADAPTER_ID
+      || harness.immutableRevision !== project.harness.pinnedRevision
+    ) {
+      throw new Error("harness_pin_invalid");
+    }
+    const preparation = await prepareProductionHarness({
+      projectPath: project.canonicalPath,
+      harnessId: harness.harnessId,
+      workspacePath: harness.workspacePath,
+      pinnedRevision: harness.immutableRevision,
+    });
+    project.harness = {
+      ...project.harness,
+      preparation: productionHarnessPreparationSchema.parse(preparation),
+    };
+    refreshRetainedProjectReferences(projectState, project);
+    await writePrivateJson(projectStatePath(options.dataDir), projectState);
+    return project;
+  };
+
   /** @param {{requestId: string, path: string}} request */
-  const inspectProject = async (request) => {
+  const inspectProject = (request) => withMutationLock(async () => {
     const state = await readProjectState(options.dataDir);
     const location = await resolveProjectLocation(state, request.path, options.dataDir);
     if (location.kind === "failure") {
@@ -941,6 +1062,39 @@ export const createProjectRegistry = async (options) => {
         auditId,
       });
     }
+    if (
+      location.kind === "registered"
+      && location.project?.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+      && !location.project.harness.preparation
+    ) {
+      try {
+        await prepareRetainedProductionProject(
+          state,
+          await readHarnessState(options.dataDir),
+          location.project,
+        );
+      } catch (error) {
+        const code = preparationFailureCode(error);
+        const auditId = await options.recordAudit("project.inspect", "rejected", {
+          code,
+          actualRevision: location.actualRevision,
+          projectId: location.project.projectId,
+          harnessId: location.project.harness.harnessId,
+          directoryScanPerformed: false,
+          projectFileWrite: false,
+          pinWrite: false,
+          harnessRunCreated: false,
+          adapterStarted: false,
+        });
+        return operationFailure({
+          requestId: request.requestId,
+          operation: "project.inspect",
+          code: /** @type {keyof typeof failureGuidance} */ (code),
+          actualRevision: location.actualRevision,
+          auditId,
+        });
+      }
+    }
     return {
       type: "project.inspect.result",
       requestId: request.requestId,
@@ -950,7 +1104,7 @@ export const createProjectRegistry = async (options) => {
         ? publicProject(location.project)
         : null,
     };
-  };
+  });
 
   /** @param {{requestId: string, path: string, configuration: unknown, authorizationClass: string, idempotencyKey: string, expectedRevision: number}} request */
   const registerProject = (request) => withMutationLock(async () => {
@@ -967,6 +1121,34 @@ export const createProjectRegistry = async (options) => {
       authorizationClass: request.authorizationClass,
       expectedRevision: request.expectedRevision,
     });
+    /** @param {unknown} error @param {z.infer<typeof storedProjectSchema>} project */
+    const rejectPreparation = async (error, project) => {
+      const code = preparationFailureCode(error);
+      const auditId = await options.recordAudit(action, "rejected", {
+        code,
+        authorizationClass,
+        idempotencyKeyHash: keyHash,
+        expectedRevision: request.expectedRevision,
+        actualRevision: project.revision,
+        projectId: project.projectId,
+        harnessId: project.harness?.harnessId ?? null,
+        directoryScanPerformed: false,
+        projectFileWrite: false,
+        pinWrite: false,
+        harnessRunCreated: false,
+        adapterStarted: false,
+      });
+      return operationFailure({
+        requestId: request.requestId,
+        operation: action,
+        code: /** @type {keyof typeof failureGuidance} */ (code),
+        authorizationClass,
+        idempotencyKeyHash: keyHash,
+        expectedRevision: request.expectedRevision,
+        actualRevision: project.revision,
+        auditId,
+      });
+    };
     const existing = keyHash
       ? state.registrationOutcomes.find((outcome) => outcome.idempotencyKeyHash === keyHash)
       : null;
@@ -994,6 +1176,23 @@ export const createProjectRegistry = async (options) => {
           auditId,
           retryable: false,
         });
+      }
+      const existingResponse = /** @type {any} */ (existing.response);
+      const retainedProjectId = existingResponse.project?.projectId;
+      const retainedProject = typeof retainedProjectId === "string"
+        ? state.projects.find((project) => project.projectId === retainedProjectId)
+        : null;
+      if (retainedProject?.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID) {
+        try {
+          await prepareRetainedProductionProject(
+            state,
+            await readHarnessState(options.dataDir),
+            retainedProject,
+          );
+        } catch (error) {
+          return rejectPreparation(error, retainedProject);
+        }
+        await writePrivateJson(projectStatePath(options.dataDir), state);
       }
       await options.recordAudit(action, "observed", {
         authorizationClass,
@@ -1116,6 +1315,17 @@ export const createProjectRegistry = async (options) => {
           auditId,
           retryable: false,
         });
+      }
+      if (location.project.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID) {
+        try {
+          await prepareRetainedProductionProject(
+            state,
+            await readHarnessState(options.dataDir),
+            location.project,
+          );
+        } catch (error) {
+          return rejectPreparation(error, location.project);
+        }
       }
       const auditId = await options.recordAudit(action, "observed", {
         authorizationClass,
@@ -1513,16 +1723,49 @@ export const createProjectRegistry = async (options) => {
       && request.idempotencyKey.length > 0
       && request.idempotencyKey.length <= 256;
     const keyHash = keyValid ? idempotencyHash(request.idempotencyKey) : null;
-    const requestFingerprint = fingerprint({
-      projectId: request.projectId,
-      harnessId: request.harnessId,
-      boundedConfiguration: request.boundedConfiguration,
-      authorizationClass: request.authorizationClass,
-      expectedRevision: request.expectedRevision,
-    });
     const existing = keyHash
       ? projectState.pinOutcomes.find((outcome) => outcome.idempotencyKeyHash === keyHash)
       : null;
+    const existingResponse = existing
+      ? /** @type {any} */ (existing.response)
+      : null;
+    const retainedImmutableRevision = commitSchema.safeParse(
+      existingResponse?.harness?.immutableRevision,
+    ).success
+      ? existingResponse.harness.immutableRevision
+      : project?.harness?.pinnedRevision;
+    const requestFingerprint = pinRequestFingerprint(
+      request,
+      retainedImmutableRevision ?? harness?.immutableRevision,
+    );
+    /** @param {unknown} error */
+    const rejectPreparation = async (error) => {
+      const code = preparationFailureCode(error);
+      const auditId = await options.recordAudit(action, "rejected", {
+        code,
+        authorizationClass,
+        idempotencyKeyHash: keyHash,
+        expectedRevision: request.expectedRevision,
+        actualRevision,
+        projectId: project?.projectId ?? null,
+        harnessId: harness?.harnessId ?? null,
+        immutableRevision: harness?.immutableRevision ?? null,
+        projectFileWrite: false,
+        pinWrite: false,
+        harnessRunCreated: false,
+        adapterStarted: false,
+      });
+      return operationFailure({
+        requestId: request.requestId,
+        operation: action,
+        code: /** @type {keyof typeof failureGuidance} */ (code),
+        authorizationClass,
+        idempotencyKeyHash: keyHash,
+        expectedRevision: request.expectedRevision,
+        actualRevision,
+        auditId,
+      });
+    };
     if (existing) {
       if (existing.requestFingerprint !== requestFingerprint) {
         const auditId = await options.recordAudit(action, "rejected", {
@@ -1546,6 +1789,18 @@ export const createProjectRegistry = async (options) => {
           retryable: false,
         });
       }
+      if (
+        project?.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+        && !project.harness.preparation
+      ) {
+        try {
+          await prepareRetainedProductionProject(projectState, harnessState, project);
+        } catch (error) {
+          return rejectPreparation(error);
+        }
+      }
+      existing.requestFingerprint = requestFingerprint;
+      await writePrivateJson(projectStatePath(options.dataDir), projectState);
       await options.recordAudit(action, "observed", {
         authorizationClass,
         idempotencyKeyHash: keyHash,
@@ -1636,6 +1891,7 @@ export const createProjectRegistry = async (options) => {
     let productionPreparation = null;
     if (harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID) {
       try {
+        await prepareRetainedProductionProject(projectState, harnessState, project);
         productionPreparation = await prepareProductionHarness({
           projectPath: project.canonicalPath,
           harnessId: harness.harnessId,
@@ -1643,33 +1899,7 @@ export const createProjectRegistry = async (options) => {
           pinnedRevision: harness.immutableRevision,
         });
       } catch (error) {
-        const preparationError = error instanceof ProductionHarnessPreparationError
-          ? error
-          : new ProductionHarnessPreparationError("harness_projection_failed");
-        const auditId = await options.recordAudit(action, "rejected", {
-          code: preparationError.code,
-          authorizationClass,
-          idempotencyKeyHash: keyHash,
-          expectedRevision: request.expectedRevision,
-          actualRevision,
-          projectId: project.projectId,
-          harnessId: harness.harnessId,
-          immutableRevision: harness.immutableRevision,
-          projectFileWrite: false,
-          pinWrite: false,
-          harnessRunCreated: false,
-          adapterStarted: false,
-        });
-        return operationFailure({
-          requestId: request.requestId,
-          operation: action,
-          code: /** @type {keyof typeof failureGuidance} */ (preparationError.code),
-          authorizationClass,
-          idempotencyKeyHash: keyHash,
-          expectedRevision: request.expectedRevision,
-          actualRevision,
-          auditId,
-        });
+        return rejectPreparation(error);
       }
     } else {
       const observedHead = await execFileAsync(
@@ -1781,7 +2011,7 @@ export const createProjectRegistry = async (options) => {
   });
 
   /** @param {string} projectId */
-  const loadLaunchContext = async (projectId) => {
+  const loadLaunchContext = (projectId) => withMutationLock(async () => {
     const projectState = await readProjectState(options.dataDir);
     const harnessState = await readHarnessState(options.dataDir);
     const project = projectState.projects.find((candidate) =>
@@ -1815,6 +2045,7 @@ export const createProjectRegistry = async (options) => {
     if (harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID) {
       let preparation;
       try {
+        await prepareRetainedProductionProject(projectState, harnessState, project);
         preparation = await prepareProductionHarness({
           projectPath: project.canonicalPath,
           harnessId: harness.harnessId,
@@ -1844,7 +2075,7 @@ export const createProjectRegistry = async (options) => {
       harnessWorkspacePath: harness.workspacePath,
       productionHarnessProjectionPath,
     };
-  };
+  });
 
   return {
     inspectProject,
