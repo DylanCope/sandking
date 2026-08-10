@@ -92,6 +92,7 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
     )).stdout;
     assert.match(commitMessage,
       /Sand-King-Seed: https:\/\/github\.com\/DylanCope\/sandking\.git@[a-f0-9]{40}/);
+    assert.match(commitMessage, /Sand-King-Seed-Source: sha256:[a-f0-9]{64}/);
     assert.match(commitMessage,
       /Upstream-Sandcastle: https:\/\/github\.com\/mattpocock\/sandcastle\.git@e99f832/);
     assert.match(commitMessage, /Sandcastle-Package: @ai-hero\/sandcastle@0\.12\.0/);
@@ -111,9 +112,12 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
       join(workspacePath, "seed-manifest.json"),
       "utf8",
     ));
-    for (const file of seedManifest.files.filter(({ source }) =>
-      source === "sandking-package")) {
-      const sourcePath = file.sourcePath ?? file.path;
+    for (const file of seedManifest.files.filter(({ path }) =>
+      path !== "provenance.json" && path !== "skills.lock.json")) {
+      const materializationPath = file.sourcePath ?? file.path;
+      const sourcePath = file.source === "seed"
+        ? `src/bundled-production-harness/${materializationPath}`
+        : materializationPath;
       const sourceAtRevision = (await execFileAsync("git", [
         "show", `${provenance.sandKing.revision}:${sourcePath}`,
       ])).stdout;
@@ -123,12 +127,35 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
         `${file.path} must originate at the recorded Sand-King revision`,
       );
     }
+    const seedSourceInventory = seedManifest.files
+      .filter(({ source }) => source === "sandking-package")
+      .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
+      .map((file) => JSON.stringify({
+        path: file.path,
+        source: file.source,
+        sourcePath: file.sourcePath ?? file.path,
+        integrity: file.integrity,
+        executable: file.executable,
+      }))
+      .join("\n") + "\n";
+    assert.equal(
+      provenance.sandKing.seedSourceIntegrity,
+      `sha256:${createHash("sha256").update(seedSourceInventory).digest("hex")}`,
+    );
     assert.deepEqual(provenance.sandcastle, {
       repository: "https://github.com/mattpocock/sandcastle.git",
       revision: "e99f832f26dc9d245c019a9ddd19fa5dee792427",
       package: "@ai-hero/sandcastle",
       version: "0.12.0",
     });
+    assert.equal(
+      provenance.artifacts.dependencyLock.integrity,
+      seedManifest.files.find(({ path }) => path === "package-lock.json").integrity,
+    );
+    assert.equal(
+      provenance.artifacts.skillSetLock.integrity,
+      seedManifest.files.find(({ path }) => path === "skills.lock.json").integrity,
+    );
     const orchestrationSource = await readFile(
       join(workspacePath, ".sandcastle", "main.mts"),
       "utf8",
@@ -246,6 +273,19 @@ test("invalid production seed inputs fail truthfully without retaining a ready H
         ),
       },
       {
+        name: "undeclared-runtime-import",
+        code: "harness_seed_missing",
+        mutate: async (sourceRoot) => {
+          const mainPath = join(sourceRoot, ".sandcastle/main.mts");
+          const main = await readFile(mainPath, "utf8");
+          await rewriteLockedSeedFile(
+            sourceRoot,
+            ".sandcastle/main.mts",
+            `${main}\nimport "./uncommitted-runtime-module.mjs";\n`,
+          );
+        },
+      },
+      {
         name: "invalid-adapter",
         code: "harness_seed_missing",
         mutate: (sourceRoot) => rewriteLockedSeedFile(
@@ -302,6 +342,28 @@ test("invalid production seed inputs fail truthfully without retaining a ready H
         ),
       },
       {
+        name: "self-consistent-but-incomplete-dependency-graph",
+        code: "harness_dependency_lock_invalid",
+        mutate: (sourceRoot) => rewriteLockedSeedJson(
+          sourceRoot,
+          "package-lock.json",
+          (value) => {
+            delete value.packages["node_modules/@ai-hero/sandcastle"]
+              .dependencies["@clack/prompts"];
+            for (const path of [
+              "node_modules/@clack/core",
+              "node_modules/@clack/prompts",
+              "node_modules/fast-string-truncated-width",
+              "node_modules/fast-string-width",
+              "node_modules/fast-wrap-ansi",
+              "node_modules/sisteransi",
+            ]) {
+              delete value.packages[path];
+            }
+          },
+        ),
+      },
+      {
         name: "invalid-skill-lock",
         code: "harness_skill_lock_invalid",
         mutate: (sourceRoot) => rewriteLockedSeedJson(
@@ -327,6 +389,37 @@ test("invalid production seed inputs fail truthfully without retaining a ready H
             }
           },
         ),
+      },
+      {
+        name: "non-literal-worker-visible-skill",
+        code: "harness_skill_lock_invalid",
+        mutate: async (sourceRoot) => {
+          const mainPath = join(sourceRoot, ".sandcastle/main.mts");
+          const main = await readFile(mainPath, "utf8");
+          const altered = main.replace(
+            'promptFile: "./.sandcastle/pr-review-prompt.md",',
+            'promptFile: ["./.sandcastle", "CODING_STANDARDS.md"].join("/"),',
+          );
+          assert.notEqual(altered, main);
+          await rewriteLockedSeedFile(
+            sourceRoot,
+            ".sandcastle/main.mts",
+            `${altered}\nvoid { promptFile: "./.sandcastle/pr-review-prompt.md" };\n`,
+          );
+        },
+      },
+      {
+        name: "source-bytes-do-not-match-provenance",
+        code: "harness_seed_provenance_invalid",
+        mutate: async (sourceRoot) => {
+          const dockerfilePath = join(sourceRoot, ".sandcastle/Dockerfile");
+          const dockerfile = await readFile(dockerfilePath, "utf8");
+          await rewriteLockedSeedFile(
+            sourceRoot,
+            ".sandcastle/Dockerfile",
+            `${dockerfile}\n# bytes absent from the recorded Sand-King revision\n`,
+          );
+        },
       },
     ];
 
@@ -403,6 +496,11 @@ test("transitive bundles and plugin-provided skills resolve into one locked inve
         { kind: "bundle", identity: "sandking.transitive-worker-skills" },
         { kind: "plugin", identity: "sandking.delivery-plugin" },
       );
+    });
+    const composedSkillLock = await readFile(join(composedSeed, "skills.lock.json"));
+    await rewriteLockedSeedJson(composedSeed, "provenance.json", (provenance) => {
+      provenance.artifacts.skillSetLock.integrity =
+        `sha256:${createHash("sha256").update(composedSkillLock).digest("hex")}`;
     });
     const registry = await createProjectRegistry({
       dataDir,

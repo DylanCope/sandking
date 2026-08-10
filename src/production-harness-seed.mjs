@@ -6,7 +6,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { z } from "zod";
@@ -31,6 +31,8 @@ const sourceUrlSchema = z.url().refine((value) => {
 
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
 const SAND_KING_SEED_REVISION = "0a602896e4063dce7b390b3a514e34cfe36b46c1";
+const SAND_KING_SEED_SOURCE_INTEGRITY =
+  "sha256:2f938e35f7b8093a444e683e949faf40ff722c581b681aed9c67d49b5625da8a";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -38,6 +40,8 @@ const SANDCASTLE_RESOLVED =
   "https://registry.npmjs.org/@ai-hero/sandcastle/-/sandcastle-0.12.0.tgz";
 const SANDCASTLE_INTEGRITY =
   "sha512-kdQ414rM8t1QiWeqZ3Klz4KSd0PqQG4bRVuqGpRDUomWhojSZkEAc1tbcEcThVmBEaHkCt8LmYR49vqEPNIoYQ==";
+const SANDCASTLE_DEPENDENCY_LOCK_INTEGRITY =
+  "sha256:f23f864604dd2901d314afdb5ee819c2ca91fccd3c16807a8c5441d818e5b4c1";
 const CODEX_VERSION = "0.146.0";
 const CODEX_RESOLVED =
   "https://registry.npmjs.org/@openai/codex/-/codex-0.146.0.tgz";
@@ -67,12 +71,23 @@ export const productionHarnessProvenanceSchema = z.object({
   sandKing: z.object({
     repository: z.literal(SAND_KING_REPOSITORY),
     revision: z.literal(SAND_KING_SEED_REVISION),
+    seedSourceIntegrity: z.literal(SAND_KING_SEED_SOURCE_INTEGRITY),
   }).strict(),
   sandcastle: z.object({
     repository: z.literal(SANDCASTLE_REPOSITORY),
     revision: z.literal(SANDCASTLE_REVISION),
     package: z.literal("@ai-hero/sandcastle"),
     version: z.literal(SANDCASTLE_VERSION),
+  }).strict(),
+  artifacts: z.object({
+    dependencyLock: z.object({
+      path: z.literal("package-lock.json"),
+      integrity: z.literal(SANDCASTLE_DEPENDENCY_LOCK_INTEGRITY),
+    }).strict(),
+    skillSetLock: z.object({
+      path: z.literal("skills.lock.json"),
+      integrity: integritySchema,
+    }).strict(),
   }).strict(),
 }).strict();
 
@@ -180,6 +195,36 @@ const PRODUCTION_WORKER_SKILL_BUNDLE = "sandking.production-worker-skills";
 /** @param {Buffer | string} value */
 const sha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 
+/**
+ * @param {{path: string}} left
+ * @param {{path: string}} right
+ */
+const compareSeedPaths = (left, right) => left.path < right.path
+  ? -1
+  : left.path > right.path
+    ? 1
+    : 0;
+
+/**
+ * Bind the immutable seed implementation to the recorded Sand-King revision.
+ * The package-sourced orchestration files are the revision-derived bytes. Seed
+ * artifacts have their own structural, adapter-probe, and lock validations.
+ * @param {z.infer<typeof seedManifestSchema>} manifest
+ */
+const seedSourceIntegrity = (manifest) => sha256(
+  [...manifest.files]
+    .filter(({ source }) => source === "sandking-package")
+    .sort(compareSeedPaths)
+    .map((file) => JSON.stringify({
+      path: file.path,
+      source: file.source,
+      sourcePath: file.sourcePath ?? file.path,
+      integrity: file.integrity,
+      executable: file.executable,
+    }))
+    .join("\n") + "\n",
+);
+
 export class ProductionHarnessSeedError extends Error {
   /** @param {"harness_seed_missing" | "harness_seed_provenance_invalid" | "harness_dependency_lock_invalid" | "harness_skill_lock_invalid"} code */
   constructor(code) {
@@ -211,17 +256,46 @@ const parseJson = (path, code) => {
 };
 
 /** @param {Map<string, Buffer>} files */
+const validateRuntimeModuleClosure = (files) => {
+  const moduleSpecifierPatterns = [
+    /\b(?:import|export)\s+(?:[^;"']*?\s+from\s+)?(["'])([^"']+)\1/g,
+    /\bimport\s*\(\s*(["'])([^"']+)\1\s*\)/g,
+  ];
+  for (const [path, source] of files) {
+    if (!/\.[cm]?[jt]s$/.test(path)) continue;
+    const text = source.toString("utf8");
+    for (const pattern of moduleSpecifierPatterns) {
+      for (const match of text.matchAll(pattern)) {
+        const specifier = match[2];
+        if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
+        const resolved = posix.normalize(posix.join(posix.dirname(path), specifier));
+        if (!relativeFileSchema.safeParse(resolved).success || !files.has(resolved)) {
+          throw new ProductionHarnessSeedError("harness_seed_missing");
+        }
+      }
+    }
+  }
+};
+
+/** @param {Map<string, Buffer>} files */
 const findWorkerVisibleSkillPaths = (files) => {
   const paths = new Set();
   for (const [path, source] of files) {
     if (!/^\.sandcastle\/.*\.m[jt]s$/.test(path)) continue;
-    for (const match of source.toString("utf8").matchAll(
-      /\bpromptFile\s*:\s*["']\.\/([^"']+)["']/g,
-    )) {
-      if (!relativeFileSchema.safeParse(match[1]).success) {
+    const text = source.toString("utf8");
+    const promptFileProperties = [...text.matchAll(/\bpromptFile\s*:/g)];
+    const staticPromptFiles = [...text.matchAll(
+      /\bpromptFile\s*:\s*(["'])(\.\/[^"']+)\1/g,
+    )];
+    if (promptFileProperties.length !== staticPromptFiles.length) {
+      throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
+    }
+    for (const match of staticPromptFiles) {
+      const promptPath = posix.normalize(match[2].slice(2));
+      if (!relativeFileSchema.safeParse(promptPath).success) {
         throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
       }
-      paths.add(match[1]);
+      paths.add(promptPath);
     }
   }
   return paths;
@@ -468,6 +542,7 @@ export const loadProductionHarnessSeed = async (options = {}) => {
     }
     files.set(file.path, source);
   }
+  validateRuntimeModuleClosure(files);
 
   let compatibility;
   try {
@@ -515,6 +590,10 @@ export const loadProductionHarnessSeed = async (options = {}) => {
     throw new ProductionHarnessSeedError("harness_dependency_lock_invalid");
   }
   validateDependencyLock(dependencyLock, expectedDependencies);
+  if (sha256(files.get("package-lock.json"))
+    !== provenance.artifacts.dependencyLock.integrity) {
+    throw new ProductionHarnessSeedError("harness_dependency_lock_invalid");
+  }
 
   let skillLock;
   try {
@@ -525,6 +604,13 @@ export const loadProductionHarnessSeed = async (options = {}) => {
     throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
   }
   validateSkillInventory(files, skillLock, provenance);
+  if (sha256(files.get("skills.lock.json"))
+    !== provenance.artifacts.skillSetLock.integrity) {
+    throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
+  }
+  if (seedSourceIntegrity(manifest) !== provenance.sandKing.seedSourceIntegrity) {
+    throw new ProductionHarnessSeedError("harness_seed_provenance_invalid");
+  }
 
   return {
     manifest,
@@ -586,6 +672,7 @@ export const initializeProductionHarnessWorkspace = async (workspacePath, option
     "-m", "Initialize Sand-King Sandcastle Harness",
     "-m", [
       `Sand-King-Seed: ${seed.provenance.sandKing.repository}@${seed.provenance.sandKing.revision}`,
+      `Sand-King-Seed-Source: ${seed.provenance.sandKing.seedSourceIntegrity}`,
       `Upstream-Sandcastle: ${seed.provenance.sandcastle.repository}@${seed.provenance.sandcastle.revision}`,
       `Sandcastle-Package: ${seed.provenance.sandcastle.package}@${seed.provenance.sandcastle.version}`,
       `Dependency-Lock: ${dependencyLockIntegrity}`,
