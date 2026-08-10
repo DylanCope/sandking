@@ -44,7 +44,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.recovery.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-reproducible-production-harness-seed")
+  .update("sandking-host-control-schema-v1-with-pinned-production-harness-preparation")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -308,7 +308,6 @@ const projectHarnessPinSchema = z.object({
   requestId: identifierSchema,
   projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
   harnessId: z.string().regex(/^harness-[a-f0-9]{24}$/),
-  immutableRevision: z.string().max(64),
   boundedConfiguration: z.unknown(),
   authorizationClass: z.literal("host_local_project_configuration"),
   idempotencyKey: z.string().max(256),
@@ -365,6 +364,14 @@ const projectOperationFailureSchema = z.object({
     "harness_pin_missing",
     "harness_pin_invalid",
     "harness_workspace_invalid",
+    "harness_pin_unreadable",
+    "harness_adapter_bytes_mismatch",
+    "harness_compatibility_unsupported",
+    "harness_skill_lock_missing",
+    "harness_locked_skill_unavailable",
+    "harness_skill_integrity_mismatch",
+    "harness_projection_collision",
+    "harness_projection_failed",
     "harness_seed_missing",
     "harness_seed_provenance_invalid",
     "harness_dependency_lock_invalid",
@@ -431,6 +438,15 @@ export const harnessRunLaunchFailureSchema = z.object({
     "harness_pin_missing",
     "harness_pin_invalid",
     "harness_workspace_invalid",
+    "harness_pin_unreadable",
+    "harness_adapter_bytes_mismatch",
+    "harness_compatibility_unsupported",
+    "harness_skill_lock_missing",
+    "harness_skill_lock_invalid",
+    "harness_locked_skill_unavailable",
+    "harness_skill_integrity_mismatch",
+    "harness_projection_collision",
+    "harness_projection_failed",
     "harness_capability_unsupported",
     "harness_adapter_protocol_invalid",
     "harness_preparation_side_effect_detected",

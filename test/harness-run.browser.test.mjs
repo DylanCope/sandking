@@ -453,7 +453,7 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
   }
 });
 
-test("Cockpit projects and launches a bundled Sandcastle identity with no parameters", async () => {
+test("Cockpit rejects a relabelled Sandcastle identity before readiness", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-empty-harness-form-browser-"));
   const dataDir = join(root, "host-state");
   const executionDirectory = join(root, "outside-checkout");
@@ -552,55 +552,28 @@ test("Cockpit projects and launches a bundled Sandcastle identity with no parame
       timeout: 90_000,
     });
     await page.locator("#project-path").fill(projectPath);
+    const responsePromise = page.waitForResponse((response) =>
+      response.request().method() === "POST"
+      && response.url().endsWith("/projects/open"));
     await page.locator("#open-project").click();
-    await page.waitForSelector(
-      "#project-readiness[data-harness-launch-ready='true']",
-      { timeout: 90_000 },
-    );
-    const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");
-    assert.match(projectId, /^project-[a-f0-9]{24}$/);
-    assert.equal(
-      await page.locator("#project-readiness").getAttribute("data-harness-adapter-id"),
-      SANDCASTLE_HARNESS_ADAPTER_ID,
-    );
-    assert.match(
-      await page.locator("#project-readiness").textContent(),
-      new RegExp(`Harness adapter: ${SANDCASTLE_HARNESS_ADAPTER_ID}`),
-    );
-    const parameters = page.locator("#harness-launch-parameters");
-    assert.equal(await parameters.getAttribute("data-parameter-kind"), "none");
-    assert.equal(await parameters.getAttribute("data-parameter-count"), "0");
-    assert.equal(await parameters.locator("input, select, label").count(), 0);
-
-    await page.locator("#launch-harness").click();
-    await page.locator("#harness-launch-confirmation").waitFor({ state: "visible" });
-    await page.locator("#harness-launch-confirmation-yes").click();
-    await page.waitForFunction(() => /Harness run harness-run-[a-f0-9]{24} launched\./
-      .test(document.querySelector("#harness-launch-feedback")?.textContent ?? ""));
-    const [run] = await waitForRetainedRuns(dataDir, 1);
-    assert.equal(run.projectId, projectId);
-    assert.equal(run.harnessPinnedRevision, noneRevision);
-    assert.equal(run.status, "succeeded", JSON.stringify(run));
-    assert.equal(run.source, "cockpit");
-    assert.equal(run.adapterId, SANDCASTLE_HARNESS_ADAPTER_ID);
-    assert.equal(
-      run.executionSnapshot.adapter.adapterId,
-      SANDCASTLE_HARNESS_ADAPTER_ID,
-    );
-    assert.equal(run.outcome.terminalEnvelope.adapterId, SANDCASTLE_HARNESS_ADAPTER_ID);
-    assert.deepEqual(run.parameters, {});
-    await page.waitForSelector(
-      `#harness-run-observation[data-run-id='${run.harnessRunId}'][data-run-status='succeeded']`,
-      { timeout: 15_000 },
-    );
-    assert.equal(
-      await page.locator("#harness-run-execution-snapshot").getAttribute("data-adapter-id"),
-      SANDCASTLE_HARNESS_ADAPTER_ID,
-    );
-    assert.match(
-      await page.locator("#harness-run-execution-snapshot").textContent(),
-      new RegExp(`Adapter: ${SANDCASTLE_HARNESS_ADAPTER_ID}`),
-    );
+    const response = await responsePromise;
+    const outcome = { status: response.status(), body: await response.json() };
+    assert.equal(outcome.status, 409);
+    assert.equal(outcome.body.type, "project.operation.failure");
+    assert.equal(outcome.body.operation, "project.harness.pin");
+    assert.equal(outcome.body.code, "harness_skill_lock_missing");
+    assert.equal(outcome.body.retryable, true);
+    assert.equal(outcome.body.prohibitedSideEffects.harnessPinWrite, false);
+    const projectState = JSON.parse(await readFile(
+      join(dataDir, "project-registrations.json"),
+      "utf8",
+    ));
+    assert.equal(projectState.projects[0].harness, null);
+    assert.equal(projectState.projects[0].readiness.launchRequest, "blocked");
+    assert.equal(await access(join(dataDir, "harness-runs.json")).then(
+      () => true,
+      () => false,
+    ), false);
     await context.close();
   } finally {
     await browser?.close().catch(() => undefined);

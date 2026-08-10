@@ -147,7 +147,6 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
       requestId: "pin-conformance-harness",
       projectId: registration.project.projectId,
       harnessId: harnessRegistration.harness.harnessId,
-      immutableRevision: harnessRegistration.harness.immutableRevision,
       boundedConfiguration: {
         adapterProtocol: "1.0.0",
         launchProfile: "delegated-work",
@@ -477,7 +476,6 @@ test("registration and pinning reject changed retries, stale revisions, and inva
       requestId: "accepted-harness-pin",
       projectId: registration.project.projectId,
       harnessId: harness.harness.harnessId,
-      immutableRevision: harness.harness.immutableRevision,
       boundedConfiguration: {
         adapterProtocol: "1.0.0",
         launchProfile: "delegated-work",
@@ -486,23 +484,6 @@ test("registration and pinning reject changed retries, stale revisions, and inva
       idempotencyKey: "accepted-harness-pin",
       expectedRevision: 1,
     };
-    const missingPin = await registry.pinConformanceHarness({
-      ...pinRequest,
-      requestId: "missing-harness-pin",
-      idempotencyKey: "missing-harness-pin",
-      immutableRevision: "",
-    });
-    assert.equal(missingPin.code, "harness_pin_missing");
-    assert.equal(missingPin.resolution.actions[0], "select_immutable_revision");
-
-    const invalidPin = await registry.pinConformanceHarness({
-      ...pinRequest,
-      requestId: "invalid-harness-pin",
-      idempotencyKey: "invalid-harness-pin",
-      immutableRevision: "f".repeat(40),
-    });
-    assert.equal(invalidPin.code, "harness_pin_invalid");
-
     const invalidPinConfiguration = await registry.pinConformanceHarness({
       ...pinRequest,
       requestId: "invalid-pin-configuration",
@@ -572,8 +553,6 @@ test("registration and pinning reject changed retries, stale revisions, and inva
           invalidFailures: {
             path: invalidPath.code,
             configuration: invalidConfiguration.code,
-            missingPin: missingPin.code,
-            invalidPin: invalidPin.code,
             invalidPinConfiguration: invalidPinConfiguration.code,
             preservedUnpinnedState: invalidFailuresPreservedUnpinned,
           },

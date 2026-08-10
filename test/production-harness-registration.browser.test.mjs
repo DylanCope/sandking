@@ -24,6 +24,14 @@ test("ordinary Cockpit Project registration defaults to the production Sandcastl
     execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]),
   ]);
   await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
+  await execFileAsync("git", ["-C", projectPath, "add", "README.md"]);
+  await execFileAsync("git", [
+    "-C", projectPath,
+    "-c", "user.name=Project Fixture",
+    "-c", "user.email=project-fixture@sandking.invalid",
+    "-c", "commit.gpgSign=false",
+    "commit", "--quiet", "-m", "Initialize disposable Project",
+  ]);
   const projectFilesBefore = (await readdir(projectPath)).sort();
   const installed = await installCurrentPackage(root);
   const environment = { ...process.env, HOME: userHome };
@@ -75,8 +83,36 @@ test("ordinary Cockpit Project registration defaults to the production Sandcastl
     assert.match(projectId, /^project-[a-f0-9]{24}$/);
     assert.match(harnessId, /^harness-[a-f0-9]{24}$/);
     assert.match(pinnedRevision, /^[a-f0-9]{40}$/);
+    assert.match(
+      await readiness.getAttribute("data-harness-skill-lock"),
+      /^sha256:[a-f0-9]{64}$/,
+    );
+    assert.match(
+      await readiness.getAttribute("data-harness-projection-digest"),
+      /^sha256:[a-f0-9]{64}$/,
+    );
+    assert.match(
+      await readiness.getAttribute("data-harness-resolved-skills"),
+      /sandking\.issue-implementation@[a-f0-9]{40}/,
+    );
     assert.match(await page.locator("#project-feedback").textContent(),
       /Sand-King Sandcastle Harness are ready to launch/);
+    assert.match(await readiness.textContent(), /Production preparation: ready/);
+    assert.match(await readiness.textContent(), /openai\.codex-cli@0\.146\.0/);
+
+    const reopenResponsePromise = page.waitForResponse((response) =>
+      response.request().method() === "POST"
+      && response.url().endsWith("/projects/open"));
+    await page.locator("#open-project").click();
+    const reopenResponse = await reopenResponsePromise;
+    const reopenOutcome = await reopenResponse.json();
+    assert.equal(reopenResponse.status(), 200);
+    assert.equal(reopenOutcome.code, "project_ready");
+    assert.equal(reopenOutcome.project.projectId, projectId);
+    assert.equal(reopenOutcome.project.harness.harnessId, harnessId);
+    assert.equal(reopenOutcome.project.harness.pinnedRevision, pinnedRevision);
+    assert.equal(reopenOutcome.project.readiness.launchRequest, "ready");
+    assert.equal(reopenOutcome.project.harness.preparation.status, "ready");
 
     const projectState = JSON.parse(await readFile(
       join(dataDir, "project-registrations.json"),
@@ -89,6 +125,15 @@ test("ordinary Cockpit Project registration defaults to the production Sandcastl
     assert.equal(projectState.projects.length, 1);
     assert.equal(projectState.projects[0].harness.adapterId, "sandcastle-harness-adapter-v1");
     assert.equal(projectState.projects[0].harness.pinnedRevision, pinnedRevision);
+    const preparation = projectState.projects[0].harness.preparation;
+    assert.equal(preparation.status, "ready");
+    assert.equal(preparation.harness.harnessId, harnessId);
+    assert.equal(preparation.harness.pinnedRevision, pinnedRevision);
+    assert.deepEqual(preparation.resolvedSkills.map(({ identity }) => identity), [
+      "sandking.issue-implementation",
+      "sandking.issue-planning",
+      "sandking.pull-request-review",
+    ]);
     assert.equal(harnessState.harnesses.length, 1);
     assert.equal(harnessState.harnesses[0].kind, "production");
     assert.equal(harnessState.harnesses[0].immutableRevision, pinnedRevision);
@@ -99,9 +144,74 @@ test("ordinary Cockpit Project registration defaults to the production Sandcastl
       ])).stdout.trim(),
       pinnedRevision,
     );
-    assert.deepEqual((await readdir(projectPath)).sort(), projectFilesBefore);
+    assert.deepEqual((await readdir(projectPath)).sort(), [
+      ...projectFilesBefore,
+      ".sandking",
+    ].sort());
     assert.equal((await readdir(projectPath)).includes(".sandcastle"), false);
+    const projectionPath = join(projectPath, ...preparation.projection.path.split("/"));
+    assert.equal(
+      (await execFileAsync("git", [
+        "-C", projectPath,
+        "check-ignore", "--no-index", "--quiet",
+        join(projectionPath, "worker-environment.json"),
+      ])).stderr,
+      "",
+    );
+    assert.equal(
+      (await execFileAsync("git", ["-C", projectPath, "status", "--porcelain=v1"])).stdout,
+      "",
+    );
     await context.close();
+    await browser.close();
+
+    const stopped = JSON.parse((await execFileAsync(installed.command, [
+      "stop", "--data-dir", dataDir, "--json",
+    ], { cwd: executionDirectory, env: environment })).stdout);
+    assert.equal(stopped.stopped, true);
+    const restartedRuntime = JSON.parse((await execFileAsync(installed.command, [
+      "launch",
+      "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
+      "--json",
+      "--no-open",
+    ], { cwd: executionDirectory, env: environment })).stdout);
+    assert.notEqual(restartedRuntime.runtime.runtimeId, runtime.runtime.runtimeId);
+    assert.equal(restartedRuntime.host.hostId, runtime.host.hostId);
+
+    browser = await launchBrowser({ niceAdjustment: 10 });
+    const restartedContext = await browser.newContext();
+    const restartedPage = await restartedContext.newPage();
+    await restartedPage.goto(restartedRuntime.bootstrapUrl, { waitUntil: "domcontentloaded" });
+    await restartedPage.waitForSelector(
+      "#project-preparation[data-explicit-path-only='true']",
+      { timeout: 90_000 },
+    );
+    await restartedPage.locator("#project-path").fill(projectPath);
+    const restartedReopenResponsePromise = restartedPage.waitForResponse((response) =>
+      response.request().method() === "POST"
+      && response.url().endsWith("/projects/open"));
+    await restartedPage.locator("#open-project").click();
+    const restartedReopenResponse = await restartedReopenResponsePromise;
+    const restartedReopenOutcome = await restartedReopenResponse.json();
+    assert.equal(
+      restartedReopenResponse.status(),
+      200,
+      JSON.stringify(restartedReopenOutcome),
+    );
+    assert.equal(restartedReopenOutcome.code, "project_ready");
+    await restartedPage.waitForSelector(
+      `#project-readiness[data-project-id='${projectId}']`
+        + "[data-harness-launch-ready='true']"
+        + `[data-harness-id='${harnessId}']`
+        + `[data-harness-pin='${pinnedRevision}']`,
+      { timeout: 90_000 },
+    );
+    assert.match(
+      await restartedPage.locator("#project-feedback").textContent(),
+      /Sand-King Sandcastle Harness are ready to launch/,
+    );
+    await restartedContext.close();
   } finally {
     await browser?.close().catch(() => undefined);
     await execFileAsync(installed.command, [

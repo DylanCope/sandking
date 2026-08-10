@@ -53,7 +53,7 @@ export const bundledProductionHarnessSeedRoot = fileURLToPath(
   new URL("./bundled-production-harness/", import.meta.url),
 );
 
-const seedManifestSchema = z.object({
+export const productionHarnessSeedManifestSchema = z.object({
   schemaVersion: z.literal(1),
   seedIdentity: z.literal("sandking.sandcastle-harness"),
   files: z.array(z.object({
@@ -209,7 +209,7 @@ const compareSeedPaths = (left, right) => left.path < right.path
  * Bind the immutable seed implementation to the recorded Sand-King revision.
  * Every source artifact except the self-referential provenance and independently
  * digested skill lock must originate at the recorded Sand-King revision.
- * @param {z.infer<typeof seedManifestSchema>} manifest
+ * @param {z.infer<typeof productionHarnessSeedManifestSchema>} manifest
  */
 const seedSourceIntegrity = (manifest) => sha256(
   [...manifest.files]
@@ -501,7 +501,9 @@ export const loadProductionHarnessSeed = async (options = {}) => {
   let manifest;
   try {
     manifestSource = await readFile(join(seedRoot, "seed-manifest.json"));
-    manifest = seedManifestSchema.parse(JSON.parse(manifestSource.toString("utf8")));
+    manifest = productionHarnessSeedManifestSchema.parse(
+      JSON.parse(manifestSource.toString("utf8")),
+    );
   } catch {
     throw new ProductionHarnessSeedError("harness_seed_missing");
   }

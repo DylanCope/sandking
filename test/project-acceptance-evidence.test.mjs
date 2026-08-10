@@ -94,9 +94,50 @@ test("issue 118 manifest drives the named packaged Project preparation scenario"
     "idempotency_key_conflict",
     "mutation_revision_conflict",
     "bounded_configuration_invalid",
-    "harness_pin_missing",
-    "harness_pin_invalid",
   ]);
+  assert.deepEqual(manifest.scenarios[0].contractMigration, {
+    issue: 172,
+    parentPrd: 169,
+    retiredCallerField: "immutableRevision",
+    retiredScenarios: [
+      "missing caller-supplied Harness revision",
+      "invalid caller-supplied Harness revision",
+    ],
+    replacementContract:
+      "Project pinning resolves the registered Harness commit internally; missing or unreadable retained pins are verified during production preparation",
+  });
+});
+
+test("issue 118 acceptance collector records the revision-free pin contract", async () => {
+  const resultDirectory = await mkdtemp(join(tmpdir(), "sandking-issue-118-collector-"));
+  try {
+    const childEnvironment = { ...process.env };
+    delete childEnvironment.NODE_TEST_CONTEXT;
+    await execFileAsync(
+      process.execPath,
+      ["--test", "test/project-registration.test.mjs"],
+      {
+        cwd: repositoryRoot,
+        env: {
+          ...childEnvironment,
+          SANDKING_ACCEPTANCE_RESULT_DIR: resultDirectory,
+        },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+    const mutationContract = JSON.parse(await readFile(
+      join(resultDirectory, "project-mutation-contract.json"),
+      "utf8",
+    ));
+    assert.deepEqual(mutationContract.invalidFailures, {
+      path: "project_path_invalid",
+      configuration: "bounded_configuration_invalid",
+      invalidPinConfiguration: "bounded_configuration_invalid",
+      preservedUnpinnedState: true,
+    });
+  } finally {
+    await rm(resultDirectory, { recursive: true, force: true });
+  }
 });
 
 test("retained issue 118 evidence identifies the unchanged demonstrated revision", async () => {
@@ -119,6 +160,7 @@ test("retained issue 118 evidence proves Project and independent Harness readine
     normalizationDifference: "one terminal LF",
     exactContentEquivalentAfterApprovedExportNormalization: true,
   });
+  assert.deepEqual(evidence.contractMigration, manifest.scenarios[0].contractMigration);
   assert.deepEqual({
     command: evidence.packagedPublicSeam.command,
     installed: evidence.packagedPublicSeam.installed,
@@ -238,8 +280,6 @@ test("retained issue 118 evidence proves path, mutation, and atomic-failure cont
   assert.deepEqual(mutation.invalidFailures, {
     path: "project_path_invalid",
     configuration: "bounded_configuration_invalid",
-    missingPin: "harness_pin_missing",
-    invalidPin: "harness_pin_invalid",
     invalidPinConfiguration: "bounded_configuration_invalid",
     preservedUnpinnedState: true,
   });

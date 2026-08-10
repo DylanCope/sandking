@@ -1358,6 +1358,14 @@ const projectFailureStatus = Object.freeze({
   harness_pin_missing: 409,
   harness_pin_invalid: 409,
   harness_workspace_invalid: 409,
+  harness_pin_unreadable: 409,
+  harness_adapter_bytes_mismatch: 409,
+  harness_compatibility_unsupported: 409,
+  harness_skill_lock_missing: 409,
+  harness_locked_skill_unavailable: 409,
+  harness_skill_integrity_mismatch: 409,
+  harness_projection_collision: 409,
+  harness_projection_failed: 409,
   harness_seed_missing: 409,
   harness_seed_provenance_invalid: 409,
   harness_dependency_lock_invalid: 409,
@@ -1630,7 +1638,13 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       request.idempotencyKey,
       "project.register",
     ),
-    expectedRevision: request.expectedRevision,
+    // A fresh Runtime has no Project revision to expose in its bootstrap
+    // document. Let an ordinary open adopt the revision discovered by the
+    // immediately preceding inspection, while preserving the caller's CAS
+    // whenever this Runtime has already observed a Project.
+    expectedRevision: currentProjectPreparation.current === null && inspectedProject
+      ? inspectedProject.revision
+      : request.expectedRevision,
   });
   if (projectRegistration.type === "project.operation.failure") {
     return retainProjectPreparation({
@@ -1644,7 +1658,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
   // An idempotent registration replay returns its original revisioned outcome;
   // the preceding inspection remains the current canonical Project snapshot.
   let project = inspectedProject ?? projectRegistration.project;
-  currentProjectPreparation = projectPreparationProjection(project);
+  currentProjectPreparation = projectPreparationProjection(project, harness);
   currentProjectPath = project.canonicalPath;
 
   try {
@@ -1672,7 +1686,6 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
         requestId: requestId("project-pin"),
         projectId: project.projectId,
         harnessId: harness.harnessId,
-        immutableRevision: harness.immutableRevision,
         boundedConfiguration: {
           adapterProtocol: "1.0.0",
           launchProfile: "delegated-work",

@@ -27,7 +27,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:16490461d44deb390c0bada6692add8e4dad5762f9aa13523d98bdedafcf8256",
+  schemaDigest: "sha256:b71eeed3b7ba8dda8681295898a0279a2c73d8c4606b24590330a9037a9ab894",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -628,6 +628,10 @@ const renderPreparedProject = (current) => {
       "No Project path has been selected.",
     );
   }
+  const productionPreparation = current.harness?.adapterId
+    === "sandcastle-harness-adapter-v1"
+    ? current.harness.preparation
+    : null;
   const card = element("article", {
     id: "project-readiness",
     "data-project-selected": "true",
@@ -636,6 +640,10 @@ const renderPreparedProject = (current) => {
     "data-harness-id": current.harness?.harnessId ?? "",
     "data-harness-pin": current.harness?.pinnedRevision ?? "",
     "data-harness-adapter-id": current.harness?.adapterId ?? "",
+    "data-harness-skill-lock": productionPreparation?.skillSetLockDigest ?? "",
+    "data-harness-projection-digest": productionPreparation?.projection.digest ?? "",
+    "data-harness-resolved-skills": productionPreparation?.resolvedSkills
+      .map(({ identity, revision }) => `${identity}@${revision}`).join(",") ?? "",
     "data-checks-readiness": current.readiness.checks,
     "data-configuration-readiness": current.readiness.configuration,
     "data-harness-launch-ready": String(current.canPrepareLaunchRequest),
@@ -657,6 +665,15 @@ const renderPreparedProject = (current) => {
     element("p", {}, current.harness
       ? `Pinned immutable revision: ${current.harness.pinnedRevision}`
       : "Pinned immutable revision: missing"),
+    ...(productionPreparation ? [
+      element("p", { "data-production-preparation": productionPreparation.status },
+        `Production preparation: ${productionPreparation.status}; skill-set lock: ${productionPreparation.skillSetLockDigest}`),
+      element("p", {}, `Resolved Worker skills: ${productionPreparation.resolvedSkills
+        .map(({ identity, revision }) => `${identity}@${revision}`).join(", ")}`),
+      element("p", {}, `Ignored Project projection: ${productionPreparation.projection.path} (${productionPreparation.projection.digest})`),
+      element("p", {}, `Versioned execution runtime inputs: ${productionPreparation.executionRuntimeInputs
+        .map(({ identity, version }) => `${identity}@${version}`).join(", ")}`),
+    ] : []),
     element("p", { "data-launch-guidance": current.readiness.launchRequest },
       current.canPrepareLaunchRequest
         ? "The pinned Harness is ready to launch."

@@ -22,6 +22,8 @@ if (
   || manifest.issue !== 118
   || manifest.parentPrd !== 125
   || manifest.scenarios?.[0]?.id !== "local-walking-skeleton/completes-approved-run"
+  || manifest.scenarios[0].contractMigration?.issue !== 172
+  || manifest.scenarios[0].contractMigration?.retiredCallerField !== "immutableRevision"
   || !Array.isArray(manifest.verification?.commands)
 ) {
   throw new Error("issue_118_acceptance_manifest_invalid");
@@ -104,6 +106,7 @@ try {
       generatedFromCommit: evidenceSourceRevision,
       recordedAt: new Date().toISOString(),
       ...observation,
+      contractMigration: manifest.scenarios[0].contractMigration,
       contractEvidence: {
         pathResolution,
         mutationContract,

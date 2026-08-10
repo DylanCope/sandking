@@ -36,6 +36,35 @@ const pinnedRevision = "5".repeat(40);
 const launchAuditId = `audit-${"6".repeat(24)}`;
 const createdAt = "2026-08-10T11:00:00.000Z";
 
+const productionPreparation = () => ({
+  status: "ready",
+  harness: {
+    harnessId,
+    adapterId: SANDCASTLE_HARNESS_ADAPTER_ID,
+    pinnedRevision,
+  },
+  skillSetLockDigest: `sha256:${"a".repeat(64)}`,
+  resolvedSkills: [{
+    identity: "sandking.issue-implementation",
+    revision: pinnedRevision,
+    contentIntegrity: `sha256:${"b".repeat(64)}`,
+  }],
+  executionRuntimeInputs: [{
+    identity: "openai.codex-cli",
+    package: "@openai/codex",
+    version: "0.146.0",
+    resolved: "https://registry.npmjs.org/@openai/codex/-/codex-0.146.0.tgz",
+    integrity: "sha512-YWJjZA==",
+    skillExposure: "versioned-with-runtime-package",
+  }],
+  projection: {
+    path: `.sandking/harnesses/${harnessId}`,
+    digest: `sha256:${"c".repeat(64)}`,
+    ignored: true,
+    trackedContentPreserved: true,
+  },
+});
+
 const harnessRegistration = (adapterId, kind, includeLaunchParameters = true) => ({
   harnessId,
   revision: 1,
@@ -74,6 +103,9 @@ const projectRegistration = (adapterId) => ({
       adapterProtocol: "1.0.0",
       launchProfile: "delegated-work",
     },
+    ...(adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+      ? { preparation: productionPreparation() }
+      : {}),
   },
   readiness: {
     issueWorkflow: "ready",
