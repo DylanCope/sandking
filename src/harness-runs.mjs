@@ -367,6 +367,17 @@ export const harnessRunExecutionSnapshotSchema = z.object({
   launchAuditId: auditIdSchema,
 }).strict();
 
+/**
+ * @param {{adapterId: string, adapterProtocol: string}} run
+ * @param {{terminalEnvelope?: {adapterId: string, adapterProtocol: string} | null} | null} outcome
+ */
+export const harnessRunOutcomeAdapterIdentityAgrees = (run, outcome) =>
+  !outcome?.terminalEnvelope
+  || (
+    outcome.terminalEnvelope.adapterId === run.adapterId
+    && outcome.terminalEnvelope.adapterProtocol === run.adapterProtocol
+  );
+
 const previousCurrentHarnessRunSchema = previousHarnessRunSchema.extend({
   executionSnapshot: harnessRunExecutionSnapshotSchema,
 }).strict();
@@ -403,9 +414,12 @@ const legacyHarnessRunSchema = previousLegacyHarnessRunWithSnapshotSchema.extend
 /** @param {any} run @param {import("zod").RefinementCtx} context */
 const requireConsistentRetainedAdapterIdentity = (run, context) => {
   if (
-    run.executionSnapshot.adapter.adapterId !== run.adapterId
-    || run.executionSnapshot.adapter.protocol !== run.adapterProtocol
-    || run.executionSnapshot.adapter.entryPoint !== run.adapterEntryPoint
+    "executionSnapshot" in run
+    && (
+      run.executionSnapshot.adapter.adapterId !== run.adapterId
+      || run.executionSnapshot.adapter.protocol !== run.adapterProtocol
+      || run.executionSnapshot.adapter.entryPoint !== run.adapterEntryPoint
+    )
   ) {
     context.addIssue({
       code: "custom",
@@ -413,13 +427,7 @@ const requireConsistentRetainedAdapterIdentity = (run, context) => {
       path: ["executionSnapshot", "adapter"],
     });
   }
-  if (
-    run.outcome?.terminalEnvelope
-    && (
-      run.outcome.terminalEnvelope.adapterId !== run.adapterId
-      || run.outcome.terminalEnvelope.adapterProtocol !== run.adapterProtocol
-    )
-  ) {
+  if (!harnessRunOutcomeAdapterIdentityAgrees(run, run.outcome)) {
     context.addIssue({
       code: "custom",
       message: "retained Harness terminal identity disagrees",
@@ -435,7 +443,7 @@ export const harnessRunSchema = z.union([
 export const retainedLegacyHarnessRunSchema = z.union([
   legacyHarnessRunSchema,
   previousLegacyHarnessRunSchema,
-]);
+]).superRefine(requireConsistentRetainedAdapterIdentity);
 
 const previousStoredRunFields = {
   events: z.array(harnessRunEventSchema).max(MAX_RETAINED_RUN_EVENTS),

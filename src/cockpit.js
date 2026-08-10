@@ -27,7 +27,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:84fc96e07dddc4d3b7035fb57bcf4ed277efcde6107dac75423703e7503bbf4a",
+  schemaDigest: "sha256:ec72d35d9788bd31bb5f07de56b1010064e73eddff22b250c8fd94dabedab326",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,

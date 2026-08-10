@@ -123,6 +123,14 @@ export const harnessRegistrationSchema = z.discriminatedUnion("adapterId", [
   sandcastleHarnessRegistrationSchema,
 ]);
 
+/**
+ * @param {z.infer<typeof projectHarnessLinkSchema>} projectHarness
+ * @param {z.infer<typeof harnessRegistrationSchema>} harness
+ */
+export const harnessRegistrationMatchesProjectLink = (projectHarness, harness) =>
+  projectHarness.harnessId === harness.harnessId
+  && projectHarness.adapterId === harness.adapterId;
+
 const storedProjectSchema = projectRegistrationSchema.extend({
   filesystemIdentityDigest: digestSchema,
   createdAt: z.string().datetime(),
@@ -755,8 +763,18 @@ if (command === "probe") {
  * @param {z.infer<typeof projectRegistrationSchema> | null} project
  * @param {z.infer<typeof harnessRegistrationSchema> | null} harness
  */
-export const projectPreparationProjection = (project = null, harness = null) =>
-  projectPreparationProjectionSchema.parse({
+export const projectPreparationProjection = (project = null, harness = null) => {
+  if (
+    project?.harness
+    && harness
+    && !harnessRegistrationMatchesProjectLink(project.harness, harness)
+  ) {
+    throw new Error("Project and Harness adapter identities disagree");
+  }
+  if (project?.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID && !harness) {
+    throw new Error("Project and Harness adapter identities disagree");
+  }
+  return projectPreparationProjectionSchema.parse({
     kind: "cockpit.project-preparation",
     selection: { mode: "explicit-host-path", directoryScanning: false },
     conformanceHarness: {
@@ -782,9 +800,7 @@ export const projectPreparationProjection = (project = null, harness = null) =>
         name: project.harness.name,
         adapterId: project.harness.adapterId,
         pinnedRevision: project.harness.pinnedRevision,
-        launchParameters: harness?.harnessId === project.harness.harnessId
-          ? harness.launchParameters
-          : conformanceLaunchParameters,
+        launchParameters: harness?.launchParameters ?? conformanceLaunchParameters,
       } : null,
       readiness: project.readiness,
       canPrepareLaunchRequest: project.readiness.launchRequest === "ready",
@@ -796,6 +812,7 @@ export const projectPreparationProjection = (project = null, harness = null) =>
       "drift-recovery",
     ],
   });
+};
 
 /**
  * @param {{

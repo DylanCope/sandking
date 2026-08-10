@@ -3,8 +3,10 @@ import { execFile } from "node:child_process";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import test from "node:test";
+import { runtimeControlEnvelopeSchema } from "../src/browser-protocol.mjs";
 import {
   CONFORMANCE_HARNESS_ADAPTER_ID,
   SANDCASTLE_HARNESS_ADAPTER_ID,
@@ -19,8 +21,10 @@ import {
   harnessRunExecutionSnapshotSchema,
   harnessRunOutcomeSchema,
   harnessRunSchema,
+  retainedLegacyHarnessRunSchema,
 } from "../src/harness-runs.mjs";
 import { validateHarnessLaunch } from "../src/harness-launch.mjs";
+import { ProtocolError, writeFrame } from "../src/protocol.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -131,6 +135,120 @@ const harnessRun = (adapterId) => ({
   launchIdempotencyKeyHash: null,
 });
 
+const retainedLegacyHarnessRun = (adapterId) => {
+  const run = harnessRun(adapterId);
+  delete run.parameters;
+  delete run.source;
+  delete run.launchAuditId;
+  delete run.launchIdempotencyKeyHash;
+  return {
+    ...run,
+    launchRequestId: `launch-request-${"8".repeat(24)}`,
+    launchRequestRevision: 2,
+    controllerSessionId: `controller-session-${"9".repeat(24)}`,
+    startAuditId: `audit-${"a".repeat(24)}`,
+  };
+};
+
+const harnessRunOutcome = (adapterId) => ({
+  outcomeId: `harness-outcome-${"b".repeat(24)}`,
+  status: "succeeded",
+  code: "conformance_run_succeeded",
+  completedAt: "2026-08-10T11:00:01.000Z",
+  incompleteResult: false,
+  result: { kind: "bounded-result" },
+  diagnosticReferences: ["stdout", "stderr"].map((producer, index) => ({
+    streamId: `harness-log-${String(index + 1).repeat(24)}`,
+    producer,
+    range: { start: 0, end: 0 },
+    explicitRetrievalRequired: true,
+    insertedIntoControllerConversation: false,
+  })),
+  terminalEnvelope: {
+    terminalId: `harness-terminal-${"c".repeat(24)}`,
+    status: "succeeded",
+    adapterId,
+    adapterProtocol: "1.0.0",
+  },
+  outcomeAuditId: null,
+  interruption: null,
+});
+
+const harnessRunObservation = (runAdapterId, outcomeAdapterId) => ({
+  type: "harness.run.observe.result",
+  requestId: "observe-bundled-adapter-identity",
+  code: "harness_run_observed",
+  mode: "snapshot",
+  resynchronization: null,
+  run: harnessRun(runAdapterId),
+  events: [],
+  nextSequence: 0,
+  outcome: harnessRunOutcome(outcomeAdapterId),
+  logStreams: [],
+  terminalEnvelopeValidation: null,
+});
+
+const retainedLegacyStartOutcome = (run) => ({
+  type: "harness.run.start.result",
+  requestId: "retained-legacy-bundled-adapter",
+  code: "harness_run_created",
+  authorizationClass: "approved_launch_request_execution",
+  idempotencyKeyHash: `sha256:${"d".repeat(64)}`,
+  expectedRevision: 2,
+  launchRequestRevision: 2,
+  revision: 3,
+  idempotentReplay: false,
+  auditId: `audit-${"e".repeat(24)}`,
+  run,
+});
+
+const retainedHarnessRunLookupResult = (launchOutcome) => ({
+  type: "harness.run.lookup.result",
+  requestId: "lookup-retained-bundled-adapter",
+  code: "harness_run_launch_outcome_found",
+  idempotencyKeyHash: launchOutcome.idempotencyKeyHash,
+  found: true,
+  launchOutcome,
+});
+
+const projectHarnessPinResult = (projectAdapterId, harnessAdapterId, harnessKind) => ({
+  type: "project.harness.pin.result",
+  requestId: "pin-bundled-adapter-identity",
+  code: "project_harness_pinned",
+  authorizationClass: "host_local_project_configuration",
+  idempotencyKeyHash: `sha256:${"f".repeat(64)}`,
+  expectedRevision: 1,
+  revision: 2,
+  idempotentReplay: false,
+  auditId: `audit-${"1".repeat(24)}`,
+  project: projectRegistration(projectAdapterId),
+  harness: harnessRegistration(harnessAdapterId, harnessKind),
+});
+
+const harnessRunRecoveryResult = (observation) => ({
+  type: "harness.run.recover.result",
+  requestId: "recover-bundled-adapter-identity",
+  code: "harness_recovery_finalized",
+  authorizationClass: "harness_run_recovery",
+  idempotencyKeyHash: `sha256:${"2".repeat(64)}`,
+  idempotentReplay: false,
+  auditId: `audit-${"3".repeat(24)}`,
+  harnessRunId: observation.run.harnessRunId,
+  action: "finalize",
+  run: observation.run,
+  recovery: null,
+  outcome: observation.outcome,
+});
+
+const runtimeHarnessRunObservation = (observation) => ({
+  channel: "control",
+  message: {
+    type: "runtime.harness-run.observation",
+    requestId: "runtime-observe-bundled-adapter-identity",
+    observation,
+  },
+});
+
 test("Project, retained run, and browser-boundary models preserve either bundled identity", () => {
   for (const [adapterId, kind] of [
     [CONFORMANCE_HARNESS_ADAPTER_ID, "conformance"],
@@ -200,6 +318,87 @@ test("Project, retained run, and browser-boundary models preserve either bundled
   const mismatchedSnapshot = harnessRun(CONFORMANCE_HARNESS_ADAPTER_ID);
   mismatchedSnapshot.executionSnapshot.adapter.adapterId = SANDCASTLE_HARNESS_ADAPTER_ID;
   assert.equal(harnessRunSchema.safeParse(mismatchedSnapshot).success, false);
+});
+
+test("retained and public composite models preserve agreements and reject every disagreement", () => {
+  for (const [adapterId, kind] of [
+    [CONFORMANCE_HARNESS_ADAPTER_ID, "conformance"],
+    [SANDCASTLE_HARNESS_ADAPTER_ID, "production"],
+  ]) {
+    const legacyRun = retainedLegacyHarnessRun(adapterId);
+    assert.equal(retainedLegacyHarnessRunSchema.parse(legacyRun).adapterId, adapterId);
+    assert.doesNotThrow(() => writeFrame(
+      new PassThrough(),
+      retainedHarnessRunLookupResult(retainedLegacyStartOutcome(legacyRun)),
+    ));
+    assert.equal(
+      projectPreparationProjection(
+        projectRegistration(adapterId),
+        harnessRegistration(adapterId, kind),
+      ).current.harness.adapterId,
+      adapterId,
+    );
+    assert.doesNotThrow(() => writeFrame(
+      new PassThrough(),
+      projectHarnessPinResult(adapterId, adapterId, kind),
+    ));
+    const observation = harnessRunObservation(adapterId, adapterId);
+    assert.doesNotThrow(() => writeFrame(new PassThrough(), observation));
+    assert.equal(runtimeControlEnvelopeSchema.safeParse(
+      runtimeHarnessRunObservation(observation),
+    ).success, true);
+    assert.doesNotThrow(() => writeFrame(
+      new PassThrough(),
+      harnessRunRecoveryResult(observation),
+    ));
+  }
+
+  for (const [retainedAdapterId, nestedAdapterId, nestedKind] of [
+    [CONFORMANCE_HARNESS_ADAPTER_ID, SANDCASTLE_HARNESS_ADAPTER_ID, "production"],
+    [SANDCASTLE_HARNESS_ADAPTER_ID, CONFORMANCE_HARNESS_ADAPTER_ID, "conformance"],
+  ]) {
+    const legacyRun = retainedLegacyHarnessRun(retainedAdapterId);
+    legacyRun.executionSnapshot.adapter.adapterId = nestedAdapterId;
+    assert.equal(retainedLegacyHarnessRunSchema.safeParse(legacyRun).success, false);
+
+    assert.throws(
+      () => writeFrame(
+        new PassThrough(),
+        retainedHarnessRunLookupResult(retainedLegacyStartOutcome(legacyRun)),
+      ),
+      (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+    );
+
+    assert.throws(
+      () => projectPreparationProjection(
+        projectRegistration(retainedAdapterId),
+        harnessRegistration(nestedAdapterId, nestedKind),
+      ),
+      /Harness adapter identities disagree/,
+    );
+
+    assert.throws(
+      () => writeFrame(
+        new PassThrough(),
+        projectHarnessPinResult(retainedAdapterId, nestedAdapterId, nestedKind),
+      ),
+      (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+    );
+
+    const observation = harnessRunObservation(retainedAdapterId, nestedAdapterId);
+    assert.throws(
+      () => writeFrame(new PassThrough(), observation),
+      (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+    );
+    assert.equal(runtimeControlEnvelopeSchema.safeParse(
+      runtimeHarnessRunObservation(observation),
+    ).success, false);
+
+    assert.throws(
+      () => writeFrame(new PassThrough(), harnessRunRecoveryResult(observation)),
+      (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+    );
+  }
 });
 
 const createPinnedAdapterFixture = async (root, name, {
