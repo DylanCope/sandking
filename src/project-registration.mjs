@@ -23,6 +23,11 @@ import {
   ProductionHarnessSeedError,
   initializeProductionHarnessWorkspace,
 } from "./production-harness-seed.mjs";
+import {
+  ProductionHarnessPreparationError,
+  prepareProductionHarness,
+  productionHarnessPreparationSchema,
+} from "./production-harness-preparation.mjs";
 
 const execFileAsync = promisify(execFile);
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -70,13 +75,23 @@ export const projectReadinessSchema = z.object({
   ])).max(2),
 }).strict();
 
-const projectHarnessLinkSchema = z.object({
+const projectHarnessLinkBaseShape = {
   harnessId: harnessIdSchema,
   name: z.string().min(1).max(120),
-  adapterId: harnessAdapterIdSchema,
   pinnedRevision: commitSchema,
   boundedConfiguration: boundedHarnessConfigurationSchema,
-}).strict();
+};
+const projectHarnessLinkSchema = z.discriminatedUnion("adapterId", [
+  z.object({
+    ...projectHarnessLinkBaseShape,
+    adapterId: z.literal(CONFORMANCE_HARNESS_ADAPTER_ID),
+  }).strict(),
+  z.object({
+    ...projectHarnessLinkBaseShape,
+    adapterId: z.literal(SANDCASTLE_HARNESS_ADAPTER_ID),
+    preparation: productionHarnessPreparationSchema,
+  }).strict(),
+]);
 
 export const projectRegistrationSchema = z.object({
   projectId: projectIdSchema,
@@ -91,7 +106,22 @@ export const projectRegistrationSchema = z.object({
   configuration: projectConfigurationSchema,
   harness: projectHarnessLinkSchema.nullable(),
   readiness: projectReadinessSchema,
-}).strict();
+}).strict().superRefine((project, context) => {
+  if (
+    project.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+    && (
+      project.harness.preparation.harness.harnessId !== project.harness.harnessId
+      || project.harness.preparation.harness.adapterId !== project.harness.adapterId
+      || project.harness.preparation.harness.pinnedRevision !== project.harness.pinnedRevision
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "production Harness preparation does not match its Project pin",
+      path: ["harness", "preparation"],
+    });
+  }
+});
 
 const harnessRegistrationBaseShape = {
   harnessId: harnessIdSchema,
@@ -198,18 +228,27 @@ export const projectPreparationProjectionSchema = z.object({
       checkId: checkIdSchema,
       readiness: z.literal("ready"),
     }).strict()).min(1).max(8),
-    harness: z.object({
-      harnessId: harnessIdSchema,
-      name: z.string().min(1).max(120),
-      adapterId: harnessAdapterIdSchema,
-      pinnedRevision: commitSchema,
-      launchParameters: harnessLaunchParametersDeclarationSchema,
-    }).strict().nullable(),
+    harness: z.discriminatedUnion("adapterId", [
+      z.object({
+        harnessId: harnessIdSchema,
+        name: z.string().min(1).max(120),
+        adapterId: z.literal(CONFORMANCE_HARNESS_ADAPTER_ID),
+        pinnedRevision: commitSchema,
+        launchParameters: harnessLaunchParametersDeclarationSchema,
+      }).strict(),
+      z.object({
+        harnessId: harnessIdSchema,
+        name: z.string().min(1).max(120),
+        adapterId: z.literal(SANDCASTLE_HARNESS_ADAPTER_ID),
+        pinnedRevision: commitSchema,
+        launchParameters: harnessLaunchParametersDeclarationSchema,
+        preparation: productionHarnessPreparationSchema,
+      }).strict(),
+    ]).nullable(),
     readiness: projectReadinessSchema,
     canPrepareLaunchRequest: z.boolean(),
   }).strict().nullable(),
   excludedCapabilities: z.tuple([
-    z.literal("full-harness-projection"),
     z.literal("production-harness-lifecycle"),
     z.literal("harness-import-update-rollback-switching"),
     z.literal("drift-recovery"),
@@ -332,9 +371,17 @@ const failureGuidance = Object.freeze({
   project_path_tombstoned: ["restore_registration", "register_as_new"],
   project_not_found: ["open_registered_project"],
   harness_not_found: ["register_conformance_harness"],
-  harness_pin_missing: ["select_immutable_revision"],
-  harness_pin_invalid: ["select_registered_immutable_revision"],
+  harness_pin_missing: ["register_project_harness_and_retry"],
+  harness_pin_invalid: ["repair_or_reregister_harness_workspace"],
   harness_workspace_invalid: ["repair_or_reregister_harness_workspace"],
+  harness_pin_unreadable: ["repair_or_reregister_harness_workspace"],
+  harness_adapter_bytes_mismatch: ["restore_pinned_harness_adapter_bytes"],
+  harness_compatibility_unsupported: ["repair_or_reregister_harness_workspace"],
+  harness_skill_lock_missing: ["restore_pinned_harness_skill_lock"],
+  harness_locked_skill_unavailable: ["restore_locked_skill_source"],
+  harness_skill_integrity_mismatch: ["restore_locked_skill_source"],
+  harness_projection_collision: ["move_conflicting_project_content_and_retry"],
+  harness_projection_failed: ["repair_project_projection_and_retry"],
   harness_seed_missing: ["repair_or_reinstall_bundled_harness_seed"],
   harness_seed_provenance_invalid: ["repair_or_reinstall_bundled_harness_seed"],
   harness_dependency_lock_invalid: ["repair_or_reinstall_bundled_harness_seed"],
@@ -844,12 +891,14 @@ export const projectPreparationProjection = (project = null, harness = null) => 
         adapterId: project.harness.adapterId,
         pinnedRevision: project.harness.pinnedRevision,
         launchParameters: harness?.launchParameters ?? conformanceLaunchParameters,
+        ...(project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+          ? { preparation: project.harness.preparation }
+          : {}),
       } : null,
       readiness: project.readiness,
       canPrepareLaunchRequest: project.readiness.launchRequest === "ready",
     } : null,
     excludedCapabilities: [
-      "full-harness-projection",
       "production-harness-lifecycle",
       "harness-import-update-rollback-switching",
       "drift-recovery",
@@ -1449,7 +1498,7 @@ export const createProjectRegistry = async (options) => {
     reusedCode: "sandcastle_harness_registration_reused",
   });
 
-  /** @param {{requestId: string, projectId: string, harnessId: string, immutableRevision: string, boundedConfiguration: unknown, authorizationClass: string, idempotencyKey: string, expectedRevision: number}} request */
+  /** @param {{requestId: string, projectId: string, harnessId: string, boundedConfiguration: unknown, authorizationClass: string, idempotencyKey: string, expectedRevision: number}} request */
   const pinConformanceHarness = (request) => withMutationLock(async () => {
     const action = "project.harness.pin";
     const authorizationClass = "host_local_project_configuration";
@@ -1467,7 +1516,6 @@ export const createProjectRegistry = async (options) => {
     const requestFingerprint = fingerprint({
       projectId: request.projectId,
       harnessId: request.harnessId,
-      immutableRevision: request.immutableRevision,
       boundedConfiguration: request.boundedConfiguration,
       authorizationClass: request.authorizationClass,
       expectedRevision: request.expectedRevision,
@@ -1529,12 +1577,6 @@ export const createProjectRegistry = async (options) => {
       code = "project_not_found";
     } else if (!harness) {
       code = "harness_not_found";
-    } else if (typeof request.immutableRevision !== "string"
-      || request.immutableRevision.length === 0) {
-      code = "harness_pin_missing";
-    } else if (!commitSchema.safeParse(request.immutableRevision).success
-      || request.immutableRevision !== harness.immutableRevision) {
-      code = "harness_pin_invalid";
     } else if (!boundedConfiguration.success) {
       code = "bounded_configuration_invalid";
     }
@@ -1591,38 +1633,88 @@ export const createProjectRegistry = async (options) => {
       });
     }
 
-    const observedHead = (await execFileAsync(
-      "git",
-      ["-C", harness.workspacePath, "rev-parse", "HEAD"],
-    )).stdout.trim();
-    if (observedHead !== harness.immutableRevision) {
-      const auditId = await options.recordAudit(action, "rejected", {
-        code: "harness_workspace_invalid",
-        authorizationClass,
-        idempotencyKeyHash: keyHash,
-        expectedRevision: request.expectedRevision,
-        actualRevision,
-        projectId: project.projectId,
-        harnessId: harness.harnessId,
-        projectFileWrite: false,
-        pinWrite: false,
-      });
-      return operationFailure({
-        requestId: request.requestId,
-        operation: action,
-        code: "harness_workspace_invalid",
-        authorizationClass,
-        idempotencyKeyHash: keyHash,
-        expectedRevision: request.expectedRevision,
-        actualRevision,
-        auditId,
-      });
+    let productionPreparation = null;
+    if (harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID) {
+      try {
+        productionPreparation = await prepareProductionHarness({
+          projectPath: project.canonicalPath,
+          harnessId: harness.harnessId,
+          workspacePath: harness.workspacePath,
+          pinnedRevision: harness.immutableRevision,
+        });
+      } catch (error) {
+        const preparationError = error instanceof ProductionHarnessPreparationError
+          ? error
+          : new ProductionHarnessPreparationError("harness_projection_failed");
+        const auditId = await options.recordAudit(action, "rejected", {
+          code: preparationError.code,
+          authorizationClass,
+          idempotencyKeyHash: keyHash,
+          expectedRevision: request.expectedRevision,
+          actualRevision,
+          projectId: project.projectId,
+          harnessId: harness.harnessId,
+          immutableRevision: harness.immutableRevision,
+          projectFileWrite: false,
+          pinWrite: false,
+          harnessRunCreated: false,
+          adapterStarted: false,
+        });
+        return operationFailure({
+          requestId: request.requestId,
+          operation: action,
+          code: /** @type {keyof typeof failureGuidance} */ (preparationError.code),
+          authorizationClass,
+          idempotencyKeyHash: keyHash,
+          expectedRevision: request.expectedRevision,
+          actualRevision,
+          auditId,
+        });
+      }
+    } else {
+      const observedHead = await execFileAsync(
+        "git",
+        ["-C", harness.workspacePath, "rev-parse", "HEAD"],
+      ).then(({ stdout }) => stdout.trim(), () => null);
+      if (observedHead !== harness.immutableRevision) {
+        const auditId = await options.recordAudit(action, "rejected", {
+          code: "harness_workspace_invalid",
+          authorizationClass,
+          idempotencyKeyHash: keyHash,
+          expectedRevision: request.expectedRevision,
+          actualRevision,
+          projectId: project.projectId,
+          harnessId: harness.harnessId,
+          projectFileWrite: false,
+          pinWrite: false,
+        });
+        return operationFailure({
+          requestId: request.requestId,
+          operation: action,
+          code: "harness_workspace_invalid",
+          authorizationClass,
+          idempotencyKeyHash: keyHash,
+          expectedRevision: request.expectedRevision,
+          actualRevision,
+          auditId,
+        });
+      }
+    }
+    if (
+      harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+      && !productionPreparation
+    ) {
+      throw new Error("production_harness_preparation_invariant_failed");
     }
 
     const alreadyPinned = project.harness?.harnessId === harness.harnessId
-      && project.harness.pinnedRevision === request.immutableRevision
+      && project.harness.pinnedRevision === harness.immutableRevision
       && JSON.stringify(project.harness.boundedConfiguration)
-        === JSON.stringify(boundedConfiguration.data);
+        === JSON.stringify(boundedConfiguration.data)
+      && (harness.adapterId !== SANDCASTLE_HARNESS_ADAPTER_ID
+        || (project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+          && JSON.stringify(project.harness.preparation)
+            === JSON.stringify(productionPreparation)));
     const resultingRevision = alreadyPinned ? actualRevision : actualRevision + 1;
     const auditId = await options.recordAudit(
       action,
@@ -1635,21 +1727,33 @@ export const createProjectRegistry = async (options) => {
         resultingRevision,
         projectId: project.projectId,
         harnessId: harness.harnessId,
-        immutableRevision: request.immutableRevision,
+        immutableRevision: harness.immutableRevision,
         projectFileWrite: false,
         pinWrite: !alreadyPinned,
         launchRequestReady: true,
+        productionPreparation,
       },
     );
     if (!alreadyPinned) {
       project.revision = resultingRevision;
-      project.harness = {
-        harnessId: harness.harnessId,
-        name: harness.name,
-        adapterId: harness.adapterId,
-        pinnedRevision: request.immutableRevision,
-        boundedConfiguration: boundedConfiguration.data,
-      };
+      if (harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID) {
+        project.harness = {
+          harnessId: harness.harnessId,
+          name: harness.name,
+          adapterId: harness.adapterId,
+          pinnedRevision: harness.immutableRevision,
+          boundedConfiguration: boundedConfiguration.data,
+          preparation: productionHarnessPreparationSchema.parse(productionPreparation),
+        };
+      } else {
+        project.harness = {
+          harnessId: harness.harnessId,
+          name: harness.name,
+          adapterId: harness.adapterId,
+          pinnedRevision: harness.immutableRevision,
+          boundedConfiguration: boundedConfiguration.data,
+        };
+      }
       project.readiness = readinessWithHarness();
       project.updatedAt = new Date().toISOString();
     }
@@ -1707,10 +1811,38 @@ export const createProjectRegistry = async (options) => {
     if (harness.immutableRevision !== project.harness.pinnedRevision) {
       throw new Error("harness_pin_invalid");
     }
+    let productionHarnessProjectionPath = null;
+    if (harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID) {
+      let preparation;
+      try {
+        preparation = await prepareProductionHarness({
+          projectPath: project.canonicalPath,
+          harnessId: harness.harnessId,
+          workspacePath: harness.workspacePath,
+          pinnedRevision: harness.immutableRevision,
+        });
+      } catch (error) {
+        if (error instanceof ProductionHarnessPreparationError) {
+          throw new Error(error.code);
+        }
+        throw error;
+      }
+      if (
+        project.harness.adapterId !== SANDCASTLE_HARNESS_ADAPTER_ID
+        || JSON.stringify(project.harness.preparation) !== JSON.stringify(preparation)
+      ) {
+        throw new Error("harness_pin_invalid");
+      }
+      productionHarnessProjectionPath = join(
+        project.canonicalPath,
+        ...preparation.projection.path.split("/"),
+      );
+    }
     return {
       project: publicProject(project),
       harness: publicHarness(harness),
       harnessWorkspacePath: harness.workspacePath,
+      productionHarnessProjectionPath,
     };
   };
 

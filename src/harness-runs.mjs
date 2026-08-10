@@ -2735,6 +2735,15 @@ export const createHarnessRunManager = async (options) => {
           "harness_pin_missing",
           "harness_pin_invalid",
           "harness_workspace_invalid",
+          "harness_pin_unreadable",
+          "harness_adapter_bytes_mismatch",
+          "harness_compatibility_unsupported",
+          "harness_skill_lock_missing",
+          "harness_skill_lock_invalid",
+          "harness_locked_skill_unavailable",
+          "harness_skill_integrity_mismatch",
+          "harness_projection_collision",
+          "harness_projection_failed",
           "bounded_configuration_invalid",
           "harness_capability_unsupported",
           "harness_adapter_protocol_invalid",
@@ -2745,6 +2754,18 @@ export const createHarnessRunManager = async (options) => {
 
     if (code || !context || !prepared || !parameters.success || !idempotencyKeyHash) {
       const failureCode = code ?? "mutation_contract_invalid";
+      const retryablePreparationFailures = new Set([
+        "project_not_found",
+        "harness_pin_unreadable",
+        "harness_adapter_bytes_mismatch",
+        "harness_compatibility_unsupported",
+        "harness_skill_lock_missing",
+        "harness_skill_lock_invalid",
+        "harness_locked_skill_unavailable",
+        "harness_skill_integrity_mismatch",
+        "harness_projection_collision",
+        "harness_projection_failed",
+      ]);
       const auditId = await options.recordAudit("harness.run.launch", "rejected", {
         code: failureCode,
         authorizationClass,
@@ -2761,7 +2782,7 @@ export const createHarnessRunManager = async (options) => {
         type: "harness.run.launch.failure",
         requestId: typeof request.requestId === "string" ? request.requestId : "invalid-request",
         code: failureCode,
-        retryable: failureCode === "project_not_found",
+        retryable: retryablePreparationFailures.has(failureCode),
         authorizationClass,
         idempotencyKeyHash,
         idempotentReplay: false,

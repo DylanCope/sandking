@@ -234,7 +234,6 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
       requestId: "pin-production-harness",
       projectId: projectRegistration.project.projectId,
       harnessId: first.harness.harnessId,
-      immutableRevision: first.harness.immutableRevision,
       boundedConfiguration: {
         adapterProtocol: "1.0.0",
         launchProfile: "delegated-work",
