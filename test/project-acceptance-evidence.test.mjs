@@ -160,6 +160,7 @@ test("retained issue 118 evidence proves Project and independent Harness readine
     normalizationDifference: "one terminal LF",
     exactContentEquivalentAfterApprovedExportNormalization: true,
   });
+  assert.deepEqual(evidence.contractMigration, manifest.scenarios[0].contractMigration);
   assert.deepEqual({
     command: evidence.packagedPublicSeam.command,
     installed: evidence.packagedPublicSeam.installed,
@@ -279,8 +280,6 @@ test("retained issue 118 evidence proves path, mutation, and atomic-failure cont
   assert.deepEqual(mutation.invalidFailures, {
     path: "project_path_invalid",
     configuration: "bounded_configuration_invalid",
-    missingPin: "harness_pin_missing",
-    invalidPin: "harness_pin_invalid",
     invalidPinConfiguration: "bounded_configuration_invalid",
     preservedUnpinnedState: true,
   });
