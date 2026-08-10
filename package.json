@@ -54,6 +54,8 @@
     "acceptance:issue-152": "node test/run-issue-152-acceptance.mjs acceptance/issue-152.manifest.json",
     "acceptance:issue-152:update-evidence": "node test/run-issue-152-acceptance.mjs acceptance/issue-152.manifest.json --update-evidence",
     "acceptance:issue-152:real": "node test/run-installed-claude-acceptance.mjs acceptance/issue-152.manifest.json",
+    "acceptance:issue-164": "node test/run-issue-164-acceptance.mjs acceptance/issue-164.manifest.json",
+    "acceptance:issue-164:update-evidence": "node test/run-issue-164-acceptance.mjs acceptance/issue-164.manifest.json --update-evidence",
     "typecheck": "tsc --noEmit -p tsconfig.sandcastle.json && tsc --noEmit -p tsconfig.json",
     "test": "node --test .sandcastle/*.test.mjs test/*.test.mjs"
   },

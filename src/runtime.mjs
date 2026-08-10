@@ -806,7 +806,7 @@ const commitRuntimeStartup = async (child, startupId) => new Promise((resolve, r
 
 /**
  * @param {string} dataDir
- * @param {{hostMode?: string, startupTimeoutMs?: number, browserSessionTtlMs: number, expectedHostId: string, allowHostIdentityCreate: boolean, lifecycleRevision: number, acceptHostBinding: (hostId: string) => Promise<unknown>}} options
+ * @param {{startupTimeoutMs?: number, browserSessionTtlMs: number, expectedHostId: string, allowHostIdentityCreate: boolean, lifecycleRevision: number, acceptHostBinding: (hostId: string) => Promise<unknown>}} options
  */
 const spawnRuntime = async (dataDir, options) => {
   const statePath = join(dataDir, "runtime-state.json");
@@ -822,9 +822,6 @@ const spawnRuntime = async (dataDir, options) => {
   daemonArgs.push("--lifecycle-revision", String(options.lifecycleRevision));
   daemonArgs.push("--startup-id", startupId);
   daemonArgs.push("--browser-session-ttl-ms", String(options.browserSessionTtlMs));
-  if (options.hostMode) {
-    daemonArgs.push("--host-mode", options.hostMode);
-  }
   const child = spawn(process.execPath, daemonArgs, {
     cwd: dataDir,
     detached: true,
@@ -861,7 +858,7 @@ const spawnRuntime = async (dataDir, options) => {
 export const resolveDataDir = (provided) => resolve(provided ?? defaultDataDir());
 
 /**
- * @param {{dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} options
+ * @param {{dataDir?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} options
  */
 export const launchRuntime = async (options = {}) => {
   const resolvedDataDir = resolveDataDir(options.dataDir);

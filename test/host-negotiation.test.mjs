@@ -19,6 +19,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const cliPath = join(process.cwd(), "src", "cli.mjs");
+const hostModeCliPath = join(process.cwd(), "test", "host-mode-cli.mjs");
 const localHostPath = join(process.cwd(), "src", "local-host.mjs");
 /** @param {Buffer | string} value */
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -237,7 +238,8 @@ const runFailingCli = async (args) => {
     ? [args[0], "--startup-timeout-ms", "60000", ...args.slice(1)]
     : args;
   try {
-    await execFileAsync(process.execPath, [cliPath, ...boundedArgs], {
+    const commandPath = args.includes("--host-mode") ? hostModeCliPath : cliPath;
+    await execFileAsync(process.execPath, [commandPath, ...boundedArgs], {
       cwd: tmpdir(),
       env: process.env,
     });
@@ -565,7 +567,7 @@ test("Controller credentials are not inherited by the local Host process", async
 
   try {
     const { stdout } = await execFileAsync(process.execPath, [
-      cliPath,
+      hostModeCliPath,
       "launch",
       "--startup-timeout-ms", "60000",
       "--data-dir",

@@ -25,24 +25,23 @@ import { createHarnessRunManager } from "./harness-runs.mjs";
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
-  let mode = "normal";
   let dataDir = process.cwd();
   let allowHostIdentityCreate = false;
   for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] === "--mode") {
-      mode = argv[index + 1] ?? mode;
-      index += 1;
-    } else if (argv[index] === "--data-dir") {
-      dataDir = argv[index + 1] ?? dataDir;
+    if (argv[index] === "--data-dir") {
+      if (!argv[index + 1]) throw new Error("host_data_dir_missing");
+      dataDir = argv[index + 1];
       index += 1;
     } else if (argv[index] === "--allow-host-identity-create") {
       allowHostIdentityCreate = true;
+    } else {
+      throw new Error("host_option_unsupported");
     }
   }
-  return { mode, dataDir, allowHostIdentityCreate };
+  return { dataDir, allowHostIdentityCreate };
 };
 
-const { mode, dataDir, allowHostIdentityCreate } = parseArgs(process.argv.slice(2));
+const { dataDir, allowHostIdentityCreate } = parseArgs(process.argv.slice(2));
 const hostAuditPath = join(dataDir, "audit.jsonl");
 
 /** @param {"accepted" | "rejected" | "observed"} outcome @param {Record<string, unknown>} details @param {string} [auditId] */
@@ -117,12 +116,6 @@ const recordProjectAudit = (action, outcome, details = {}, auditId) => {
   });
   projectAuditQueue = operation.then(() => undefined, () => undefined);
   return operation;
-};
-
-const writeMalformedFrame = () => {
-  const header = Buffer.alloc(4);
-  header.writeUInt32BE(MAX_FRAME_BYTES + 1, 0);
-  process.stdout.write(header);
 };
 
 /**
@@ -273,23 +266,10 @@ const handleHostIdentityAcceptance = async (identityRequest, negotiatedHostId) =
 };
 
 const main = async () => {
-  if (mode === "exit-before-ack") {
-    process.exitCode = 12;
-    return;
-  }
-
   const hello = await readFrame(process.stdin);
   if (hello.type !== "hello") {
     rejectHandshake("host_protocol_unexpected_message");
     return;
-  }
-
-  if (mode === "hang-before-ack") {
-    await new Promise(() => {});
-    return;
-  }
-  if (mode === "delayed-ack") {
-    await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
   if (
@@ -327,26 +307,10 @@ const main = async () => {
     return;
   }
 
-  if (mode === "malformed-frame") {
-    writeMalformedFrame();
-    return;
-  }
-
-  const major = mode === "incompatible-major"
-    ? protocolVersion.major + 1
-    : protocolVersion.major;
+  const major = protocolVersion.major;
   const identity = "local-host";
-  const hostId = mode === "unexpected-identity"
-    ? `host-${"0".repeat(24)}`
-    : negotiatedHostId;
-  const requiredCapabilities = mode === "unknown-required-capability"
-    ? ["sandking.control.slice-1", "sandking.future-required"]
-    : ["sandking.control.slice-1"];
-
-  // A test mode makes an inherited Controller secret observable only as a typed
-  // identity failure. The Controller never supplies such environment entries.
-  const secretLeaked = mode === "secret-probe"
-    && typeof process.env.SANDKING_CONTROLLER_SECRET === "string";
+  const hostId = negotiatedHostId;
+  const requiredCapabilities = ["sandking.control.slice-1"];
 
   writeFrame(process.stdout, {
     type: "hello-ack",
@@ -357,7 +321,7 @@ const main = async () => {
       version: `${major}.${protocolVersion.minor}.${protocolVersion.patch}`,
     },
     release: releaseVersion,
-    identity: secretLeaked ? "controller-secret-leaked" : identity,
+    identity,
     hostId,
     peerIdentity: "controller-runtime",
     peerControllerId: hello.controllerId,
@@ -388,27 +352,12 @@ const main = async () => {
     dataDir,
     recordAudit: recordProjectAudit,
   });
-  let pausedAtCancellationAcceptance = false;
   const harnessRuns = await createHarnessRunManager({
     dataDir,
     hostId: negotiatedHostId,
     recordAudit: recordProjectAudit,
     loadLaunchContext: projectRegistry.loadLaunchContext,
-    faultInjector: (point) => {
-      if (
-        mode === "pause-after-harness-run-cancellation-acceptance"
-        && point === "harness_run_cancellation.after_state_commit"
-        && !pausedAtCancellationAcceptance
-      ) {
-        pausedAtCancellationAcceptance = true;
-        process.kill(process.pid, "SIGSTOP");
-      }
-    },
   });
-  let delayedHarnessRunLaunchResponse = false;
-  let pausedAfterProjectRegistration = false;
-  let startupObservationCompleted = false;
-
   // The Host is a durable process boundary. It remains available after
   // negotiation and keeps control and opaque bulk frames structurally distinct.
   while (true) {
@@ -434,17 +383,6 @@ const main = async () => {
     if (frame.message.type === "project.register") {
       const outcome = await projectRegistry.registerProject(frame.message);
       writeFrame(process.stdout, outcome);
-      if (
-        mode === "pause-after-project-registration"
-        && !pausedAfterProjectRegistration
-        && "type" in outcome
-        && outcome.type === "project.register.result"
-        && "code" in outcome
-        && outcome.code === "project_registered"
-      ) {
-        pausedAfterProjectRegistration = true;
-        process.kill(process.pid, "SIGSTOP");
-      }
       continue;
     }
     if (frame.message.type === "harness.conformance.inspect") {
@@ -464,10 +402,6 @@ const main = async () => {
     }
     if (frame.message.type === "harness.run.launch") {
       const outcome = await harnessRuns.launch(frame.message);
-      if (mode === "delayed-harness-run-launch-response" && !delayedHarnessRunLaunchResponse) {
-        delayedHarnessRunLaunchResponse = true;
-        await new Promise((resolve) => setTimeout(resolve, 3_250));
-      }
       writeFrame(process.stdout, outcome);
       continue;
     }
@@ -488,11 +422,6 @@ const main = async () => {
       continue;
     }
     if (frame.message.type === "harness.run.observe") {
-      if (mode === "malformed-frame-after-negotiation" && startupObservationCompleted) {
-        writeMalformedFrame();
-        continue;
-      }
-      startupObservationCompleted = true;
       writeFrame(process.stdout, await harnessRuns.observe(frame.message));
       continue;
     }

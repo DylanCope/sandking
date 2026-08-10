@@ -7,7 +7,10 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { launchBrowser } from "./browser-launch.mjs";
-import { installCurrentPackage } from "./installed-package.mjs";
+import {
+  enableInstalledHostModeCli,
+  installCurrentPackage,
+} from "./installed-package.mjs";
 
 const execFileAsync = promisify(execFile);
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -469,6 +472,8 @@ test("Host loss after accepted Project registration preserves its identity and e
   const productEnvironment = { ...process.env, HOME: userHome };
   let pausedHostPid = null;
 
+  await enableInstalledHostModeCli(installed);
+
   try {
     const { stdout } = await execFileAsync(installed.command, [
       "launch",
@@ -697,6 +702,8 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
   ]);
   const installed = await installCurrentPackage(root);
   const productEnvironment = { ...process.env, HOME: userHome };
+
+  await enableInstalledHostModeCli(installed);
 
   try {
     const { stdout } = await execFileAsync(installed.command, [

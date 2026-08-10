@@ -9,7 +9,10 @@ import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { launchBrowser } from "./browser-launch.mjs";
-import { installCurrentPackage } from "./installed-package.mjs";
+import {
+  enableInstalledHostModeCli,
+  installCurrentPackage,
+} from "./installed-package.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -82,6 +85,7 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
     mkdir(launchAgentsDirectory, { recursive: true }),
   ]);
   const installed = await installCurrentPackage(root);
+  await enableInstalledHostModeCli(installed);
   const instrumentedCommands = [
     "sudo", "apt", "apt-get", "dnf", "yum", "apk", "pacman", "brew",
     "systemctl", "launchctl", "service",

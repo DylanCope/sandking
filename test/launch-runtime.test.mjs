@@ -9,13 +9,15 @@ import { launchRuntime, stopRuntime } from "../src/runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 const cliPath = join(process.cwd(), "src", "cli.mjs");
+const hostModeCliPath = join(process.cwd(), "test", "host-mode-cli.mjs");
+const cliPathFor = (args) => args.includes("--host-mode") ? hostModeCliPath : cliPath;
 
 /** @param {string[]} args @param {{env?: NodeJS.ProcessEnv, cwd?: string}} [options] */
 const runCli = async (args, options = {}) => {
   const boundedArgs = args[0] === "launch" && !args.includes("--startup-timeout-ms")
     ? [args[0], "--startup-timeout-ms", "60000", ...args.slice(1)]
     : args;
-  const { stdout } = await execFileAsync(process.execPath, [cliPath, ...boundedArgs], {
+  const { stdout } = await execFileAsync(process.execPath, [cliPathFor(args), ...boundedArgs], {
     cwd: options.cwd ?? tmpdir(),
     env: { ...process.env, ...options.env },
   });
@@ -28,7 +30,7 @@ const runFailingCli = async (args) => {
     ? [args[0], "--startup-timeout-ms", "60000", ...args.slice(1)]
     : args;
   try {
-    await execFileAsync(process.execPath, [cliPath, ...boundedArgs], {
+    await execFileAsync(process.execPath, [cliPathFor(args), ...boundedArgs], {
       cwd: tmpdir(),
       env: process.env,
     });
@@ -699,7 +701,7 @@ test("a partial stale launch lock left before its owner was recorded is recovere
 test("killing launch before readiness cannot orphan its runtime and Host", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-killed-launch-"));
   const launcher = spawn(process.execPath, [
-    cliPath,
+    hostModeCliPath,
     "launch",
     "--data-dir",
     dataDir,

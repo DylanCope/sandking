@@ -658,10 +658,11 @@ if (command === "probe") {
     if (progressRecordCount === 1) {
       await new Promise((resolve) => setTimeout(resolve, 140));
     }
-    if (normalized.issueNumber === 999999993) {
-      // This reserved packaged-Cockpit fixture remains live until the selected
-      // run is cancelled. Wall-clock completion made the public Cancel control
-      // depend on launch, reload, and browser scheduling speed.
+    if ([999999993, 999999994].includes(normalized.issueNumber)) {
+      // These reserved packaged-Cockpit fixtures remain live until the
+      // selected run is cancelled. The latter deliberately ignores
+      // cooperative cancellation so complete-tree forced termination can be
+      // reached without depending on browser polling speed.
       setInterval(() => undefined, 1000);
     } else {
       const terminal = {

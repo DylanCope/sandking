@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -118,6 +118,20 @@ test("an installed production package launches outside the source checkout", asy
       });
       assert.equal(discoveredHelp, help);
     }
+
+    const prohibitedFaultState = join(root, "prohibited-fault-state");
+    await assert.rejects(execFileAsync(command, [
+      "launch", "--data-dir", prohibitedFaultState,
+      "--host-mode", "pause-after-harness-run-cancellation-acceptance",
+      "--json", "--no-open",
+    ], { cwd: root, env: process.env }));
+    await assert.rejects(access(prohibitedFaultState));
+
+    const hostCommand = join(installDirectory, "node_modules", ".bin", "sandking-host");
+    await assert.rejects(execFileAsync(hostCommand, [
+      "--mode", "hang-before-ack", "--data-dir", prohibitedFaultState,
+    ], { cwd: root, env: process.env }));
+    await assert.rejects(access(prohibitedFaultState));
 
     const { stdout } = await execFileAsync(command, [
       "launch", "--data-dir", runtimeDirectory, "--json", "--no-open",

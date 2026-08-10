@@ -49,15 +49,12 @@ import {
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
-  /** @type {{dataDir?: string, hostMode?: string, expectedHostId?: string, allowHostIdentityCreate?: boolean, lifecycleRevision?: number, startupId?: string, browserSessionTtlMs?: number}} */
+  /** @type {{dataDir?: string, expectedHostId?: string, allowHostIdentityCreate?: boolean, lifecycleRevision?: number, startupId?: string, browserSessionTtlMs?: number}} */
   const result = {};
   for (let index = 0; index < argv.length; index += 1) {
     const current = argv[index];
     if (current === "--data-dir") {
       result.dataDir = argv[index + 1];
-      index += 1;
-    } else if (current === "--host-mode") {
-      result.hostMode = argv[index + 1];
       index += 1;
     } else if (current === "--expected-host-id") {
       result.expectedHostId = argv[index + 1];
@@ -94,7 +91,7 @@ const parseArgs = (argv) => {
   ) {
     throw new Error("runtime_browser_session_ttl_missing");
   }
-  return /** @type {{dataDir: string, hostMode?: string, expectedHostId: string, allowHostIdentityCreate?: boolean, lifecycleRevision: number, startupId: string, browserSessionTtlMs: number}} */ (result);
+  return /** @type {{dataDir: string, expectedHostId: string, allowHostIdentityCreate?: boolean, lifecycleRevision: number, startupId: string, browserSessionTtlMs: number}} */ (result);
 };
 
 const args = parseArgs(process.argv.slice(2));
@@ -1056,9 +1053,6 @@ const launchHost = async (runtimeId) => {
   if (args.allowHostIdentityCreate) {
     hostArgs.push("--allow-host-identity-create");
   }
-  if (args.hostMode) {
-    hostArgs.push("--mode", args.hostMode);
-  }
 
   // This explicit environment is the credential boundary. Controller-side
   // environment variables, provider credentials, and NODE_OPTIONS do not cross it.
@@ -1079,19 +1073,9 @@ const launchHost = async (runtimeId) => {
   });
 
   try {
-    const controllerProtocol = args.hostMode === "controller-incompatible-major"
-      ? {
-          ...protocolVersion,
-          major: protocolVersion.major + 1,
-          version: `${protocolVersion.major + 1}.${protocolVersion.minor}.${protocolVersion.patch}`,
-        }
-      : protocolVersion;
-    const controllerRequiredCapabilities = args.hostMode === "controller-unknown-required-capability"
-      ? [...hostCapabilities, "sandking.controller.future-required"]
-      : [...hostCapabilities];
-    const controllerSchemaDigest = args.hostMode === "controller-schema-mismatch"
-      ? `sha256:${"0".repeat(64)}`
-      : HOST_SCHEMA_DIGEST;
+    const controllerProtocol = protocolVersion;
+    const controllerRequiredCapabilities = [...hostCapabilities];
+    const controllerSchemaDigest = HOST_SCHEMA_DIGEST;
 
     writeFrame(child.stdin, {
       type: "hello",

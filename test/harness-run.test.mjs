@@ -21,6 +21,10 @@ import {
   scheduleCancellationEscalation,
 } from "../src/harness-runs.mjs";
 import { createProjectRegistry } from "../src/project-registration.mjs";
+import {
+  qualifyIssue164FaultPoint,
+  retainIssue164FaultPointResults,
+} from "./issue-164-fault-results.mjs";
 
 const execFileAsync = promisify(execFile);
 const hostId = `host-${"1".repeat(24)}`;
@@ -643,7 +647,94 @@ test("startup completes a cancellation accepted before signalling without relaun
     assert.deepEqual(repeated.events, observation.events);
     assert.deepEqual(repeated.outcome, observation.outcome);
     assert.deepEqual((await readdir(fixture.projectPath)).sort(), projectFilesBefore);
+    qualifyIssue164FaultPoint(
+      "harness_run_cancellation.after_state_commit",
+      "startup completes a cancellation accepted before signalling without relaunching work",
+    );
 
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("cancellation interrupted after its complete commit replays once after restart", async () => {
+  const fixture = await createFixture("sandking-harness-cancellation-after-commit-");
+  const projectFilesBefore = (await readdir(fixture.projectPath)).sort();
+  let interruptLaunch = true;
+  try {
+    const manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      faultInjector: (point) => {
+        if (point === "harness_run_launch.after_state_commit" && interruptLaunch) {
+          interruptLaunch = false;
+          throw new Error("seed_cancellation_after_commit_without_supervision");
+        }
+        if (point === "harness_run_cancellation.after_commit") {
+          throw new Error("injected_cancellation_after_complete_commit");
+        }
+      },
+    });
+    await assert.rejects(manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      999_999_993,
+      { idempotencyKey: "cancellation-after-commit-launch" },
+    )), /seed_cancellation_after_commit_without_supervision/);
+    const launchedState = JSON.parse(
+      await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+    );
+    const run = launchedState.runs[0];
+    const request = cancellationRequest(run.harnessRunId, {
+      idempotencyKey: "cancellation-after-complete-commit",
+    });
+    await assert.rejects(
+      manager.cancel(request),
+      /injected_cancellation_after_complete_commit/,
+    );
+    const committed = JSON.parse(
+      await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.equal(committed.runs[0].status, "cancelling");
+    assert.equal(committed.cancellationOutcomes.length, 1);
+    assert.equal(fixture.audits.filter((audit) =>
+      audit.action === "harness.run.cancel" && audit.outcome === "accepted").length, 1);
+
+    const restarted = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: async () => {
+        throw new Error("committed_cancellation_restart_must_not_resolve_launch_context");
+      },
+      inspectInterruptedRunTermination: async () => ({
+        platform: process.platform,
+        status: "confirmed",
+      }),
+    });
+    const converged = await restarted.observe({
+      requestId: "observe-cancellation-after-commit-restart",
+      harnessRunId: run.harnessRunId,
+      afterSequence: 0,
+    });
+    assert.equal(converged.run.status, "cancelled");
+    assert.equal(converged.events.filter((event) =>
+      event.type === "harness_run_cancellation_accepted").length, 1);
+    assert.equal(converged.events.filter((event) =>
+      event.type === "harness_run_cancelled").length, 1);
+    const replay = await restarted.cancel({
+      ...request,
+      requestId: "replay-cancellation-after-commit-restart",
+    });
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(fixture.audits.filter((audit) =>
+      audit.action === "harness.run.cancel" && audit.outcome === "accepted").length, 1);
+    assert.deepEqual((await readdir(fixture.projectPath)).sort(), projectFilesBefore);
+    qualifyIssue164FaultPoint(
+      "harness_run_cancellation.after_commit",
+      "cancellation interrupted after its complete commit replays once after restart",
+    );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -720,6 +811,10 @@ test("restart does not invent cancellation when interruption precedes its accept
     });
     assert.equal(retry.code, "harness_run_not_cancellable");
     assert.equal(retry.idempotentReplay, false);
+    qualifyIssue164FaultPoint(
+      "harness_run_cancellation.before_commit",
+      "restart does not invent cancellation when interruption precedes its acceptance commit",
+    );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -917,6 +1012,7 @@ test("startup retains recovery-required truth when accepted cancellation termina
 
 test("restart arbitrates a signal dispatched before its durable publication", async () => {
   const fixture = await createFixture("sandking-harness-run-cancel-after-signal-dispatch-");
+  let manager;
   let reportSignalDispatched;
   let releaseSignalDispatch;
   const signalDispatched = new Promise((resolve) => {
@@ -927,7 +1023,7 @@ test("restart arbitrates a signal dispatched before its durable publication", as
   });
   let signalDispatchCount = 0;
   try {
-    const manager = await createHarnessRunManager({
+    manager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId,
       recordAudit: fixture.recordAudit,
@@ -998,15 +1094,20 @@ test("restart arbitrates a signal dispatched before its durable publication", as
     });
     assert.equal(replay.idempotentReplay, true);
     assert.equal(signalDispatchCount, 1);
+    qualifyIssue164FaultPoint(
+      "harness_run_cancellation.cooperative_signal.after_dispatch",
+      "restart arbitrates a signal dispatched before its durable publication",
+    );
   } finally {
     releaseSignalDispatch?.();
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await manager?.waitForIdle();
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
 test("cooperative signal publication is durable before restart terminal arbitration", async () => {
   const fixture = await createFixture("sandking-harness-run-cancel-signal-publication-");
+  let manager;
   let reportSignalPublication;
   let releaseSignalPublication;
   const signalPublished = new Promise((resolve) => {
@@ -1015,13 +1116,9 @@ test("cooperative signal publication is durable before restart terminal arbitrat
   const signalPublicationRelease = new Promise((resolve) => {
     releaseSignalPublication = resolve;
   });
-  let reportBackgroundConfirmation;
-  const backgroundConfirmation = new Promise((resolve) => {
-    reportBackgroundConfirmation = resolve;
-  });
   let signalPublicationCount = 0;
   try {
-    const manager = await createHarnessRunManager({
+    manager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId,
       recordAudit: fixture.recordAudit,
@@ -1032,10 +1129,6 @@ test("cooperative signal publication is durable before restart terminal arbitrat
           signalPublicationCount += 1;
           reportSignalPublication?.();
           await signalPublicationRelease;
-        }
-        if (point
-          === "harness_run_cancellation.termination_confirmation.after_state_commit") {
-          reportBackgroundConfirmation?.();
         }
       },
     });
@@ -1098,19 +1191,20 @@ test("cooperative signal publication is durable before restart terminal arbitrat
     });
     assert.equal(replay.idempotentReplay, true);
     assert.equal(signalPublicationCount, 1);
+    qualifyIssue164FaultPoint(
+      "harness_run_cancellation.cooperative_signal.after_state_commit",
+      "cooperative signal publication is durable before restart terminal arbitration",
+    );
   } finally {
     releaseSignalPublication?.();
-    await Promise.race([
-      backgroundConfirmation,
-      new Promise((resolve) => setTimeout(resolve, 2_000)),
-    ]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await manager?.waitForIdle();
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
 test("retained termination confirmation finalizes accepted cancellation exactly once after restart", async () => {
   const fixture = await createFixture("sandking-harness-run-cancel-confirmation-restart-");
+  let manager;
   let reportConfirmationCommit;
   let releaseConfirmationCommit;
   const confirmationCommitted = new Promise((resolve) => {
@@ -1120,7 +1214,7 @@ test("retained termination confirmation finalizes accepted cancellation exactly 
     releaseConfirmationCommit = resolve;
   });
   try {
-    const manager = await createHarnessRunManager({
+    manager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId,
       recordAudit: fixture.recordAudit,
@@ -1185,15 +1279,20 @@ test("retained termination confirmation finalizes accepted cancellation exactly 
       requestId: "replay-after-confirmed-cancellation-restart",
     });
     assert.equal(replay.idempotentReplay, true);
+    qualifyIssue164FaultPoint(
+      "harness_run_cancellation.termination_confirmation.after_state_commit",
+      "retained termination confirmation finalizes accepted cancellation exactly once after restart",
+    );
   } finally {
     releaseConfirmationCommit?.();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await manager?.waitForIdle();
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
 test("forced signal publication survives restart without a second escalation", async () => {
   const fixture = await createFixture("sandking-harness-run-cancel-forced-signal-restart-");
+  let manager;
   let reportForcedSignalCommit;
   let releaseForcedSignalCommit;
   const forcedSignalCommitted = new Promise((resolve) => {
@@ -1202,13 +1301,9 @@ test("forced signal publication survives restart without a second escalation", a
   const forcedSignalCommitRelease = new Promise((resolve) => {
     releaseForcedSignalCommit = resolve;
   });
-  let reportForcedBackgroundConfirmation;
-  const forcedBackgroundConfirmation = new Promise((resolve) => {
-    reportForcedBackgroundConfirmation = resolve;
-  });
   let forcedSignalPublicationCount = 0;
   try {
-    const manager = await createHarnessRunManager({
+    manager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId,
       recordAudit: fixture.recordAudit,
@@ -1219,10 +1314,6 @@ test("forced signal publication survives restart without a second escalation", a
           forcedSignalPublicationCount += 1;
           reportForcedSignalCommit?.();
           await forcedSignalCommitRelease;
-        }
-        if (point
-          === "harness_run_cancellation.termination_confirmation.after_state_commit") {
-          reportForcedBackgroundConfirmation?.();
         }
       },
     });
@@ -1278,14 +1369,159 @@ test("forced signal publication survives restart without a second escalation", a
     });
     assert.equal(replay.idempotentReplay, true);
     assert.equal(forcedSignalPublicationCount, 1);
+    qualifyIssue164FaultPoint(
+      "harness_run_cancellation.forced_signal.after_state_commit",
+      "forced signal publication survives restart without a second escalation",
+    );
   } finally {
     releaseForcedSignalCommit?.();
-    await Promise.race([
-      forcedBackgroundConfirmation,
-      new Promise((resolve) => setTimeout(resolve, 2_000)),
-    ]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await manager?.waitForIdle();
     await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("pre-publication cancellation signal and termination faults converge after restart", async () => {
+  const cases = [
+    {
+      point: "harness_run_cancellation.cooperative_signal.before_dispatch",
+      issueNumber: 999_999_994,
+      cooperativePublished: false,
+      forcedPublished: false,
+    },
+    {
+      point: "harness_run_cancellation.forced_signal.before_dispatch",
+      issueNumber: 999_999_992,
+      cooperativePublished: true,
+      forcedPublished: false,
+    },
+    {
+      point: "harness_run_cancellation.forced_signal.after_dispatch",
+      issueNumber: 999_999_992,
+      cooperativePublished: true,
+      forcedPublished: false,
+    },
+    {
+      point: "harness_run_cancellation.termination_confirmation.before_commit",
+      issueNumber: 999_999_993,
+      cooperativePublished: true,
+      forcedPublished: false,
+    },
+  ];
+
+  for (const [index, boundary] of cases.entries()) {
+    const fixture = await createFixture(`sandking-cancellation-signal-boundary-${index}-`);
+    const projectFilesBefore = (await readdir(fixture.projectPath)).sort();
+    let reportFault;
+    const faultReached = new Promise((resolve) => { reportFault = resolve; });
+    let injections = 0;
+    try {
+      const manager = await createHarnessRunManager({
+        dataDir: fixture.dataDir,
+        hostId,
+        recordAudit: fixture.recordAudit,
+        loadLaunchContext: fixture.registry.loadLaunchContext,
+        cancellationGraceMs: 50,
+        faultInjector: (point) => {
+          if (point !== boundary.point || injections > 0) return;
+          injections += 1;
+          reportFault();
+          throw new Error(`injected_cancellation_signal_boundary_${index}`);
+        },
+      });
+      const launched = await manager.launch(launchRequest(
+        fixture.registered.project.projectId,
+        boundary.issueNumber,
+        { idempotencyKey: `cancellation-signal-boundary-launch-${index}` },
+      ));
+      await waitForRunStatus(manager, launched.run.harnessRunId, "running");
+      const request = cancellationRequest(launched.run.harnessRunId, {
+        idempotencyKey: `cancellation-signal-boundary-cancel-${index}`,
+      });
+      const accepted = await manager.cancel(request);
+      assert.equal(accepted.code, "harness_run_cancellation_accepted");
+      await Promise.race([
+        faultReached,
+        new Promise((_, reject) => setTimeout(() => reject(
+          new Error(`cancellation_signal_boundary_not_reached:${boundary.point}`),
+        ), 5_000)),
+      ]);
+      await manager.waitForIdle();
+
+      const interrupted = JSON.parse(
+        await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+      ).runs[0];
+      assert.equal(interrupted.status, "cancelling", boundary.point);
+      assert.equal(interrupted.outcome, null, boundary.point);
+      assert.equal(
+        interrupted.cancellation.cooperativeSignalSentAt !== null,
+        boundary.cooperativePublished,
+        boundary.point,
+      );
+      assert.equal(
+        interrupted.cancellation.forcedTerminationSentAt !== null,
+        boundary.forcedPublished,
+        boundary.point,
+      );
+      assert.equal(interrupted.cancellation.terminationConfirmedAt, null, boundary.point);
+
+      let inspections = 0;
+      const restarted = await createHarnessRunManager({
+        dataDir: fixture.dataDir,
+        hostId,
+        recordAudit: fixture.recordAudit,
+        loadLaunchContext: async () => {
+          throw new Error("signal_boundary_restart_must_not_resolve_launch_context");
+        },
+        inspectInterruptedRunTermination: async () => {
+          inspections += 1;
+          return { platform: process.platform, status: "confirmed" };
+        },
+      });
+      const converged = await restarted.observe({
+        requestId: `observe-cancellation-signal-boundary-${index}`,
+        harnessRunId: launched.run.harnessRunId,
+        afterSequence: 0,
+      });
+      assert.equal(inspections, 1, boundary.point);
+      assert.equal(converged.run.status, "cancelled", boundary.point);
+      assert.equal(converged.outcome.incompleteResult, true, boundary.point);
+      assert.equal(converged.events.filter((event) =>
+        event.type === "harness_run_cancellation_accepted").length, 1, boundary.point);
+      assert.equal(converged.events.filter((event) =>
+        event.type === "harness_run_cancelled").length, 1, boundary.point);
+      const replay = await restarted.cancel({
+        ...request,
+        requestId: `replay-cancellation-signal-boundary-${index}`,
+      });
+      assert.equal(replay.idempotentReplay, true, boundary.point);
+      assert.equal(injections, 1, boundary.point);
+
+      const repeated = await createHarnessRunManager({
+        dataDir: fixture.dataDir,
+        hostId,
+        recordAudit: fixture.recordAudit,
+        loadLaunchContext: async () => {
+          throw new Error("signal_boundary_terminal_restart_must_not_relaunch");
+        },
+        inspectInterruptedRunTermination: async () => {
+          throw new Error("signal_boundary_terminal_restart_must_not_reinspect");
+        },
+      });
+      const repeatedObservation = await repeated.observe({
+        requestId: `observe-repeated-cancellation-signal-boundary-${index}`,
+        harnessRunId: launched.run.harnessRunId,
+        afterSequence: 0,
+      });
+      assert.deepEqual(repeatedObservation.events, converged.events, boundary.point);
+      assert.deepEqual(repeatedObservation.outcome, converged.outcome, boundary.point);
+      assert.deepEqual((await readdir(fixture.projectPath)).sort(), projectFilesBefore);
+      qualifyIssue164FaultPoint(
+        boundary.point,
+        "pre-publication cancellation signal and termination faults converge after restart",
+      );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
   }
 });
 
@@ -1381,7 +1617,7 @@ test("uncertain termination confirmation never invents a cancelled outcome", asy
       recordAudit: fixture.recordAudit,
       loadLaunchContext: fixture.registry.loadLaunchContext,
       faultInjector: (point) => {
-        if (point === "harness_run_cancellation.before_termination_confirmation_commit") {
+        if (point === "harness_run_cancellation.termination_confirmation.before_commit") {
           reportConfirmationAttempt();
           throw new Error("simulated_termination_confirmation_uncertainty");
         }
@@ -1396,6 +1632,7 @@ test("uncertain termination confirmation never invents a cancelled outcome", asy
       idempotencyKey: "uncertain-termination-confirmation-key",
     }));
     await confirmationAttempted;
+    await manager.waitForIdle();
 
     const observation = await manager.observe({
       requestId: "observe-uncertain-cancellation",
@@ -1870,6 +2107,31 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
         .then((source) => JSON.parse(source).runs.length, () => 0),
       0,
     );
+    const preRestarted = await createHarnessRunManager({
+      dataDir: preCommit.dataDir,
+      hostId,
+      recordAudit: preCommit.recordAudit,
+      loadLaunchContext: preCommit.registry.loadLaunchContext,
+    });
+    const preRestartObservation = await preRestarted.observe({
+      requestId: "observe-pre-commit-launch-after-restart",
+      harnessRunId: null,
+      afterSequence: 0,
+    });
+    assert.equal(preRestartObservation.run, null);
+    const retriedPreCommit = await preRestarted.launch({
+      ...preRequest,
+      requestId: "retry-pre-commit-launch-after-restart",
+    });
+    assert.equal(retriedPreCommit.idempotentReplay, false);
+    await waitForTerminal(preRestarted, retriedPreCommit.run.harnessRunId);
+    assert.equal(JSON.parse(
+      await readFile(join(preCommit.dataDir, "harness-runs.json"), "utf8"),
+    ).runs.length, 1);
+    qualifyIssue164FaultPoint(
+      pointBeforeCommit,
+      "launch commit interruptions leave pre-commit work unclaimed and replay post-commit work",
+    );
 
     const projectFilesBefore = (await readdir(stateCommit.projectPath)).sort();
     const stateFaults = [];
@@ -1962,6 +2224,10 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
     assert.equal(afterReplay.runs[0].events.at(-1).type, "harness_run_failed");
     assert.equal(afterReplay.runs[0].outcome.code, "host_daemon_interrupted");
     assert.deepEqual((await readdir(stateCommit.projectPath)).sort(), projectFilesBefore);
+    qualifyIssue164FaultPoint(
+      pointAfterStateCommit,
+      "launch commit interruptions leave pre-commit work unclaimed and replay post-commit work",
+    );
 
     const postFaults = [];
     const postManager = await createHarnessRunManager({
@@ -2014,6 +2280,10 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
     assert.equal(postReplay.run.harnessRunId, postState.runs[0].harnessRunId);
     assert.equal(postCommit.audits.filter((audit) =>
       audit.action === "harness.run.launch" && audit.outcome === "accepted").length, 1);
+    qualifyIssue164FaultPoint(
+      pointAfterCommit,
+      "launch commit interruptions leave pre-commit work unclaimed and replay post-commit work",
+    );
 
     let interruptAcceptedAudit = true;
     const auditManager = await createHarnessRunManager({
@@ -2063,6 +2333,195 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
       rm(postCommit.root, { recursive: true, force: true }),
       rm(auditCommit.root, { recursive: true, force: true }),
     ]);
+  }
+});
+
+test("readiness and terminal-envelope interruptions converge from exact pre/post history", async () => {
+  const boundaries = [
+    {
+      point: "harness_run_lifecycle.adapter_ready.before_commit",
+      retainedStatus: "starting",
+      retainedEvents: ["harness_run_created"],
+      retainedOutcome: false,
+    },
+    {
+      point: "harness_run_lifecycle.adapter_ready.after_state_commit",
+      retainedStatus: "running",
+      retainedEvents: ["harness_run_created", "harness_adapter_ready"],
+      retainedOutcome: false,
+    },
+    {
+      point: "harness_run_terminal_envelope.before_commit",
+      retainedStatus: "running",
+      retainedEvents: [
+        "harness_run_created",
+        "harness_adapter_ready",
+        "harness_progress_published",
+      ],
+      retainedOutcome: false,
+    },
+    {
+      point: "harness_run_outcome.before_commit",
+      retainedStatus: "running",
+      retainedEvents: [
+        "harness_run_created",
+        "harness_adapter_ready",
+        "harness_progress_published",
+      ],
+      retainedOutcome: false,
+    },
+    {
+      point: "harness_run_terminal_envelope.after_state_commit",
+      retainedStatus: "succeeded",
+      retainedEvents: [
+        "harness_run_created",
+        "harness_adapter_ready",
+        "harness_progress_published",
+        "harness_run_succeeded",
+      ],
+      retainedOutcome: true,
+    },
+    {
+      point: "harness_run_outcome.after_state_commit",
+      retainedStatus: "succeeded",
+      retainedEvents: [
+        "harness_run_created",
+        "harness_adapter_ready",
+        "harness_progress_published",
+        "harness_run_succeeded",
+      ],
+      retainedOutcome: true,
+    },
+  ];
+
+  for (const [index, boundary] of boundaries.entries()) {
+    const fixture = await createFixture(`sandking-harness-lifecycle-boundary-${index}-`);
+    const projectFilesBefore = (await readdir(fixture.projectPath)).sort();
+    let faultReached;
+    const reachedFault = new Promise((resolve) => { faultReached = resolve; });
+    let injected = false;
+    try {
+      const manager = await createHarnessRunManager({
+        dataDir: fixture.dataDir,
+        hostId,
+        recordAudit: fixture.recordAudit,
+        loadLaunchContext: fixture.registry.loadLaunchContext,
+        faultInjector: (point) => {
+          if (point !== boundary.point || injected) return;
+          injected = true;
+          faultReached();
+          throw new Error(`injected_lifecycle_boundary_${index}`);
+        },
+      });
+      const launched = await manager.launch(launchRequest(
+        fixture.registered.project.projectId,
+        164,
+        { idempotencyKey: `lifecycle-boundary-launch-${index}` },
+      ));
+      let faultTimeout;
+      try {
+        await Promise.race([
+          reachedFault,
+          new Promise((_, reject) => {
+            faultTimeout = setTimeout(() => reject(
+              new Error(`lifecycle_boundary_not_reached:${boundary.point}`),
+            ), 10_000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(faultTimeout);
+      }
+      // Restart only after the original Host-owned supervision operation has
+      // actually unwound from the injected interruption. A timing delay would
+      // leave this canonical recovery proof vulnerable to a cross-manager
+      // write race.
+      await manager.waitForIdle();
+
+      const stateAfterFault = JSON.parse(
+        await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+      );
+      const retainedRun = stateAfterFault.runs[0];
+      assert.equal(retainedRun.harnessRunId, launched.run.harnessRunId);
+      assert.equal(retainedRun.status, boundary.retainedStatus, boundary.point);
+      assert.deepEqual(
+        retainedRun.events.map((event) => event.type),
+        boundary.retainedEvents,
+        boundary.point,
+      );
+      assert.equal(retainedRun.outcome !== null, boundary.retainedOutcome, boundary.point);
+      assert.notEqual(retainedRun.outcome?.code, "harness_adapter_start_failed");
+      const immutableSnapshot = structuredClone(retainedRun.executionSnapshot);
+      const retainedHistory = structuredClone(retainedRun.events);
+      const retainedOutcome = structuredClone(retainedRun.outcome);
+      let terminationInspections = 0;
+
+      const restarted = await createHarnessRunManager({
+        dataDir: fixture.dataDir,
+        hostId,
+        recordAudit: fixture.recordAudit,
+        loadLaunchContext: async () => {
+          throw new Error("lifecycle_restart_must_not_resolve_mutable_launch_context");
+        },
+        inspectInterruptedRunTermination: async () => {
+          terminationInspections += 1;
+          return { platform: process.platform, status: "confirmed" };
+        },
+      });
+      const converged = await restarted.observe({
+        requestId: `observe-lifecycle-boundary-${index}-after-restart`,
+        harnessRunId: launched.run.harnessRunId,
+        afterSequence: 0,
+      });
+      assert.deepEqual(converged.run.executionSnapshot, immutableSnapshot, boundary.point);
+      assert.deepEqual(
+        converged.events.slice(0, retainedHistory.length),
+        retainedHistory,
+        boundary.point,
+      );
+      assert.equal(converged.events.filter((event) => [
+        "harness_run_succeeded",
+        "harness_run_failed",
+        "harness_run_cancelled",
+      ].includes(event.type)).length, 1, boundary.point);
+
+      if (boundary.retainedOutcome) {
+        assert.equal(terminationInspections, 0, boundary.point);
+        assert.equal(converged.run.status, "succeeded", boundary.point);
+        assert.deepEqual(converged.outcome, retainedOutcome, boundary.point);
+      } else {
+        assert.equal(terminationInspections, 1, boundary.point);
+        assert.equal(converged.run.status, "failed", boundary.point);
+        assert.equal(converged.outcome.code, "host_daemon_interrupted", boundary.point);
+        assert.equal(converged.outcome.incompleteResult, true, boundary.point);
+        assert.equal(converged.outcome.terminalEnvelope, null, boundary.point);
+      }
+
+      const repeated = await createHarnessRunManager({
+        dataDir: fixture.dataDir,
+        hostId,
+        recordAudit: fixture.recordAudit,
+        loadLaunchContext: async () => {
+          throw new Error("terminal_lifecycle_history_must_not_relaunch");
+        },
+        inspectInterruptedRunTermination: async () => {
+          throw new Error("terminal_lifecycle_history_must_not_be_reinspected");
+        },
+      });
+      const repeatedObservation = await repeated.observe({
+        requestId: `observe-lifecycle-boundary-${index}-after-second-restart`,
+        harnessRunId: launched.run.harnessRunId,
+        afterSequence: 0,
+      });
+      assert.deepEqual(repeatedObservation.events, converged.events, boundary.point);
+      assert.deepEqual(repeatedObservation.outcome, converged.outcome, boundary.point);
+      assert.deepEqual((await readdir(fixture.projectPath)).sort(), projectFilesBefore);
+      qualifyIssue164FaultPoint(
+        boundary.point,
+        "readiness and terminal-envelope interruptions converge from exact pre/post history",
+      );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
   }
 });
 
@@ -2628,6 +3087,143 @@ test("recovery recheck and finalization are durable, idempotent, and never inven
   }
 });
 
+test("every recovery publication fault resumes one hashed mutation without canonical duplication", async () => {
+  const fixture = await createFixture("sandking-harness-recovery-boundary-seed-");
+  const roots = [];
+  try {
+    const interruptedManager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      faultInjector: (point) => {
+        if (point === "harness_run_launch.after_state_commit") {
+          throw new Error("seed_recovery_boundary_state");
+        }
+      },
+    });
+    await assert.rejects(interruptedManager.launch(hashedLaunchRequest(launchRequest(
+      fixture.registered.project.projectId,
+      164,
+      { idempotencyKey: "recovery-boundary-seed" },
+    ))), /seed_recovery_boundary_state/);
+    const seededManager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      inspectInterruptedRunTermination: async () => ({
+        platform: process.platform,
+        status: "unconfirmed",
+      }),
+    });
+    const seeded = await seededManager.observe({
+      requestId: "observe-recovery-boundary-seed",
+      harnessRunId: null,
+      afterSequence: 0,
+    });
+    assert.equal(seeded.run.status, "recovery_required");
+    const seededStateText = await readFile(
+      join(fixture.dataDir, "harness-runs.json"),
+      "utf8",
+    );
+    const faultPoints = [
+      "harness_run_recovery.before_intent_commit",
+      "harness_run_recovery.after_intent_commit",
+      "harness_run_recovery.before_action",
+      "harness_run_recovery.after_action",
+      "harness_run_recovery.before_result_commit",
+      "harness_run_recovery.after_state_commit",
+      "harness_run_recovery.after_commit",
+    ];
+
+    for (const [index, faultPoint] of faultPoints.entries()) {
+      const dataDir = await mkdtemp(join(tmpdir(), `sandking-recovery-boundary-${index}-`));
+      roots.push(dataDir);
+      await writeFile(join(dataDir, "harness-runs.json"), seededStateText);
+      const audits = [];
+      const recordAudit = async (action, outcome, details = {}, requestedAuditId) => {
+        if (requestedAuditId) {
+          const existing = audits.find((audit) => audit.auditId === requestedAuditId);
+          if (existing) return requestedAuditId;
+        }
+        const auditId = requestedAuditId
+          ?? `audit-${String(audits.length + 1).padStart(24, "0")}`;
+        audits.push({ auditId, action, outcome, details });
+        return auditId;
+      };
+      let interrupt = true;
+      let inspections = 0;
+      const managerOptions = (faultInjector) => ({
+        dataDir,
+        hostId,
+        recordAudit,
+        loadLaunchContext: async () => {
+          throw new Error("recovery_resume_must_not_resolve_mutable_launch_context");
+        },
+        inspectInterruptedRunTermination: async () => {
+          inspections += 1;
+          return { platform: process.platform, status: "confirmed" };
+        },
+        ...(faultInjector ? { faultInjector } : {}),
+      });
+      const manager = await createHarnessRunManager(managerOptions((point) => {
+        if (point === faultPoint && interrupt) {
+          interrupt = false;
+          throw new Error(`injected_${index}_recovery_boundary`);
+        }
+      }));
+      const rawRetryKey = `recognizable-raw-recovery-boundary-${index}`;
+      const request = recoveryRequest(seeded.run.harnessRunId, "recheck", {
+        requestId: `recover-boundary-${index}`,
+        idempotencyKey: rawRetryKey,
+      });
+      await assert.rejects(manager.recover(request),
+        new RegExp(`injected_${index}_recovery_boundary`));
+      const afterFault = JSON.parse(
+        await readFile(join(dataDir, "harness-runs.json"), "utf8"),
+      );
+      assert.equal(afterFault.runs.length, 1);
+      assert.equal(afterFault.runs[0].events.filter((event) =>
+        event.type === "harness_run_recovery_required").length, 1);
+      assert.equal(afterFault.runs[0].events.some((event) =>
+        ["harness_run_succeeded", "harness_run_failed", "harness_run_cancelled"]
+          .includes(event.type)), false);
+
+      const restarted = await createHarnessRunManager(managerOptions());
+      const replay = await restarted.recover({
+        ...request,
+        requestId: `replay-recovery-boundary-${index}`,
+      });
+      assert.equal(replay.type, "harness.run.recover.result");
+      assert.equal(replay.code, "harness_recovery_rechecked");
+      assert.equal(replay.run.status, "recovery_required");
+      assert.deepEqual(replay.recovery.availableActions, ["finalize"]);
+      assert.ok(inspections <= 2);
+      const converged = JSON.parse(
+        await readFile(join(dataDir, "harness-runs.json"), "utf8"),
+      );
+      assert.equal(converged.recoveryMutations.length, 1);
+      assert.notEqual(converged.recoveryMutations[0].response, null);
+      assert.equal(converged.runs[0].events.filter((event) =>
+        event.type === "harness_run_recovery_required").length, 1);
+      assert.equal(audits.filter((audit) =>
+        audit.action === "harness.run.recover"
+        && audit.outcome === "accepted").length, 1);
+      assert.doesNotMatch(JSON.stringify({ converged, audits }), new RegExp(rawRetryKey));
+      qualifyIssue164FaultPoint(
+        faultPoint,
+        "every recovery publication fault resumes one hashed mutation without canonical duplication",
+      );
+    }
+  } finally {
+    await Promise.all([
+      rm(fixture.root, { recursive: true, force: true }),
+      ...roots.map((root) => rm(root, { recursive: true, force: true })),
+    ]);
+  }
+});
+
 test("recovery termination resumes one identity-bound action without exposing a process target", async () => {
   const fixture = await createFixture("sandking-harness-recovery-termination-");
   try {
@@ -2765,6 +3361,7 @@ test("recovery termination resumes one identity-bound action without exposing a 
 test("reconciliation commit boundaries converge idempotently after repeated startup", async () => {
   const preCommit = await createFixture("sandking-harness-reconcile-pre-commit-");
   const stateCommit = await createFixture("sandking-harness-reconcile-state-commit-");
+  const postCommit = await createFixture("sandking-harness-reconcile-post-commit-");
   const seedInterruptedLaunch = async (fixture, key) => {
     const manager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
@@ -2820,6 +3417,16 @@ test("reconciliation commit boundaries converge idempotently after repeated star
       await readFile(join(preCommit.dataDir, "harness-runs.json"), "utf8"),
     );
     assert.equal(preRecoveredState.runs[0].status, "failed");
+    await createHarnessRunManager(restartOptions(preCommit));
+    assert.deepEqual(JSON.parse(
+      await readFile(join(preCommit.dataDir, "harness-runs.json"), "utf8"),
+    ), preRecoveredState);
+    assert.equal(preCommit.audits.filter((audit) =>
+      audit.action === "harness.run.reconcile").length, 1);
+    qualifyIssue164FaultPoint(
+      "harness_run_reconciliation.before_commit",
+      "reconciliation commit boundaries converge idempotently after repeated startup",
+    );
 
     await seedInterruptedLaunch(stateCommit, "reconcile-state-commit");
     await assert.rejects(createHarnessRunManager(restartOptions(
@@ -2856,10 +3463,47 @@ test("reconciliation commit boundaries converge idempotently after repeated star
       audit.action === "harness.run.outcome").length, 1);
     assert.equal(repeated.runs[0].events.filter((event) =>
       event.type === "harness_run_failed").length, 1);
+    qualifyIssue164FaultPoint(
+      "harness_run_reconciliation.after_state_commit",
+      "reconciliation commit boundaries converge idempotently after repeated startup",
+    );
+
+    await seedInterruptedLaunch(postCommit, "reconcile-post-commit");
+    await assert.rejects(createHarnessRunManager(restartOptions(
+      postCommit,
+      (point) => {
+        if (point === "harness_run_reconciliation.after_commit") {
+          throw new Error("injected_reconciliation_post_commit_interrupt");
+        }
+      },
+    )), /injected_reconciliation_post_commit_interrupt/);
+    const fullyCommitted = JSON.parse(
+      await readFile(join(postCommit.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.equal(fullyCommitted.runs[0].status, "failed");
+    assert.equal(fullyCommitted.runs[0].outcome.code, "host_daemon_interrupted");
+    assert.equal(postCommit.audits.filter((audit) =>
+      audit.action === "harness.run.reconcile").length, 1);
+    assert.equal(postCommit.audits.filter((audit) =>
+      audit.action === "harness.run.outcome").length, 1);
+    await createHarnessRunManager(restartOptions(postCommit));
+    await createHarnessRunManager(restartOptions(postCommit));
+    assert.deepEqual(JSON.parse(
+      await readFile(join(postCommit.dataDir, "harness-runs.json"), "utf8"),
+    ), fullyCommitted);
+    assert.equal(postCommit.audits.filter((audit) =>
+      audit.action === "harness.run.reconcile").length, 1);
+    assert.equal(postCommit.audits.filter((audit) =>
+      audit.action === "harness.run.outcome").length, 1);
+    qualifyIssue164FaultPoint(
+      "harness_run_reconciliation.after_commit",
+      "reconciliation commit boundaries converge idempotently after repeated startup",
+    );
   } finally {
     await Promise.all([
       rm(preCommit.root, { recursive: true, force: true }),
       rm(stateCommit.root, { recursive: true, force: true }),
+      rm(postCommit.root, { recursive: true, force: true }),
     ]);
   }
 });
@@ -3378,6 +4022,153 @@ test("schema-v2 execution history migrates deterministically without losing acce
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("migration commit interruptions retry without losing or duplicating canonical history", async () => {
+  const fixture = await createFixture("sandking-harness-migration-boundaries-seed-");
+  const roots = [];
+  try {
+    const launched = await fixture.manager.launch(launchRequest(
+      fixture.registered.project.projectId,
+      164,
+      { idempotencyKey: "migration-boundary-launch" },
+    ));
+    await waitForTerminal(fixture.manager, launched.run.harnessRunId);
+    const current = JSON.parse(
+      await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+    );
+    const legacy = structuredClone(current);
+    legacy.schemaVersion = 2;
+    delete legacy.cancellationOutcomes;
+    delete legacy.recoveryMutations;
+    for (const run of legacy.runs) {
+      delete run.executionSnapshot;
+      delete run.cancellation;
+      delete run.recovery;
+      delete run.cancellationReconciliation;
+      delete run.launchIdempotencyKeyHash;
+    }
+    for (const outcome of [...legacy.launchOutcomes, ...legacy.legacyStartOutcomes]) {
+      if (!outcome.response?.run) continue;
+      delete outcome.response.run.executionSnapshot;
+      delete outcome.response.run.cancellation;
+      delete outcome.response.run.recovery;
+      delete outcome.response.run.launchIdempotencyKeyHash;
+    }
+    const legacyText = `${JSON.stringify(legacy, null, 2)}\n`;
+    const makeBoundary = async (name) => {
+      const dataDir = await mkdtemp(join(tmpdir(), `sandking-migration-${name}-`));
+      roots.push(dataDir);
+      await writeFile(join(dataDir, "harness-runs.json"), legacyText);
+      const audits = [];
+      return {
+        dataDir,
+        audits,
+        recordAudit: async (action, outcome, details, auditId) => {
+          if (!audits.some((audit) => audit.auditId === auditId)) {
+            audits.push({ action, outcome, details, auditId });
+          }
+          return auditId;
+        },
+      };
+    };
+    const optionsFor = (boundary, faultInjector) => ({
+      dataDir: boundary.dataDir,
+      hostId,
+      recordAudit: boundary.recordAudit,
+      loadLaunchContext: async () => {
+        throw new Error("migration_must_not_resolve_mutable_launch_context");
+      },
+      ...(faultInjector ? { faultInjector } : {}),
+    });
+
+    const before = await makeBoundary("before-commit");
+    const beforePoints = [];
+    await assert.rejects(createHarnessRunManager(optionsFor(before, (point) => {
+      beforePoints.push(point);
+      if (point === "harness_run_migration.before_commit") {
+        throw new Error("injected_migration_before_commit");
+      }
+    })), /injected_migration_before_commit/);
+    assert.deepEqual(beforePoints, ["harness_run_migration.before_commit"]);
+    assert.equal(await readFile(join(before.dataDir, "harness-runs.json"), "utf8"), legacyText);
+    await createHarnessRunManager(optionsFor(before));
+    const retriedBefore = JSON.parse(
+      await readFile(join(before.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.equal(retriedBefore.schemaVersion, 8);
+    qualifyIssue164FaultPoint(
+      "harness_run_migration.before_commit",
+      "migration commit interruptions retry without losing or duplicating canonical history",
+    );
+
+    const afterState = await makeBoundary("after-state-commit");
+    const statePoints = [];
+    await assert.rejects(createHarnessRunManager(optionsFor(afterState, (point) => {
+      statePoints.push(point);
+      if (point === "harness_run_migration.after_state_commit") {
+        throw new Error("injected_migration_after_state_commit");
+      }
+    })), /injected_migration_after_state_commit/);
+    assert.deepEqual(statePoints, [
+      "harness_run_migration.before_commit",
+      "harness_run_migration.after_state_commit",
+    ]);
+    const committed = JSON.parse(
+      await readFile(join(afterState.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.equal(committed.schemaVersion, 8);
+    assert.equal(committed.runs.length, 1);
+    assert.equal(committed.runs[0].status, "succeeded");
+    assert.equal(committed.runs[0].events.filter((event) =>
+      event.type === "harness_run_succeeded").length, 1);
+    assert.equal(afterState.audits.length, 0);
+    await createHarnessRunManager(optionsFor(afterState));
+    assert.deepEqual(
+      JSON.parse(await readFile(join(afterState.dataDir, "harness-runs.json"), "utf8")),
+      committed,
+    );
+    assert.ok(afterState.audits.some((audit) => audit.action === "harness.run.launch"));
+    assert.ok(afterState.audits.some((audit) => audit.action === "harness.run.outcome"));
+    qualifyIssue164FaultPoint(
+      "harness_run_migration.after_state_commit",
+      "migration commit interruptions retry without losing or duplicating canonical history",
+    );
+
+    const afterCommit = await makeBoundary("after-commit");
+    const commitPoints = [];
+    await assert.rejects(createHarnessRunManager(optionsFor(afterCommit, (point) => {
+      commitPoints.push(point);
+      if (point === "harness_run_migration.after_commit") {
+        throw new Error("injected_migration_after_commit");
+      }
+    })), /injected_migration_after_commit/);
+    assert.deepEqual(commitPoints, [
+      "harness_run_migration.before_commit",
+      "harness_run_migration.after_state_commit",
+      "harness_run_migration.after_commit",
+    ]);
+    const fullyCommitted = JSON.parse(
+      await readFile(join(afterCommit.dataDir, "harness-runs.json"), "utf8"),
+    );
+    assert.deepEqual(fullyCommitted, committed);
+    const auditCount = afterCommit.audits.length;
+    await createHarnessRunManager(optionsFor(afterCommit));
+    assert.equal(afterCommit.audits.length, auditCount);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(afterCommit.dataDir, "harness-runs.json"), "utf8")),
+      fullyCommitted,
+    );
+    qualifyIssue164FaultPoint(
+      "harness_run_migration.after_commit",
+      "migration commit interruptions retry without losing or duplicating canonical history",
+    );
+  } finally {
+    await Promise.all([
+      rm(fixture.root, { recursive: true, force: true }),
+      ...roots.map((root) => rm(root, { recursive: true, force: true })),
+    ]);
   }
 });
 
@@ -4093,4 +4884,9 @@ test("main-era Harness-run history remains observable after the launch-schema up
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
+});
+
+test("issue 164 retains one executed restart result for every declared fault point", async () => {
+  const results = await retainIssue164FaultPointResults();
+  assert.ok(results.every((result) => result.passed));
 });

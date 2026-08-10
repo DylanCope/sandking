@@ -22,7 +22,7 @@ defaults to the focused Controller Project.
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
   const [command = "launch", ...rest] = argv;
-  /** @type {{command: string, help: boolean, noOpen: boolean, json: boolean, projectId?: string, harnessRunId?: string, recoveryAction?: string, parameters?: Record<string, unknown>, launchArguments: Array<{flag: string, value: string}>, dataDir?: string, hostMode?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
+  /** @type {{command: string, help: boolean, noOpen: boolean, json: boolean, projectId?: string, harnessRunId?: string, recoveryAction?: string, parameters?: Record<string, unknown>, launchArguments: Array<{flag: string, value: string}>, dataDir?: string, startupTimeoutMs?: number, bootstrapTtlMs?: number, browserSessionTtlMs?: number, idempotencyKey?: string, expectedRevision?: number}} */
   const options = { command, help: false, noOpen: false, json: false, launchArguments: [] };
 
   if ((command === "--help" || command === "-h") && rest.length === 0) {
@@ -48,9 +48,6 @@ const parseArgs = (argv) => {
       options.noOpen = true;
     } else if (current === "--json") {
       options.json = true;
-    } else if (current === "--host-mode") {
-      options.hostMode = rest[index + 1];
-      index += 1;
     } else if (current === "--startup-timeout-ms") {
       options.startupTimeoutMs = Number(rest[index + 1]);
       index += 1;
@@ -214,7 +211,6 @@ const main = async () => {
   } else if (options.command === "launch") {
     output = await launchRuntime({
       dataDir: options.dataDir,
-      hostMode: options.hostMode,
       startupTimeoutMs: options.startupTimeoutMs,
       bootstrapTtlMs: options.bootstrapTtlMs,
       browserSessionTtlMs: options.browserSessionTtlMs,
