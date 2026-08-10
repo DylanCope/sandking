@@ -129,6 +129,17 @@ if (conformanceHarnessLaunchParametersDeclaration.kind !== "fields") {
   throw new Error("conformance_launch_parameters_invalid");
 }
 
+export const sandcastleHarnessLaunchParametersDeclaration =
+  harnessLaunchParametersDeclarationSchema.parse({
+    kind: "fields",
+    fields: conformanceHarnessLaunchParametersDeclaration.fields.map((field) => ({
+      ...field,
+      description: field.name === "issueNumber"
+        ? "Optional GitHub issue identifier for Sandcastle delivery."
+        : "Optional canonical sandcastle branch for the issue.",
+    })),
+  });
+
 // Adapter protocol 1.0.0 originally required this conformance-only shape in
 // the adapter implementation even though its probe did not declare it. Keep
 // that exact contract when interpreting immutable legacy bytes: presenting the

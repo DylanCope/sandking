@@ -396,8 +396,19 @@ const main = async () => {
       );
       continue;
     }
+    if (frame.message.type === "harness.sandcastle.inspect") {
+      writeFrame(process.stdout, await projectRegistry.inspectSandcastleHarness(frame.message));
+      continue;
+    }
+    if (frame.message.type === "harness.sandcastle.register") {
+      writeFrame(
+        process.stdout,
+        await projectRegistry.registerSandcastleHarness(frame.message),
+      );
+      continue;
+    }
     if (frame.message.type === "project.harness.pin") {
-      writeFrame(process.stdout, await projectRegistry.pinConformanceHarness(frame.message));
+      writeFrame(process.stdout, await projectRegistry.pinHarness(frame.message));
       continue;
     }
     if (frame.message.type === "harness.run.launch") {

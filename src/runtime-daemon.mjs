@@ -35,6 +35,10 @@ import {
   projectPreparationProjection,
 } from "./project-registration.mjs";
 import {
+  CONFORMANCE_HARNESS_ADAPTER_ID,
+  SANDCASTLE_HARNESS_ADAPTER_ID,
+} from "./harness-adapter-identity.mjs";
+import {
   HOST_SCHEMA_DIGEST,
   MAX_BULK_CHUNK_BYTES,
   MAX_FRAME_BYTES,
@@ -1354,6 +1358,10 @@ const projectFailureStatus = Object.freeze({
   harness_pin_missing: 409,
   harness_pin_invalid: 409,
   harness_workspace_invalid: 409,
+  harness_seed_missing: 409,
+  harness_seed_provenance_invalid: 409,
+  harness_dependency_lock_invalid: 409,
+  harness_skill_lock_invalid: 409,
   idempotency_key_conflict: 409,
   mutation_revision_conflict: 409,
 });
@@ -1402,7 +1410,7 @@ const runtimeProjectFailure = async (
 };
 
 /**
- * @param {{path: unknown, configuration: unknown, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number}} request
+ * @param {{path: unknown, configuration: unknown, harnessAdapterId?: unknown, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number}} request
  */
 const prepareExplicitProject = (request) => withProjectPreparationLock(async () => {
   const mutationContractValid = !(
@@ -1411,11 +1419,15 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     || request.idempotencyKey.length > 256
     || !Number.isSafeInteger(request.expectedRevision)
     || request.expectedRevision < 0
+    || (request.harnessAdapterId !== undefined
+      && request.harnessAdapterId !== CONFORMANCE_HARNESS_ADAPTER_ID
+      && request.harnessAdapterId !== SANDCASTLE_HARNESS_ADAPTER_ID)
   );
 
   const requestContent = {
     path: request.path,
     configuration: request.configuration,
+    harnessAdapterId: request.harnessAdapterId ?? null,
   };
   const prohibitedSideEffects = {
     directoryScan: false,
@@ -1489,6 +1501,125 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
   }
 
   const inspectedProject = inspection.project;
+  const selectedHarnessAdapterId = request.harnessAdapterId
+    ?? inspectedProject?.harness?.adapterId
+    ?? SANDCASTLE_HARNESS_ADAPTER_ID;
+  if (
+    inspectedProject?.harness
+    && inspectedProject.harness.adapterId !== selectedHarnessAdapterId
+  ) {
+    return retainProjectPreparation({
+      status: 400,
+      body: await runtimeProjectFailure(
+        "bounded_configuration_invalid",
+        request.expectedRevision,
+        inspectedProject.revision,
+        request.idempotencyKeyHash,
+        ["keep_existing_harness_or_open_another_project"],
+      ),
+    });
+  }
+  const productionSelected = selectedHarnessAdapterId === SANDCASTLE_HARNESS_ADAPTER_ID;
+  const harnessProtocol = productionSelected ? {
+    inspectType: "harness.sandcastle.inspect",
+    inspectResultType: "harness.sandcastle.inspect.result",
+    registerType: "harness.sandcastle.register",
+    registerResultType: "harness.sandcastle.register.result",
+    registeredCode: "sandcastle_harness_registered",
+    name: "Sand-King Sandcastle Harness",
+  } : {
+    inspectType: "harness.conformance.inspect",
+    inspectResultType: "harness.conformance.inspect.result",
+    registerType: "harness.conformance.register",
+    registerResultType: "harness.conformance.register.result",
+    registeredCode: "conformance_harness_registered",
+    name: "Sand-King Conformance Harness",
+  };
+
+  const ensureHarness = async () => {
+    const harnessInspection = /** @type {any} */ (await requestHostOperation({
+      type: harnessProtocol.inspectType,
+      requestId: requestId("harness-inspect"),
+    }));
+    if (harnessInspection.type !== harnessProtocol.inspectResultType) {
+      throw new Error("host_protocol_error");
+    }
+    if (harnessInspection.harness) {
+      return { harness: harnessInspection.harness, registration: null, failure: null };
+    }
+    const registration = /** @type {any} */ (await requestHostOperation({
+      type: harnessProtocol.registerType,
+      requestId: requestId("harness-register"),
+      name: harnessProtocol.name,
+      authorizationClass: "host_local_harness_registration",
+      idempotencyKey: derivedHostIdempotencyKey(
+        request.idempotencyKey,
+        harnessProtocol.registerType,
+      ),
+      expectedRevision: 0,
+    }));
+    if (registration.type === "project.operation.failure") {
+      return { harness: null, registration, failure: registration };
+    }
+    if (registration.type !== harnessProtocol.registerResultType) {
+      throw new Error("host_protocol_error");
+    }
+    return { harness: registration.harness, registration, failure: null };
+  };
+
+  /** @type {any} */
+  let harness = null;
+  /** @type {any} */
+  let harnessRegistration = null;
+  let pin = null;
+  // Validate and materialize the production seed before tracking a fresh
+  // Project. A rejected seed must leave neither half of the composite ready.
+  if (productionSelected) {
+    try {
+      const ensured = await ensureHarness();
+      if (ensured.failure) {
+        return retainProjectPreparation({
+          status: projectFailureStatus[
+            /** @type {keyof typeof projectFailureStatus} */ (ensured.failure.code)
+          ] ?? 409,
+          body: ensured.failure,
+        });
+      }
+      harness = ensured.harness;
+      harnessRegistration = ensured.registration;
+    } catch (error) {
+      if (
+        error instanceof ControllerSessionError
+        && (error.code === "host_disconnected" || error.code === "host_protocol_invalid")
+      ) {
+        return hostMutationFailure(
+          error.code,
+          "project.prepare",
+          "host_local_project_preparation",
+          request.expectedRevision,
+          request.idempotencyKeyHash,
+          requestContent,
+          {
+            project: currentProjectPreparation.current,
+            harness,
+            mutations: {
+              projectRegistration: null,
+              harnessRegistration: projectMutationSummary(harnessRegistration),
+              harnessPin: null,
+            },
+            effects: {
+              projectRegistrationCreated: false,
+              harnessRegistrationCreated:
+                harnessRegistration?.code === harnessProtocol.registeredCode,
+              harnessPinChanged: false,
+            },
+          },
+        );
+      }
+      throw error;
+    }
+  }
+
   const projectRegistration = await requestHostOperation({
     type: "project.register",
     requestId: requestId("project-register"),
@@ -1516,40 +1647,19 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
   currentProjectPreparation = projectPreparationProjection(project);
   currentProjectPath = project.canonicalPath;
 
-  let harness = null;
-  let harnessRegistration = null;
-  let pin = null;
   try {
-    const harnessInspection = await requestHostOperation({
-      type: "harness.conformance.inspect",
-      requestId: requestId("harness-inspect"),
-    });
-    if (harnessInspection.type !== "harness.conformance.inspect.result") {
-      throw new Error("host_protocol_error");
-    }
-    harness = harnessInspection.harness;
     if (!harness) {
-      harnessRegistration = await requestHostOperation({
-        type: "harness.conformance.register",
-        requestId: requestId("harness-register"),
-        name: "Sand-King Conformance Harness",
-        authorizationClass: "host_local_harness_registration",
-        idempotencyKey: derivedHostIdempotencyKey(
-          request.idempotencyKey,
-          "harness.conformance.register",
-        ),
-        expectedRevision: 0,
-      });
-      if (harnessRegistration.type === "project.operation.failure") {
+      const ensured = await ensureHarness();
+      if (ensured.failure) {
         return retainProjectPreparation({
-          status: projectFailureStatus[harnessRegistration.code] ?? 409,
-          body: harnessRegistration,
+          status: projectFailureStatus[
+            /** @type {keyof typeof projectFailureStatus} */ (ensured.failure.code)
+          ] ?? 409,
+          body: ensured.failure,
         });
       }
-      if (harnessRegistration.type !== "harness.conformance.register.result") {
-        throw new Error("host_protocol_error");
-      }
-      harness = harnessRegistration.harness;
+      harness = ensured.harness;
+      harnessRegistration = ensured.registration;
     }
 
     if (
@@ -1610,7 +1720,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
           effects: {
             projectRegistrationCreated: projectRegistration.code === "project_registered",
             harnessRegistrationCreated:
-              mutations.harnessRegistration?.code === "conformance_harness_registered",
+              mutations.harnessRegistration?.code === harnessProtocol.registeredCode,
             harnessPinChanged: mutations.harnessPin?.code === "project_harness_pinned",
           },
         },
@@ -1628,6 +1738,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     resultingRevision: project.revision,
     projectId: project.projectId,
     harnessId: project.harness?.harnessId ?? null,
+    harnessAdapterId: project.harness?.adapterId ?? null,
     pinnedRevision: project.harness?.pinnedRevision ?? null,
     checksReady: project.readiness.checks === "ready",
     configurationReady: project.readiness.configuration === "ready",
@@ -2879,6 +2990,9 @@ const main = async () => {
           const requestContent = {
             path: "path" in record ? record.path : null,
             configuration: "configuration" in record ? record.configuration : null,
+            harnessAdapterId: "harnessAdapterId" in record
+              ? record.harnessAdapterId
+              : undefined,
           };
           let outcome;
           try {

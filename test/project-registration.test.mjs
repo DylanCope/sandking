@@ -214,6 +214,37 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
     );
     assert.deepEqual(await readdir(projectPath), projectFilesBefore);
     assert.equal((await readdir(projectPath)).includes(".sandcastle"), false);
+
+    writeFrame(child.stdin, {
+      type: "harness.sandcastle.inspect",
+      requestId: "inspect-production-harness",
+    });
+    assert.deepEqual(await readFrame(child.stdout), {
+      type: "harness.sandcastle.inspect.result",
+      requestId: "inspect-production-harness",
+      code: "sandcastle_harness_unregistered",
+      actualRevision: 0,
+      harness: null,
+    });
+    writeFrame(child.stdin, {
+      type: "harness.sandcastle.register",
+      requestId: "register-production-harness",
+      name: "Sand-King Sandcastle Harness",
+      authorizationClass: "host_local_harness_registration",
+      idempotencyKey: "register-production-harness",
+      expectedRevision: 0,
+    });
+    const productionHarness = await readFrame(child.stdout);
+    assert.equal(productionHarness.type, "harness.sandcastle.register.result");
+    assert.equal(productionHarness.code, "sandcastle_harness_registered");
+    assert.equal(productionHarness.harness.adapterId, "sandcastle-harness-adapter-v1");
+    const sideBySideState = JSON.parse(
+      await readFile(join(dataDir, "harness-registry.json"), "utf8"),
+    );
+    assert.deepEqual(
+      sideBySideState.harnesses.map((harness) => harness.adapterId),
+      ["conformance-harness-adapter-v1", "sandcastle-harness-adapter-v1"],
+    );
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGTERM");

@@ -24,8 +24,10 @@ ARG AGENT_GID=1000
 # Rename the base image's "node" user to "agent" and align UID/GID.
 RUN groupmod -o -g $AGENT_GID node && usermod -o -u $AGENT_UID -g $AGENT_GID -d /home/agent -m -l agent node
 
-# Install Codex CLI (run as root before USER agent)
-RUN npm install -g @openai/codex
+# Keep Worker runtime capabilities fixed with the committed skill-set lock.
+# The package bytes and integrity are recorded in skills.lock.json in the
+# production Harness workspace.
+RUN npm install -g @openai/codex@0.146.0
 
 USER ${AGENT_UID}:${AGENT_GID}
 

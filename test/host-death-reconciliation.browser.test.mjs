@@ -249,6 +249,8 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
         timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
+      await page.locator("#project-harness-adapter")
+        .selectOption("conformance-harness-adapter-v1");
       await page.locator("#open-project").click();
       await page.waitForSelector("#launch-harness:not([disabled])", { timeout: 90_000 });
       await page.locator("#open-project-controller").click();
@@ -409,6 +411,8 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
         && audit.details.harnessRunId === activeRun.harnessRunId).length, 1);
 
       await page.locator("#project-path").fill(projectPath);
+      await page.locator("#project-harness-adapter")
+        .selectOption("conformance-harness-adapter-v1");
       await page.locator("#open-project").click();
       await page.waitForSelector("#open-project:not([disabled])", { timeout: 90_000 });
       if (await page.locator("#launch-harness").isDisabled()) {
@@ -589,6 +593,8 @@ test("packaged Cockpit resolves uncertain Host-loss supervision through bounded 
         timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
+      await page.locator("#project-harness-adapter")
+        .selectOption("conformance-harness-adapter-v1");
       await page.locator("#open-project").click();
       await page.waitForSelector("#launch-harness:not([disabled])", { timeout: 90_000 });
       await page.locator("#harness-launch-parameter-issueNumber").fill("999999993");
@@ -660,6 +666,8 @@ test("packaged Cockpit resolves uncertain Host-loss supervision through bounded 
       assert.match(await recoveryPanel.textContent(), /deliberately launch a new run/i);
       assert.match(await recoveryPanel.textContent(), /could overlap/i);
       await page.locator("#project-path").fill(projectPath);
+      await page.locator("#project-harness-adapter")
+        .selectOption("conformance-harness-adapter-v1");
       await page.locator("#open-project").click();
       await page.waitForSelector("#open-project:not([disabled])", { timeout: 90_000 });
       if (await page.locator("#launch-harness").isDisabled()) {
@@ -830,6 +838,8 @@ test("packaged Cockpit continues accepted cancellation after real Host death", {
         timeout: 90_000,
       });
       await page.locator("#project-path").fill(projectPath);
+      await page.locator("#project-harness-adapter")
+        .selectOption("conformance-harness-adapter-v1");
       await page.locator("#open-project").click();
       await page.waitForSelector("#launch-harness:not([disabled])", { timeout: 90_000 });
       await page.locator("#harness-launch-parameter-issueNumber").fill("999999993");

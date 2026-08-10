@@ -121,6 +121,7 @@ test("concurrent launches reuse one ready runtime and retain full Host negotiati
       "sandking.bulk-stream.v1",
       "sandking.project-registration.v1",
       "sandking.conformance-harness-registration.v1",
+      "sandking.production-harness-registration.v1",
       "sandking.harness-run.launch.v2",
       "sandking.harness-run.v2",
       "sandking.harness-run-reconciliation.v1",

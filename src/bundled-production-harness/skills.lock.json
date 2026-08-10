@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "policy": {
+    "ambientDiscovery": "disabled",
+    "unlistedSkills": "reject"
+  },
+  "skills": [
+    {
+      "identity": "sandking.issue-implementation",
+      "source": {
+        "kind": "git",
+        "repository": "https://github.com/DylanCope/sandking.git",
+        "revision": "0a602896e4063dce7b390b3a514e34cfe36b46c1",
+        "path": ".sandcastle/implement-prompt.md"
+      },
+      "contentIntegrity": "sha256:abb4994f1f500212e432b8b2626b07d538c4fdc58a8609a13f0efda5699abf68",
+      "providers": [
+        {
+          "kind": "bundle",
+          "identity": "sandking.production-worker-skills"
+        }
+      ]
+    },
+    {
+      "identity": "sandking.issue-planning",
+      "source": {
+        "kind": "git",
+        "repository": "https://github.com/DylanCope/sandking.git",
+        "revision": "0a602896e4063dce7b390b3a514e34cfe36b46c1",
+        "path": ".sandcastle/plan-prompt.md"
+      },
+      "contentIntegrity": "sha256:6220c63e7b128296cd2e7c5b0e7fd4159f6a6dbc3351f7f5924e1d14debeac6f",
+      "providers": [
+        {
+          "kind": "bundle",
+          "identity": "sandking.production-worker-skills"
+        }
+      ]
+    },
+    {
+      "identity": "sandking.pull-request-review",
+      "source": {
+        "kind": "git",
+        "repository": "https://github.com/DylanCope/sandking.git",
+        "revision": "0a602896e4063dce7b390b3a514e34cfe36b46c1",
+        "path": ".sandcastle/pr-review-prompt.md"
+      },
+      "contentIntegrity": "sha256:67ab262dbfccdeefd9c4c7b391bf0c908ae1e15aacded9845a188b522c7d3eed",
+      "providers": [
+        {
+          "kind": "bundle",
+          "identity": "sandking.production-worker-skills"
+        }
+      ]
+    }
+  ],
+  "bundles": [
+    {
+      "identity": "sandking.production-worker-skills",
+      "includes": [],
+      "skills": [
+        "sandking.issue-implementation",
+        "sandking.issue-planning",
+        "sandking.pull-request-review"
+      ]
+    }
+  ],
+  "plugins": [],
+  "executionRuntimeInputs": [
+    {
+      "identity": "openai.codex-cli",
+      "package": "@openai/codex",
+      "version": "0.146.0",
+      "resolved": "https://registry.npmjs.org/@openai/codex/-/codex-0.146.0.tgz",
+      "integrity": "sha512-yG3sPWNda/2YAIQIDq9MrrjoCTIQ7rxYM5IasrG3VBcuhCLTkgeg/JzqmJq1V98RE4MJ5jCxDXXQlOjrditFRw==",
+      "skillExposure": "versioned-with-runtime-package"
+    }
+  ]
+}

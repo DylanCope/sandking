@@ -9,6 +9,7 @@
   },
   "files": [
     "src/",
+    ".sandcastle/",
     "README.md"
   ],
   "engines": {
