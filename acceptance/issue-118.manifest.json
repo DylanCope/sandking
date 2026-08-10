@@ -29,11 +29,21 @@
         "open only the selected Host-native path",
         "create and replay its Host-local Project registration without a separate approval",
         "register a named independently identified conformance Harness in an independent Git workspace",
-        "pin the exact Harness commit with bounded configuration",
-        "reject mismatched idempotency payload, stale revision, invalid configuration, missing or invalid pin, and changed path identity",
+        "pin the Harness registration's exact commit with bounded configuration, without a caller-supplied revision",
+        "reject mismatched idempotency payload, stale revision, invalid configuration, and changed path identity",
         "render Project identity, Harness identity, pin, checks and configuration readiness, and Launch-request preparation readiness"
       ],
       "expectedTypedOutcome": "project_ready with Project and Harness identities and a pinned immutable commit",
+      "contractMigration": {
+        "issue": 172,
+        "parentPrd": 169,
+        "retiredCallerField": "immutableRevision",
+        "retiredScenarios": [
+          "missing caller-supplied Harness revision",
+          "invalid caller-supplied Harness revision"
+        ],
+        "replacementContract": "Project pinning resolves the registered Harness commit internally; missing or unreadable retained pins are verified during production preparation"
+      },
       "canonicalStateInvariants": [
         "Project identity remains anchored to the selected canonical path and stored filesystem evidence",
         "Project and Harness identities are independently generated and retained",
@@ -74,9 +84,7 @@
     "typedMutationFailures": [
       "idempotency_key_conflict",
       "mutation_revision_conflict",
-      "bounded_configuration_invalid",
-      "harness_pin_missing",
-      "harness_pin_invalid"
+      "bounded_configuration_invalid"
     ]
   }
 }

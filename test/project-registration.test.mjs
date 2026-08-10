@@ -553,8 +553,6 @@ test("registration and pinning reject changed retries, stale revisions, and inva
           invalidFailures: {
             path: invalidPath.code,
             configuration: invalidConfiguration.code,
-            missingPin: missingPin.code,
-            invalidPin: invalidPin.code,
             invalidPinConfiguration: invalidPinConfiguration.code,
             preservedUnpinnedState: invalidFailuresPreservedUnpinned,
           },
