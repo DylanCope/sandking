@@ -65,8 +65,7 @@ src/
 │
 ├── supervision/              # per-OS process trees + host-loss evidence
 │
-├── adapters/                 # Harness adapters as real, checked-in files
-│   ├── conformance/          #   ← extracted from a template string
+├── adapters/                 # REAL Harness adapters only (see note below)
 │   └── sandcastle/           #   ← today's production adapter
 │
 └── cockpit/                  # browser UI modules
@@ -115,13 +114,68 @@ record type should happen as part of the extraction.
 - **`project-registration.mjs:663–936` contains ~250 lines of a different
   program embedded as a template string** — a complete fd-3 adapter with its
   own frame I/O, written to disk and `git init`-ed at runtime. It becomes a
-  real file under `adapters/conformance/`, copied into the workspace the way
-  `production-harness-seed.mjs` already copies the production seed. This makes
-  it lintable, typecheckable and testable, and removes one of the two
-  confusingly-named "conformance adapters" flagged in `docs/architecture.md`.
+  real checked-in file, copied into the workspace the way
+  `production-harness-seed.mjs` already copies the production seed. That makes
+  it lintable, typecheckable and testable — but it belongs under
+  `test/fixtures/`, not `src/adapters/`. See below.
 - **`claude-provider-adapter.mjs`** (1,095 lines, three self-contained
   exports) is nearly a three-file split already — the lowest-effort win
   available.
+
+## Conformance belongs in `test/`, not `src/`
+
+Decided 2026-08-11. There are two separate "conformance" implementations, and
+**the product's own view model flags both as fakes**:
+
+| Thing | Flag | User-facing surface today |
+|---|---|---|
+| Conformance **Harness** adapter (the template string above) | `permittedTestDouble: true` (`project-registration.mjs:965`) | Cockpit dropdown: "deterministic conformance" |
+| Conformance **provider** adapter (`conformance-provider-adapter.mjs`, 441 ln) | `fixture: true` | "Open focused Controller for Launch"; every Planning session |
+
+`cockpit.js:2467-2468` even asserts the `permittedTestDouble` pair as a
+compatibility check. A deterministic oracle is a legitimate engineering need —
+proving the run protocol without a live model — but it was given a production
+surface, which is the same scope leakage found elsewhere in this codebase.
+
+**Target**: both move to `test/fixtures/`. The Cockpit Harness dropdown offers
+real Harnesses only. **No user-facing "dry run" mode** — if that is ever
+wanted, it should be designed and named as a product feature, not be a test
+oracle left in the UI.
+
+This costs the test suite nothing: tests already construct their own provider
+manifests and drive adapters directly, so they do not depend on conformance
+living in `src/`.
+
+### Sequencing constraint
+
+The conformance Harness is currently the **only** Launch path that works, so
+evicting it before the production gate lands leaves the Cockpit with zero
+working Launch paths. **Do the eviction in the same ticket that lands the gate
+fix**, not as a standalone earlier cleanup. A separate demo/test build variant
+was considered and rejected — far too much machinery to bridge a
+self-inflicted gap.
+
+## The production gate is bigger than "write a manifest"
+
+Recorded 2026-08-11 after scoping. `docs/current-state.md` gap #2 identifies
+the missing `sandcastle.real-provider.json` manifest. Scoping found that is
+**one of at least three** test-only dependencies. To make production Launch
+work, product code must take over responsibilities that currently live only in
+`test/run-issue-174-real-sandcastle.mjs`:
+
+1. **Write the provider manifest** — known.
+2. **Build/ensure the Docker image.** `realSandboxAvailable()`
+   (`sandcastle-v4.mjs:242`) checks that `sandcastle:sandking-real-worker`
+   exists, but nothing in `src/` ever builds it. Only the acceptance runner
+   does, and it removes/restores the tag afterwards.
+3. **Satisfy an exact version pin.** `sandcastle-v4.mjs:16` pins
+   `codexVersion = "0.146.0"` and readiness requires
+   `version === "codex-cli 0.146.0"` by string equality — any other installed
+   Codex fails. This needs a tolerance policy or it breaks on the next release.
+
+Plus authenticated `codex` and an exact skill-inventory match. The honest
+framing is "move the real-provider bootstrap out of the acceptance runner into
+the product", which is a ticket or two, not a quick fix.
 
 ## Sequencing, and why the refactor is safer than it looks
 
