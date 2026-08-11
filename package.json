@@ -62,7 +62,10 @@
     "acceptance:issue-175": "node test/run-issue-175-acceptance.mjs acceptance/issue-175.manifest.json",
     "acceptance:issue-175:update-evidence": "node test/run-issue-175-acceptance.mjs acceptance/issue-175.manifest.json --update-evidence",
     "typecheck": "tsc --noEmit -p tsconfig.sandcastle.json && tsc --noEmit -p tsconfig.json",
-    "test": "node --test .sandcastle/*.test.mjs test/*.test.mjs"
+    "test": "node --test .sandcastle/*.test.mjs test/*.test.mjs",
+    "test:unit": "node --test .sandcastle/*.test.mjs $(ls test/*.test.mjs | grep -v '\\.browser\\.')",
+    "pretest:browser": "node test/ensure-playwright.mjs",
+    "test:browser": "node --test test/*.browser.test.mjs"
   },
   "dependencies": {
     "@fontsource/fira-code": "^5.3.0",
