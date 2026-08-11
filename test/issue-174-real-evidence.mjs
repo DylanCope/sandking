@@ -94,6 +94,13 @@ export const validateIssue174RealEvidence = (evidence) => {
     || evidence.provider?.version !== "0.146.0"
     || evidence.provider?.realExecution !== true
     || evidence.provider?.simulated !== false
+    || evidence.provider?.sandbox?.provider !== "docker"
+    || evidence.provider?.sandbox?.image !== "sandcastle:sandking-real-worker"
+    || !digestPattern.test(evidence.provider?.sandbox?.imageId ?? "")
+    || evidence.provider?.sandbox?.configurationSource !== ".sandcastle/Dockerfile"
+    || !digestPattern.test(evidence.provider?.sandbox?.configurationIntegrity ?? "")
+    || evidence.provider?.sandbox?.destinationIsolation !== true
+    || evidence.provider?.sandbox?.temporaryImageRemoved !== true
     || evidence.adapter?.identity !== "sandcastle-harness-adapter-v1"
     || evidence.adapter?.protocol !== "1.0.0"
     || !digestPattern.test(evidence.adapter?.contentIntegrity ?? "")
@@ -103,6 +110,9 @@ export const validateIssue174RealEvidence = (evidence) => {
     || evidence.harness?.upstream?.version !== "0.12.0"
     || !digestPattern.test(evidence.harness?.dependencyLock?.integrity ?? "")
     || !digestPattern.test(evidence.harness?.skillSetLock?.integrity ?? "")
+    || evidence.harness?.skillSetLock?.delivery?.ambient !== "disabled"
+    || evidence.harness?.skillSetLock?.delivery?.method
+      !== "complete-pinned-inventory-in-worker-prompt"
     || evidence.harness?.skillSetLock?.resolvedSkills?.length !== 4
     || JSON.stringify(evidence.harness.skillSetLock.resolvedSkills.map(({ identity }) => identity))
       !== JSON.stringify([

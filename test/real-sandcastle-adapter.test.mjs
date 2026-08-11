@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
@@ -11,12 +11,12 @@ import {
 } from "../src/harness-adapter-protocol.mjs";
 
 const adapterPath = new URL(
-  "../src/production-sandcastle-adapter/sandcastle-v3.mjs",
+  "../src/production-sandcastle-adapter/sandcastle-v4.mjs",
   import.meta.url,
 );
 const adapterId = "sandcastle-harness-adapter-v1";
 const adapterProtocol = "1.0.0";
-const workerPath = ".sandcastle/real-worker.mjs";
+const workerPath = ".sandcastle/real-worker-v2.mjs";
 
 const encode = (value) => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 const integrity = (source) => `sha256:${createHash("sha256").update(source).digest("hex")}`;
@@ -30,6 +30,7 @@ const createFixture = async ({
   providerReady = true,
   authenticated = true,
   authenticationStream = "stderr",
+  sandboxReady = true,
 } = {}) => {
   const root = await mkdtemp(join(tmpdir(), "sandking-real-adapter-"));
   const projectPath = join(root, "project");
@@ -53,7 +54,13 @@ const createFixture = async ({
     schemaVersion: 1,
     harness: { adapterId },
     skillSetLockDigest: `sha256:${"1".repeat(64)}`,
-    skills: [{ identity: "sandking.real-delegation" }],
+    skillDiscovery: { ambient: "disabled", roots: ["worker-skills"], unlisted: "reject" },
+    skills: [
+      { identity: "sandking.issue-implementation" },
+      { identity: "sandking.issue-planning" },
+      { identity: "sandking.pull-request-review" },
+      { identity: "sandking.real-delegation" },
+    ],
     executionRuntimeInputs: [{ identity: "openai.codex-cli", version: "0.146.0" }],
   })}\n`);
   await writeExecutable(join(binPath, "codex"), `#!/bin/sh
@@ -70,9 +77,27 @@ fi
 `);
   await writeExecutable(join(binPath, "npm"), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
-if [ "$1" = "ci" ]; then exit 0; fi
+if [ "$1" = "ci" ]; then
+  mkdir -p node_modules/.bin node_modules/fake-runtime
+  printf '%s\\n' 'temporary dependency' > node_modules/fake-runtime/index.js
+  ln -s ../fake-runtime/index.js node_modules/.bin/fake-runtime
+  exit 0
+fi
 exit 92
 `);
+  if (sandboxReady) {
+    await writeExecutable(join(binPath, "docker"), `#!/bin/sh
+if [ "$1" = "version" ] && [ "$2" = "--format" ]; then
+  printf '%s\\n' '27.5.1'
+  exit 0
+fi
+if [ "$1" = "image" ] && [ "$2" = "inspect" ] && [ "$3" = "sandcastle:sandking-real-worker" ]; then
+  printf '%s\\n' 'sha256:${"d".repeat(64)}'
+  exit 0
+fi
+exit 93
+`);
+  }
   return {
     root,
     projectPath,
@@ -111,12 +136,14 @@ test("real-provider preparation fails closed unless its exact gate and credentia
 }, async () => {
   const disabled = await createFixture({ providerReady: false });
   const unauthenticated = await createFixture({ authenticated: false });
+  const sandboxUnavailable = await createFixture({ sandboxReady: false });
   const readyOnStderr = await createFixture();
   const readyOnStdout = await createFixture({ authenticationStream: "stdout" });
   try {
     for (const [fixture, expectedType] of [
       [disabled, "harness.launch.failure"],
       [unauthenticated, "harness.launch.failure"],
+      [sandboxUnavailable, "harness.launch.failure"],
       [readyOnStderr, "harness.launch.prepared"],
       [readyOnStdout, "harness.launch.prepared"],
     ]) {
@@ -140,7 +167,13 @@ test("real-provider preparation fails closed unless its exact gate and credentia
       assert.deepEqual(await waitForExit(invocation.child), { code: 0, signal: null });
     }
   } finally {
-    await Promise.all([disabled, unauthenticated, readyOnStderr, readyOnStdout].map((fixture) =>
+    await Promise.all([
+      disabled,
+      unauthenticated,
+      sandboxUnavailable,
+      readyOnStderr,
+      readyOnStdout,
+    ].map((fixture) =>
       rm(fixture.root, { recursive: true, force: true })));
   }
 });
@@ -205,6 +238,7 @@ writeSync(3, JSON.stringify({
       await readFile(join(fixture.projectPath, "partial-provider-state.txt"), "utf8"),
       "inspectable partial state\n",
     );
+    await assert.rejects(access(join(fixture.executionPath, "node_modules")));
     assert.match(diagnostic, /token=\[redacted\]/);
     assert.doesNotMatch(diagnostic, /reusable-provider-secret|provider transcript/);
   } finally {

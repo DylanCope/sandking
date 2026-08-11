@@ -24,7 +24,12 @@
       "cliVersion": "0.146.0",
       "model": "gpt-5.6-sol",
       "effort": "medium",
-      "simulationAllowed": false
+      "simulationAllowed": false,
+      "sandbox": {
+        "provider": "docker",
+        "image": "sandcastle:sandking-real-worker",
+        "configurationSource": ".sandcastle/Dockerfile"
+      }
     },
     "expectedArtifact": {
       "path": "sandking-real-delegation.txt",
@@ -52,6 +57,7 @@
     "closedCode": "real_provider_gate_disabled",
     "missingProviderCode": "real_provider_unavailable",
     "unauthenticatedCode": "real_provider_unauthenticated",
+    "missingSandboxCode": "real_sandbox_unavailable",
     "productionEvidence": false,
     "fixtureSubstitutionAllowed": false
   },

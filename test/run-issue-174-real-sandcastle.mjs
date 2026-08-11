@@ -4,7 +4,6 @@ import {
   mkdir,
   mkdtemp,
   readFile,
-  readdir,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -23,6 +22,12 @@ import {
   ISSUE_174_SCENARIO,
   validateIssue174RealEvidence,
 } from "./issue-174-real-evidence.mjs";
+import { snapshotIssue174Projection } from "./issue-174-projection-snapshot.mjs";
+import {
+  inspectIssue174SandboxImage,
+  prepareIssue174SandboxImage,
+  restoreIssue174SandboxImage,
+} from "./issue-174-sandbox-image.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -54,6 +59,9 @@ const verifyManifest = (manifest) => {
     || manifest.scenario?.id !== ISSUE_174_SCENARIO
     || manifest.scenario?.provider?.kind !== "openai-codex"
     || manifest.scenario?.provider?.simulationAllowed !== false
+    || manifest.scenario?.provider?.sandbox?.provider !== "docker"
+    || manifest.scenario?.provider?.sandbox?.image !== "sandcastle:sandking-real-worker"
+    || manifest.scenario?.provider?.sandbox?.configurationSource !== ".sandcastle/Dockerfile"
     || manifest.environmentGate?.name !== "SANDKING_REAL_SANDCASTLE_ACCEPTANCE"
     || manifest.environmentGate?.requiredValue !== "1"
     || manifest.environmentGate?.fixtureSubstitutionAllowed !== false
@@ -85,6 +93,7 @@ const probeRealProvider = async (expectedVersion) => {
   try {
     version = (await execFileAsync("codex", ["--version"], {
       env: process.env,
+      shell: process.platform === "win32",
       timeout: 5_000,
     })).stdout.trim();
   } catch {
@@ -96,35 +105,32 @@ const probeRealProvider = async (expectedVersion) => {
   try {
     const authentication = await execFileAsync("codex", ["login", "status"], {
       env: process.env,
+      shell: process.platform === "win32",
       timeout: 5_000,
     });
     if (!/^Logged in\b/m.test(`${authentication.stdout}\n${authentication.stderr}`)) {
       return { code: "real_provider_unauthenticated" };
     }
-    await execFileAsync("npm", ["--version"], { env: process.env, timeout: 5_000 });
+    await execFileAsync("npm", ["--version"], {
+      env: process.env,
+      shell: process.platform === "win32",
+      timeout: 5_000,
+    });
   } catch {
     return { code: "real_provider_unauthenticated" };
   }
-  return { version: expectedVersion };
-};
-
-const snapshotDirectory = async (root) => {
-  const entries = [];
-  const visit = async (directory, prefix = "") => {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await visit(path, relativePath);
-      } else if (entry.isFile()) {
-        entries.push({ path: relativePath, integrity: sha256(await readFile(path)) });
-      } else {
-        throw new Error("issue_174_projection_shape_invalid");
-      }
+  let sandboxVersion;
+  try {
+    sandboxVersion = (await execFileAsync("docker", [
+      "version", "--format", "{{.Server.Version}}",
+    ], { env: process.env, timeout: 5_000 })).stdout.trim();
+    if (!/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(sandboxVersion)) {
+      return { code: "real_sandbox_unavailable" };
     }
-  };
-  await visit(root);
-  return entries.sort((left, right) => left.path.localeCompare(right.path));
+  } catch {
+    return { code: "real_sandbox_unavailable" };
+  }
+  return { version: expectedVersion, sandboxVersion };
 };
 
 const waitForTerminalRun = async (dataDir) => {
@@ -210,6 +216,14 @@ const main = async () => {
   let launchActionCount = 0;
   let run = null;
   let completed = false;
+  let sandboxImageBefore = null;
+  let sandboxImageName;
+  let sandboxImageId;
+  let sandboxConfigurationIntegrity;
+  let sandboxFixedTagChanged = false;
+  let sandboxTemporaryImageName;
+  let sandboxTemporaryImageOwned = false;
+  let workspacePath;
   try {
     await verifySourceIssues(manifest);
     const evidenceSourceRevision = await captureCleanIssue174EvidenceRevision({
@@ -236,6 +250,43 @@ const main = async () => {
     ], { cwd: executionDirectory, env: process.env, maxBuffer: 1024 * 1024 });
     const launch = JSON.parse(launchSource);
     runtimeStarted = true;
+
+    const initialHarnessState = await readJson(join(dataDir, "harness-registry.json"));
+    const initialHarness = initialHarnessState.harnesses.find((candidate) =>
+      candidate.adapterId === "sandcastle-harness-adapter-v1");
+    if (!initialHarness) throw new Error("issue_174_default_production_harness_missing");
+    workspacePath = initialHarness.workspacePath;
+    sandboxImageName = manifest.scenario.provider.sandbox.image;
+    sandboxImageBefore = await inspectIssue174SandboxImage(sandboxImageName);
+    sandboxTemporaryImageName = `${sandboxImageName}-issue-174-${createHash("sha256")
+      .update(`${root}\0${process.pid}`)
+      .digest("hex")
+      .slice(0, 16)}`;
+    if (await inspectIssue174SandboxImage(sandboxTemporaryImageName)) {
+      throw new Error("issue_174_real_sandbox_temporary_tag_exists");
+    }
+    sandboxTemporaryImageOwned = true;
+    const sandboxConfigurationPath = join(
+      workspacePath,
+      ...manifest.scenario.provider.sandbox.configurationSource.split("/"),
+    );
+    sandboxConfigurationIntegrity = sha256(await readFile(sandboxConfigurationPath));
+    sandboxImageId = await prepareIssue174SandboxImage({
+      projectionPath: workspacePath,
+      imageName: sandboxTemporaryImageName,
+      dockerfilePath: sandboxConfigurationPath,
+    });
+    await execFileAsync("docker", ["tag", sandboxTemporaryImageName, sandboxImageName], {
+      env: process.env,
+    });
+    sandboxFixedTagChanged = true;
+    if (
+      await inspectIssue174SandboxImage(sandboxImageName) !== sandboxImageId
+      || await git(workspacePath, ["status", "--porcelain=v1", "--untracked-files=all"]) !== ""
+    ) {
+      throw new Error("issue_174_real_sandbox_image_invalid");
+    }
+
     browser = await launchBrowser({ niceAdjustment: 10 });
     const context = await browser.newContext();
     const page = await context.newPage();
@@ -265,7 +316,7 @@ const main = async () => {
       projectPath,
       ...registration.harness.preparation.projection.path.split("/"),
     );
-    const projectionBefore = await snapshotDirectory(projectionPath);
+    const projectionBefore = await snapshotIssue174Projection(projectionPath);
 
     launchActionCount += 1;
     await page.locator("#launch-harness").click();
@@ -280,6 +331,24 @@ const main = async () => {
       run.status !== "succeeded"
       || run.outcome?.code !== "harness_run_succeeded"
       || run.outcome?.result?.code !== "real_work_committed"
+      || run.outcome?.result?.sandbox?.provider !== "docker"
+      || run.outcome?.result?.sandbox?.image !== sandboxImageName
+      || run.outcome?.result?.sandbox?.imageId !== sandboxImageId
+      || run.outcome?.result?.sandbox?.configurationSource
+        !== manifest.scenario.provider.sandbox.configurationSource
+      || run.outcome?.result?.sandbox?.configurationIntegrity !== sandboxConfigurationIntegrity
+      || run.outcome?.result?.sandbox?.destinationIsolation !== true
+      || run.outcome?.result?.resolvedSkillCount !== 4
+      || run.outcome?.result?.skillDelivery?.ambient !== "disabled"
+      || run.outcome?.result?.skillDelivery?.method
+        !== "complete-pinned-inventory-in-worker-prompt"
+      || JSON.stringify(run.outcome?.result?.skillDelivery?.deliveredIdentities)
+        !== JSON.stringify([
+          "sandking.issue-implementation",
+          "sandking.issue-planning",
+          "sandking.pull-request-review",
+          "sandking.real-delegation",
+        ])
       || run.terminalEnvelopeValidation?.exactlyOne !== true
     ) {
       throw new Error("issue_174_structured_outcome_failed");
@@ -297,7 +366,7 @@ const main = async () => {
     const artifact = await readFile(
       join(projectPath, manifest.scenario.expectedArtifact.path),
     );
-    const projectionAfter = await snapshotDirectory(projectionPath);
+    const projectionAfter = await snapshotIssue174Projection(projectionPath);
     const ignored = await execFileAsync("git", [
       "-C", projectPath, "check-ignore", "--no-index", "--quiet",
       join(projectionPath, "worker-environment.json"),
@@ -335,7 +404,9 @@ const main = async () => {
     const harnessState = await readJson(join(dataDir, "harness-registry.json"));
     const harness = harnessState.harnesses.find((candidate) =>
       candidate.harnessId === harnessId);
-    const workspacePath = harness.workspacePath;
+    if (harness?.workspacePath !== workspacePath) {
+      throw new Error("issue_174_pinned_harness_changed");
+    }
     const [provenance, skillSetLock, seedManifest, adapterSource] = await Promise.all([
       readJson(join(workspacePath, "provenance.json")),
       readJson(join(workspacePath, "skills.lock.json")),
@@ -351,7 +422,7 @@ const main = async () => {
     const adapterManifest = seedManifest.files.find(({ path }) =>
       path === "adapters/sandcastle.mjs");
     if (
-      adapterManifest.sourcePath !== "src/production-sandcastle-adapter/sandcastle-v3.mjs"
+      adapterManifest.sourcePath !== "src/production-sandcastle-adapter/sandcastle-v4.mjs"
       || adapterManifest.integrity !== sha256(adapterSource)
     ) {
       throw new Error("issue_174_adapter_provenance_invalid");
@@ -369,6 +440,16 @@ const main = async () => {
     ) {
       throw new Error("issue_174_audit_proof_invalid");
     }
+
+    await restoreIssue174SandboxImage({
+      fixedImageName: sandboxImageName,
+      fixedImageBefore: sandboxImageBefore,
+      fixedTagChanged: sandboxFixedTagChanged,
+      temporaryImageName: sandboxTemporaryImageName,
+      temporaryImageOwned: sandboxTemporaryImageOwned,
+    });
+    sandboxFixedTagChanged = false;
+    sandboxTemporaryImageOwned = false;
 
     await verifyIssue174EvidenceRevisionUnchanged({
       repositoryRoot,
@@ -408,6 +489,16 @@ const main = async () => {
         simulated: false,
         model: manifest.scenario.provider.model,
         effort: manifest.scenario.provider.effort,
+        sandbox: {
+          provider: manifest.scenario.provider.sandbox.provider,
+          version: provider.sandboxVersion,
+          image: sandboxImageName,
+          imageId: sandboxImageId,
+          configurationSource: manifest.scenario.provider.sandbox.configurationSource,
+          configurationIntegrity: sandboxConfigurationIntegrity,
+          destinationIsolation: true,
+          temporaryImageRemoved: true,
+        },
       },
       adapter: {
         identity: run.adapterId,
@@ -424,6 +515,10 @@ const main = async () => {
         dependencyLock: provenance.artifacts.dependencyLock,
         skillSetLock: {
           integrity: provenance.artifacts.skillSetLock.integrity,
+          delivery: {
+            ambient: "disabled",
+            method: "complete-pinned-inventory-in-worker-prompt",
+          },
           resolvedSkills: skillSetLock.skills.map((skill) => ({
             identity: skill.identity,
             revision: skill.source.revision,
@@ -514,6 +609,15 @@ const main = async () => {
       await execFileAsync(installed.command, [
         "stop", "--data-dir", dataDir, "--json",
       ], { cwd: executionDirectory, env: process.env }).catch(() => undefined);
+    }
+    if (sandboxImageName && sandboxTemporaryImageName) {
+      await restoreIssue174SandboxImage({
+        fixedImageName: sandboxImageName,
+        fixedImageBefore: sandboxImageBefore,
+        fixedTagChanged: sandboxFixedTagChanged,
+        temporaryImageName: sandboxTemporaryImageName,
+        temporaryImageOwned: sandboxTemporaryImageOwned,
+      }).catch(() => undefined);
     }
     if (completed && root) await rm(root, { recursive: true, force: true });
   }

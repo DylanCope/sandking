@@ -30,6 +30,11 @@ test("issue 174 manifest binds the one gated real-provider Project-commit proof"
   assert.equal(manifest.scenario.id, ISSUE_174_SCENARIO);
   assert.equal(manifest.scenario.provider.kind, "openai-codex");
   assert.equal(manifest.scenario.provider.simulationAllowed, false);
+  assert.deepEqual(manifest.scenario.provider.sandbox, {
+    provider: "docker",
+    image: "sandcastle:sandking-real-worker",
+    configurationSource: ".sandcastle/Dockerfile",
+  });
   assert.equal(manifest.scenario.requiredOutcome.exactlyOneTerminalEnvelope, true);
   assert.equal(manifest.scenario.requiredOutcome.exactlyOneChildCommit, true);
   assert.equal(manifest.environmentGate.name, "SANDKING_REAL_SANDCASTLE_ACCEPTANCE");
@@ -115,7 +120,7 @@ test("retained issue 174 evidence proves the unchanged packaged real delegation"
   ], { cwd: repositoryRoot });
   assert.equal(changes.trim(), "", `issue 174 evidence predates changes:\n${changes}`);
   assert.equal(evidence.adapter.sourcePath,
-    "src/production-sandcastle-adapter/sandcastle-v3.mjs");
+    "src/production-sandcastle-adapter/sandcastle-v4.mjs");
   assert.equal(evidence.harness.sandKingSeed.revision,
     "bbdc73f3cb2b3cd265330f811306098ffdcc51be");
   assert.equal(evidence.harness.upstream.repository,
