@@ -147,6 +147,27 @@ export const runRealDelegation = async ({
   };
 };
 
+export const executeRealDelegation = async ({ runDelegation = runRealDelegation, ...options }) => {
+  try {
+    return {
+      type: "sandcastle.worker.result",
+      status: "succeeded",
+      result: await runDelegation(options),
+    };
+  } catch {
+    return {
+      type: "sandcastle.worker.result",
+      status: "failed",
+      result: {
+        schemaVersion: 1,
+        kind: "sandcastle.delegation",
+        code: "real_provider_execution_failed",
+        provider: { kind: REAL_PROVIDER_KIND },
+      },
+    };
+  }
+};
+
 const publish = (message) => {
   writeSync(3, `${JSON.stringify(message)}\n`);
 };
@@ -162,24 +183,13 @@ if (invokedPath.endsWith("/.sandcastle/real-worker.mjs")) {
     summary: "The pinned upstream Sandcastle runtime invoked the configured real Worker provider.",
     status: "running",
   });
-  try {
-    const result = await runRealDelegation({
-      executionPath: process.cwd(),
-      projectPath,
-      signal: controller.signal,
-    });
-    publish({ type: "sandcastle.worker.result", status: "succeeded", result });
-  } catch {
+  const outcome = await executeRealDelegation({
+    executionPath: process.cwd(),
+    projectPath,
+    signal: controller.signal,
+  });
+  if (outcome.status === "failed") {
     process.stderr.write("sandcastle_real_provider_execution_failed\n");
-    publish({
-      type: "sandcastle.worker.result",
-      status: "failed",
-      result: {
-        schemaVersion: 1,
-        kind: "sandcastle.delegation",
-        code: "real_provider_execution_failed",
-        provider: { kind: REAL_PROVIDER_KIND },
-      },
-    });
   }
+  publish(outcome);
 }

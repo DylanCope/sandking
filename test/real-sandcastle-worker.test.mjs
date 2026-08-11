@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   REAL_DELEGATION_ARTIFACT,
   REAL_DELEGATION_CONTENT,
+  executeRealDelegation,
   verifyRealDelegationCommit,
 } from "../src/production-sandcastle-adapter/real-worker.mjs";
 
@@ -71,6 +72,37 @@ test("the real Worker rejects extra tracked changes in the delegated commit", as
       verifyRealDelegationCommit({ projectPath, beforeCommit }),
       /real_delegation_commit_invalid/,
     );
+  } finally {
+    await rm(projectPath, { recursive: true, force: true });
+  }
+});
+
+test("failed real work publishes one truthful failure and preserves partial Project state", async () => {
+  const projectPath = await mkdtemp(join(tmpdir(), "sandking-real-worker-partial-"));
+  try {
+    const partialPath = join(projectPath, "partial-real-worker-change.txt");
+    const outcome = await executeRealDelegation({
+      executionPath: projectPath,
+      projectPath,
+      signal: AbortSignal.timeout(1_000),
+      runDelegation: async () => {
+        await writeFile(partialPath, "partial state remains inspectable\n");
+        throw new Error("provider transcript must not become a result");
+      },
+    });
+
+    assert.deepEqual(outcome, {
+      type: "sandcastle.worker.result",
+      status: "failed",
+      result: {
+        schemaVersion: 1,
+        kind: "sandcastle.delegation",
+        code: "real_provider_execution_failed",
+        provider: { kind: "openai-codex" },
+      },
+    });
+    assert.equal(await readFile(partialPath, "utf8"), "partial state remains inspectable\n");
+    assert.doesNotMatch(JSON.stringify(outcome), /provider transcript/i);
   } finally {
     await rm(projectPath, { recursive: true, force: true });
   }

@@ -41,6 +41,7 @@ import {
   writePrivateJson,
 } from "./private-state.mjs";
 import { spawnPosixProcessTree } from "./posix-process-tree.mjs";
+import { createDestinationWorkerEnvironment } from "./destination-worker-environment.mjs";
 import {
   readHostLossTerminationEvidence,
   waitForHostLossTerminationEvidence,
@@ -1195,17 +1196,18 @@ const superviseHarnessAdapter = async (run, context, observer) => {
       retainedExecutionInputs: retainedHarnessExecutionInputs,
     });
   }
+  const adapterEnvironment = createDestinationWorkerEnvironment();
   const posixProcessTree = process.platform === "win32"
     ? null
       : spawnPosixProcessTree(process.execPath, adapterArgs, {
           cwd: adapterWorkingDirectory,
-          env: { LANG: "C.UTF-8" },
+          env: adapterEnvironment,
           hostLossTerminationEvidencePath: context.hostLossTerminationEvidencePath,
       });
   const child = posixProcessTree?.child ?? spawn(process.execPath, adapterArgs, {
     cwd: adapterWorkingDirectory,
     env: {
-      LANG: "C.UTF-8",
+      ...adapterEnvironment,
       ...(windowsBarrierMarker
         ? {
             SANDKING_WINDOWS_JOB_BARRIER: windowsBarrierMarker,
