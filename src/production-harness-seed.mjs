@@ -30,9 +30,9 @@ const sourceUrlSchema = z.url().refine((value) => {
 });
 
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
-const SAND_KING_SEED_REVISION = "f4f8887ae914bda597321da2e7fc5eb0a5ebbeb3";
+const SAND_KING_SEED_REVISION = "bbdc73f3cb2b3cd265330f811306098ffdcc51be";
 const SAND_KING_SEED_SOURCE_INTEGRITY =
-  "sha256:24dc74bdc4222bba59ab7c6cf2bdadd88126fcec4ccd2ce9b008f4ec470fa4b0";
+  "sha256:28e6e55054c15265337d204b2a09d57ffd0d7cf9f585d4626763b9f80f430db7";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -159,7 +159,7 @@ const productionSeedFileContract = Object.freeze([
   },
   {
     path: "adapters/sandcastle.mjs",
-    sourcePath: "src/production-sandcastle-adapter/sandcastle-v2.mjs",
+    sourcePath: "src/production-sandcastle-adapter/sandcastle-v3.mjs",
     source: "sandking-package",
     executable: false,
   },

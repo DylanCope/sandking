@@ -351,7 +351,7 @@ const main = async () => {
     const adapterManifest = seedManifest.files.find(({ path }) =>
       path === "adapters/sandcastle.mjs");
     if (
-      adapterManifest.sourcePath !== "src/production-sandcastle-adapter/sandcastle-v2.mjs"
+      adapterManifest.sourcePath !== "src/production-sandcastle-adapter/sandcastle-v3.mjs"
       || adapterManifest.integrity !== sha256(adapterSource)
     ) {
       throw new Error("issue_174_adapter_provenance_invalid");

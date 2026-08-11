@@ -115,9 +115,9 @@ test("retained issue 174 evidence proves the unchanged packaged real delegation"
   ], { cwd: repositoryRoot });
   assert.equal(changes.trim(), "", `issue 174 evidence predates changes:\n${changes}`);
   assert.equal(evidence.adapter.sourcePath,
-    "src/production-sandcastle-adapter/sandcastle-v2.mjs");
+    "src/production-sandcastle-adapter/sandcastle-v3.mjs");
   assert.equal(evidence.harness.sandKingSeed.revision,
-    "f4f8887ae914bda597321da2e7fc5eb0a5ebbeb3");
+    "bbdc73f3cb2b3cd265330f811306098ffdcc51be");
   assert.equal(evidence.harness.upstream.repository,
     "https://github.com/mattpocock/sandcastle.git");
   assert.equal(evidence.harness.upstream.revision,
