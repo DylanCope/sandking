@@ -7,6 +7,7 @@ import test from "node:test";
 import { ISSUE_174_DEMONSTRATED_PATHS } from "./issue-174-evidence-source.mjs";
 import {
   assertIssue174EvidenceSanitized,
+  inspectIssue174RetainedRunState,
   ISSUE_174_SCENARIO,
   validateIssue174RealEvidence,
 } from "./issue-174-real-evidence.mjs";
@@ -76,6 +77,27 @@ test("issue 174 evidence sanitizer rejects machine paths and full skill material
   assert.throws(() => assertIssue174EvidenceSanitized({
     evidence: { skillContent: "complete private prompt" },
   }), /issue_174_evidence_prohibited_field/);
+});
+
+test("issue 174 runner recognizes a rejected launch before any model invocation", () => {
+  assert.deepEqual(inspectIssue174RetainedRunState({
+    runs: [],
+    launchOutcomes: [{
+      response: {
+        type: "harness.run.launch.failure",
+        code: "harness_worker_provider_unavailable",
+        prohibitedSideEffects: {
+          harnessRunCreated: false,
+          adapterStarted: false,
+          projectWrite: false,
+        },
+      },
+    }],
+  }), {
+    status: "launch-failed",
+    code: "harness_worker_provider_unavailable",
+    modelInvocationMayHaveOccurred: false,
+  });
 });
 
 test("retained issue 174 evidence proves the unchanged packaged real delegation", {

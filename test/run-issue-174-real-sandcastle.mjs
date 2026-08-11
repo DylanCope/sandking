@@ -19,6 +19,7 @@ import {
 import {
   assertIssue174EvidenceSanitized,
   createIssue174Qualification,
+  inspectIssue174RetainedRunState,
   ISSUE_174_SCENARIO,
   validateIssue174RealEvidence,
 } from "./issue-174-real-evidence.mjs";
@@ -130,9 +131,14 @@ const waitForTerminalRun = async (dataDir) => {
   const deadline = Date.now() + 20 * 60_000;
   while (Date.now() < deadline) {
     const state = await readJson(join(dataDir, "harness-runs.json")).catch(() => null);
-    const run = state?.runs?.[0];
-    if (state?.runs?.length === 1 && ["succeeded", "failed", "cancelled"].includes(run.status)) {
-      return run;
+    const retained = inspectIssue174RetainedRunState(state);
+    if (retained.status === "terminal") {
+      return retained.run;
+    }
+    if (retained.status === "launch-failed") {
+      const error = new Error(`issue_174_launch_failed:${retained.code}`);
+      error.modelInvocationMayHaveOccurred = retained.modelInvocationMayHaveOccurred;
+      throw error;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -477,7 +483,12 @@ const main = async () => {
     completed = true;
     process.stdout.write(`Retained sanitized issue #174 real-provider evidence: ${evidencePath}\n`);
     return 0;
-  } catch {
+  } catch (error) {
+    const modelInvocationMayHaveOccurred = error
+      && typeof error === "object"
+      && "modelInvocationMayHaveOccurred" in error
+      ? error.modelInvocationMayHaveOccurred === true
+      : launchActionCount === 1;
     emitQualification({
       schemaVersion: 1,
       issue: 174,
@@ -488,7 +499,7 @@ const main = async () => {
         productionEvidence: false,
         fixtureSubstitution: false,
         launchActionCount,
-        modelInvocationMayHaveOccurred: launchActionCount === 1,
+        modelInvocationMayHaveOccurred,
         partialProjectRetained: Boolean(projectPath),
         structuredOutcome: run
           ? { status: run.status, code: run.outcome?.result?.code ?? null }

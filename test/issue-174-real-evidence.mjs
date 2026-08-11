@@ -19,6 +19,31 @@ export const createIssue174Qualification = (code) => ({
   },
 });
 
+export const inspectIssue174RetainedRunState = (state) => {
+  if (!state || !Array.isArray(state.runs) || !Array.isArray(state.launchOutcomes)) {
+    return { status: "pending" };
+  }
+  if (state.runs.length > 1) {
+    throw new Error("issue_174_retained_run_state_invalid");
+  }
+  const run = state.runs[0];
+  if (run && ["succeeded", "failed", "cancelled"].includes(run.status)) {
+    return { status: "terminal", run };
+  }
+  const launchFailure = state.launchOutcomes
+    .map(({ response }) => response)
+    .findLast((response) => response?.type === "harness.run.launch.failure");
+  if (launchFailure) {
+    return {
+      status: "launch-failed",
+      code: launchFailure.code,
+      modelInvocationMayHaveOccurred:
+        launchFailure.prohibitedSideEffects?.adapterStarted !== false,
+    };
+  }
+  return { status: "pending" };
+};
+
 const inspectKeys = (value, path = []) => {
   if (Array.isArray(value)) {
     value.forEach((item, index) => inspectKeys(item, [...path, String(index)]));

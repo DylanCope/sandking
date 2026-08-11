@@ -11,7 +11,7 @@ import {
 } from "../src/harness-adapter-protocol.mjs";
 
 const adapterPath = new URL(
-  "../src/production-sandcastle-adapter/sandcastle-v2.mjs",
+  "../src/production-sandcastle-adapter/sandcastle-v3.mjs",
   import.meta.url,
 );
 const adapterId = "sandcastle-harness-adapter-v1";
@@ -26,7 +26,11 @@ const writeExecutable = async (path, source) => {
   await chmod(path, 0o700);
 };
 
-const createFixture = async ({ providerReady = true, authenticated = true } = {}) => {
+const createFixture = async ({
+  providerReady = true,
+  authenticated = true,
+  authenticationStream = "stderr",
+} = {}) => {
   const root = await mkdtemp(join(tmpdir(), "sandking-real-adapter-"));
   const projectPath = join(root, "project");
   const executionPath = join(projectPath, ".sandking", "projection");
@@ -56,7 +60,10 @@ const createFixture = async ({ providerReady = true, authenticated = true } = {}
 if [ "$1" = "--version" ]; then
   printf '%s\\n' 'codex-cli 0.146.0'
 elif [ "$1" = "login" ] && [ "$2" = "status" ]; then
-  printf '%s\\n' '${authenticated ? "Logged in using fixture" : "Not logged in"}'
+  printf '%s\\n' '${authenticated ? "Logged in using fixture" : "Not logged in"}'${
+    authenticationStream === "stderr" ? " >&2" : ""
+  }
+  ${authenticated ? "exit 0" : "exit 1"}
 else
   exit 91
 fi
@@ -104,12 +111,14 @@ test("real-provider preparation fails closed unless its exact gate and credentia
 }, async () => {
   const disabled = await createFixture({ providerReady: false });
   const unauthenticated = await createFixture({ authenticated: false });
-  const ready = await createFixture();
+  const readyOnStderr = await createFixture();
+  const readyOnStdout = await createFixture({ authenticationStream: "stdout" });
   try {
     for (const [fixture, expectedType] of [
       [disabled, "harness.launch.failure"],
       [unauthenticated, "harness.launch.failure"],
-      [ready, "harness.launch.prepared"],
+      [readyOnStderr, "harness.launch.prepared"],
+      [readyOnStdout, "harness.launch.prepared"],
     ]) {
       const invocation = await invoke({
         command: "prepare",
@@ -131,7 +140,7 @@ test("real-provider preparation fails closed unless its exact gate and credentia
       assert.deepEqual(await waitForExit(invocation.child), { code: 0, signal: null });
     }
   } finally {
-    await Promise.all([disabled, unauthenticated, ready].map((fixture) =>
+    await Promise.all([disabled, unauthenticated, readyOnStderr, readyOnStdout].map((fixture) =>
       rm(fixture.root, { recursive: true, force: true })));
   }
 });
