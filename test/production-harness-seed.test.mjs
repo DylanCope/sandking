@@ -106,7 +106,7 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
     assert.equal(provenance.sandKing.repository, "https://github.com/DylanCope/sandking.git");
     assert.equal(
       provenance.sandKing.revision,
-    "0fb005c1d8edfbf6f793b15068c5da33ea49bd20",
+      "f4f8887ae914bda597321da2e7fc5eb0a5ebbeb3",
     );
     const seedManifest = JSON.parse(await readFile(
       join(workspacePath, "seed-manifest.json"),
@@ -197,6 +197,7 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
       "sandking.issue-implementation",
       "sandking.issue-planning",
       "sandking.pull-request-review",
+      "sandking.real-delegation",
     ]);
     assert.ok(skillLock.skills.every((skill) =>
       /^[a-z0-9][a-z0-9.-]*$/.test(skill.identity)
@@ -217,6 +218,20 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
         await readFile(join(workspacePath, skill.source.path), "utf8"),
       );
     }
+    assert.equal(
+      await readFile(join(workspacePath, "adapters", "sandcastle.mjs"), "utf8"),
+      (await execFileAsync("git", [
+        "show",
+        `${provenance.sandKing.revision}:src/production-sandcastle-adapter/sandcastle-v2.mjs`,
+      ])).stdout,
+    );
+    assert.equal(
+      await readFile(join(workspacePath, ".sandcastle", "real-worker.mjs"), "utf8"),
+      (await execFileAsync("git", [
+        "show",
+        `${provenance.sandKing.revision}:src/production-sandcastle-adapter/real-worker.mjs`,
+      ])).stdout,
+    );
     assert.doesNotMatch(JSON.stringify(skillLock), /(?:\/home\/|\\Users\\|secret|token)/i);
 
     const projectRegistration = await firstRegistry.registerProject({
@@ -532,7 +547,7 @@ test("transitive bundles and plugin-provided skills resolve into one locked inve
       join(state.harnesses[0].workspacePath, "skills.lock.json"),
       "utf8",
     ));
-    assert.equal(lock.skills.length, 3);
+    assert.equal(lock.skills.length, 4);
     assert.deepEqual(lock.skills[0].providers.map((provider) => provider.kind), [
       "bundle",
       "bundle",

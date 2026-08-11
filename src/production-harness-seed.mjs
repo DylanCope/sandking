@@ -30,9 +30,9 @@ const sourceUrlSchema = z.url().refine((value) => {
 });
 
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
-const SAND_KING_SEED_REVISION = "0fb005c1d8edfbf6f793b15068c5da33ea49bd20";
+const SAND_KING_SEED_REVISION = "f4f8887ae914bda597321da2e7fc5eb0a5ebbeb3";
 const SAND_KING_SEED_SOURCE_INTEGRITY =
-  "sha256:983155f55195938e7572aa37aa8aaa9da5b681d41619821389c976dbcf5d9a5e";
+  "sha256:24dc74bdc4222bba59ab7c6cf2bdadd88126fcec4ccd2ce9b008f4ec470fa4b0";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -146,8 +146,20 @@ const productionSeedFileContract = Object.freeze([
     executable: false,
   },
   {
+    path: ".sandcastle/real-delegation-prompt.md",
+    sourcePath: ".sandcastle/real-delegation-prompt.md",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
+    path: ".sandcastle/real-worker.mjs",
+    sourcePath: "src/production-sandcastle-adapter/real-worker.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
     path: "adapters/sandcastle.mjs",
-    sourcePath: "src/production-sandcastle-adapter/sandcastle-v1.mjs",
+    sourcePath: "src/production-sandcastle-adapter/sandcastle-v2.mjs",
     source: "sandking-package",
     executable: false,
   },
@@ -191,14 +203,22 @@ const workerVisibleSkillContract = Object.freeze([
   {
     identity: "sandking.issue-implementation",
     path: ".sandcastle/implement-prompt.md",
+    staticPromptFile: true,
   },
   {
     identity: "sandking.issue-planning",
     path: ".sandcastle/plan-prompt.md",
+    staticPromptFile: true,
   },
   {
     identity: "sandking.pull-request-review",
     path: ".sandcastle/pr-review-prompt.md",
+    staticPromptFile: true,
+  },
+  {
+    identity: "sandking.real-delegation",
+    path: ".sandcastle/real-delegation-prompt.md",
+    staticPromptFile: false,
   },
 ]);
 const PRODUCTION_WORKER_SKILL_BUNDLE = "sandking.production-worker-skills";
@@ -388,7 +408,7 @@ const validateSkillInventory = (files, lock, provenance) => {
     if (
       !skill
       || skill.source.path !== expected.path
-      || !workerVisiblePaths.has(expected.path)
+      || (expected.staticPromptFile && !workerVisiblePaths.has(expected.path))
       || !productionBundleSkills.has(expected.identity)
     ) {
       throw new ProductionHarnessSeedError("harness_skill_lock_invalid");

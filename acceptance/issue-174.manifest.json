@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "issue": 174,
+  "parentPrd": 169,
+  "sourceIssue": {
+    "githubBodyUtf8Sha256": "c4b46ee03f91f25d04d789e3e090f4d1772fb993c960ea2252c0fe4f2b4d0914"
+  },
+  "sourcePrd": {
+    "issue": 169,
+    "githubBodyUtf8Sha256": "654df6d41b39dbdf73eb22ba6ab96a93e2c013b799539a5827b8cf80aedc4055"
+  },
+  "sourceSpecification": {
+    "issue": 168,
+    "githubBodyUtf8Sha256": "c11c9d214917682b3b97c764e8fae7b406bfc63c9f11ce54cba3450b2952e04d",
+    "parentApprovedBodySha256": "c11c9d214917682b3b97c764e8fae7b406bfc63c9f11ce54cba3450b2952e04d",
+    "parentApprovedBaselineCommit": "c4abb32e71f80757c826e581f7b4c80459349916"
+  },
+  "scenario": {
+    "id": "production-sandcastle-delegation/commits-real-project-work",
+    "version": "1.0.0",
+    "publicSeam": "npm-packed sandking -> ordinary launch command -> default production Harness -> Cockpit Launch",
+    "provider": {
+      "kind": "openai-codex",
+      "cliVersion": "0.146.0",
+      "model": "gpt-5.6-sol",
+      "effort": "medium",
+      "simulationAllowed": false
+    },
+    "expectedArtifact": {
+      "path": "sandking-real-delegation.txt",
+      "contentUtf8Sha256": "d249b05094457d73964be3ca190a1497399ddc9ae629b7e21f5e7ddd9dcfd57a"
+    },
+    "requiredOutcome": {
+      "status": "succeeded",
+      "code": "real_work_committed",
+      "exactlyOneTerminalEnvelope": true,
+      "exactlyOneChildCommit": true
+    },
+    "invariants": [
+      "the Project begins clean and retains unrelated tracked bytes",
+      "the structured Harness outcome and exact Git commit must agree",
+      "the delegated commit contains only the expected artifact",
+      "the ignored production projection is unchanged by Worker execution",
+      "no Sand-King runtime or projection file is tracked",
+      "provider output never enters the structured result channel"
+    ]
+  },
+  "environmentGate": {
+    "name": "SANDKING_REAL_SANDCASTLE_ACCEPTANCE",
+    "requiredValue": "1",
+    "command": "SANDKING_REAL_SANDCASTLE_ACCEPTANCE=1 npm run acceptance:issue-174:real",
+    "closedCode": "real_provider_gate_disabled",
+    "missingProviderCode": "real_provider_unavailable",
+    "unauthenticatedCode": "real_provider_unauthenticated",
+    "productionEvidence": false,
+    "fixtureSubstitutionAllowed": false
+  },
+  "retainedEvidence": {
+    "path": "acceptance/evidence/issue-174.real.json",
+    "maximumBytes": 65536,
+    "includes": [
+      "stable scenario identity and packaged Sand-King revision",
+      "adapter identity, protocol, content digest, and pinned Harness revision",
+      "upstream Sandcastle repository, revision, package version, and dependency lock digest",
+      "skill-set lock digest and resolved skill identities, revisions, and content digests",
+      "Project before/after commits, expected artifact digest, and preservation assertions",
+      "exact structured Harness outcome and bounded diagnostic references"
+    ],
+    "excludes": [
+      "credentials and provider account metadata",
+      "provider transcripts and unrestricted logs",
+      "environment dumps",
+      "bootstrap URLs, browser sessions, cookies, and reusable session material",
+      "machine-specific Project, state, install, or credential paths",
+      "full skill contents"
+    ]
+  },
+  "verification": {
+    "commands": [
+      [
+        "node",
+        "--test",
+        "test/production-harness-seed.test.mjs",
+        "test/production-harness-preparation.test.mjs",
+        "test/production-sandcastle-adapter.test.mjs",
+        "test/real-sandcastle-adapter.test.mjs",
+        "test/real-sandcastle-worker.test.mjs",
+        "test/issue-174-acceptance-evidence.test.mjs"
+      ]
+    ]
+  }
+}

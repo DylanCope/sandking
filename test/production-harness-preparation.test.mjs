@@ -193,6 +193,7 @@ test("production preparation resolves the registered pin and projects only verif
         "sandking.issue-implementation",
         "sandking.issue-planning",
         "sandking.pull-request-review",
+        "sandking.real-delegation",
       ],
     );
     assert.ok(prepared.project.harness.preparation.resolvedSkills.every((skill) =>
@@ -225,6 +226,7 @@ test("production preparation resolves the registered pin and projects only verif
         "sandking.issue-implementation",
         "sandking.issue-planning",
         "sandking.pull-request-review",
+        "sandking.real-delegation",
       ],
     );
     assert.equal(
