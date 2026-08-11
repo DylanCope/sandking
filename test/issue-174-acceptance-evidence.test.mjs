@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -21,6 +22,12 @@ const manifestPath = fileURLToPath(new URL(
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 const evidenceUrl = new URL("../acceptance/evidence/issue-174.real.json", import.meta.url);
 const evidenceExists = await access(evidenceUrl).then(() => true, () => false);
+const postProofUrl = new URL(
+  "../acceptance/evidence/issue-174.post-proof.json",
+  import.meta.url,
+);
+const postProof = JSON.parse(await readFile(postProofUrl, "utf8"));
+const sha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 
 test("issue 174 manifest binds the one gated real-provider Project-commit proof", () => {
   assert.equal(manifest.schemaVersion, 1);
@@ -111,6 +118,23 @@ test("retained issue 174 evidence proves the unchanged packaged real delegation"
   const evidenceText = await readFile(evidenceUrl, "utf8");
   const evidence = validateIssue174RealEvidence(JSON.parse(evidenceText));
   assertIssue174EvidenceSanitized({ evidence });
+  assert.equal(postProof.schemaVersion, 1);
+  assert.equal(postProof.issue, 174);
+  assert.equal(postProof.kind, "post-proof-package-boundary");
+  assert.equal(postProof.realEvidenceGeneratedFromCommit, evidence.generatedFromCommit);
+  assert.deepEqual(postProof.allowedChangedFiles.map(({ path }) => path), [
+    "src/production-sandcastle-adapter/.npmignore",
+    "test/issue-174-acceptance-evidence.test.mjs",
+    "test/issue-174-package-boundary.test.mjs",
+  ]);
+  for (const file of postProof.allowedChangedFiles) {
+    assert.match(file.integrity, /^sha256:[a-f0-9]{64}$/);
+    assert.equal(
+      sha256(await readFile(new URL(`../${file.path}`, import.meta.url))),
+      file.integrity,
+      `${file.path} differs from the bounded post-proof package refinement`,
+    );
+  }
   await execFileAsync("git", [
     "merge-base", "--is-ancestor", evidence.generatedFromCommit, "HEAD",
   ], { cwd: repositoryRoot });
@@ -118,7 +142,34 @@ test("retained issue 174 evidence proves the unchanged packaged real delegation"
     "diff", "--name-only", `${evidence.generatedFromCommit}..HEAD`, "--",
     ...ISSUE_174_DEMONSTRATED_PATHS,
   ], { cwd: repositoryRoot });
-  assert.equal(changes.trim(), "", `issue 174 evidence predates changes:\n${changes}`);
+  const allowedChanges = new Set(postProof.allowedChangedFiles.map(({ path }) => path));
+  const changedPaths = changes.trim().split("\n").filter(Boolean);
+  assert.deepEqual(
+    changedPaths.filter((path) => !allowedChanges.has(path)),
+    [],
+    `issue 174 evidence predates material changes:\n${changes}`,
+  );
+  const { stdout: status } = await execFileAsync("git", [
+    "status", "--short", "--untracked-files=all", "--",
+    ...postProof.allowedChangedFiles.map(({ path }) => path),
+  ], { cwd: repositoryRoot });
+  if (!status.trim()) {
+    assert.deepEqual(changedPaths.sort(), [...allowedChanges].sort());
+  }
+  for (const path of [
+    "src/production-sandcastle-adapter/real-worker-v2.mjs",
+    "src/production-sandcastle-adapter/sandcastle-v4.mjs",
+    "test/run-issue-174-real-sandcastle.mjs",
+  ]) {
+    const [{ stdout: evidencedSource }, currentSource] = await Promise.all([
+      execFileAsync("git", ["show", `${evidence.generatedFromCommit}:${path}`], {
+        cwd: repositoryRoot,
+        maxBuffer: 1024 * 1024,
+      }),
+      readFile(new URL(`../${path}`, import.meta.url), "utf8"),
+    ]);
+    assert.equal(currentSource, evidencedSource, `${path} changed after the real proof`);
+  }
   assert.equal(evidence.adapter.sourcePath,
     "src/production-sandcastle-adapter/sandcastle-v4.mjs");
   assert.equal(evidence.harness.sandKingSeed.revision,

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "issue": 174,
+  "kind": "post-proof-package-boundary",
+  "realEvidenceGeneratedFromCommit": "ce242aa8111d9ba0de76766e06a4f84ec3762a4a",
+  "qualification": "The real-provider adapter, Worker, runner, and retained outcome remain byte-identical. This bounded refinement removes only superseded unsafe adapter revisions from later installed packages and adds the exact package-boundary verification.",
+  "allowedChangedFiles": [
+    {
+      "path": "src/production-sandcastle-adapter/.npmignore",
+      "integrity": "sha256:b2cba9f6d48ea8c990785e8802f4ee47399f4b1a5c1331e19dbc966e6a5cae21"
+    },
+    {
+      "path": "test/issue-174-acceptance-evidence.test.mjs",
+      "integrity": "sha256:7d6bbbe08e94669adf1e3f56dcef2f8a73f18ad4f3aaa24a4140d75c5c5cdf5a"
+    },
+    {
+      "path": "test/issue-174-package-boundary.test.mjs",
+      "integrity": "sha256:87d4e5353ce651cda2a00c3be22224e1ee777772ea549ab5ff6f141774f7f6a9"
+    }
+  ]
+}
