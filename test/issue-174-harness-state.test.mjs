@@ -7,19 +7,22 @@ test("the gated runner waits for the default production Harness registry", async
   const harness = await waitForIssue174ProductionHarness({
     readState: async () => {
       reads += 1;
-      if (reads < 3) throw new Error("registry_not_published_yet");
       return {
         harnesses: [{
-          harnessId: "harness-111111111111111111111111",
+          harnessId: reads === 1
+            ? "harness-000000000000000000000000"
+            : "harness-111111111111111111111111",
           adapterId: "sandcastle-harness-adapter-v1",
           workspacePath: "/host/harness",
         }],
       };
     },
+    harnessId: "harness-111111111111111111111111",
     pause: async () => undefined,
     timeoutMs: 1_000,
   });
 
-  assert.equal(reads, 3);
+  assert.equal(reads, 2);
+  assert.equal(harness.harnessId, "harness-111111111111111111111111");
   assert.equal(harness.adapterId, "sandcastle-harness-adapter-v1");
 });

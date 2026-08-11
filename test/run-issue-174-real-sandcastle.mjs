@@ -252,7 +252,38 @@ const main = async () => {
     const launch = JSON.parse(launchSource);
     runtimeStarted = true;
 
+    browser = await launchBrowser({ niceAdjustment: 10 });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
+      timeout: 90_000,
+    });
+    if (await page.locator("#project-harness-adapter").inputValue()
+      !== "sandcastle-harness-adapter-v1") {
+      throw new Error("issue_174_default_production_harness_missing");
+    }
+    await page.locator("#project-path").fill(projectPath);
+    await page.locator("#open-project").click();
+    await page.waitForSelector(
+      "#project-readiness[data-harness-launch-ready='true']"
+        + "[data-harness-adapter-id='sandcastle-harness-adapter-v1']",
+      { timeout: 90_000 },
+    );
+    const readiness = page.locator("#project-readiness");
+    const projectId = await readiness.getAttribute("data-project-id");
+    const harnessId = await readiness.getAttribute("data-harness-id");
+    const pinnedRevision = await readiness.getAttribute("data-harness-pin");
+    const projectStateBefore = await readJson(join(dataDir, "project-registrations.json"));
+    const registration = projectStateBefore.projects.find((candidate) =>
+      candidate.projectId === projectId);
+    const projectionPath = join(
+      projectPath,
+      ...registration.harness.preparation.projection.path.split("/"),
+    );
+
     const initialHarness = await waitForIssue174ProductionHarness({
+      harnessId,
       readState: () => readJson(join(dataDir, "harness-registry.json")),
     });
     workspacePath = initialHarness.workspacePath;
@@ -287,35 +318,6 @@ const main = async () => {
       throw new Error("issue_174_real_sandbox_image_invalid");
     }
 
-    browser = await launchBrowser({ niceAdjustment: 10 });
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
-      timeout: 90_000,
-    });
-    if (await page.locator("#project-harness-adapter").inputValue()
-      !== "sandcastle-harness-adapter-v1") {
-      throw new Error("issue_174_default_production_harness_missing");
-    }
-    await page.locator("#project-path").fill(projectPath);
-    await page.locator("#open-project").click();
-    await page.waitForSelector(
-      "#project-readiness[data-harness-launch-ready='true']"
-        + "[data-harness-adapter-id='sandcastle-harness-adapter-v1']",
-      { timeout: 90_000 },
-    );
-    const readiness = page.locator("#project-readiness");
-    const projectId = await readiness.getAttribute("data-project-id");
-    const harnessId = await readiness.getAttribute("data-harness-id");
-    const pinnedRevision = await readiness.getAttribute("data-harness-pin");
-    const projectStateBefore = await readJson(join(dataDir, "project-registrations.json"));
-    const registration = projectStateBefore.projects.find((candidate) =>
-      candidate.projectId === projectId);
-    const projectionPath = join(
-      projectPath,
-      ...registration.harness.preparation.projection.path.split("/"),
-    );
     const projectionBefore = await snapshotIssue174Projection(projectionPath);
 
     launchActionCount += 1;

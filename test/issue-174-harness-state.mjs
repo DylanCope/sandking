@@ -1,6 +1,7 @@
 const productionAdapterId = "sandcastle-harness-adapter-v1";
 
 export const waitForIssue174ProductionHarness = async ({
+  harnessId,
   readState,
   pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   timeoutMs = 90_000,
@@ -9,7 +10,8 @@ export const waitForIssue174ProductionHarness = async ({
   while (Date.now() < deadline) {
     const state = await readState().catch(() => null);
     const harness = state?.harnesses?.find((candidate) =>
-      candidate.adapterId === productionAdapterId);
+      candidate.harnessId === harnessId
+      && candidate.adapterId === productionAdapterId);
     if (harness) return harness;
     await pause(100);
   }
