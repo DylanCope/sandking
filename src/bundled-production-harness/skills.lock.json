@@ -10,7 +10,7 @@
       "source": {
         "kind": "git",
         "repository": "https://github.com/DylanCope/sandking.git",
-        "revision": "866e61d6d439bb28138920e6d28e1048821e93e5",
+        "revision": "d1b0517a0b5d0cd2ce986fd137bfdca091b2c87b",
         "path": ".sandcastle/implement-prompt.md"
       },
       "contentIntegrity": "sha256:7b9283edb3b94c73c68f283ec30270cc9825c08787a17bcd78da38475fadecaf",
@@ -26,7 +26,7 @@
       "source": {
         "kind": "git",
         "repository": "https://github.com/DylanCope/sandking.git",
-        "revision": "866e61d6d439bb28138920e6d28e1048821e93e5",
+        "revision": "d1b0517a0b5d0cd2ce986fd137bfdca091b2c87b",
         "path": ".sandcastle/plan-prompt.md"
       },
       "contentIntegrity": "sha256:6220c63e7b128296cd2e7c5b0e7fd4159f6a6dbc3351f7f5924e1d14debeac6f",
@@ -42,7 +42,7 @@
       "source": {
         "kind": "git",
         "repository": "https://github.com/DylanCope/sandking.git",
-        "revision": "866e61d6d439bb28138920e6d28e1048821e93e5",
+        "revision": "d1b0517a0b5d0cd2ce986fd137bfdca091b2c87b",
         "path": ".sandcastle/pr-review-prompt.md"
       },
       "contentIntegrity": "sha256:06a73d4d8349a7da423065cee641090fb6ea43f93001c43b6924ab08399d410a",
@@ -58,7 +58,7 @@
       "source": {
         "kind": "git",
         "repository": "https://github.com/DylanCope/sandking.git",
-        "revision": "866e61d6d439bb28138920e6d28e1048821e93e5",
+        "revision": "d1b0517a0b5d0cd2ce986fd137bfdca091b2c87b",
         "path": ".sandcastle/real-delegation-prompt.md"
       },
       "contentIntegrity": "sha256:74d6ed9fc2bb9dc84d8301d0a93461e25b6007003a17c16efc52d64773dddf22",
