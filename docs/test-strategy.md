@@ -1,5 +1,11 @@
 # Test suite audit: what guards correctness, what is ceremony
 
+> **Status: partially acted on (2026-08-11).** The evidence-freshness
+> tripwires and the descriptively-named evidence receipt files have been
+> retired — see "What has been retired" at the end. The remaining
+> recommendations (evidence JSON, manifests, non-gated runners, schema
+> migrations) are still open.
+
 An audit of all 102 files / 34,505 lines in `test/` plus the 30 files /
 15,321 lines in `acceptance/`, done to answer one question: **what is
 required to ensure correctness under future changes, and what is
@@ -178,3 +184,50 @@ lines) barely touches the 11-line `harness-adapter-identity.mjs` — it is
 really a registration/run-manager integration suite. And
 `local-walking-skeleton.browser.test.mjs` (751 lines) is a full end-to-end
 suite, not a skeleton.
+
+## What has been retired (2026-08-11)
+
+**Evidence-freshness tripwires** — removed from the four issue-numbered
+acceptance tests (152, 164, 174, 175). This included a self-referential
+variant in issue-174 that hashed its own source file against a recorded
+value, so any edit to the test broke the test. The `merge-base` ancestry
+checks, evidence content assertions, and secret-leak checks were kept.
+
+**The descriptively-named evidence receipt files** — 11 files, 3,101 lines,
+deleted outright:
+
+`acceptance-evidence.test.mjs` (issue-117), `project-acceptance-evidence.test.mjs`
+(118), `launch-acceptance-evidence.test.mjs` (119),
+`harness-acceptance-evidence.test.mjs` (120),
+`reconnect-acceptance-evidence.test.mjs` (121),
+`truthful-failure-acceptance-evidence.test.mjs` (122),
+`planning-acceptance-evidence.test.mjs` (123),
+`claude-acceptance-evidence.test.mjs` (124),
+`mobile-workbench-acceptance-evidence.test.mjs` (149),
+`workbench-acceptance-evidence.test.mjs` (146 + 152), and the shared
+`retained-evidence-supersession.mjs` helper they all routed through.
+
+**Preserved from that deletion**, in a new `test/real-provider-gates.test.mjs`:
+the two fail-closed gates (issues 124 and 146) that stop an ordinary
+`npm test` from triggering a billed model invocation.
+
+**Kept despite appearing in the retirement list**: this audit originally
+grouped `installed-claude-acceptance-audits.test.mjs` (268 lines) with the
+receipts. That was wrong — it is a genuine unit test of audit-chain
+validation logic in `installed-claude-acceptance-audits.mjs`, which the
+gated real-provider runner imports. It asserts real behaviour (rejects a
+plugin-gated CLI description, requires CLI discovery before launch, requires
+reattachment evidence) and stays.
+
+### Why this accumulated
+
+Worth recording, because it is the root cause rather than the symptom: the
+delivery methodology treated *producing retained evidence artifacts* as the
+proof that a ticket was complete. That made evidence generation a goal in
+itself rather than a by-product of working software. The artifacts then
+became load-bearing — wired into tests that failed when unrelated files
+changed — so each new ticket added both more evidence and more coupling.
+The result was a suite that grew faster than the product, went red for
+documentation edits, and trained everyone to distrust it. Future acceptance
+criteria should be expressed as behavioural tests that fail when behaviour
+breaks, not as artifacts that fail when files change.
