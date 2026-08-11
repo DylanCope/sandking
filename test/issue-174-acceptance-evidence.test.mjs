@@ -123,9 +123,14 @@ test("retained issue 174 evidence proves the unchanged packaged real delegation"
   assert.equal(postProof.kind, "post-proof-package-boundary");
   assert.equal(postProof.realEvidenceGeneratedFromCommit, evidence.generatedFromCommit);
   assert.deepEqual(postProof.allowedChangedFiles.map(({ path }) => path), [
+    "package.json",
     "src/production-sandcastle-adapter/.npmignore",
     "test/issue-174-acceptance-evidence.test.mjs",
     "test/issue-174-package-boundary.test.mjs",
+    "test/issue-175-acceptance-evidence.test.mjs",
+    "test/issue-175-evidence-source.mjs",
+    "test/issue-175-source-verification.mjs",
+    "test/run-issue-175-acceptance.mjs",
   ]);
   for (const file of postProof.allowedChangedFiles) {
     assert.match(file.integrity, /^sha256:[a-f0-9]{64}$/);

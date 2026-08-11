@@ -59,6 +59,8 @@
     "acceptance:issue-164:update-evidence": "node test/run-issue-164-acceptance.mjs acceptance/issue-164.manifest.json --update-evidence",
     "acceptance:issue-174": "node --test test/issue-174-acceptance-evidence.test.mjs",
     "acceptance:issue-174:real": "node test/run-issue-174-real-sandcastle.mjs acceptance/issue-174.manifest.json",
+    "acceptance:issue-175": "node test/run-issue-175-acceptance.mjs acceptance/issue-175.manifest.json",
+    "acceptance:issue-175:update-evidence": "node test/run-issue-175-acceptance.mjs acceptance/issue-175.manifest.json --update-evidence",
     "typecheck": "tsc --noEmit -p tsconfig.sandcastle.json && tsc --noEmit -p tsconfig.json",
     "test": "node --test .sandcastle/*.test.mjs test/*.test.mjs"
   },
