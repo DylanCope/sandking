@@ -1,0 +1,730 @@
+{
+  "schemaVersion": 2,
+  "issue": 175,
+  "parentPrd": 169,
+  "sourceIssue": {
+    "githubBodyUtf8Sha256": "eebd3b9450306783dac8f85082346e8916d252112d6c3012b5e8c6efdfd0a7e8"
+  },
+  "sourcePrd": {
+    "issue": 169,
+    "githubBodyUtf8Sha256": "654df6d41b39dbdf73eb22ba6ab96a93e2c013b799539a5827b8cf80aedc4055"
+  },
+  "sourceSpecification": {
+    "issue": 168,
+    "githubBodyUtf8Sha256": "c11c9d214917682b3b97c764e8fae7b406bfc63c9f11ce54cba3450b2952e04d",
+    "parentApprovedBodySha256": "c11c9d214917682b3b97c764e8fae7b406bfc63c9f11ce54cba3450b2952e04d",
+    "parentApprovedBaselineCommit": "c4abb32e71f80757c826e581f7b4c80459349916"
+  },
+  "generatedFromCommit": "ca886332e8af1d96b24d3bc4d19322eafabbd76b",
+  "recordedAt": "2026-08-11T15:39:57.293Z",
+  "scenarioVersion": "1.0.0",
+  "sourceAndGraphVerification": {
+    "sourceIssues": [
+      168,
+      169,
+      175
+    ],
+    "coveredStories": 45,
+    "childIssues": [
+      170,
+      171,
+      172,
+      173,
+      174,
+      175
+    ],
+    "dependencyEdges": 9,
+    "repository": "DylanCope/sandking",
+    "sourceBodyHashes": {
+      "168": "c11c9d214917682b3b97c764e8fae7b406bfc63c9f11ce54cba3450b2952e04d",
+      "169": "654df6d41b39dbdf73eb22ba6ab96a93e2c013b799539a5827b8cf80aedc4055",
+      "175": "eebd3b9450306783dac8f85082346e8916d252112d6c3012b5e8c6efdfd0a7e8"
+    },
+    "children": [
+      {
+        "issue": 170,
+        "state": "closed"
+      },
+      {
+        "issue": 171,
+        "state": "closed"
+      },
+      {
+        "issue": 172,
+        "state": "closed"
+      },
+      {
+        "issue": 173,
+        "state": "closed"
+      },
+      {
+        "issue": 174,
+        "state": "closed"
+      },
+      {
+        "issue": 175,
+        "state": "open"
+      }
+    ],
+    "dependencies": [
+      [
+        170,
+        171
+      ],
+      [
+        171,
+        172
+      ],
+      [
+        172,
+        173
+      ],
+      [
+        173,
+        174
+      ],
+      [
+        170,
+        175
+      ],
+      [
+        171,
+        175
+      ],
+      [
+        172,
+        175
+      ],
+      [
+        173,
+        175
+      ],
+      [
+        174,
+        175
+      ]
+    ],
+    "parentState": "open",
+    "qualificationIssueState": "open"
+  },
+  "verificationCommands": [
+    {
+      "command": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      "passed": true,
+      "outputIntegrity": "sha256:fef46ca027ed80b48cd9fa5d80830a86582f1370e0abe9e9652cf8f8a0872b49"
+    },
+    {
+      "command": [
+        "node",
+        "--test",
+        "--test-concurrency=1",
+        "test/harness-adapter-identity.test.mjs",
+        "test/harness-adapter-protocol.test.mjs",
+        "test/protocol.test.mjs",
+        "test/browser-protocol.test.mjs",
+        "test/project-registration.test.mjs",
+        "test/production-harness-seed.test.mjs",
+        "test/production-harness-preparation.test.mjs",
+        "test/production-sandcastle-adapter.test.mjs",
+        "test/real-sandcastle-adapter.test.mjs",
+        "test/real-sandcastle-worker.test.mjs",
+        "test/harness-run.test.mjs",
+        "test/controller-cli.test.mjs",
+        "test/package-command.test.mjs",
+        "test/security-boundary.test.mjs",
+        "test/issue-152-acceptance-evidence.test.mjs",
+        "test/issue-164-acceptance-evidence.test.mjs",
+        "test/issue-174-projection-snapshot.test.mjs",
+        "test/issue-174-acceptance-evidence.test.mjs",
+        "test/issue-175-acceptance-evidence.test.mjs"
+      ],
+      "passed": true,
+      "outputIntegrity": "sha256:082f5048d1b5f319e4a88de6d035dded470d5d76a072dfbb869ffb2031111c10",
+      "testSummary": {
+        "tests": 168,
+        "passed": 166,
+        "failed": 0,
+        "skipped": 2
+      }
+    },
+    {
+      "command": [
+        "node",
+        "--test",
+        "--test-concurrency=1",
+        "test/production-harness-registration.browser.test.mjs",
+        "test/harness-run.browser.test.mjs"
+      ],
+      "passed": true,
+      "outputIntegrity": "sha256:0a95a7fd8d6cd56955162891b31a566fd3c768736bbe754b93fbdf627fcd8241",
+      "testSummary": {
+        "tests": 5,
+        "passed": 5,
+        "failed": 0,
+        "skipped": 0
+      }
+    }
+  ],
+  "scenarioResults": [
+    {
+      "id": "production-sandcastle-delegation/qualifies-public-delegation",
+      "name": "Production Sandcastle delegation",
+      "passed": true,
+      "deterministicPublicSurfaces": {
+        "cockpit": {
+          "installed": true,
+          "launchedOutsideCheckout": true,
+          "operation": "harness-run.launch",
+          "adapterSelection": "Project registration pin",
+          "executableEvidence": "test/production-harness-registration.browser.test.mjs"
+        },
+        "cliAndApi": {
+          "installed": true,
+          "command": "sandking launch",
+          "operation": "harness-run.launch",
+          "adapterSelection": "Project registration pin",
+          "executableEvidence": "test/production-sandcastle-adapter.test.mjs"
+        },
+        "sameHostOperationAndAdapterSelection": true
+      },
+      "realProviderProof": {
+        "sourceIssue": 174,
+        "repeatedByIssue175": false,
+        "generatedFromCommit": "ce242aa8111d9ba0de76766e06a4f84ec3762a4a",
+        "installedSandKing": {
+          "revision": "ce242aa8111d9ba0de76766e06a4f84ec3762a4a",
+          "command": "sandking",
+          "installed": true,
+          "launchedOutsideCheckout": true,
+          "tarballIntegrity": "sha256:1a99b5ef92aa6df9ab2c0daa5b555e05897a31a092911fef5b53fb9536978c98"
+        },
+        "publicSeam": {
+          "surface": "cockpit",
+          "defaultProductionHarness": true,
+          "launchActionCount": 1,
+          "transport": "installed sandking -> loopback Cockpit -> authenticated WebSocket -> framed local Host"
+        },
+        "adapter": {
+          "identity": "sandcastle-harness-adapter-v1",
+          "protocol": "1.0.0",
+          "entryPoint": "adapters/sandcastle.mjs",
+          "sourcePath": "src/production-sandcastle-adapter/sandcastle-v4.mjs",
+          "contentIntegrity": "sha256:cb26374b75af14f78552bfe0adac9cad70ea5a9fc0ca22e6a88659f0b41b7c0a"
+        },
+        "harness": {
+          "harnessId": "harness-dca081dea16fd444445f1eda",
+          "pinnedRevision": "e214221c1f160cc4b17fd643fc9b75f56dd975db",
+          "sandKingSeed": {
+            "repository": "https://github.com/DylanCope/sandking.git",
+            "revision": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
+            "seedSourceIntegrity": "sha256:674e758d029e7615e70a324c21ab24a00e576d04b35cd8f83282ea416ea2bec5"
+          },
+          "upstream": {
+            "repository": "https://github.com/mattpocock/sandcastle.git",
+            "revision": "e99f832f26dc9d245c019a9ddd19fa5dee792427",
+            "package": "@ai-hero/sandcastle",
+            "version": "0.12.0"
+          },
+          "dependencyLock": {
+            "path": "package-lock.json",
+            "integrity": "sha256:f23f864604dd2901d314afdb5ee819c2ca91fccd3c16807a8c5441d818e5b4c1"
+          },
+          "skillSetLock": {
+            "integrity": "sha256:a788a2250b809e173c14170fad331999579357d9006e88a7dbee4cae92101b56",
+            "delivery": {
+              "ambient": "disabled",
+              "method": "complete-pinned-inventory-in-worker-prompt"
+            },
+            "resolvedSkills": [
+              {
+                "identity": "sandking.issue-implementation",
+                "revision": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
+                "contentIntegrity": "sha256:abb4994f1f500212e432b8b2626b07d538c4fdc58a8609a13f0efda5699abf68"
+              },
+              {
+                "identity": "sandking.issue-planning",
+                "revision": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
+                "contentIntegrity": "sha256:6220c63e7b128296cd2e7c5b0e7fd4159f6a6dbc3351f7f5924e1d14debeac6f"
+              },
+              {
+                "identity": "sandking.pull-request-review",
+                "revision": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
+                "contentIntegrity": "sha256:67ab262dbfccdeefd9c4c7b391bf0c908ae1e15aacded9845a188b522c7d3eed"
+              },
+              {
+                "identity": "sandking.real-delegation",
+                "revision": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
+                "contentIntegrity": "sha256:74d6ed9fc2bb9dc84d8301d0a93461e25b6007003a17c16efc52d64773dddf22"
+              }
+            ]
+          },
+          "projectionIntegrity": "sha256:cd46eaa6a7501b096a81c9a53678fe17902be36cd862068c82a241c9a4d0bf67"
+        },
+        "project": {
+          "beforeCommit": "7c55983fe90322b1f803384dd53609d2529b8e03",
+          "afterCommit": "4e80ea7d7dd19fe80958b6784fcc4454a24cd00a",
+          "parentCommit": "7c55983fe90322b1f803384dd53609d2529b8e03",
+          "artifact": {
+            "path": "sandking-real-delegation.txt",
+            "contentIntegrity": "sha256:d249b05094457d73964be3ca190a1497399ddc9ae629b7e21f5e7ddd9dcfd57a"
+          },
+          "invariants": {
+            "exactlyOneChildCommit": true,
+            "expectedArtifactOnly": true,
+            "expectedArtifactContent": true,
+            "unrelatedTrackedContentPreserved": true,
+            "cleanAfter": true,
+            "ignoredProjection": true,
+            "projectionUnchanged": true,
+            "noRuntimeTracked": true,
+            "prescribedCommitIdentity": true,
+            "structuredCommitAgrees": true
+          }
+        },
+        "structuredOutcome": {
+          "harnessRunId": "harness-run-3c8b5c2ba985cf91935b5e6f",
+          "status": "succeeded",
+          "code": "real_work_committed",
+          "commit": "4e80ea7d7dd19fe80958b6784fcc4454a24cd00a",
+          "artifact": "sandking-real-delegation.txt",
+          "exactlyOneTerminalEnvelope": true
+        },
+        "diagnostics": {
+          "bounded": true,
+          "contentRetained": false,
+          "references": [
+            {
+              "streamId": "harness-log-11b5be396fea7b6e66da6a3e",
+              "producer": "stdout",
+              "start": 0,
+              "end": 0,
+              "explicitRetrievalRequired": true
+            },
+            {
+              "streamId": "harness-log-4cae293d1dd75be90d7aa81c",
+              "producer": "stderr",
+              "start": 0,
+              "end": 25,
+              "explicitRetrievalRequired": true
+            }
+          ]
+        },
+        "auditReferences": [
+          {
+            "auditId": "audit-7a59820a11106c0ca4510177",
+            "action": "harness.run.launch",
+            "outcome": "accepted"
+          },
+          {
+            "auditId": "audit-6c2cc3f8b00f62ae384e7b75",
+            "action": "harness.adapter.start",
+            "outcome": "observed"
+          },
+          {
+            "auditId": "audit-b0a429112001e142596a2af0",
+            "action": "harness.run.outcome",
+            "outcome": "observed"
+          }
+        ]
+      },
+      "preLaunchResults": [
+        {
+          "boundary": "invalid-or-incomplete-seed",
+          "typedResults": [
+            "harness_seed_missing",
+            "harness_seed_provenance_invalid",
+            "harness_dependency_lock_invalid",
+            "harness_skill_lock_invalid"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-harness-seed.test.mjs",
+            "test/production-harness-registration.browser.test.mjs"
+          ],
+          "prohibitedSideEffectsPreserved": true,
+          "fallbackObserved": false
+        },
+        {
+          "boundary": "unresolvable-pin",
+          "typedResults": [
+            "harness_pin_unreadable"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-harness-preparation.test.mjs"
+          ],
+          "prohibitedSideEffectsPreserved": true,
+          "fallbackObserved": false
+        },
+        {
+          "boundary": "altered-pinned-adapter-bytes",
+          "typedResults": [
+            "harness_adapter_bytes_mismatch",
+            "harness_projection_collision"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-harness-preparation.test.mjs",
+            "test/production-sandcastle-adapter.test.mjs"
+          ],
+          "prohibitedSideEffectsPreserved": true,
+          "fallbackObserved": false
+        },
+        {
+          "boundary": "unsupported-or-mismatched-adapter-identity-or-protocol",
+          "typedResults": [
+            "harness_compatibility_unsupported",
+            "harness_adapter_protocol_invalid"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/harness-adapter-identity.test.mjs",
+            "test/harness-adapter-protocol.test.mjs",
+            "test/production-harness-preparation.test.mjs"
+          ],
+          "prohibitedSideEffectsPreserved": true,
+          "fallbackObserved": false
+        },
+        {
+          "boundary": "invalid-entry-point",
+          "typedResults": [
+            "harness_adapter_protocol_invalid"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/harness-adapter-identity.test.mjs"
+          ],
+          "prohibitedSideEffectsPreserved": true,
+          "fallbackObserved": false
+        },
+        {
+          "boundary": "missing-or-unverifiable-locked-skills",
+          "typedResults": [
+            "harness_skill_lock_missing",
+            "harness_skill_lock_invalid",
+            "harness_locked_skill_unavailable",
+            "harness_skill_integrity_mismatch"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-harness-seed.test.mjs",
+            "test/production-harness-preparation.test.mjs"
+          ],
+          "prohibitedSideEffectsPreserved": true,
+          "fallbackObserved": false
+        },
+        {
+          "boundary": "ambient-only-skill-availability",
+          "typedResults": [
+            "harness_locked_skill_unavailable"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-harness-preparation.test.mjs"
+          ],
+          "prohibitedSideEffectsPreserved": true,
+          "fallbackObserved": false
+        },
+        {
+          "boundary": "unsafe-projection-collision",
+          "typedResults": [
+            "harness_projection_collision",
+            "harness_projection_failed"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-harness-preparation.test.mjs",
+            "test/production-harness-registration.browser.test.mjs"
+          ],
+          "prohibitedSideEffectsPreserved": true,
+          "fallbackObserved": false
+        },
+        {
+          "boundary": "unavailable-runtime-readiness",
+          "typedResults": [
+            "harness_execution_runtime_unavailable"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-sandcastle-adapter.test.mjs",
+            "test/real-sandcastle-adapter.test.mjs"
+          ],
+          "prohibitedSideEffectsPreserved": true,
+          "fallbackObserved": false
+        },
+        {
+          "boundary": "unavailable-provider-readiness",
+          "typedResults": [
+            "harness_worker_provider_unavailable",
+            "real_provider_gate_disabled",
+            "real_provider_unavailable",
+            "real_provider_unauthenticated"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-sandcastle-adapter.test.mjs",
+            "test/real-sandcastle-adapter.test.mjs",
+            "test/issue-174-acceptance-evidence.test.mjs"
+          ],
+          "prohibitedSideEffectsPreserved": true,
+          "fallbackObserved": false
+        }
+      ],
+      "postLaunchResults": [
+        {
+          "boundary": "worker-failure",
+          "typedResults": [
+            "harness_run_failed",
+            "work_failed"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-sandcastle-adapter.test.mjs",
+            "test/real-sandcastle-worker.test.mjs"
+          ],
+          "canonicalRunCount": 1,
+          "terminalOrRecoveryOutcomeCount": 1,
+          "duplicateWorkerInvocation": false,
+          "duplicateProjectCommit": false
+        },
+        {
+          "boundary": "malformed-terminal-outcome",
+          "typedResults": [
+            "harness_run_failed",
+            "worker_output_invalid",
+            "worker_result_ambiguous"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-sandcastle-adapter.test.mjs",
+            "test/harness-adapter-identity.test.mjs"
+          ],
+          "canonicalRunCount": 1,
+          "terminalOrRecoveryOutcomeCount": 1,
+          "duplicateWorkerInvocation": false,
+          "duplicateProjectCommit": false
+        },
+        {
+          "boundary": "missing-terminal-outcome",
+          "typedResults": [
+            "harness_run_failed",
+            "worker_result_missing"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-sandcastle-adapter.test.mjs",
+            "test/harness-run.test.mjs"
+          ],
+          "canonicalRunCount": 1,
+          "terminalOrRecoveryOutcomeCount": 1,
+          "duplicateWorkerInvocation": false,
+          "duplicateProjectCommit": false
+        },
+        {
+          "boundary": "non-zero-exit-without-required-result",
+          "typedResults": [
+            "harness_run_failed",
+            "worker_result_missing"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-sandcastle-adapter.test.mjs"
+          ],
+          "canonicalRunCount": 1,
+          "terminalOrRecoveryOutcomeCount": 1,
+          "duplicateWorkerInvocation": false,
+          "duplicateProjectCommit": false
+        },
+        {
+          "boundary": "early-or-zero-exit-without-required-result",
+          "typedResults": [
+            "harness_run_failed",
+            "worker_result_missing"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-sandcastle-adapter.test.mjs",
+            "test/harness-run.test.mjs"
+          ],
+          "canonicalRunCount": 1,
+          "terminalOrRecoveryOutcomeCount": 1,
+          "duplicateWorkerInvocation": false,
+          "duplicateProjectCommit": false
+        },
+        {
+          "boundary": "observation-interruption-and-reconnect",
+          "typedResults": [
+            "harness_run_observed"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-sandcastle-adapter.test.mjs",
+            "test/harness-run.browser.test.mjs"
+          ],
+          "canonicalRunCount": 1,
+          "terminalOrRecoveryOutcomeCount": 1,
+          "duplicateWorkerInvocation": false,
+          "duplicateProjectCommit": false
+        },
+        {
+          "boundary": "cancellation",
+          "typedResults": [
+            "harness_run_cancellation_accepted",
+            "harness_run_cancelled",
+            "harness_process_termination_unconfirmed"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-sandcastle-adapter.test.mjs",
+            "test/harness-run.test.mjs"
+          ],
+          "canonicalRunCount": 1,
+          "terminalOrRecoveryOutcomeCount": 1,
+          "duplicateWorkerInvocation": false,
+          "duplicateProjectCommit": false
+        },
+        {
+          "boundary": "ambiguous-launch-retry",
+          "typedResults": [
+            "harness_run_created",
+            "idempotency_key_conflict"
+          ],
+          "passed": true,
+          "executableEvidence": [
+            "test/production-sandcastle-adapter.test.mjs",
+            "test/controller-cli.test.mjs",
+            "test/harness-run.browser.test.mjs"
+          ],
+          "canonicalRunCount": 1,
+          "terminalOrRecoveryOutcomeCount": 1,
+          "duplicateWorkerInvocation": false,
+          "duplicateProjectCommit": false
+        }
+      ]
+    },
+    {
+      "id": "conformance-acceptance-oracle/qualifies-public-delegation",
+      "name": "Conformance acceptance oracle",
+      "passed": true,
+      "mandatory": true,
+      "prerequisites": {
+        "modelOutput": false,
+        "productionCredentials": false,
+        "networkAccess": false
+      },
+      "packagedPublicSeam": {
+        "command": "sandking",
+        "installed": true,
+        "launchedOutsideCheckout": true,
+        "transport": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
+        "operation": "harness-run.launch",
+        "executableEvidence": "test/harness-run.browser.test.mjs"
+      },
+      "adapter": {
+        "identity": "conformance-harness-adapter-v1",
+        "protocol": "1.0.0",
+        "entryPoint": "adapters/conformance.mjs"
+      },
+      "observation": {
+        "status": "succeeded",
+        "outcomeCode": "conformance_run_succeeded",
+        "orderedEventTypes": [
+          "harness_run_created",
+          "harness_adapter_ready",
+          "harness_progress_published",
+          "harness_run_succeeded"
+        ],
+        "exactlyOneTerminalEnvelope": true,
+        "reconnectReturnsCanonicalRun": true,
+        "ambiguousRetryReturnsCanonicalRun": true,
+        "duplicateRunCount": 0
+      },
+      "inheritedPublicSeamEvidence": {
+        "issue": 152,
+        "generatedFromCommit": "a88b6ca9253af285bfaf6a422d392753574fc4f0",
+        "assertions": {
+          "oneRevisionFreeHostLaunch": true,
+          "freshProjectLaunch": true,
+          "cockpitSinglePersistedConfirmation": true,
+          "ordinaryControllerCliDiscoverable": true,
+          "ordinaryControllerCliLaunch": true,
+          "claudePluginAbsent": true,
+          "revisionDriftFailureAbsent": true,
+          "mainEraHarnessRunsReadable": true,
+          "mainEraControllerSessionsReadable": true,
+          "typedClaudeStopFailuresPreserved": true,
+          "bootstrapSessionAuditTerminalProjectHostCoveragePassed": true
+        }
+      },
+      "productionProviderInvoked": false
+    }
+  ],
+  "durabilityQualification": {
+    "sourceIssue": 164,
+    "generatedFromCommit": "a88b6ca9253af285bfaf6a422d392753574fc4f0",
+    "scenarios": [
+      {
+        "id": "durable-execution/reconciles-host-death-mid-run",
+        "passed": true
+      },
+      {
+        "id": "durable-execution/cancels-across-host-restart",
+        "passed": true
+      },
+      {
+        "id": "durable-execution/completion-wins-cancellation-race",
+        "passed": true
+      },
+      {
+        "id": "durable-execution/exposes-uncertain-supervision-for-recovery",
+        "passed": true
+      },
+      {
+        "id": "durable-execution/recovers-every-canonical-boundary",
+        "passed": true
+      }
+    ]
+  },
+  "securityAssertions": {
+    "surfaces": {
+      "protocol frames": true,
+      "registrations": true,
+      "execution snapshots": true,
+      "events": true,
+      "outcomes": true,
+      "diagnostics": true,
+      "audits": true,
+      "browser models": true,
+      "retained evidence": true
+    },
+    "exclusions": {
+      "credentials": true,
+      "raw idempotency keys": true,
+      "provider transcripts": true,
+      "unrestricted logs": true,
+      "environment dumps": true,
+      "reusable session material": true,
+      "machine-specific secret paths": true,
+      "full skill contents": true
+    },
+    "inheritedDurabilityAssertions": {
+      "credentialFixturesAbsentFromAllSurfaces": true,
+      "rawRetryKeysAbsentFromAllSurfaces": true,
+      "unrestrictedProcessHandlesAbsentFromAllSurfaces": true,
+      "environmentDumpsAbsentFromAllSurfaces": true,
+      "trackedProjectChangesAbsentFromAllSurfaces": true,
+      "protocolFramesSanitized": true,
+      "immutableSnapshotsSanitized": true,
+      "eventsAndOutcomesSanitized": true,
+      "auditsAndDiagnosticsSanitized": true,
+      "browserModelsSanitized": true,
+      "retainedEvidenceSanitized": true
+    },
+    "boundedDiagnosticReferencesOnly": true,
+    "retainedEvidenceSanitized": true
+  }
+}
