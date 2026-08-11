@@ -7,6 +7,7 @@ import {
   harnessLaunchParametersDeclarationSchema,
   harnessPreparationFailureEnvelopeSchema,
   harnessPreparedEnvelopeSchema,
+  retainedExecutionInputPathsSchema,
   invokePinnedHarnessAdapter,
   loadPinnedHarnessAdapter,
 } from "./harness-adapter-protocol.mjs";
@@ -80,6 +81,7 @@ const harnessLaunchValidationSchema = z.object({
   adapterEntryPoint: harnessAdapterEntryPointSchema,
   negotiatedCapabilities: z.array(z.literal("harness.launch.prepare.v1")).length(1),
   suppliedCapabilities: z.array(capabilitySchema).min(1).max(8),
+  retainedExecutionInputs: retainedExecutionInputPathsSchema,
   sanitizedPreview: z.object({
     summary: z.string().min(1).max(512),
     secretFree: z.literal(true),

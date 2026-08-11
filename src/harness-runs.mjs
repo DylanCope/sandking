@@ -18,6 +18,7 @@ import {
   harnessTerminalEnvelopeSchema,
   loadPinnedHarnessAdapter,
   readHarnessAdapterFrame,
+  writeHarnessAdapterFrame,
 } from "./harness-adapter-protocol.mjs";
 import {
   SANDCASTLE_HARNESS_ADAPTER_ID,
@@ -31,7 +32,7 @@ import {
 import {
   materializeProductionHarnessExecutionSnapshot,
   productionHarnessPreparationSchema,
-  verifyProductionHarnessRuntimeEntryPoint,
+  verifyProductionHarnessRetainedInputs,
 } from "./production-harness-preparation.mjs";
 import {
   ensurePrivateDirectory,
@@ -1134,45 +1135,6 @@ export const scheduleCancellationEscalation = (
 };
 
 /**
- * Keep the pinned adapter's process and cancellation behavior unchanged while
- * binding its Worker spawn to the bytes authenticated before launch
- * acceptance. The preload runs before the exact pinned adapter source and
- * replaces only that adapter's one expected Worker invocation. The Worker is
- * evaluated from the retained source, so replacing its projected path after
- * the adapter process starts cannot change the code that executes.
- *
- * @param {{workerPath: string, workerSource: string}} options
- */
-const productionWorkerExecutionPreload = (options) => {
-  const preloadSource = [
-    'import childProcess from "node:child_process";',
-    'import { syncBuiltinESMExports } from "node:module";',
-    `const expectedWorkerPath = ${JSON.stringify(options.workerPath)};`,
-    `const exactWorkerSource = ${JSON.stringify(options.workerSource)};`,
-    "const originalSpawn = childProcess.spawn;",
-    "childProcess.spawn = function(executable, args, spawnOptions) {",
-    "  if (executable === process.execPath",
-    "      && Array.isArray(args)",
-    "      && args.length === 2",
-    "      && args[0] === expectedWorkerPath",
-    '      && typeof args[1] === "string") {',
-    "    return originalSpawn.call(this, executable, [",
-    '      "--input-type=module",',
-    '      "--eval",',
-    "      exactWorkerSource,",
-    "      expectedWorkerPath,",
-    "      args[1],",
-    "    ], spawnOptions);",
-    "  }",
-    "  return originalSpawn.call(this, executable, args, spawnOptions);",
-    "};",
-    "syncBuiltinESMExports();",
-    "",
-  ].join("\n");
-  return `data:text/javascript;base64,${Buffer.from(preloadSource, "utf8").toString("base64")}`;
-};
-
-/**
  * @param {z.infer<typeof storedRunSchema>} run
  * @param {any} context
  * @param {{onAdapterStarted: () => Promise<void>, onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, beforeCancellationSignal: (kind: "cooperative" | "forced") => Promise<void>, onCancellationSignalPublished: (kind: "cooperative" | "forced", sentAt: string) => Promise<void>, onCancellationTerminationConfirmed: (confirmedAt: string) => Promise<void>, onSupervisorAvailable: (supervisor: {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, interrupt: () => Promise<void>, releaseProcessTree: () => Promise<void>}) => void}} observer
@@ -1189,36 +1151,20 @@ const superviseHarnessAdapter = async (run, context, observer) => {
   ) {
     throw new Error("harness_adapter_protocol_invalid");
   }
-  const preparedProductionHarness = run.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
-    && context.project?.harness?.preparation;
-  const productionHarnessSnapshot = preparedProductionHarness
-    ? run.executionSnapshot.productionHarness
+  const harnessExecutionPath = typeof context.harnessExecutionPath === "string"
+    ? context.harnessExecutionPath
     : null;
-  if (
-    preparedProductionHarness
-    && (
-      !productionHarnessSnapshot
-      || typeof context.productionHarnessExecutionPath !== "string"
-      || typeof context.productionHarnessRuntimeEntryPointSource !== "string"
-      || typeof context.productionHarnessRuntimeEntryPointIntegrity !== "string"
-    )
-  ) {
+  const retainedHarnessExecutionInputs = Array.isArray(
+    context.retainedHarnessExecutionInputs,
+  ) ? context.retainedHarnessExecutionInputs : [];
+  if (harnessExecutionPath === null && retainedHarnessExecutionInputs.length > 0) {
     throw new Error("harness_adapter_start_failed");
   }
   const encodedExecution = Buffer.from(JSON.stringify({
     harnessRunId: run.harnessRunId,
     parameters: context.parameters,
   }), "utf8").toString("base64url");
-  const adapterWorkingDirectory = preparedProductionHarness
-    ? context.productionHarnessExecutionPath
-    : context.harnessWorkspacePath;
-  const productionWorkerPath = preparedProductionHarness
-    ? join(
-        context.productionHarnessExecutionPath,
-        ".sandcastle",
-        "controlled-worker-fixture.mjs",
-      )
-    : null;
+  const adapterWorkingDirectory = harnessExecutionPath ?? context.harnessWorkspacePath;
   const windowsBarrierDirectory = process.platform === "win32"
     ? await mkdtemp(join(tmpdir(), "sandking-harness-job-"))
     : null;
@@ -1237,26 +1183,16 @@ const superviseHarnessAdapter = async (run, context, observer) => {
   // window in which different adapter bytes could otherwise be launched.
   const adapterArgs = [
     ...(windowsBarrierMarker ? ["--require", windowsProcessBarrierPath] : []),
-    ...(productionWorkerPath
-      ? [
-          "--import",
-          productionWorkerExecutionPreload({
-            workerPath: productionWorkerPath,
-            workerSource: context.productionHarnessRuntimeEntryPointSource,
-          }),
-        ]
-      : []),
     "--input-type=module",
     "--eval", pinnedAdapter.pinnedEntryPointSource,
     pinnedAdapter.compatibility.entryPoint,
     "run",
     encodedExecution,
   ];
-  if (preparedProductionHarness) {
-    await verifyProductionHarnessRuntimeEntryPoint({
-      executionPath: context.productionHarnessExecutionPath,
-      runtimeEntryPointSource: context.productionHarnessRuntimeEntryPointSource,
-      runtimeEntryPointIntegrity: context.productionHarnessRuntimeEntryPointIntegrity,
+  if (harnessExecutionPath !== null) {
+    await verifyProductionHarnessRetainedInputs({
+      executionPath: harnessExecutionPath,
+      retainedExecutionInputs: retainedHarnessExecutionInputs,
     });
   }
   const posixProcessTree = process.platform === "win32"
@@ -1342,8 +1278,16 @@ const superviseHarnessAdapter = async (run, context, observer) => {
         processTree.forceTerminate()).catch(() => undefined);
     }
   };
-  const adapterChannel = posixProcessTree?.adapterChannel ?? child.stdio[3];
-  if (!adapterChannel || !child.stdout || !child.stderr || !("readable" in adapterChannel)) {
+  const adapterChannel = /** @type {import("node:stream").Duplex | null | undefined} */ (
+    posixProcessTree?.adapterChannel ?? child.stdio[3]
+  );
+  if (
+    !adapterChannel
+    || !child.stdout
+    || !child.stderr
+    || !("readable" in adapterChannel)
+    || (retainedHarnessExecutionInputs.length > 0 && !("writable" in adapterChannel))
+  ) {
     terminateContainedAdapter();
     await windowsJobObject?.close();
     throw new Error("harness_adapter_start_failed");
@@ -1497,6 +1441,22 @@ const superviseHarnessAdapter = async (run, context, observer) => {
     return processTreePreparation;
   };
   const completion = Promise.all([exit, consumeFrames(), adapterStartObservation]);
+  if (retainedHarnessExecutionInputs.length > 0) {
+    try {
+      writeHarnessAdapterFrame(adapterChannel, {
+        type: "harness.run.start",
+        adapterProtocol: run.adapterProtocol,
+        adapterId: run.adapterId,
+        harnessRunId: run.harnessRunId,
+        retainedExecutionInputs: retainedHarnessExecutionInputs,
+      });
+    } catch {
+      terminateContainedAdapter();
+      adapterChannel.destroy();
+      await windowsJobObject?.close();
+      throw new Error("harness_adapter_start_failed");
+    }
+  }
   /** @param {string} cooperativeDeadlineAt */
   const requestCancellation = (cooperativeDeadlineAt) => {
     if (cancellationOperation) return cancellationOperation;
@@ -2864,9 +2824,9 @@ export const createHarnessRunManager = async (options) => {
     }
 
     let harnessRunId = null;
-    let productionHarnessExecutionPath = null;
-    let productionHarnessRuntimeEntryPointSource = null;
-    let productionHarnessRuntimeEntryPointIntegrity = null;
+    let harnessExecutionPath = null;
+    /** @type {Array<{path: string, integrity: string, source: string}>} */
+    let retainedHarnessExecutionInputs = [];
     if (!code && context && prepared && parameters.success && idempotencyKeyHash) {
       harnessRunId = `harness-run-${randomBytes(12).toString("hex")}`;
       if (
@@ -2874,31 +2834,28 @@ export const createHarnessRunManager = async (options) => {
         && context.project.harness.preparation
       ) {
         const logsDirectory = join(options.dataDir, "harness-runs", harnessRunId);
-        productionHarnessExecutionPath = join(logsDirectory, "execution");
+        harnessExecutionPath = join(logsDirectory, "execution");
         try {
           if (typeof context.productionHarnessProjectionPath !== "string") {
             throw new Error("harness_projection_failed");
           }
           const executionSnapshot = await materializeProductionHarnessExecutionSnapshot({
             sourcePath: context.productionHarnessProjectionPath,
-            destinationPath: productionHarnessExecutionPath,
+            destinationPath: harnessExecutionPath,
             projectPath: context.project.canonicalPath,
             preparation: context.project.harness.preparation,
+            retainedInputPaths: prepared.retainedExecutionInputs,
           });
-          productionHarnessExecutionPath = executionSnapshot.path;
-          productionHarnessRuntimeEntryPointSource =
-            executionSnapshot.runtimeEntryPointSource;
-          productionHarnessRuntimeEntryPointIntegrity =
-            executionSnapshot.runtimeEntryPointIntegrity;
+          harnessExecutionPath = executionSnapshot.path;
+          retainedHarnessExecutionInputs = executionSnapshot.retainedExecutionInputs;
         } catch (error) {
           const typedCode = error instanceof Error ? error.message : "";
           code = new Set([
             "harness_projection_collision",
             "harness_projection_failed",
           ]).has(typedCode) ? typedCode : "harness_projection_failed";
-          productionHarnessExecutionPath = null;
-          productionHarnessRuntimeEntryPointSource = null;
-          productionHarnessRuntimeEntryPointIntegrity = null;
+          harnessExecutionPath = null;
+          retainedHarnessExecutionInputs = [];
           await rm(logsDirectory, { recursive: true, force: true }).catch(() => undefined);
         }
       }
@@ -3092,9 +3049,8 @@ export const createHarnessRunManager = async (options) => {
       const operation = supervise(structuredClone(run), {
         ...context,
         parameters: structuredClone(parameters.data),
-        productionHarnessExecutionPath,
-        productionHarnessRuntimeEntryPointSource,
-        productionHarnessRuntimeEntryPointIntegrity,
+        harnessExecutionPath,
+        retainedHarnessExecutionInputs,
         cancellationGraceMs,
         hostLossTerminationEvidencePath: join(
           options.dataDir,

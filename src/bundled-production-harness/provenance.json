@@ -3,8 +3,8 @@
   "seedVersion": "sandking-sandcastle-harness-v1",
   "sandKing": {
     "repository": "https://github.com/DylanCope/sandking.git",
-    "revision": "e239c0ec5a3db8b6e41b99ce62022f1dff34cd9d",
-    "seedSourceIntegrity": "sha256:ab9bdce676dd01cb0fb916b1da70edf35a2e98f61388f99c3fe9dee3c2cc0147"
+    "revision": "0fb005c1d8edfbf6f793b15068c5da33ea49bd20",
+    "seedSourceIntegrity": "sha256:983155f55195938e7572aa37aa8aaa9da5b681d41619821389c976dbcf5d9a5e"
   },
   "sandcastle": {
     "repository": "https://github.com/mattpocock/sandcastle.git",
@@ -19,7 +19,7 @@
     },
     "skillSetLock": {
       "path": "skills.lock.json",
-      "integrity": "sha256:d7ce639a804833de576f3cd1aba7bfe3a6910570ca16af2b240efa81e25d3b9e"
+      "integrity": "sha256:156851bd407329478f985d7f5bb156d5af11afefeb55d7c0af2f35e85098d50f"
     }
   }
 }

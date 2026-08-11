@@ -16,7 +16,11 @@ import { basename, dirname, join, posix, relative, resolve, sep } from "node:pat
 import { promisify } from "node:util";
 import { z } from "zod";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "./harness-adapter-identity.mjs";
-import { harnessCompatibilityManifestSchema } from "./harness-adapter-protocol.mjs";
+import {
+  harnessCompatibilityManifestSchema,
+  retainedExecutionInputPathsSchema,
+  retainedExecutionInputSchema,
+} from "./harness-adapter-protocol.mjs";
 import {
   productionHarnessProvenanceSchema,
   productionHarnessSeedManifestSchema,
@@ -33,7 +37,6 @@ const relativeProjectionPathSchema = z.string().min(1).max(512).refine((value) =
   && !value.includes("\\")
   && !value.includes("\0")
   && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."));
-const controlledWorkerRuntimePath = ".sandcastle/controlled-worker-fixture.mjs";
 
 const productionHarnessProjectionManifestSchema = z.object({
   schemaVersion: z.literal(1),
@@ -322,10 +325,14 @@ const makeExecutionTreeRemovable = async (root) => {
  *   destinationPath: string,
  *   projectPath: string,
  *   preparation: z.infer<typeof productionHarnessPreparationSchema>,
+ *   retainedInputPaths: string[],
  * }} options
  */
 export const materializeProductionHarnessExecutionSnapshot = async (options) => {
   const preparation = productionHarnessPreparationSchema.parse(options.preparation);
+  const retainedInputPaths = retainedExecutionInputPathsSchema.parse(
+    options.retainedInputPaths,
+  );
   const manifestSource = await readWorkspaceFile(
     options.sourcePath,
     "projection-manifest.json",
@@ -379,10 +386,13 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
   if (projectionDigest !== preparation.projection.digest) {
     throw new ProductionHarnessPreparationError("harness_projection_collision");
   }
-  const runtimeEntryPointSource = snapshotFiles.get(controlledWorkerRuntimePath);
-  if (typeof runtimeEntryPointSource !== "string") {
-    throw new ProductionHarnessPreparationError("harness_projection_collision");
-  }
+  const retainedExecutionInputs = retainedInputPaths.map((path) => {
+    const source = snapshotFiles.get(path);
+    if (typeof source !== "string") {
+      throw new ProductionHarnessPreparationError("harness_projection_collision");
+    }
+    return retainedExecutionInputSchema.parse({ path, source, integrity: sha256(source) });
+  });
   snapshotFiles.set("projection-manifest.json", manifestSource);
 
   const destinationPath = resolve(options.destinationPath);
@@ -449,8 +459,7 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
     await makeExecutionTreeReadOnly(destinationPath);
     return {
       path: destinationPath,
-      runtimeEntryPointSource,
-      runtimeEntryPointIntegrity: sha256(runtimeEntryPointSource),
+      retainedExecutionInputs,
     };
   } catch (error) {
     if (stagingPath) {
@@ -467,33 +476,34 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
 };
 
 /**
- * Re-authenticate the executable projection input at the last Host-controlled
- * boundary before the adapter process is created. The retained source was
- * captured before launch acceptance, so a later replacement cannot become an
- * accepted Worker runtime merely by restoring writable file permissions.
+ * Re-authenticate adapter-declared projection inputs at the last
+ * Host-controlled boundary before the adapter process is created. Retained
+ * sources were captured before launch acceptance, so later replacements
+ * cannot become accepted runtime inputs by restoring writable permissions.
  *
  * @param {{
  *   executionPath: string,
- *   runtimeEntryPointSource: string,
- *   runtimeEntryPointIntegrity: string,
+ *   retainedExecutionInputs: Array<z.infer<typeof retainedExecutionInputSchema>>,
  * }} options
  */
-export const verifyProductionHarnessRuntimeEntryPoint = async (options) => {
-  const runtimePath = join(
-    options.executionPath,
-    ...controlledWorkerRuntimePath.split("/"),
+export const verifyProductionHarnessRetainedInputs = async (options) => {
+  const inputs = z.array(retainedExecutionInputSchema).max(8).parse(
+    options.retainedExecutionInputs,
   );
   try {
-    const details = await lstat(runtimePath);
-    const source = details.isFile() && !details.isSymbolicLink() && details.nlink === 1
-      ? await readFile(runtimePath, "utf8")
-      : null;
-    if (
-      source === null
-      || source !== options.runtimeEntryPointSource
-      || sha256(source) !== options.runtimeEntryPointIntegrity
-    ) {
-      throw new ProductionHarnessPreparationError("harness_projection_failed");
+    for (const input of inputs) {
+      const inputPath = join(options.executionPath, ...input.path.split("/"));
+      const details = await lstat(inputPath);
+      const source = details.isFile() && !details.isSymbolicLink() && details.nlink === 1
+        ? await readFile(inputPath, "utf8")
+        : null;
+      if (
+        source === null
+        || source !== input.source
+        || sha256(source) !== input.integrity
+      ) {
+        throw new ProductionHarnessPreparationError("harness_projection_failed");
+      }
     }
   } catch (error) {
     if (error instanceof ProductionHarnessPreparationError) throw error;
