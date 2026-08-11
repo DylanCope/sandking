@@ -16,6 +16,10 @@ conflate the two.
   of `src/` into real/working, dead, test-scaffolding-in-`src/`, and
   speculative/future, with a button-by-button Cockpit UI audit. The
   quantitative backing for the other two docs.
+- **[`test-strategy.md`](test-strategy.md)** — audit of all 102 test files
+  and the `acceptance/` tree: what guards correctness under future change,
+  what is per-ticket ceremony, and what will obstruct the refactors `src/`
+  needs.
 
 All three docs are grounded in direct code inspection with file:line
 citations, not aspiration — they were written specifically to reconcile the
