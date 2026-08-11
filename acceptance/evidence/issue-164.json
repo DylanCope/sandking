@@ -16,8 +16,8 @@
     "parentApprovedHashBasis": "GitHub body UTF-8 with leading and trailing whitespace trimmed",
     "parentApprovedBaselineCommit": "ca06fb7906dca384c8a1ff49114d701df9e925b6"
   },
-  "generatedFromCommit": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
-  "recordedAt": "2026-08-11T09:32:13.749Z",
+  "generatedFromCommit": "0517e193358886526feddd9d66adad7456ea34da",
+  "recordedAt": "2026-08-11T09:58:03.034Z",
   "verificationCommands": [
     [
       "npm",
@@ -70,14 +70,14 @@
         "command": "sandking",
         "installed": true,
         "launchedOutsideCheckout": true,
-        "tarballSha256": "86930d8909a1446468068dcbe2add3ffa2b8e1ae97eb3943dc8fbdc77ecb48fc",
+        "tarballSha256": "1a99b5ef92aa6df9ab2c0daa5b555e05897a31a092911fef5b53fb9536978c98",
         "transport": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host"
       },
       "identities": {
-        "hostId": "host-a6ec7776480f78605c2c63cd",
-        "projectId": "project-5dd1ca6ae46d6f1d4415a647",
-        "harnessId": "harness-6afe77d6ab824367ff8d4d27",
-        "harnessRunId": "harness-run-1c61e45c9745def57ec5bc63",
+        "hostId": "host-3983ecc7029f781028911ffc",
+        "projectId": "project-1a48f416ba81003e24b670e0",
+        "harnessId": "harness-556e09e72487e13139f27d80",
+        "harnessRunId": "harness-run-2451872857186ee55b5e55a5",
         "harnessPinnedCommit": "9aedd195ea310c07118a4e9a45149341d1ba65bd"
       },
       "adapter": {
@@ -87,103 +87,113 @@
       },
       "eventReferences": [
         {
-          "eventId": "harness-event-77b3f2433394ae7265714eb4",
+          "eventId": "harness-event-810d6b08384591a868c7209b",
           "sequence": 1,
           "type": "harness_run_created",
           "outcomeReference": null
         },
         {
-          "eventId": "harness-event-10a4848349ee1b51068f7ce6",
+          "eventId": "harness-event-8a645022cae5146c9f027eeb",
           "sequence": 2,
           "type": "harness_adapter_ready",
           "outcomeReference": null
         },
         {
-          "eventId": "harness-event-32ca68a1fb3053fa002351a7",
+          "eventId": "harness-event-e8696ed3611cf76b87d81bcb",
           "sequence": 3,
           "type": "harness_progress_published",
           "outcomeReference": null
         },
         {
-          "eventId": "harness-event-9087f8dfec4faab67d012acd",
+          "eventId": "harness-event-0eed2b020b1d2f0b6a72cc14",
           "sequence": 4,
           "type": "harness_run_failed",
-          "outcomeReference": "harness-outcome-e8635fdd8b071838f16eb28a"
+          "outcomeReference": "harness-outcome-7da53a535e50215fefb16280"
         }
       ],
       "auditReferences": [
         {
-          "auditId": "audit-c38f1fa81ad98312e4ee44af",
+          "auditId": "audit-ce726bd6a80f360ed5c81ba3",
           "action": "harness.run.launch",
           "outcome": "accepted"
         },
         {
-          "auditId": "audit-38f15bfa9ac3803efcd1f244",
+          "auditId": "audit-85f81ce4829c8f3160265d99",
           "action": "harness.adapter.start",
           "outcome": "observed"
         },
         {
-          "auditId": "audit-061f1ddfda54eb78b8aecad5",
+          "auditId": "audit-1db5d327958d46975c9fcfe8",
           "action": "browser.harness-run.logs",
           "outcome": "observed"
         },
         {
-          "auditId": "audit-1608a6b5d8e655334b44eb36",
+          "auditId": "audit-77f176b2c41caf5a4b52570d",
           "action": "browser.harness-run.logs",
           "outcome": "observed"
         },
         {
-          "auditId": "audit-055f65cc5c2290fd05ee5aeb",
+          "auditId": "audit-b05447b2f8788746f8f23a90",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-3cde29ffb29c7a7a7df31b83",
+          "action": "browser.harness-run.logs",
+          "outcome": "observed"
+        },
+        {
+          "auditId": "audit-c9972901a5af90600c11314f",
           "action": "harness.run.outcome",
           "outcome": "observed"
         },
         {
-          "auditId": "audit-bace32bb10c9d9e4c33662b0",
+          "auditId": "audit-30485afe81b2d42af1d888c5",
           "action": "harness.run.reconcile",
           "outcome": "observed"
         },
         {
-          "auditId": "audit-b58f2dc12d742493ddc2da4e",
+          "auditId": "audit-81d663520a5ab7bc69b826e1",
           "action": "browser.harness-run.logs",
           "outcome": "observed"
         },
         {
-          "auditId": "audit-5d63f2a54ed06a7144689b82",
+          "auditId": "audit-1ebd37d7a85683945cc8c81a",
           "action": "browser.harness-run.logs",
           "outcome": "observed"
         },
         {
-          "auditId": "audit-144463cc8b2d4b272c53a8a8",
+          "auditId": "audit-d1249c9d6c8d38702a0d052b",
           "action": "harness.run.launch",
           "outcome": "observed"
         },
         {
-          "auditId": "audit-4909ef15572c17d4fae73bff",
+          "auditId": "audit-9342f30b1ca87b2e8e338e25",
           "action": "browser.harness-run.logs",
           "outcome": "observed"
         },
         {
-          "auditId": "audit-c6d32424b7bf2fc2b2e7d899",
+          "auditId": "audit-d0e515e7cf02e234593d6c24",
           "action": "browser.harness-run.logs",
           "outcome": "observed"
         }
       ],
       "retryKeyHashes": [
-        "sha256:d2a5d9458403cf6b3719fbefdb40ab64bf9c5a49ef5d17f1e780783c5ca666bf",
-        "sha256:29c199e61db15c6d2af441d6450bb9d904179a21cc4cff271e8829f3709949bd",
+        "sha256:80b1dc24abae9490d7cdcc98f210a2d98457131c7bfd3b96a3e09ca50915cfe0",
+        "sha256:6c3f6053653d9f2d14929a1de52ad2cd210b274e527a8f9fee7d237b67175c6e",
         "sha256:b256d5952520231d27a79535f4ba70d3f7984c0617660e7a4ed4dcbd382382fc",
-        "sha256:621abcf1d4ecb651ff606ac6ac3964fbf785a5771234171bc40f10a27f4324d1",
-        "sha256:1ed2b991aa4be184e52830fce75a1c85872d4dc7f41e12816f0ed29217ff572d",
-        "sha256:423e21efaedcce65ec2f02ed49e1d2ae22640250e5d26fe7bcb793d9242adb1a",
-        "sha256:2f79aac26c80157e3013513bfb425dbccf5907cea5e4ff4a22eb649fc04295af",
-        "sha256:fdb25ae5c2ec0be7cd88f4e50d148b0fb00d9ef8f00a250c7a8d102bfad179f6",
-        "sha256:9fea4fccde87cd77655aa69b490b242a4bd06d03b1b7138420823dba9ff6ab7f",
-        "sha256:9423171d5f662b98ce12bd38536e55f1291284cb3cf66e594471a1ee599190cb",
+        "sha256:f1f9363a0a4518508c1b1930d0d67545c025110683e0d4b4f994b17a2ec4a30a",
+        "sha256:2abab3d98de4765c3c481a3087bb79b06bf02ea253f95c493f4b8e3068284af5",
+        "sha256:ef1b7f80097377b0ac127525cf59c9d4cb8182d5a7e4c43f0664d77811596d57",
+        "sha256:45701eab49e24b51313f6e732d01f8f9de1b945f69c534c011fd1b156f6e60de",
+        "sha256:4d58dd3fe4fed17ed930dc3ceb602ba9055dce168f687ad01f3de0333b2806fa",
+        "sha256:0826a4cfca5642cd6524813a79859daff6a5d12d59912bebbd9e3c8783a5185d",
+        "sha256:4aaf83108b36415da244f7ace04508b029d1c38517a2a8f0b7cda2e47746265f",
         "sha256:7ac81e8b931706970b6be07f8916b5561e5d82e8719ff567b60f457a373d716a",
-        "sha256:a94386ca48245ebe57a5dd9729378f9155cab09ee8b25015dc10217d12eb3544",
-        "sha256:86adac88f468450e052168135daa6803d3d99d17ff8de698d19b58171ef7a102",
-        "sha256:102bbc6afc7cd299f026a264ad0ebf011b47dba29fae9c3217c7645209165371",
-        "sha256:035ea899d275c33b65caf519f45c26a397502e3f03ea8f212160c3b95b7d37d3"
+        "sha256:e53ac71b50abbaa3dbd98aed4d66b5e63a3eb7eacbcf695b26bf653a0e114ca4",
+        "sha256:f1b26ff0f50fedc6e9d5f5b9544079aa62a24480f198ec8ad51d9b60b6b07de8",
+        "sha256:ac2ae05b860fad0d81e518a18928c367fcd1ab8bdb7f8a6427851b112d00347c",
+        "sha256:e1eae15426260e80920e975389a36c57657f87a812e13bb783efd975649b6cce"
       ],
       "faultPoint": "real_host_sigkill_after_active_publication",
       "reconciliationDecision": "finalize_failed_incomplete",
@@ -195,7 +205,7 @@
         "processExitObserved": false
       },
       "typedOutcome": {
-        "outcomeId": "harness-outcome-e8635fdd8b071838f16eb28a",
+        "outcomeId": "harness-outcome-7da53a535e50215fefb16280",
         "status": "failed",
         "code": "host_daemon_interrupted",
         "incompleteResult": true,
@@ -203,7 +213,7 @@
       },
       "sanitizedDiagnosticRanges": [
         {
-          "streamId": "harness-log-36c54dbd2b90353864d959ec",
+          "streamId": "harness-log-296633dcc38c55b47c48ccb1",
           "producer": "stdout",
           "range": {
             "start": 0,
@@ -212,7 +222,7 @@
           "explicitRetrievalRequired": true
         },
         {
-          "streamId": "harness-log-2650cae0e20d483278bec187",
+          "streamId": "harness-log-06565dbb1155e47be5b897fa",
           "producer": "stderr",
           "range": {
             "start": 0,
