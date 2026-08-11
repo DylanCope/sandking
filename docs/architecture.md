@@ -235,8 +235,19 @@ three pinned skills' workflows (`sandking.issue-implementation`,
 `.sandcastle` toolkit — `main.mts` and its real GitHub-issue-driven
 plan→implement→review loop — is bundled into the production seed
 (`seed-manifest.json`) and integrity-verified, but **no code path in `src/`
-ever executes it.** It rides along, fully capable, permanently dormant. See
-`docs/current-state.md` for what closing this gap would take.
+ever executes it.** It rides along, fully capable, permanently dormant.
+
+**More fundamentally: none of this is reachable through the shipped product
+today.** `inspectRuntime()` (`sandcastle-v4.mjs:263`) gates all of the above
+on a `sandcastle.worker-fixture.json` or `sandcastle.real-provider.json`
+manifest existing in the Project root — and the only code anywhere that
+writes either file is `test/*.test.mjs` fixture setup. No `src/` code path
+(not `production-harness-preparation.mjs`, not `harness-runs.mjs`, not the
+Cockpit) ever creates it. A real Cockpit launch of the production Harness
+fails closed with `harness_worker_provider_unavailable` on every Project,
+regardless of Docker/Codex configuration — confirmed by reproducing this
+exact error from a real launch. See `docs/current-state.md` gap #2 for detail
+and severity.
 
 ## Cross-platform process supervision
 

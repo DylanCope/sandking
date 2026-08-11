@@ -44,11 +44,34 @@ for term definitions.
 from-scratch implementation to connect it to a real GitHub issue graph. This
 was already known going into slice 4 planning.
 
-### 2. The "production default" Harness proves delegation plumbing, not real work
-This is the one that prompted this doc. Clicking Launch with the production
-Harness selected runs a real Codex agent, inside Docker, with real
-credentials — but the task it performs is a **fixed canary prompt**
-(`.sandcastle/real-delegation-prompt.md`: write one file, commit it, stop).
+### 2. The production Harness cannot currently be launched by a person at all
+Confirmed by reproducing Dylan's exact error (`harness_worker_provider_unavailable`)
+on a real registered Project. `sandcastle-v4.mjs`'s readiness check
+(`inspectRuntime`, line 263) requires exactly one of two manifest files —
+`sandcastle.worker-fixture.json` or `sandcastle.real-provider.json` — to exist
+in the Project root before it will run at all. Grepped every write of either
+filename across the repo: **the only writers are `test/*.test.mjs` files**,
+which `mkdtemp` a throwaway directory, hand-write the manifest as fixture
+setup, and drive the adapter directly. No code path in `src/` — not
+`production-harness-preparation.mjs`, not `harness-runs.mjs`, not the Cockpit
+— ever writes either file into a real Project.
+
+**Practical consequence**: clicking Launch with the production Harness
+selected, on any Project, with Docker and Codex auth perfectly configured,
+will always fail with `harness_worker_provider_unavailable`. This is not a
+local misconfiguration — it reproduces for anyone. Issue #174's real-provider
+proof is genuine (it really did drive Codex through the real adapter), but it
+achieved this by having its *test script* pre-stage the manifest the shipped
+product never creates — technically satisfying "launches through the ordinary
+Cockpit/CLI surface" (the launch call is ordinary) while depending on a
+precondition no person using the product can produce. Closing this gap is a
+prerequisite to everything below — the canary task described next has never
+actually been reachable through the Cockpit, only through test harnesses.
+
+Separately, even once that manifest gap is closed, the task the real adapter
+performs is a **fixed canary prompt**
+(`.sandcastle/real-delegation-prompt.md`: write one file, commit it, stop),
+not real work — see below.
 
 The important part: **this isn't a missing capability, it's a disconnected
 one.** The full `.sandcastle` toolkit — `main.mts`, `issue-delivery.mjs`,
