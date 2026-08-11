@@ -221,11 +221,12 @@ Only one is live:
 |---|---|---|
 | `sandcastle-v1.mjs` / `v2.mjs` / `v3.mjs` | No | Dead code, deliberately excluded from the shipped package (`.npmignore`), retained only so a boundary test can assert-by-path they never ship |
 | `real-worker.mjs` | Only imported by dead v2/v3 | Dead |
-| `sandcastle-v4.mjs` | Yes — this is the pinned production adapter | Live |
-| `real-worker-v2.mjs` | Yes — invoked by v4 | Live |
-| `controlled-worker-fixture.mjs` | Yes — the non-real "controlled" test double, used by all four v-files and the seed manifest | Live |
+| `sandcastle-v4.mjs` (lines 1–~260: framing/arg-parsing/gate) | Yes — this is the pinned production adapter | Live |
+| `sandcastle-v4.mjs` (lines ~260–708: dispatch past the gate) | **Correction**: no — gated behind a manifest only tests create, see below | Test-reachable only |
+| `real-worker-v2.mjs` | **Correction**: no, same gate | Test-reachable only |
+| `controlled-worker-fixture.mjs` | **Correction**: no — previously listed here as "Live," but it has the identical unconditional dependency on the same missing manifest (`controlled-worker-fixture.mjs:9`), no fallback | Test-reachable only |
 
-**What the live adapter actually does today:** `sandcastle-v4.mjs` →
+**What the adapter would do if it were reachable:** `sandcastle-v4.mjs` →
 `real-worker-v2.mjs` runs a real `openai-codex` provider inside Docker with
 the Worker's pinned skill inventory — but the prompt is a **fixed canary
 task** (`.sandcastle/real-delegation-prompt.md`: create one file, commit it,
@@ -238,15 +239,20 @@ plan→implement→review loop — is bundled into the production seed
 ever executes it.** It rides along, fully capable, permanently dormant.
 
 **More fundamentally: none of this is reachable through the shipped product
-today.** `inspectRuntime()` (`sandcastle-v4.mjs:263`) gates all of the above
-on a `sandcastle.worker-fixture.json` or `sandcastle.real-provider.json`
-manifest existing in the Project root — and the only code anywhere that
-writes either file is `test/*.test.mjs` fixture setup. No `src/` code path
-(not `production-harness-preparation.mjs`, not `harness-runs.mjs`, not the
-Cockpit) ever creates it. A real Cockpit launch of the production Harness
-fails closed with `harness_worker_provider_unavailable` on every Project,
-regardless of Docker/Codex configuration — confirmed by reproducing this
-exact error from a real launch. See `docs/current-state.md` gap #2 for detail
+today — in either mode.** `inspectRuntime()` (`sandcastle-v4.mjs:263`) gates
+everything past it on a `sandcastle.worker-fixture.json` or
+`sandcastle.real-provider.json` manifest existing in the Project root — and
+the only code anywhere that writes either file is `test/*.test.mjs` fixture
+setup. This blocks not just the real-provider branch but also
+`controlled-worker-fixture.mjs`'s own test-double branch (it has the same
+unconditional read, no fallback) — so the entire production-adapter payload,
+real and fixture alike, is unreachable. No `src/` code path (not
+`production-harness-preparation.mjs`, not `harness-runs.mjs`, not the
+Cockpit) ever creates either manifest. A real Cockpit launch of the
+production Harness fails closed with `harness_worker_provider_unavailable`
+on every Project, regardless of Docker/Codex configuration — confirmed by
+reproducing this exact error from a real launch. See `docs/current-state.md`
+gap #2 and `docs/code-inventory.md` for the full quantitative breakdown
 and severity.
 
 ## Cross-platform process supervision

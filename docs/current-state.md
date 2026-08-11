@@ -56,6 +56,16 @@ setup, and drive the adapter directly. No code path in `src/` — not
 `production-harness-preparation.mjs`, not `harness-runs.mjs`, not the Cockpit
 — ever writes either file into a real Project.
 
+**This blocks both branches, not just the real one.** A follow-up audit found
+`controlled-worker-fixture.mjs:9` — the deterministic test-double worker,
+previously believed reachable — has the identical unconditional dependency on
+`sandcastle.worker-fixture.json` with no fallback. So the entire
+production-adapter payload (`sandcastle-v4.mjs`'s dispatch logic,
+`real-worker-v2.mjs`, and `controlled-worker-fixture.mjs` — ~1,072 lines) is
+unreachable from the shipped product in both its real and fixture modes. See
+`docs/code-inventory.md` for the full line-by-line breakdown of the codebase
+by this same real/speculative/test-only taxonomy.
+
 **Practical consequence**: clicking Launch with the production Harness
 selected, on any Project, with Docker and Codex auth perfectly configured,
 will always fail with `harness_worker_provider_unavailable`. This is not a
