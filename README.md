@@ -288,3 +288,34 @@ The gated runner opens the Cockpit, prints the exact ordinary-CLI launch,
 structured-outcome, and browser-detach checklist, then verifies the durable
 canonical records. It never copies credentials or treats terminal prose as a
 launch operation.
+
+Run the deterministic issue-174 evidence contract with:
+
+```bash
+npm run acceptance:issue-174
+```
+
+The real-provider proof is deliberately separate and may run only once for a
+clean demonstrated revision. On a destination with the exact authenticated
+`codex-cli 0.146.0` and a running Docker provider, run:
+
+```bash
+SANDKING_REAL_SANDCASTLE_ACCEPTANCE=1 npm run acceptance:issue-174:real
+```
+
+That gated command installs the current package outside the checkout, opens a
+disposable Git Project in the packaged Cockpit, keeps the default production
+Sandcastle Harness selected, builds its fixed `sandcastle:sandking-real-worker`
+image from the pinned projection, and uses the ordinary **Launch** action. The
+runner restores any pre-existing image tag (or removes its temporary tag) when
+the scenario ends. Success
+requires one structured successful Harness outcome and one exact child commit;
+exit status, progress, and diagnostic text are never accepted as substitutes.
+The retained `acceptance/evidence/issue-174.real.json` contains only pinned
+revision and integrity facts, Project commit and artifact digests, the
+structured result, audit identities, and bounded diagnostic range references.
+Credentials, provider transcripts, unrestricted logs, environment dumps,
+session material, machine-specific paths, and full skill contents are excluded.
+If the gate, exact provider, or authentication is unavailable, the command
+emits an explicit non-success qualification and produces no production
+evidence; it never falls back to the conformance or controlled fixture.

@@ -11,9 +11,31 @@ import { promisify } from "node:util";
 import {
   waitForHostLossTerminationEvidence,
 } from "../src/host-loss-termination-evidence.mjs";
-import { spawnPosixProcessTree } from "../src/posix-process-tree.mjs";
+import {
+  readLinuxProcessStats,
+  spawnPosixProcessTree,
+} from "../src/posix-process-tree.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("Linux process inventory bounds concurrent procfs reads", async () => {
+  const entries = Array.from({ length: 130 }, (_, index) => ({
+    name: String(index + 1),
+  }));
+  let activeReads = 0;
+  let maximumActiveReads = 0;
+  const processes = await readLinuxProcessStats(entries, {
+    readStat: async () => {
+      activeReads += 1;
+      maximumActiveReads = Math.max(maximumActiveReads, activeReads);
+      await new Promise((resolve) => setImmediate(resolve));
+      activeReads -= 1;
+      return `1 (worker) S 0 1 ${Array(16).fill("0").join(" ")} 123`;
+    },
+  });
+  assert.equal(processes?.length, entries.length);
+  assert.equal(maximumActiveReads, 64);
+});
 
 const processCanRun = (processId) => {
   if (process.platform === "linux") {

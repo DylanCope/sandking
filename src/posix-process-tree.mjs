@@ -208,6 +208,45 @@ const parseLinuxProcessStat = (pid, stat) => {
   };
 };
 
+const LINUX_PROCESS_STAT_READ_CONCURRENCY = 64;
+
+/**
+ * Keep /proc inventory reads bounded. An unbounded Promise.all can queue
+ * thousands of filesystem operations on a long-lived Host and delay the
+ * cancellation state publication that the inventory is meant to protect.
+ *
+ * @param {Array<{name: string}>} processEntries
+ * @param {{readStat?: (pid: string) => Promise<string>}} [options]
+ * @returns {Promise<PosixProcess[] | null>}
+ */
+export const readLinuxProcessStats = async (processEntries, options = {}) => {
+  const readStat = options.readStat ?? ((pid) => readFile(`/proc/${pid}/stat`, "utf8"));
+  /** @type {PosixProcess[]} */
+  const processes = [];
+  for (
+    let offset = 0;
+    offset < processEntries.length;
+    offset += LINUX_PROCESS_STAT_READ_CONCURRENCY
+  ) {
+    const batch = await Promise.all(processEntries
+      .slice(offset, offset + LINUX_PROCESS_STAT_READ_CONCURRENCY)
+      .map(async (entry) => {
+        try {
+          const stat = await readStat(entry.name);
+          return parseLinuxProcessStat(Number(entry.name), stat) ?? false;
+        } catch {
+          // A process can disappear between the directory and stat reads.
+          return undefined;
+        }
+      }));
+    for (const processEntry of batch) {
+      if (processEntry === false) return null;
+      if (processEntry !== undefined) processes.push(processEntry);
+    }
+  }
+  return processes;
+};
+
 /** @returns {Promise<PosixProcess[] | null>} */
 const readPosixProcesses = async () => {
   if (process.platform === "linux") {
@@ -215,20 +254,7 @@ const readPosixProcesses = async () => {
       const entries = await readdir("/proc", { withFileTypes: true });
       const processEntries = entries.filter((entry) =>
         entry.isDirectory() && /^[0-9]+$/.test(entry.name));
-      const processes = await Promise.all(processEntries.map(async (entry) => {
-        try {
-          const stat = await readFile(`/proc/${entry.name}/stat`, "utf8");
-          const processEntry = parseLinuxProcessStat(Number(entry.name), stat);
-          return processEntry ?? false;
-        } catch {
-          // A process can disappear between the directory and stat reads.
-          return undefined;
-        }
-      }));
-      if (processes.includes(false)) return null;
-      return /** @type {PosixProcess[]} */ (
-        processes.filter((processEntry) => processEntry !== undefined)
-      );
+      return readLinuxProcessStats(processEntries);
     } catch {
       return null;
     }

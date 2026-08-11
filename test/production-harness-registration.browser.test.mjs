@@ -207,6 +207,7 @@ test("ordinary Cockpit Project registration defaults to the production Sandcastl
       "sandking.issue-implementation",
       "sandking.issue-planning",
       "sandking.pull-request-review",
+      "sandking.real-delegation",
     ]);
     assert.equal(harnessState.harnesses.length, 1);
     assert.equal(harnessState.harnesses[0].kind, "production");

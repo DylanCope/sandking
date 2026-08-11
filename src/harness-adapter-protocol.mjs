@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { createDestinationWorkerEnvironment } from "./destination-worker-environment.mjs";
 import {
   CONFORMANCE_HARNESS_ADAPTER_ID,
   SANDCASTLE_HARNESS_ADAPTER_ID,
@@ -406,7 +407,7 @@ export const invokePinnedHarnessAdapter = async (
     ...invocationArgs,
   ], {
     cwd: options.workingDirectory ?? pinnedAdapter.workspacePath,
-    env: { LANG: "C.UTF-8" },
+    env: createDestinationWorkerEnvironment(),
     stdio: ["ignore", "pipe", "pipe", "pipe"],
   });
   const adapterChannel = child.stdio[3];
