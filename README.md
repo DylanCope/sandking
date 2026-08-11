@@ -4,6 +4,12 @@ Sand-King is a developer agent system for interactively directing work across
 local and SSH-hosted projects and delegating durable coding work to
 project-adjacent agent harnesses.
 
+For a code-grounded architecture overview (process topology, protocols,
+diagrams) and an honest snapshot of what's real versus scaffolded, see
+[`docs/architecture.md`](docs/architecture.md) and
+[`docs/current-state.md`](docs/current-state.md). For vocabulary, see
+[`CONTEXT.md`](CONTEXT.md).
+
 The product is currently being specified through the
 [Sand-King MVP Wayfinder map](https://github.com/DylanCope/sandking/issues/1).
 This initial planning workspace preserves the known-good Sandcastle harness
