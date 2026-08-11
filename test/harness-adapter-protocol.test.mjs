@@ -10,6 +10,7 @@ import {
   harnessPreparedEnvelopeSchema,
   harnessProgressEnvelopeSchema,
   harnessReadyEnvelopeSchema,
+  harnessRunStartRequestSchema,
   harnessTerminalEnvelopeSchema,
   legacyConformanceHarnessLaunchParametersDeclaration,
 } from "../src/harness-adapter-protocol.mjs";
@@ -72,6 +73,19 @@ test("one bounded identity vocabulary governs every Harness adapter contract", (
           projectWrite: false,
           harnessWorkspaceWrite: false,
         },
+      },
+    },
+    {
+      schema: harnessRunStartRequestSchema,
+      value: {
+        type: "harness.run.start",
+        adapterProtocol: "1.0.0",
+        harnessRunId,
+        retainedExecutionInputs: [{
+          path: ".sandcastle/runtime.mjs",
+          integrity: `sha256:${"a".repeat(64)}`,
+          source: "export default true;\n",
+        }],
       },
     },
     {
@@ -196,6 +210,54 @@ test("the adapter handshake declares no parameters or its exact optional fields"
     kind: "fields",
     fields: [fieldsDeclaration.fields[0], fieldsDeclaration.fields[0]],
   }).success, false);
+});
+
+test("preparation can retain inputs without describing Worker topology", () => {
+  assert.deepEqual(harnessPreparedEnvelopeSchema.parse({
+    type: "harness.launch.prepared",
+    adapterProtocol: "1.0.0",
+    adapterId: CONFORMANCE_HARNESS_ADAPTER_ID,
+    negotiatedCapabilities: ["harness.launch.prepare.v1"],
+    suppliedCapabilities: ["project.git.read"],
+    sanitizedPreview: { summary: "No retained inputs", secretFree: true },
+    sideEffects: {
+      delegatedWorkStarted: false,
+      projectWrite: false,
+      harnessWorkspaceWrite: false,
+    },
+  }).retainedExecutionInputs, []);
+
+  const prepared = harnessPreparedEnvelopeSchema.parse({
+    type: "harness.launch.prepared",
+    adapterProtocol: "1.0.0",
+    adapterId: SANDCASTLE_HARNESS_ADAPTER_ID,
+    negotiatedCapabilities: ["harness.launch.prepare.v1"],
+    suppliedCapabilities: ["project.git.read"],
+    retainedExecutionInputs: [".sandcastle/controlled-worker-fixture.mjs"],
+    sanitizedPreview: { summary: "Retain one adapter-owned input", secretFree: true },
+    sideEffects: {
+      delegatedWorkStarted: false,
+      projectWrite: false,
+      harnessWorkspaceWrite: false,
+    },
+  });
+
+  assert.deepEqual(prepared.retainedExecutionInputs, [
+    ".sandcastle/controlled-worker-fixture.mjs",
+  ]);
+  assert.equal("executable" in prepared, false);
+  assert.equal("argv" in prepared, false);
+  assert.equal("worker" in prepared, false);
+  for (const topology of [
+    { executable: process.execPath },
+    { argv: ["worker.mjs"] },
+    { worker: { path: "worker.mjs" } },
+  ]) {
+    assert.equal(harnessPreparedEnvelopeSchema.safeParse({
+      ...prepared,
+      ...topology,
+    }).success, false);
+  }
 });
 
 test("a legacy conformance probe retains its required historical parameter declaration", () => {

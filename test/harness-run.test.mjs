@@ -2015,6 +2015,7 @@ test("one revision-free action launches a fresh Project's Harness run", async ()
       createdAt: launched.run.createdAt,
       credentialCapabilityReferences: ["github.issues.read", "project.git.read"],
       launchAuditId: launched.auditId,
+      productionHarness: null,
     });
 
     const replay = await fixture.manager.launch({ ...request, requestId: "launch-replay" });
@@ -3979,6 +3980,7 @@ test("schema-v2 execution history migrates deterministically without losing acce
       },
       createdAt: originalHistory.createdAt,
       credentialCapabilityReferences: null,
+      productionHarness: null,
       launchAuditId: originalHistory.launchAuditId,
     });
     assert.deepEqual(migrated.runs[0].events, v4.runs[0].events);
@@ -4806,6 +4808,7 @@ test("main-era Harness-run history remains observable after the launch-schema up
       createdAt: legacyRun.createdAt,
       credentialCapabilityReferences: null,
       launchAuditId: legacyRun.startAuditId,
+      productionHarness: null,
     });
     assert.deepEqual(initialized.launchOutcomes, []);
     assert.deepEqual(initialized.cancellationOutcomes, []);

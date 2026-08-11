@@ -5,7 +5,9 @@ import {
   harnessAdapterEntryPointSchema,
   harnessAdapterProbeSchema,
   harnessLaunchParametersDeclarationSchema,
+  harnessPreparationFailureEnvelopeSchema,
   harnessPreparedEnvelopeSchema,
+  retainedExecutionInputPathsSchema,
   invokePinnedHarnessAdapter,
   loadPinnedHarnessAdapter,
 } from "./harness-adapter-protocol.mjs";
@@ -79,6 +81,7 @@ const harnessLaunchValidationSchema = z.object({
   adapterEntryPoint: harnessAdapterEntryPointSchema,
   negotiatedCapabilities: z.array(z.literal("harness.launch.prepare.v1")).length(1),
   suppliedCapabilities: z.array(capabilitySchema).min(1).max(8),
+  retainedExecutionInputs: retainedExecutionInputPathsSchema,
   sanitizedPreview: z.object({
     summary: z.string().min(1).max(512),
     secretFree: z.literal(true),
@@ -151,7 +154,23 @@ export const validateHarnessLaunch = async (context, parameters) => {
   const preparedInvocation = await invokePinnedHarnessAdapter(
     pinnedAdapter,
     ["prepare", encodedParameters],
+    typeof context.productionHarnessProjectionPath === "string"
+      ? { workingDirectory: context.productionHarnessProjectionPath }
+      : {},
   );
+  const parsedPreparationFailure = harnessPreparationFailureEnvelopeSchema.safeParse(
+    preparedInvocation.message,
+  );
+  if (parsedPreparationFailure.success) {
+    const failure = parsedPreparationFailure.data;
+    if (
+      failure.adapterId !== preparedInvocation.compatibility.adapterId
+      || failure.adapterProtocol !== preparedInvocation.compatibility.adapterProtocol
+    ) {
+      throw new Error("harness_adapter_protocol_invalid");
+    }
+    throw new Error(failure.code);
+  }
   if (
     preparedInvocation.message
     && typeof preparedInvocation.message === "object"

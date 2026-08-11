@@ -10,7 +10,7 @@
       "source": {
         "kind": "git",
         "repository": "https://github.com/DylanCope/sandking.git",
-        "revision": "0a602896e4063dce7b390b3a514e34cfe36b46c1",
+        "revision": "0fb005c1d8edfbf6f793b15068c5da33ea49bd20",
         "path": ".sandcastle/implement-prompt.md"
       },
       "contentIntegrity": "sha256:abb4994f1f500212e432b8b2626b07d538c4fdc58a8609a13f0efda5699abf68",
@@ -26,7 +26,7 @@
       "source": {
         "kind": "git",
         "repository": "https://github.com/DylanCope/sandking.git",
-        "revision": "0a602896e4063dce7b390b3a514e34cfe36b46c1",
+        "revision": "0fb005c1d8edfbf6f793b15068c5da33ea49bd20",
         "path": ".sandcastle/plan-prompt.md"
       },
       "contentIntegrity": "sha256:6220c63e7b128296cd2e7c5b0e7fd4159f6a6dbc3351f7f5924e1d14debeac6f",
@@ -42,7 +42,7 @@
       "source": {
         "kind": "git",
         "repository": "https://github.com/DylanCope/sandking.git",
-        "revision": "0a602896e4063dce7b390b3a514e34cfe36b46c1",
+        "revision": "0fb005c1d8edfbf6f793b15068c5da33ea49bd20",
         "path": ".sandcastle/pr-review-prompt.md"
       },
       "contentIntegrity": "sha256:67ab262dbfccdeefd9c4c7b391bf0c908ae1e15aacded9845a188b522c7d3eed",

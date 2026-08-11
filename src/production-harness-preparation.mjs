@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -11,11 +12,15 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join, posix, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "./harness-adapter-identity.mjs";
-import { harnessCompatibilityManifestSchema } from "./harness-adapter-protocol.mjs";
+import {
+  harnessCompatibilityManifestSchema,
+  retainedExecutionInputPathsSchema,
+  retainedExecutionInputSchema,
+} from "./harness-adapter-protocol.mjs";
 import {
   productionHarnessProvenanceSchema,
   productionHarnessSeedManifestSchema,
@@ -32,6 +37,28 @@ const relativeProjectionPathSchema = z.string().min(1).max(512).refine((value) =
   && !value.includes("\\")
   && !value.includes("\0")
   && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."));
+
+const productionHarnessProjectionManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  harness: z.object({
+    adapterId: z.literal(SANDCASTLE_HARNESS_ADAPTER_ID),
+    pinnedRevision: commitSchema,
+  }).strict(),
+  skillSetLockDigest: digestSchema,
+  projectionDigest: digestSchema,
+  files: z.array(z.object({
+    path: relativeProjectionPathSchema,
+    integrity: digestSchema,
+  }).strict()).min(1).max(4_096),
+}).strict().superRefine((manifest, context) => {
+  if (new Set(manifest.files.map(({ path }) => path)).size !== manifest.files.length) {
+    context.addIssue({
+      code: "custom",
+      message: "production Harness projection paths must be unique",
+      path: ["files"],
+    });
+  }
+});
 
 export const productionHarnessPreparationSchema = z.object({
   status: z.literal("ready"),
@@ -244,6 +271,244 @@ const verifyExistingProjection = async (targetPath, expectedFiles) => {
     }
   }
   return true;
+};
+
+/** @param {string} root */
+const makeExecutionTreeReadOnly = async (root) => {
+  /** @param {string} directory */
+  const visit = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw new ProductionHarnessPreparationError("harness_projection_failed");
+      }
+      if (entry.isDirectory()) {
+        await visit(path);
+      } else if (entry.isFile()) {
+        await chmod(path, 0o400);
+      } else {
+        throw new ProductionHarnessPreparationError("harness_projection_failed");
+      }
+    }
+    // Directories remain owner-traversable and removable with ordinary Host
+    // state cleanup; the captured regular files themselves are read-only.
+    await chmod(directory, 0o700);
+  };
+  await visit(root);
+};
+
+/** @param {string} root */
+const makeExecutionTreeRemovable = async (root) => {
+  /** @param {string} directory */
+  const visit = async (directory) => {
+    await chmod(directory, 0o700).catch(() => undefined);
+    for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+        await visit(path);
+      } else {
+        await chmod(path, 0o600).catch(() => undefined);
+      }
+    }
+  };
+  await visit(root);
+};
+
+/**
+ * Capture the verified Project projection into Host-private run state before
+ * launch acceptance. Each source file is reduced to bytes authenticated by
+ * the pinned projection manifest; later Project mutations therefore cannot
+ * change the runtime consumed by supervision.
+ *
+ * @param {{
+ *   sourcePath: string,
+ *   destinationPath: string,
+ *   projectPath: string,
+ *   preparation: z.infer<typeof productionHarnessPreparationSchema>,
+ *   retainedInputPaths: string[],
+ * }} options
+ */
+export const materializeProductionHarnessExecutionSnapshot = async (options) => {
+  const preparation = productionHarnessPreparationSchema.parse(options.preparation);
+  const retainedInputPaths = retainedExecutionInputPathsSchema.parse(
+    options.retainedInputPaths,
+  );
+  const manifestSource = await readWorkspaceFile(
+    options.sourcePath,
+    "projection-manifest.json",
+  );
+  if (manifestSource === null) {
+    throw new ProductionHarnessPreparationError("harness_projection_collision");
+  }
+  let manifestValue;
+  try {
+    manifestValue = JSON.parse(manifestSource);
+  } catch {
+    throw new ProductionHarnessPreparationError("harness_projection_collision");
+  }
+  const parsedManifest = productionHarnessProjectionManifestSchema.safeParse(manifestValue);
+  if (!parsedManifest.success) {
+    throw new ProductionHarnessPreparationError("harness_projection_collision");
+  }
+  const manifest = parsedManifest.data;
+  if (
+    manifest.harness.adapterId !== preparation.harness.adapterId
+    || manifest.harness.pinnedRevision !== preparation.harness.pinnedRevision
+    || manifest.skillSetLockDigest !== preparation.skillSetLockDigest
+    || manifest.projectionDigest !== preparation.projection.digest
+    || manifest.files.some(({ path }) => path === "projection-manifest.json")
+  ) {
+    throw new ProductionHarnessPreparationError("harness_projection_collision");
+  }
+
+  const expectedPaths = [
+    ...manifest.files.map(({ path }) => path),
+    "projection-manifest.json",
+  ].sort();
+  if (JSON.stringify(await listProjectionFiles(options.sourcePath))
+      !== JSON.stringify(expectedPaths)) {
+    throw new ProductionHarnessPreparationError("harness_projection_collision");
+  }
+
+  /** @type {Map<string, string>} */
+  const snapshotFiles = new Map();
+  for (const file of manifest.files) {
+    const source = await readWorkspaceFile(options.sourcePath, file.path);
+    if (source === null || sha256(source) !== file.integrity) {
+      throw new ProductionHarnessPreparationError("harness_projection_collision");
+    }
+    snapshotFiles.set(file.path, source);
+  }
+  const projectionDigest = sha256([...snapshotFiles]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([path, source]) => `${JSON.stringify(path)}:${sha256(source)}`)
+    .join("\n") + "\n");
+  if (projectionDigest !== preparation.projection.digest) {
+    throw new ProductionHarnessPreparationError("harness_projection_collision");
+  }
+  const retainedExecutionInputs = retainedInputPaths.map((path) => {
+    const source = snapshotFiles.get(path);
+    if (typeof source !== "string") {
+      throw new ProductionHarnessPreparationError("harness_projection_collision");
+    }
+    return retainedExecutionInputSchema.parse({ path, source, integrity: sha256(source) });
+  });
+  snapshotFiles.set("projection-manifest.json", manifestSource);
+
+  const destinationPath = resolve(options.destinationPath);
+  const destinationParent = dirname(destinationPath);
+  if (destinationPath === resolve(options.sourcePath)) {
+    throw new ProductionHarnessPreparationError("harness_projection_failed");
+  }
+  await mkdir(destinationParent, { recursive: true, mode: 0o700 });
+  try {
+    await lstat(destinationPath);
+    throw new ProductionHarnessPreparationError("harness_projection_failed");
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+      if (error instanceof ProductionHarnessPreparationError) throw error;
+      throw new ProductionHarnessPreparationError("harness_projection_failed");
+    }
+  }
+
+  let stagingPath = null;
+  let published = false;
+  try {
+    stagingPath = await mkdtemp(join(
+      destinationParent,
+      `.${basename(destinationPath)}-prepare-`,
+    ));
+    for (const [path, source] of [...snapshotFiles]
+      .sort(([left], [right]) => left.localeCompare(right))) {
+      const target = join(stagingPath, ...path.split("/"));
+      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+      await writeFile(target, source, { mode: 0o600 });
+    }
+    if (!await verifyExistingProjection(stagingPath, snapshotFiles)) {
+      throw new ProductionHarnessPreparationError("harness_projection_failed");
+    }
+    const executionGitDirectory = join(stagingPath, ".git");
+    await Promise.all([
+      mkdir(join(executionGitDirectory, "objects"), { recursive: true, mode: 0o700 }),
+      mkdir(join(executionGitDirectory, "refs", "heads"), {
+        recursive: true,
+        mode: 0o700,
+      }),
+    ]);
+    await Promise.all([
+      writeFile(
+        join(executionGitDirectory, "HEAD"),
+        "ref: refs/heads/sandking-execution\n",
+        { mode: 0o600 },
+      ),
+      writeFile(
+        join(executionGitDirectory, "config"),
+        [
+          "[core]",
+          "\trepositoryformatversion = 0",
+          "\tbare = false",
+          `\tworktree = ${JSON.stringify(resolve(options.projectPath))}`,
+          "",
+        ].join("\n"),
+        { mode: 0o600 },
+      ),
+    ]);
+    await rename(stagingPath, destinationPath);
+    stagingPath = null;
+    published = true;
+    await makeExecutionTreeReadOnly(destinationPath);
+    return {
+      path: destinationPath,
+      retainedExecutionInputs,
+    };
+  } catch (error) {
+    if (stagingPath) {
+      await makeExecutionTreeRemovable(stagingPath).catch(() => undefined);
+      await rm(stagingPath, { recursive: true, force: true }).catch(() => undefined);
+    }
+    if (published) {
+      await makeExecutionTreeRemovable(destinationPath).catch(() => undefined);
+      await rm(destinationPath, { recursive: true, force: true }).catch(() => undefined);
+    }
+    if (error instanceof ProductionHarnessPreparationError) throw error;
+    throw new ProductionHarnessPreparationError("harness_projection_failed");
+  }
+};
+
+/**
+ * Re-authenticate adapter-declared projection inputs at the last
+ * Host-controlled boundary before the adapter process is created. Retained
+ * sources were captured before launch acceptance, so later replacements
+ * cannot become accepted runtime inputs by restoring writable permissions.
+ *
+ * @param {{
+ *   executionPath: string,
+ *   retainedExecutionInputs: Array<z.infer<typeof retainedExecutionInputSchema>>,
+ * }} options
+ */
+export const verifyProductionHarnessRetainedInputs = async (options) => {
+  const inputs = z.array(retainedExecutionInputSchema).max(8).parse(
+    options.retainedExecutionInputs,
+  );
+  try {
+    for (const input of inputs) {
+      const inputPath = join(options.executionPath, ...input.path.split("/"));
+      const details = await lstat(inputPath);
+      const source = details.isFile() && !details.isSymbolicLink() && details.nlink === 1
+        ? await readFile(inputPath, "utf8")
+        : null;
+      if (
+        source === null
+        || source !== input.source
+        || sha256(source) !== input.integrity
+      ) {
+        throw new ProductionHarnessPreparationError("harness_projection_failed");
+      }
+    }
+  } catch (error) {
+    if (error instanceof ProductionHarnessPreparationError) throw error;
+    throw new ProductionHarnessPreparationError("harness_projection_failed");
+  }
 };
 
 /** @param {string} path */

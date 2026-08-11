@@ -16,9 +16,17 @@
       "executable": false
     },
     {
+      "path": ".sandcastle/controlled-worker-fixture.mjs",
+      "sourcePath": "src/production-sandcastle-adapter/controlled-worker-fixture.mjs",
+      "source": "sandking-package",
+      "integrity": "sha256:e3d515ecb94bcdc91c7e307267714706c68a1433867f36c5d139ea3adf928653",
+      "executable": false
+    },
+    {
       "path": "adapters/sandcastle.mjs",
-      "source": "seed",
-      "integrity": "sha256:9c85bf6892b970356feaff73bead2cd8ed5fdfa8db8db2b909119295dbb2b9be",
+      "sourcePath": "src/production-sandcastle-adapter/sandcastle-v1.mjs",
+      "source": "sandking-package",
+      "integrity": "sha256:324076e6a7a9e82df78ec12eedb065eb4b76bcf0161ae0c51ba1e45f7533ac50",
       "executable": false
     },
     {
@@ -42,13 +50,13 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:ae0ade8e7522c2fb58024053bbf1e2187e4f631c6e476509dbf6b99579ee2c77",
+      "integrity": "sha256:808716570322089c7665c1f465fe766a080a3054a00588dcd2705a83033b67da",
       "executable": false
     },
     {
       "path": "skills.lock.json",
       "source": "seed",
-      "integrity": "sha256:9a2d7f6820a750aed5c2c3a6e71f81ff88621eaba7b1b8c7598856973b020207",
+      "integrity": "sha256:156851bd407329478f985d7f5bb156d5af11afefeb55d7c0af2f35e85098d50f",
       "executable": false
     },
     {

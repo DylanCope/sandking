@@ -17,7 +17,7 @@ import { readFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
+import { Duplex, PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
   parseHostLossTerminationEvidence,
@@ -465,6 +465,26 @@ const createOutputServer = (path, output) => {
 };
 
 /**
+ * Preserve the adapter protocol fd as one duplex lifecycle channel. Output is
+ * consumed by the Host while bounded Host requests flow back to the adapter;
+ * keeping the directions separate avoids reflecting requests into responses.
+ *
+ * @param {string} path
+ * @param {PassThrough} input
+ * @param {PassThrough} output
+ */
+const createAdapterServer = (path, input, output) => {
+  const server = createServer((socket) => {
+    server.close();
+    input.pipe(socket);
+    socket.pipe(output);
+    socket.once("close", () => input.end());
+  });
+  server.listen(path);
+  return server;
+};
+
+/**
  * Launch one Harness adapter in a LaunchServices application coalition. A
  * detached Host-owned supervisor leads the ordinary cooperative process
  * group and the adapter inherits it. The supervisor remains alive through the
@@ -477,7 +497,7 @@ const createOutputServer = (path, output) => {
  * @param {string} executable
  * @param {string[]} args
  * @param {{cwd: string, env: NodeJS.ProcessEnv, hostLossTerminationEvidencePath?: string}} options
- * @returns {{child: import("node:child_process").ChildProcess, adapterChannel: PassThrough, adapterStarted: Promise<boolean>, adapterExit: Promise<AdapterExitResult>, adapterExited: () => boolean, captureDescendants: () => Promise<boolean>, prepareCancellation: () => Promise<boolean>, processTreeAlive: () => Promise<boolean>, signal: (signal: "SIGTERM" | "SIGKILL") => Promise<SignalResult>, release: () => Promise<void>}}
+ * @returns {{child: import("node:child_process").ChildProcess, adapterChannel: Duplex, adapterStarted: Promise<boolean>, adapterExit: Promise<AdapterExitResult>, adapterExited: () => boolean, captureDescendants: () => Promise<boolean>, prepareCancellation: () => Promise<boolean>, processTreeAlive: () => Promise<boolean>, signal: (signal: "SIGTERM" | "SIGKILL") => Promise<SignalResult>, release: () => Promise<void>}}
  */
 export const spawnDarwinProcessTree = (executable, args, options) => {
   if (typeof process.getuid !== "function") {
@@ -520,11 +540,16 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
   };
   const stdout = new PassThrough();
   const stderr = new PassThrough();
-  const adapterChannel = new PassThrough();
+  const adapterInput = new PassThrough();
+  const adapterOutput = new PassThrough();
+  const adapterChannel = Duplex.from({
+    readable: adapterOutput,
+    writable: adapterInput,
+  });
   const outputServers = [
     createOutputServer(channels.stdout, stdout),
     createOutputServer(channels.stderr, stderr),
-    createOutputServer(channels.adapter, adapterChannel),
+    createAdapterServer(channels.adapter, adapterInput, adapterOutput),
   ];
   const controlServer = createServer();
   controlServer.listen(channels.control);
@@ -873,7 +898,7 @@ exec ${quoteShellArgument(process.execPath)} ${quoteShellArgument(supervisorPath
       }
       stdout.end();
       stderr.end();
-      adapterChannel.end();
+      adapterChannel.destroy();
       rmSync(directory, { recursive: true, force: true });
     })();
     return releaseOperation;

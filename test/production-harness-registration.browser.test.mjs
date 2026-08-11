@@ -11,6 +11,20 @@ import { installCurrentPackage } from "./installed-package.mjs";
 
 const execFileAsync = promisify(execFile);
 
+const waitForRetainedRuns = async (dataDir, expectedCount) => {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    try {
+      const state = JSON.parse(await readFile(join(dataDir, "harness-runs.json"), "utf8"));
+      if (state.runs.length === expectedCount) return state.runs;
+    } catch {
+      // The durable run store is created lazily.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("retained_production_harness_run_timeout");
+};
+
 test("ordinary Cockpit Project registration defaults to the production Sandcastle Harness", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-registration-browser-"));
   const dataDir = join(root, "host-state");
@@ -24,7 +38,12 @@ test("ordinary Cockpit Project registration defaults to the production Sandcastl
     execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]),
   ]);
   await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
-  await execFileAsync("git", ["-C", projectPath, "add", "README.md"]);
+  await writeFile(join(projectPath, "sandcastle.worker-fixture.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    provider: { kind: "controlled-worker-fixture", ready: false },
+    scenario: "succeeded",
+  }, null, 2)}\n`);
+  await execFileAsync("git", ["-C", projectPath, "add", "--all"]);
   await execFileAsync("git", [
     "-C", projectPath,
     "-c", "user.name=Project Fixture",
@@ -113,6 +132,61 @@ test("ordinary Cockpit Project registration defaults to the production Sandcastl
     assert.equal(reopenOutcome.project.harness.pinnedRevision, pinnedRevision);
     assert.equal(reopenOutcome.project.readiness.launchRequest, "ready");
     assert.equal(reopenOutcome.project.harness.preparation.status, "ready");
+
+    assert.equal(await page.locator("#harness-launch-parameter-issueNumber").count(), 1);
+    assert.equal(await page.locator("#harness-launch-parameter-targetBranch").count(), 1);
+    await page.locator("#launch-harness").click();
+    await page.locator("#harness-launch-confirmation-yes").click();
+    await page.waitForFunction(() => document.querySelector("#harness-launch-feedback")
+      ?.textContent?.includes("harness_worker_provider_unavailable"));
+    assert.equal((await waitForRetainedRuns(dataDir, 0)).length, 0);
+
+    await writeFile(join(projectPath, "sandcastle.worker-fixture.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      provider: { kind: "controlled-worker-fixture", ready: true },
+      scenario: "succeeded",
+    }, null, 2)}\n`);
+    await execFileAsync("git", ["-C", projectPath, "add", "sandcastle.worker-fixture.json"]);
+    await execFileAsync("git", [
+      "-C", projectPath,
+      "-c", "user.name=Project Fixture",
+      "-c", "user.email=project-fixture@sandking.invalid",
+      "-c", "commit.gpgSign=false",
+      "commit", "--quiet", "-m", "Enable controlled Worker provider",
+    ]);
+
+    await page.locator("#launch-harness").click();
+    await page.locator("#harness-launch-confirmation-yes").click();
+    const [acceptedProductionRun] = await waitForRetainedRuns(dataDir, 1);
+    await page.waitForSelector(
+      `#harness-run-observation[data-run-id='${acceptedProductionRun.harnessRunId}']`
+        + "[data-run-status='succeeded']",
+      { timeout: 20_000 },
+    );
+    const [productionRun] = await waitForRetainedRuns(dataDir, 1);
+    assert.equal(productionRun.status, "succeeded");
+    assert.equal(productionRun.adapterId, "sandcastle-harness-adapter-v1");
+    assert.deepEqual(productionRun.parameters, {});
+    assert.equal(productionRun.outcome.code, "harness_run_succeeded");
+    assert.equal(productionRun.terminalEnvelopeValidation.exactlyOne, true);
+    assert.deepEqual(productionRun.executionSnapshot.productionHarness, {
+      skillSetLockDigest: reopenOutcome.project.harness.preparation.skillSetLockDigest,
+      resolvedSkills: reopenOutcome.project.harness.preparation.resolvedSkills,
+      executionRuntimeInputs: reopenOutcome.project.harness.preparation.executionRuntimeInputs,
+      projectionDigest: reopenOutcome.project.harness.preparation.projection.digest,
+    });
+    const executionFacts = page.locator("#harness-run-execution-snapshot");
+    assert.equal(
+      await executionFacts.getAttribute("data-production-skill-lock"),
+      productionRun.executionSnapshot.productionHarness.skillSetLockDigest,
+    );
+    assert.equal(
+      await executionFacts.getAttribute("data-production-projection-digest"),
+      productionRun.executionSnapshot.productionHarness.projectionDigest,
+    );
+    assert.match(await executionFacts.textContent(), /Resolved production skills:/);
+    assert.match(await executionFacts.textContent(), /Production runtime inputs:/);
+    assert.equal(await page.locator("#harness-run-launch-parameters").textContent(), "{}");
 
     const projectState = JSON.parse(await readFile(
       join(dataDir, "project-registrations.json"),
@@ -210,6 +284,16 @@ test("ordinary Cockpit Project registration defaults to the production Sandcastl
     assert.match(
       await restartedPage.locator("#project-feedback").textContent(),
       /Sand-King Sandcastle Harness are ready to launch/,
+    );
+    await restartedPage.waitForSelector(
+      `#harness-run-observation[data-run-id='${productionRun.harnessRunId}']`
+        + "[data-run-status='succeeded']",
+      { timeout: 20_000 },
+    );
+    assert.equal(
+      await restartedPage.locator("#harness-run-execution-snapshot")
+        .getAttribute("data-production-projection-digest"),
+      productionRun.executionSnapshot.productionHarness.projectionDigest,
     );
     await restartedContext.close();
   } finally {

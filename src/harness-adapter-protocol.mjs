@@ -21,6 +21,21 @@ export const MAX_HARNESS_ADAPTER_FRAME_BYTES = 32_768;
 
 const harnessRunIdSchema = z.string().regex(/^harness-run-[a-f0-9]{24}$/);
 const adapterProtocolSchema = z.literal("1.0.0");
+export const harnessExecutionInputPathSchema = z.string().min(1).max(512)
+  .regex(/^[a-zA-Z0-9._/-]+$/)
+  .refine((value) =>
+    !value.startsWith("/")
+    && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."));
+export const retainedExecutionInputPathsSchema = z.array(
+  harnessExecutionInputPathSchema,
+).max(8).superRefine((paths, context) => {
+  if (new Set(paths).size !== paths.length) {
+    context.addIssue({
+      code: "custom",
+      message: "retained execution input paths must be unique",
+    });
+  }
+});
 export const harnessAdapterEntryPointSchema = z.string().min(1).max(256)
   .regex(/^[a-zA-Z0-9._/-]+\.mjs$/)
   .refine((value) =>
@@ -187,10 +202,28 @@ export const harnessPreparedEnvelopeSchema = z.object({
     "github.issues.read",
     "project.git.read",
   ])).min(1).max(8),
+  retainedExecutionInputs: retainedExecutionInputPathsSchema.default([]),
   sanitizedPreview: z.object({
     summary: z.string().min(1).max(512),
     secretFree: z.literal(true),
   }).strict(),
+  sideEffects: z.object({
+    delegatedWorkStarted: z.literal(false),
+    projectWrite: z.literal(false),
+    harnessWorkspaceWrite: z.literal(false),
+  }).strict(),
+}).strict();
+
+export const harnessPreparationFailureEnvelopeSchema = z.object({
+  type: z.literal("harness.launch.failure"),
+  adapterProtocol: adapterProtocolSchema,
+  adapterId: harnessAdapterIdSchema,
+  code: z.enum([
+    "harness_execution_runtime_unavailable",
+    "harness_worker_provider_unavailable",
+  ]),
+  retryable: z.literal(true),
+  sanitizedExplanation: z.string().min(1).max(512),
   sideEffects: z.object({
     delegatedWorkStarted: z.literal(false),
     projectWrite: z.literal(false),
@@ -214,6 +247,30 @@ export const harnessCancellationRequestSchema = z.object({
   harnessRunId: harnessRunIdSchema,
   cooperativeDeadlineAt: z.string().datetime(),
 }).strict();
+
+export const retainedExecutionInputSchema = z.object({
+  path: harnessExecutionInputPathSchema,
+  integrity: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  source: z.string().max(12_000).refine((value) =>
+    Buffer.byteLength(value, "utf8") <= 12_000),
+}).strict();
+
+export const harnessRunStartRequestSchema = z.object({
+  type: z.literal("harness.run.start"),
+  adapterProtocol: adapterProtocolSchema,
+  adapterId: harnessAdapterIdSchema,
+  harnessRunId: harnessRunIdSchema,
+  retainedExecutionInputs: z.array(retainedExecutionInputSchema).max(8),
+}).strict().superRefine((request, context) => {
+  if (new Set(request.retainedExecutionInputs.map(({ path }) => path)).size
+      !== request.retainedExecutionInputs.length) {
+    context.addIssue({
+      code: "custom",
+      message: "retained execution input paths must be unique",
+      path: ["retainedExecutionInputs"],
+    });
+  }
+});
 
 export const harnessProgressEnvelopeSchema = z.object({
   type: z.literal("harness.run.progress"),
@@ -247,6 +304,8 @@ export const harnessTerminalEnvelopeSchema = z.object({
 export const harnessAdapterMessageSchema = z.union([
   harnessAdapterProbeSchema,
   harnessPreparedEnvelopeSchema,
+  harnessPreparationFailureEnvelopeSchema,
+  harnessRunStartRequestSchema,
   harnessReadyEnvelopeSchema,
   harnessProgressEnvelopeSchema,
   harnessTerminalEnvelopeSchema,
@@ -333,15 +392,20 @@ export const loadPinnedHarnessAdapter = async ({ workspacePath, pinnedRevision }
  * Invoke the exact pinned adapter bytes across the framed protocol channel.
  * @param {Awaited<ReturnType<typeof loadPinnedHarnessAdapter>>} pinnedAdapter
  * @param {string[]} invocationArgs
+ * @param {{workingDirectory?: string}} [options]
  */
-export const invokePinnedHarnessAdapter = async (pinnedAdapter, invocationArgs) => {
+export const invokePinnedHarnessAdapter = async (
+  pinnedAdapter,
+  invocationArgs,
+  options = {},
+) => {
   const child = spawn(process.execPath, [
     "--input-type=module",
     "--eval", pinnedAdapter.pinnedEntryPointSource,
     pinnedAdapter.compatibility.entryPoint,
     ...invocationArgs,
   ], {
-    cwd: pinnedAdapter.workspacePath,
+    cwd: options.workingDirectory ?? pinnedAdapter.workspacePath,
     env: { LANG: "C.UTF-8" },
     stdio: ["ignore", "pipe", "pipe", "pipe"],
   });
