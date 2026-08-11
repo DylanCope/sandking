@@ -123,6 +123,7 @@ sequenceDiagram
     C->>D: WS mutation (launch-harness)
     D->>H: framed request
     H->>H: prepareProductionHarness — re-verify pinned<br/>commit bytes match seed (separate from registration check)
+    Note over H: production Harness only:<br/>projects pinned files into<br/>&lt;project&gt;/.sandking/harnesses/&lt;id&gt;/<br/>(git-invisible via .git/info/exclude,<br/>see below)
     H->>A: spawn adapter, invokePinnedHarnessAdapter<br/>(frame protocol over fd 3)
     A-->>H: readiness envelope
     A->>W: (production only) docker exec, real-worker-v2.mjs
@@ -133,20 +134,59 @@ sequenceDiagram
     C->>D: fetch log ranges on demand
 ```
 
-Note what the target **Project directory** receives through this whole flow:
-**nothing.** No `.sandcastle/` projection, no manifest. All Harness workspace
-state lives in Host-private storage (`~/.sandking`-rooted), separate from both
-the Project and the Harness workspace's own git history.
+### The project-local `.sandking/` projection (production Harness only)
+
+**Correction to an earlier version of this doc**: the target Project directory
+is not left untouched for the production Harness path. `prepareProductionHarness`
+(`production-harness-preparation.mjs:632`) runs on **every launch attempt** and
+projects the pinned Harness's worker environment, adapter, and skills into
+`<projectRoot>/.sandking/harnesses/<harnessId>/` — inside the Project itself.
+
+Why: the Docker sandbox that runs the real Worker is launched with
+`cwd: projectPath` (`real-worker-v2.mjs:191`) — `@ai-hero/sandcastle`'s docker
+sandbox provider mounts the Project's working tree as the container's
+filesystem. Staging the projection inside the Project directory lets it be
+integrity-verified and proven collision-free against your real tracked files,
+on the same filesystem the sandbox will use, without a second bind mount.
+
+It's kept git-invisible on purpose: the code appends rules to
+`.git/info/exclude` (the local, untracked exclude file — not your committed
+`.gitignore`) and explicitly diffs `git status`/`git ls-files` before and
+after to guarantee the projection never perturbs real Project content. This
+requires the Project to be a real git repository **at its own root**
+(`git rev-parse --show-toplevel` must equal the Project path) — a requirement
+specific to the production Harness path, not to registration or the
+conformance Harness.
+
+**It is not cleaned up on success.** The only removal call
+(`production-harness-preparation.mjs:1012`) fires exclusively on a failed/
+rolled-back preparation. After a successful run, `.sandking/harnesses/<id>/`
+simply persists in the Project directory indefinitely.
+
+At actual launch time, a **third** copy is made: `harness-runs.mjs:2844`
+(`materializeProductionHarnessExecutionSnapshot`) copies that project-local
+projection into a Host-private, per-run "execution snapshot"
+(`~/.sandking/.../harness-runs/<run-id>/execution/`), which is what
+`real-worker-v2.mjs` actually reads to build the Codex prompt before the
+container starts. So one production Harness run involves three copies of
+essentially the same pinned bytes: the registered Harness workspace
+(`~/.sandking`), the project-local staged projection
+(`<project>/.sandking/harnesses/<id>/`), and the per-run execution snapshot
+(`~/.sandking/.../harness-runs/<id>/execution/`). See `docs/current-state.md`
+for this as a loose-end item.
 
 ## Data/state boundaries
 
 - **Host-private state** (`~/.sandking` by default): runtime lifecycle
   revision, launch/stop lock, Controller↔Host identity binding, bootstrap
   claims, audit records, Project registry, Harness workspaces (each its own
-  git repo), Harness run state/logs.
-- **Project directory**: untouched by registration or launch. Only touched if
-  a Harness run's Worker itself commits to it (that's the whole point of a
-  run).
+  git repo), Harness run state/logs, and (production Harness only) a
+  per-run execution snapshot.
+- **Project directory**: untouched by the **conformance** Harness path and by
+  registration in general. The **production** Harness path writes a
+  persistent, git-invisible `.sandking/harnesses/<harnessId>/` projection into
+  the Project on every launch — see above. Beyond that, only touched if a
+  Harness run's Worker itself commits to it (that's the whole point of a run).
 - **Harness workspace**: a separate, Host-private git repo per registered
   Harness, pinned to an exact commit. For the production Harness, this is a
   verified-integrity projection of the bundled seed (see below) — not a live

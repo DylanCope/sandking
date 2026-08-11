@@ -18,8 +18,11 @@ for term definitions.
   git-repo requirement), see readiness, launch with a single confirm, watch a
   live PTY and ordered lifecycle events, reconnect/resync across refreshes.
 - **Project & Harness registration**: pins an exact Harness commit into a
-  Host-private, integrity-verified workspace. Works against any local
-  directory — doesn't need to be a git repo, doesn't touch GitHub.
+  Host-private, integrity-verified workspace. Registration itself works
+  against any local directory — doesn't need to be a git repo, doesn't touch
+  GitHub. **Caveat**: actually *launching* the production Harness has a
+  stricter requirement not covered by registration alone — see loose end #9
+  below.
 - **Real Harness run execution**: the full protocol — readiness → progress →
   exactly one terminal envelope, process exit/stdout never trusted for
   outcome — is proven end to end, including a real `openai-codex` provider
@@ -133,6 +136,27 @@ made — flagging them so the next call is a deliberate one.
    runtime** — bundled, integrity-verified, never executed. Covered above
    under gap #2; listed again here because it's as much a "why does the repo
    carry all this" question as a "what's missing" one.
+
+9. **The production Harness path writes a persistent, undocumented artifact
+   into the Project directory, and triples the same bytes across three
+   locations.** `prepareProductionHarness` (`production-harness-preparation.mjs:632`)
+   projects the pinned Harness into `<project>/.sandking/harnesses/<harnessId>/`
+   on every launch — a real write into the Project, not the Host-private state
+   the rest of the system uses. It's kept git-invisible via `.git/info/exclude`
+   and verified not to disturb tracked files, but it is **never cleaned up on
+   success** (the only removal path is a failed-preparation rollback,
+   `production-harness-preparation.mjs:1012`) — it just accumulates in the
+   Project directory indefinitely. It also silently requires the Project be a
+   git repository at its own root, a requirement registration alone doesn't
+   surface. At actual launch, that projection is copied a third time into a
+   Host-private per-run execution snapshot
+   (`harness-runs.mjs:2844`, `~/.sandking/.../harness-runs/<id>/execution/`),
+   which is what the real Worker script actually reads. Three copies of the
+   same pinned bytes, one of them leaking into the Project directory
+   permanently, is worth a deliberate design pass — either the project-local
+   copy should be cleaned up after use, or its persistence and purpose should
+   be documented and surfaced to the person using Sand-King rather than
+   discovered by `ls -a`.
 
 ## Suggested next step
 
