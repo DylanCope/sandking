@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "issue": 174,
+  "parentPrd": 169,
+  "generatedFromCommit": "803f5133f72c622907d19b45c41862c728c2ebee",
+  "recordedAt": "2026-08-11T07:53:47.620Z",
+  "scenario": "production-sandcastle-delegation/commits-real-project-work",
+  "qualification": {
+    "status": "passed",
+    "productionEvidence": true,
+    "fixtureSubstitution": false
+  },
+  "installedSandKing": {
+    "revision": "803f5133f72c622907d19b45c41862c728c2ebee",
+    "command": "sandking",
+    "installed": true,
+    "launchedOutsideCheckout": true,
+    "tarballIntegrity": "sha256:66e43bad5a6ba6325de6b2e30410bcfa0b8d3c1a4633d491ad7c4c41508fec0d"
+  },
+  "publicSeam": {
+    "surface": "cockpit",
+    "defaultProductionHarness": true,
+    "launchActionCount": 1,
+    "transport": "installed sandking -> loopback Cockpit -> authenticated WebSocket -> framed local Host"
+  },
+  "provider": {
+    "kind": "openai-codex",
+    "version": "0.146.0",
+    "authentication": "destination-local-authenticated",
+    "realExecution": true,
+    "simulated": false,
+    "model": "gpt-5.6-sol",
+    "effort": "medium"
+  },
+  "adapter": {
+    "identity": "sandcastle-harness-adapter-v1",
+    "protocol": "1.0.0",
+    "entryPoint": "adapters/sandcastle.mjs",
+    "sourcePath": "src/production-sandcastle-adapter/sandcastle-v3.mjs",
+    "contentIntegrity": "sha256:684eb6694a8d3251865e302d968c2c196861fc0f788e08924d4495062aef4e43"
+  },
+  "harness": {
+    "harnessId": "harness-6953897151facec655eecc7b",
+    "pinnedRevision": "481659ddc0f3e83c6817fef91373887476d59e34",
+    "sandKingSeed": {
+      "repository": "https://github.com/DylanCope/sandking.git",
+      "revision": "bbdc73f3cb2b3cd265330f811306098ffdcc51be",
+      "seedSourceIntegrity": "sha256:28e6e55054c15265337d204b2a09d57ffd0d7cf9f585d4626763b9f80f430db7"
+    },
+    "upstream": {
+      "repository": "https://github.com/mattpocock/sandcastle.git",
+      "revision": "e99f832f26dc9d245c019a9ddd19fa5dee792427",
+      "package": "@ai-hero/sandcastle",
+      "version": "0.12.0"
+    },
+    "dependencyLock": {
+      "path": "package-lock.json",
+      "integrity": "sha256:f23f864604dd2901d314afdb5ee819c2ca91fccd3c16807a8c5441d818e5b4c1"
+    },
+    "skillSetLock": {
+      "integrity": "sha256:f75991164768f2b3b3e23dd7c2492c4990a1885a6ea777eff71b07244a54dc8a",
+      "resolvedSkills": [
+        {
+          "identity": "sandking.issue-implementation",
+          "revision": "bbdc73f3cb2b3cd265330f811306098ffdcc51be",
+          "contentIntegrity": "sha256:abb4994f1f500212e432b8b2626b07d538c4fdc58a8609a13f0efda5699abf68"
+        },
+        {
+          "identity": "sandking.issue-planning",
+          "revision": "bbdc73f3cb2b3cd265330f811306098ffdcc51be",
+          "contentIntegrity": "sha256:6220c63e7b128296cd2e7c5b0e7fd4159f6a6dbc3351f7f5924e1d14debeac6f"
+        },
+        {
+          "identity": "sandking.pull-request-review",
+          "revision": "bbdc73f3cb2b3cd265330f811306098ffdcc51be",
+          "contentIntegrity": "sha256:67ab262dbfccdeefd9c4c7b391bf0c908ae1e15aacded9845a188b522c7d3eed"
+        },
+        {
+          "identity": "sandking.real-delegation",
+          "revision": "bbdc73f3cb2b3cd265330f811306098ffdcc51be",
+          "contentIntegrity": "sha256:74d6ed9fc2bb9dc84d8301d0a93461e25b6007003a17c16efc52d64773dddf22"
+        }
+      ]
+    },
+    "projectionIntegrity": "sha256:4d1a4c994580b3bf78b822e2f8d94e9163b546bf7777cc2a645872b270d93775"
+  },
+  "project": {
+    "beforeCommit": "581fed92e9fe53fd7741fb93fcff31eb9933ca2c",
+    "afterCommit": "b7f79195b9669f68afa819d00418035426428c17",
+    "parentCommit": "581fed92e9fe53fd7741fb93fcff31eb9933ca2c",
+    "artifact": {
+      "path": "sandking-real-delegation.txt",
+      "contentIntegrity": "sha256:d249b05094457d73964be3ca190a1497399ddc9ae629b7e21f5e7ddd9dcfd57a"
+    },
+    "invariants": {
+      "exactlyOneChildCommit": true,
+      "expectedArtifactOnly": true,
+      "expectedArtifactContent": true,
+      "unrelatedTrackedContentPreserved": true,
+      "cleanAfter": true,
+      "ignoredProjection": true,
+      "projectionUnchanged": true,
+      "noRuntimeTracked": true,
+      "prescribedCommitIdentity": true,
+      "structuredCommitAgrees": true
+    }
+  },
+  "structuredOutcome": {
+    "harnessRunId": "harness-run-e99a6891fadfffe3a92869df",
+    "status": "succeeded",
+    "code": "real_work_committed",
+    "commit": "b7f79195b9669f68afa819d00418035426428c17",
+    "artifact": "sandking-real-delegation.txt",
+    "exactlyOneTerminalEnvelope": true
+  },
+  "diagnostics": {
+    "bounded": true,
+    "contentRetained": false,
+    "references": [
+      {
+        "streamId": "harness-log-24a3e734bd532002f2eaf90d",
+        "producer": "stdout",
+        "start": 0,
+        "end": 0,
+        "explicitRetrievalRequired": true
+      },
+      {
+        "streamId": "harness-log-8e843411b17dbc29b7cd6cb7",
+        "producer": "stderr",
+        "start": 0,
+        "end": 25,
+        "explicitRetrievalRequired": true
+      }
+    ]
+  },
+  "auditReferences": [
+    {
+      "auditId": "audit-a97f3464fa07efed44093050",
+      "action": "harness.run.launch",
+      "outcome": "accepted"
+    },
+    {
+      "auditId": "audit-0425a6520165aee8b2e1aa5b",
+      "action": "harness.adapter.start",
+      "outcome": "observed"
+    },
+    {
+      "auditId": "audit-e196b43767f12b4228521fce",
+      "action": "harness.run.outcome",
+      "outcome": "observed"
+    }
+  ]
+}
