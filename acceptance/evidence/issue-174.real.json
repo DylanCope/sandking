@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "issue": 174,
+  "parentPrd": 169,
+  "generatedFromCommit": "ce242aa8111d9ba0de76766e06a4f84ec3762a4a",
+  "recordedAt": "2026-08-11T12:25:53.339Z",
+  "scenario": "production-sandcastle-delegation/commits-real-project-work",
+  "qualification": {
+    "status": "passed",
+    "productionEvidence": true,
+    "fixtureSubstitution": false
+  },
+  "installedSandKing": {
+    "revision": "ce242aa8111d9ba0de76766e06a4f84ec3762a4a",
+    "command": "sandking",
+    "installed": true,
+    "launchedOutsideCheckout": true,
+    "tarballIntegrity": "sha256:1a99b5ef92aa6df9ab2c0daa5b555e05897a31a092911fef5b53fb9536978c98"
+  },
+  "publicSeam": {
+    "surface": "cockpit",
+    "defaultProductionHarness": true,
+    "launchActionCount": 1,
+    "transport": "installed sandking -> loopback Cockpit -> authenticated WebSocket -> framed local Host"
+  },
+  "provider": {
+    "kind": "openai-codex",
+    "version": "0.146.0",
+    "authentication": "destination-local-authenticated",
+    "realExecution": true,
+    "simulated": false,
+    "model": "gpt-5.6-sol",
+    "effort": "medium",
+    "sandbox": {
+      "provider": "docker",
+      "version": "29.5.3",
+      "image": "sandcastle:sandking-real-worker",
+      "imageId": "sha256:8a4368dd5dd73d969b64ed9286dbf475ecbff0b7b42566b90d7fa7e3e18c85d5",
+      "configurationSource": ".sandcastle/Dockerfile",
+      "configurationIntegrity": "sha256:273b84ad7eb4a77bd93df066edac11722c47f6cec3857eb20129bdf87ca20582",
+      "destinationIsolation": true,
+      "temporaryImageRemoved": true
+    }
+  },
+  "adapter": {
+    "identity": "sandcastle-harness-adapter-v1",
+    "protocol": "1.0.0",
+    "entryPoint": "adapters/sandcastle.mjs",
+    "sourcePath": "src/production-sandcastle-adapter/sandcastle-v4.mjs",
+    "contentIntegrity": "sha256:cb26374b75af14f78552bfe0adac9cad70ea5a9fc0ca22e6a88659f0b41b7c0a"
+  },
+  "harness": {
+    "harnessId": "harness-dca081dea16fd444445f1eda",
+    "pinnedRevision": "e214221c1f160cc4b17fd643fc9b75f56dd975db",
+    "sandKingSeed": {
+      "repository": "https://github.com/DylanCope/sandking.git",
+      "revision": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
+      "seedSourceIntegrity": "sha256:674e758d029e7615e70a324c21ab24a00e576d04b35cd8f83282ea416ea2bec5"
+    },
+    "upstream": {
+      "repository": "https://github.com/mattpocock/sandcastle.git",
+      "revision": "e99f832f26dc9d245c019a9ddd19fa5dee792427",
+      "package": "@ai-hero/sandcastle",
+      "version": "0.12.0"
+    },
+    "dependencyLock": {
+      "path": "package-lock.json",
+      "integrity": "sha256:f23f864604dd2901d314afdb5ee819c2ca91fccd3c16807a8c5441d818e5b4c1"
+    },
+    "skillSetLock": {
+      "integrity": "sha256:a788a2250b809e173c14170fad331999579357d9006e88a7dbee4cae92101b56",
+      "delivery": {
+        "ambient": "disabled",
+        "method": "complete-pinned-inventory-in-worker-prompt"
+      },
+      "resolvedSkills": [
+        {
+          "identity": "sandking.issue-implementation",
+          "revision": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
+          "contentIntegrity": "sha256:abb4994f1f500212e432b8b2626b07d538c4fdc58a8609a13f0efda5699abf68"
+        },
+        {
+          "identity": "sandking.issue-planning",
+          "revision": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
+          "contentIntegrity": "sha256:6220c63e7b128296cd2e7c5b0e7fd4159f6a6dbc3351f7f5924e1d14debeac6f"
+        },
+        {
+          "identity": "sandking.pull-request-review",
+          "revision": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
+          "contentIntegrity": "sha256:67ab262dbfccdeefd9c4c7b391bf0c908ae1e15aacded9845a188b522c7d3eed"
+        },
+        {
+          "identity": "sandking.real-delegation",
+          "revision": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
+          "contentIntegrity": "sha256:74d6ed9fc2bb9dc84d8301d0a93461e25b6007003a17c16efc52d64773dddf22"
+        }
+      ]
+    },
+    "projectionIntegrity": "sha256:cd46eaa6a7501b096a81c9a53678fe17902be36cd862068c82a241c9a4d0bf67"
+  },
+  "project": {
+    "beforeCommit": "7c55983fe90322b1f803384dd53609d2529b8e03",
+    "afterCommit": "4e80ea7d7dd19fe80958b6784fcc4454a24cd00a",
+    "parentCommit": "7c55983fe90322b1f803384dd53609d2529b8e03",
+    "artifact": {
+      "path": "sandking-real-delegation.txt",
+      "contentIntegrity": "sha256:d249b05094457d73964be3ca190a1497399ddc9ae629b7e21f5e7ddd9dcfd57a"
+    },
+    "invariants": {
+      "exactlyOneChildCommit": true,
+      "expectedArtifactOnly": true,
+      "expectedArtifactContent": true,
+      "unrelatedTrackedContentPreserved": true,
+      "cleanAfter": true,
+      "ignoredProjection": true,
+      "projectionUnchanged": true,
+      "noRuntimeTracked": true,
+      "prescribedCommitIdentity": true,
+      "structuredCommitAgrees": true
+    }
+  },
+  "structuredOutcome": {
+    "harnessRunId": "harness-run-3c8b5c2ba985cf91935b5e6f",
+    "status": "succeeded",
+    "code": "real_work_committed",
+    "commit": "4e80ea7d7dd19fe80958b6784fcc4454a24cd00a",
+    "artifact": "sandking-real-delegation.txt",
+    "exactlyOneTerminalEnvelope": true
+  },
+  "diagnostics": {
+    "bounded": true,
+    "contentRetained": false,
+    "references": [
+      {
+        "streamId": "harness-log-11b5be396fea7b6e66da6a3e",
+        "producer": "stdout",
+        "start": 0,
+        "end": 0,
+        "explicitRetrievalRequired": true
+      },
+      {
+        "streamId": "harness-log-4cae293d1dd75be90d7aa81c",
+        "producer": "stderr",
+        "start": 0,
+        "end": 25,
+        "explicitRetrievalRequired": true
+      }
+    ]
+  },
+  "auditReferences": [
+    {
+      "auditId": "audit-7a59820a11106c0ca4510177",
+      "action": "harness.run.launch",
+      "outcome": "accepted"
+    },
+    {
+      "auditId": "audit-6c2cc3f8b00f62ae384e7b75",
+      "action": "harness.adapter.start",
+      "outcome": "observed"
+    },
+    {
+      "auditId": "audit-b0a429112001e142596a2af0",
+      "action": "harness.run.outcome",
+      "outcome": "observed"
+    }
+  ]
+}
