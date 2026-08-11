@@ -22,6 +22,7 @@ import {
   ISSUE_174_SCENARIO,
   validateIssue174RealEvidence,
 } from "./issue-174-real-evidence.mjs";
+import { waitForIssue174ProductionHarness } from "./issue-174-harness-state.mjs";
 import { snapshotIssue174Projection } from "./issue-174-projection-snapshot.mjs";
 import {
   inspectIssue174SandboxImage,
@@ -251,10 +252,9 @@ const main = async () => {
     const launch = JSON.parse(launchSource);
     runtimeStarted = true;
 
-    const initialHarnessState = await readJson(join(dataDir, "harness-registry.json"));
-    const initialHarness = initialHarnessState.harnesses.find((candidate) =>
-      candidate.adapterId === "sandcastle-harness-adapter-v1");
-    if (!initialHarness) throw new Error("issue_174_default_production_harness_missing");
+    const initialHarness = await waitForIssue174ProductionHarness({
+      readState: () => readJson(join(dataDir, "harness-registry.json")),
+    });
     workspacePath = initialHarness.workspacePath;
     sandboxImageName = manifest.scenario.provider.sandbox.image;
     sandboxImageBefore = await inspectIssue174SandboxImage(sandboxImageName);
