@@ -20,6 +20,10 @@ conflate the two.
   and the `acceptance/` tree: what guards correctness under future change,
   what is per-ticket ceremony, and what will obstruct the refactors `src/`
   needs.
+- **[`target-structure.md`](target-structure.md)** — where the repository
+  should end up after the strip-back and refactor tickets, with decomposition
+  boundaries for the 3,000-line files and the sequencing that makes the
+  refactor safe.
 
 All three docs are grounded in direct code inspection with file:line
 citations, not aspiration — they were written specifically to reconcile the
