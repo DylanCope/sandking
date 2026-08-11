@@ -1,27 +1,47 @@
 # Coding Standards
 
-<!-- Customize this file with your project's coding standards.
-     The reviewer agent loads it during code review via @.sandcastle/CODING_STANDARDS.md
-     so these standards are enforced during review without costing tokens during implementation. -->
+Loaded by the reviewer during code review, and referenced by the implementer.
+Keep it short — every line costs tokens on every PR.
 
-## Style
+## Do not grow the acceptance-artifact surface
 
-<!-- Example:
-- Use camelCase for variables and functions
-- Use PascalCase for classes and types
-- Prefer named exports over default exports
--->
+- **Never add a test that fails when a file changes rather than when behaviour
+  changes.** No assertion that a `git diff` is empty, that a file's hash matches
+  a recorded value, or that retained JSON was generated from the current commit.
+  Such tests produce red builds for documentation edits while staying green
+  through real regressions.
+- **Do not add per-ticket evidence artifacts, acceptance manifests, or
+  acceptance runners.** A ticket is proven by behavioural tests in the ordinary
+  suite. If an acceptance criterion cannot be expressed as a test that fails
+  when behaviour breaks, say so in the pull request rather than inventing an
+  artifact that records the ticket was delivered.
 
-## Testing
+## Keep the product free of test-only code
 
-<!-- Example:
-- Every public function must have at least one test
-- Use descriptive test names that explain the expected behavior
--->
+- Product code in `src/` must be reachable from a real user action — a CLI
+  invocation or a Cockpit interaction.
+- **Never make product code depend on state that only tests create**: a
+  manifest, fixture file, built image, or environment variable written by a test
+  runner rather than by `src/`. If a feature needs a precondition, product code
+  must establish it. A green test that passes only because the harness staged
+  the precondition does not demonstrate a working feature.
 
-## Architecture
+## Do not duplicate primitives
 
-<!-- Example:
-- Keep modules focused on a single responsibility
-- Prefer composition over inheritance
--->
+- Before writing a helper — hashing, canonical JSON, ID validation, path
+  resolution, framed I/O — grep for an existing one and import it. Divergent
+  copies of the same primitive have already produced a latent fingerprint bug in
+  this repository.
+
+## Keep modules bounded
+
+- Prefer files under ~600 lines. Past ~1,000, a new concern almost certainly
+  belongs in its own module rather than appended to the existing one.
+- A file that spans several layers at once — schemas, persistence, transport,
+  process supervision — should be split along those layers.
+
+## Delete what you supersede
+
+- When a change makes code unreachable, delete it in the same pull request. Do
+  not leave superseded versions beside their replacements; Git history preserves
+  them.

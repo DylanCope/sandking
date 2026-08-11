@@ -28,7 +28,9 @@ A concrete example of the failure mode this is meant to prevent: fixing a proces
 
 # ACCEPTANCE MATRIX
 
-Before changing code, build a complete acceptance matrix from the ticket and inherited parent requirements. For every applicable requirement record the required public seam, executable evidence, current status, and any relevant review finding. Keep this matrix in your working context; do not add a tracked planning artifact unless the issue requests one.
+Before changing code, build a complete acceptance matrix from the ticket and inherited parent requirements. For every applicable requirement record the required public seam, the behavioural test that would fail if the requirement were violated, current status, and any relevant review finding. Keep this matrix in your working context; do not add a tracked planning artifact, and do not add an evidence file, manifest, or runner to represent it.
+
+A requirement is satisfied when a test fails if the behaviour breaks. It is not satisfied by a recorded artifact, a stored hash, or a test that only proves the requirement was once demonstrated. If a criterion genuinely cannot be expressed as a behavioural test, say so explicitly in your issue comment rather than substituting an artifact.
 
 On a change-request pass, re-audit the complete matrix against the current branch, not merely the latest findings. A correction is complete only when the new regression test passes and the rest of the matrix remains satisfied. Explicitly identify any review suggestion that conflicts with the source requirements or belongs to a later slice rather than silently expanding scope.
 
@@ -57,9 +59,23 @@ If applicable, use RGR to complete the task.
 3. REPEAT until done
 4. REFACTOR the code
 
+# LEAVE THE CODEBASE BETTER THAN YOU FOUND IT
+
+Your change is judged on the state it leaves behind, not only on satisfying the ticket. Read `@.sandcastle/CODING_STANDARDS.md` — it is enforced at review, and complying now is far cheaper than a correction round.
+
+In particular:
+
+- Before adding a helper, grep for an existing one and import it instead of writing a second copy.
+- If the file you are editing is already over ~1,000 lines, ask whether your addition belongs in a new module rather than appended to it.
+- If your change makes existing code unreachable, delete it in the same commit.
+- Do not add a file, artifact, or test whose only purpose is to record that this ticket was delivered.
+- Product code must not depend on state that only a test creates. If your feature needs a precondition — a manifest, a fixture, a built image, an environment variable — product code must establish it, or the feature does not work outside the test harness.
+
 # FEEDBACK LOOPS
 
-Before every commit, including your final one, run the full `npm run typecheck` and `npm test` (not a filtered subset) and confirm there are zero failures. Do not commit while any test is failing, including a test that checks retained acceptance-evidence freshness against the current commit. If your change makes any `acceptance/evidence/issue-*.json` file stale, regenerate it with its corresponding `acceptance:issue-<N>:update-evidence` script and commit that update as part of the same change — do not treat evidence refresh as a separate step you might do later.
+Use `npm run test:unit` for fast iteration; it does not launch a browser. Before your final commit, run the full `npm run typecheck` and `npm test` and confirm you have introduced no new failures. Establish the pre-existing failure set first, so you can distinguish your regressions from the repository's existing state rather than assuming a fully green baseline.
+
+If a test fails only because a file changed — not because behaviour changed — that test is defective and the correct response is to report it, not to service it. Say so in your issue comment and commit message. Do not regenerate an artifact to turn such a test green, and do not add one.
 
 # COMMIT
 

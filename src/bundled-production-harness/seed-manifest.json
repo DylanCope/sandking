@@ -64,19 +64,19 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:7bd890ca64b072ad0619f287f3672376ed98929fca80ae0fe5806d38f7253d22",
+      "integrity": "sha256:0edc6b75caf9c54d97c477127289313b6c66070731310f0f2f58539b4c34f2c4",
       "executable": false
     },
     {
       "path": "skills.lock.json",
       "source": "seed",
-      "integrity": "sha256:a788a2250b809e173c14170fad331999579357d9006e88a7dbee4cae92101b56",
+      "integrity": "sha256:d4cc55a9e3cbdd7e1dd36d5948ba2e538d74710055afca720e8ccbe360c7f921",
       "executable": false
     },
     {
       "path": ".sandcastle/CODING_STANDARDS.md",
       "source": "sandking-package",
-      "integrity": "sha256:0a4103256daf028e1bf6df39a2471c89a4d9de62ff18ef8b12875ab4230a3200",
+      "integrity": "sha256:6ab0b9e2bbfe6ab059324a976e46e9b03eee023184c1ae9635a2e4455086f6ac",
       "executable": false
     },
     {
@@ -94,7 +94,7 @@
     {
       "path": ".sandcastle/implement-prompt.md",
       "source": "sandking-package",
-      "integrity": "sha256:abb4994f1f500212e432b8b2626b07d538c4fdc58a8609a13f0efda5699abf68",
+      "integrity": "sha256:7b9283edb3b94c73c68f283ec30270cc9825c08787a17bcd78da38475fadecaf",
       "executable": false
     },
     {
@@ -130,7 +130,7 @@
     {
       "path": ".sandcastle/pr-review-prompt.md",
       "source": "sandking-package",
-      "integrity": "sha256:67ab262dbfccdeefd9c4c7b391bf0c908ae1e15aacded9845a188b522c7d3eed",
+      "integrity": "sha256:b41f25656bbd2fc1065d9d996ad5163ab7d06e4add30557f369f99cc7a137aef",
       "executable": false
     },
     {

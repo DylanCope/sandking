@@ -13,7 +13,7 @@
         "revision": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
         "path": ".sandcastle/implement-prompt.md"
       },
-      "contentIntegrity": "sha256:abb4994f1f500212e432b8b2626b07d538c4fdc58a8609a13f0efda5699abf68",
+      "contentIntegrity": "sha256:7b9283edb3b94c73c68f283ec30270cc9825c08787a17bcd78da38475fadecaf",
       "providers": [
         {
           "kind": "bundle",
@@ -45,7 +45,7 @@
         "revision": "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
         "path": ".sandcastle/pr-review-prompt.md"
       },
-      "contentIntegrity": "sha256:67ab262dbfccdeefd9c4c7b391bf0c908ae1e15aacded9845a188b522c7d3eed",
+      "contentIntegrity": "sha256:b41f25656bbd2fc1065d9d996ad5163ab7d06e4add30557f369f99cc7a137aef",
       "providers": [
         {
           "kind": "bundle",
