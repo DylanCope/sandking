@@ -3,19 +3,39 @@
   "issue": 174,
   "kind": "post-proof-package-boundary",
   "realEvidenceGeneratedFromCommit": "ce242aa8111d9ba0de76766e06a4f84ec3762a4a",
-  "qualification": "The real-provider adapter, Worker, runner, and retained outcome remain byte-identical. This bounded refinement removes only superseded unsafe adapter revisions from later installed packages and adds the exact package-boundary verification.",
+  "qualification": "The real-provider adapter, Worker, runner, and retained outcome remain byte-identical. Bounded post-proof changes remove superseded adapter revisions from installed packages and add only exact package-boundary and final shared acceptance-oracle verification.",
   "allowedChangedFiles": [
+    {
+      "path": "package.json",
+      "integrity": "sha256:5e8d33a722bf0cd5e1bb90acfba26b216818ad927213964d09093e34bbd71a53"
+    },
     {
       "path": "src/production-sandcastle-adapter/.npmignore",
       "integrity": "sha256:b2cba9f6d48ea8c990785e8802f4ee47399f4b1a5c1331e19dbc966e6a5cae21"
     },
     {
       "path": "test/issue-174-acceptance-evidence.test.mjs",
-      "integrity": "sha256:7d6bbbe08e94669adf1e3f56dcef2f8a73f18ad4f3aaa24a4140d75c5c5cdf5a"
+      "integrity": "sha256:ec2b7229858ccf162dbdb92418ce6a06a2ad6e7885b063fd526e354101548995"
     },
     {
       "path": "test/issue-174-package-boundary.test.mjs",
       "integrity": "sha256:87d4e5353ce651cda2a00c3be22224e1ee777772ea549ab5ff6f141774f7f6a9"
+    },
+    {
+      "path": "test/issue-175-acceptance-evidence.test.mjs",
+      "integrity": "sha256:8553e86bdce2722a7cd1042f6d01b69a50073a3740a8f922b2abe4ebb722e032"
+    },
+    {
+      "path": "test/issue-175-evidence-source.mjs",
+      "integrity": "sha256:0e4c40414b8670b8c749dc63d5df308edb2966666dd91f1429dc726ecbc854b2"
+    },
+    {
+      "path": "test/issue-175-source-verification.mjs",
+      "integrity": "sha256:fe5bdc65238b7ee8e12c7a53a49da38d8faf7eeea416c83a9f4d7bedb2230f13"
+    },
+    {
+      "path": "test/run-issue-175-acceptance.mjs",
+      "integrity": "sha256:ed39995f7cf375461b6d81b3c14d6f9261f2bf1247213ba324a654bd5b39eb71"
     }
   ]
 }
