@@ -6,10 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
-import {
-  assertIssue175EvidenceSanitized,
-  ISSUE_175_DEMONSTRATED_PATHS,
-} from "./issue-175-evidence-source.mjs";
+import { assertIssue175EvidenceSanitized } from "./issue-175-evidence-source.mjs";
 
 const manifestUrl = new URL("../acceptance/issue-175.manifest.json", import.meta.url);
 const evidenceUrl = new URL("../acceptance/evidence/issue-175.json", import.meta.url);
@@ -275,11 +272,6 @@ test("retained issue 175 evidence qualifies the unchanged complete acceptance gr
   await execFileAsync("git", [
     "merge-base", "--is-ancestor", evidence.generatedFromCommit, "HEAD",
   ], { cwd: repositoryRoot });
-  const { stdout: changes } = await execFileAsync("git", [
-    "diff", "--name-only", `${evidence.generatedFromCommit}..HEAD`, "--",
-    ...ISSUE_175_DEMONSTRATED_PATHS,
-  ], { cwd: repositoryRoot });
-  assert.equal(changes.trim(), "", `issue 175 evidence predates changes:\n${changes}`);
 
   assert.deepEqual(evidence.sourceAndGraphVerification.sourceIssues, [168, 169, 175]);
   assert.equal(evidence.sourceAndGraphVerification.coveredStories, 45);

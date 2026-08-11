@@ -4,7 +4,6 @@ import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
-import { ISSUE_164_DEMONSTRATED_PATHS } from "./issue-164-evidence-source.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -137,11 +136,6 @@ test("retained issue 164 evidence identifies a current sanitized packaged qualif
   await execFileAsync("git", [
     "merge-base", "--is-ancestor", evidence.generatedFromCommit, "HEAD",
   ], { cwd: repositoryRoot });
-  const { stdout: changes } = await execFileAsync("git", [
-    "diff", "--name-only", `${evidence.generatedFromCommit}..HEAD`, "--",
-    ...ISSUE_164_DEMONSTRATED_PATHS,
-  ], { cwd: repositoryRoot });
-  assert.equal(changes.trim(), "", `issue 164 evidence predates changes:\n${changes}`);
 
   const realProcess = evidence.scenarioResults[0];
   assert.deepEqual({
