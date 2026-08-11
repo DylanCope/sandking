@@ -106,7 +106,7 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
     assert.equal(provenance.sandKing.repository, "https://github.com/DylanCope/sandking.git");
     assert.equal(
       provenance.sandKing.revision,
-      "bbdc73f3cb2b3cd265330f811306098ffdcc51be",
+      "4357a746267956b431ebfb5e465dcbdbb3b3ec00",
     );
     const seedManifest = JSON.parse(await readFile(
       join(workspacePath, "seed-manifest.json"),
@@ -222,14 +222,14 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
       await readFile(join(workspacePath, "adapters", "sandcastle.mjs"), "utf8"),
       (await execFileAsync("git", [
         "show",
-        `${provenance.sandKing.revision}:src/production-sandcastle-adapter/sandcastle-v3.mjs`,
+        `${provenance.sandKing.revision}:src/production-sandcastle-adapter/sandcastle-v4.mjs`,
       ])).stdout,
     );
     assert.equal(
-      await readFile(join(workspacePath, ".sandcastle", "real-worker.mjs"), "utf8"),
+      await readFile(join(workspacePath, ".sandcastle", "real-worker-v2.mjs"), "utf8"),
       (await execFileAsync("git", [
         "show",
-        `${provenance.sandKing.revision}:src/production-sandcastle-adapter/real-worker.mjs`,
+        `${provenance.sandKing.revision}:src/production-sandcastle-adapter/real-worker-v2.mjs`,
       ])).stdout,
     );
     assert.doesNotMatch(JSON.stringify(skillLock), /(?:\/home\/|\\Users\\|secret|token)/i);

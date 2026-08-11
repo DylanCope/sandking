@@ -122,7 +122,7 @@ test("retained issue 174 evidence proves the unchanged packaged real delegation"
   assert.equal(evidence.adapter.sourcePath,
     "src/production-sandcastle-adapter/sandcastle-v4.mjs");
   assert.equal(evidence.harness.sandKingSeed.revision,
-    "bbdc73f3cb2b3cd265330f811306098ffdcc51be");
+    "4357a746267956b431ebfb5e465dcbdbb3b3ec00");
   assert.equal(evidence.harness.upstream.repository,
     "https://github.com/mattpocock/sandcastle.git");
   assert.equal(evidence.harness.upstream.revision,
