@@ -64,13 +64,13 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:0edc6b75caf9c54d97c477127289313b6c66070731310f0f2f58539b4c34f2c4",
+      "integrity": "sha256:d229528182f247d469525683c048fe9ca5020c2681dcf75a24f0b6ad24dbabb5",
       "executable": false
     },
     {
       "path": "skills.lock.json",
       "source": "seed",
-      "integrity": "sha256:d4cc55a9e3cbdd7e1dd36d5948ba2e538d74710055afca720e8ccbe360c7f921",
+      "integrity": "sha256:81039e7fbf2c565f17c425a56c6a7f64654ae34b9b302122666a41883a1499b9",
       "executable": false
     },
     {
@@ -130,7 +130,7 @@
     {
       "path": ".sandcastle/pr-review-prompt.md",
       "source": "sandking-package",
-      "integrity": "sha256:b41f25656bbd2fc1065d9d996ad5163ab7d06e4add30557f369f99cc7a137aef",
+      "integrity": "sha256:06a73d4d8349a7da423065cee641090fb6ea43f93001c43b6924ab08399d410a",
       "executable": false
     },
     {
