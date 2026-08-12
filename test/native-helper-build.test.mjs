@@ -18,7 +18,7 @@ const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const requiredZigVersion = "0.13.0";
 
-test("npm detects both shipped Linux helpers as stale after a real source edit", async (context) => {
+test("npm transitions both shipped Linux helpers from current to stale after a real source edit", async (context) => {
   const zigPath = process.env.SANDKING_ZIG ?? "zig";
   try {
     const { stdout } = await execFileAsync(zigPath, ["version"]);
@@ -36,6 +36,10 @@ test("npm detects both shipped Linux helpers as stale after a real source edit",
 
   const root = await mkdtemp(join(tmpdir(), "sandking-native-helper-build-"));
   const sourcePath = join(root, "src", "posix-process-tree-helper.c");
+  const checkOptions = {
+    cwd: root,
+    env: { ...process.env, SANDKING_ZIG: zigPath },
+  };
 
   try {
     for (const path of [
@@ -50,16 +54,27 @@ test("npm detects both shipped Linux helpers as stale after a real source edit",
       await copyFile(join(repositoryRoot, path), destination);
     }
 
+    const current = await execFileAsync(
+      "npm",
+      ["run", "check:native-helpers"],
+      checkOptions,
+    );
+    assert.match(
+      current.stdout,
+      /Linux process-tree helpers match their source\./,
+    );
+
     const source = await readFile(sourcePath, "utf8");
     const editedSource = source.replace("SANDKING_OK = 0", "SANDKING_OK = 1");
     assert.notEqual(editedSource, source);
     await writeFile(sourcePath, editedSource);
 
     await assert.rejects(
-      execFileAsync("npm", ["run", "check:native-helpers"], {
-        cwd: root,
-        env: { ...process.env, SANDKING_ZIG: zigPath },
-      }),
+      execFileAsync(
+        "npm",
+        ["run", "check:native-helpers"],
+        checkOptions,
+      ),
       (error) => {
         assert.equal(error.code, 1);
         const output = `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
