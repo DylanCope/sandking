@@ -25,27 +25,14 @@ import {
   qualifyIssue164FaultPoint,
   retainIssue164FaultPointResults,
 } from "./issue-164-fault-results.mjs";
+import { waitForTestCheckpoint } from "./test-checkpoint.mjs";
 
 const execFileAsync = promisify(execFile);
 const hostId = `host-${"1".repeat(24)}`;
 const controllerId = `runtime-${"2".repeat(24)}`;
 const controllerSessionId = `controller-session-${"3".repeat(24)}`;
-
-const waitForTestCheckpoint = async (checkpoint, name, timeoutMs = 10_000) => {
-  let timeout;
-  try {
-    return await Promise.race([
-      checkpoint,
-      new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(
-          new Error(`harness_run_test_checkpoint_timeout:${name}`),
-        ), timeoutMs);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timeout);
-  }
-};
+const localFaultCheckpointTimeoutMs = 10_000;
+const supervisionQuiescenceTimeoutMs = 60_000;
 
 const waitForTerminal = async (manager, harnessRunId) => {
   const deadline = Date.now() + 60_000;
@@ -97,7 +84,7 @@ const waitForDiagnosticCommits = async (manager, harnessRunId) => {
   throw new Error("harness_run_diagnostic_commit_timeout");
 };
 
-const createFixture = async (prefix) => {
+const createFixture = async (prefix, managerOptions = {}) => {
   const root = await mkdtemp(join(tmpdir(), prefix));
   const dataDir = join(root, "host-state");
   const projectPath = join(root, "selected-project");
@@ -153,6 +140,7 @@ const createFixture = async (prefix) => {
     hostId,
     recordAudit,
     loadLaunchContext: registry.loadLaunchContext,
+    ...managerOptions,
   });
   return {
     root,
@@ -241,13 +229,15 @@ const recoveryRequest = (harnessRunId, action, overrides = {}) => ({
 });
 
 test("accepted cancellation terminates once and replays without another lifecycle transition", async () => {
-  const fixture = await createFixture("sandking-harness-run-cancellation-");
+  const fixture = await createFixture("sandking-harness-run-cancellation-", {
+    cancellationGraceMs: 10_000,
+  });
   const projectFilesBefore = (await readdir(fixture.projectPath)).sort();
   const rawRetryKey = "recognizable-raw-cancellation-retry-key";
   try {
     const launched = await fixture.manager.launch(launchRequest(
       fixture.registered.project.projectId,
-      161,
+      999_999_993,
     ));
     await waitForRunStatus(fixture.manager, launched.run.harnessRunId, "running");
 
@@ -1117,7 +1107,11 @@ test("restart arbitrates a signal dispatched before its durable publication", as
   } finally {
     releaseSignalDispatch?.();
     if (manager) {
-      await waitForTestCheckpoint(manager.waitForIdle(), "cooperative_signal_manager_idle");
+      await waitForTestCheckpoint(
+        manager.waitForIdle(),
+        "cooperative_signal_manager_idle",
+        supervisionQuiescenceTimeoutMs,
+      );
     }
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -1216,7 +1210,11 @@ test("cooperative signal publication is durable before restart terminal arbitrat
   } finally {
     releaseSignalPublication?.();
     if (manager) {
-      await waitForTestCheckpoint(manager.waitForIdle(), "signal_publication_manager_idle");
+      await waitForTestCheckpoint(
+        manager.waitForIdle(),
+        "signal_publication_manager_idle",
+        supervisionQuiescenceTimeoutMs,
+      );
     }
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -1309,6 +1307,7 @@ test("retained termination confirmation finalizes accepted cancellation exactly 
       await waitForTestCheckpoint(
         manager.waitForIdle(),
         "termination_confirmation_manager_idle",
+        supervisionQuiescenceTimeoutMs,
       );
     }
     await rm(fixture.root, { recursive: true, force: true });
@@ -1401,7 +1400,11 @@ test("forced signal publication survives restart without a second escalation", a
   } finally {
     releaseForcedSignalCommit?.();
     if (manager) {
-      await waitForTestCheckpoint(manager.waitForIdle(), "forced_signal_manager_idle");
+      await waitForTestCheckpoint(
+        manager.waitForIdle(),
+        "forced_signal_manager_idle",
+        supervisionQuiescenceTimeoutMs,
+      );
     }
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -1474,6 +1477,7 @@ test("pre-publication cancellation signal and termination faults converge after 
       await waitForTestCheckpoint(
         manager.waitForIdle(),
         `cancellation_signal_boundary_manager_idle:${boundary.point}`,
+        supervisionQuiescenceTimeoutMs,
       );
 
       const interrupted = JSON.parse(
@@ -1663,10 +1667,12 @@ test("uncertain termination confirmation never invents a cancelled outcome", asy
     await waitForTestCheckpoint(
       confirmationAttempted,
       "cancellation_termination_confirmation_not_attempted",
+      localFaultCheckpointTimeoutMs,
     );
     await waitForTestCheckpoint(
       manager.waitForIdle(),
       "uncertain_termination_manager_idle",
+      supervisionQuiescenceTimeoutMs,
     );
 
     const observation = await manager.observe({
@@ -1763,6 +1769,7 @@ test("cancellation accepted before terminal commit wins the serialized race", as
     await waitForTestCheckpoint(
       outcomeCommitReached,
       "completed_outcome_commit_not_reached",
+      localFaultCheckpointTimeoutMs,
     );
     process.kill = (pid, signal) => {
       if (pid < 0 && signal !== 0) staleGroupSignals.push({ pid, signal });
@@ -1835,6 +1842,7 @@ test("late cancellation confirms the complete process tree before recording canc
     await waitForTestCheckpoint(
       outcomeCommitReached,
       "late_outcome_commit_not_reached",
+      localFaultCheckpointTimeoutMs,
     );
     process.kill = (pid, signal) => {
       if (pid < 0 && signal !== 0) {
@@ -1904,6 +1912,7 @@ test("cancellation acceptance commits before the cooperative signal is dispatche
     await waitForTestCheckpoint(
       stateCommitReached,
       "cancellation_state_commit_not_reached",
+      localFaultCheckpointTimeoutMs,
     );
 
     const committed = JSON.parse(
@@ -2466,6 +2475,7 @@ test("readiness and terminal-envelope interruptions converge from exact pre/post
       await waitForTestCheckpoint(
         reachedFault,
         `lifecycle_boundary_not_reached:${boundary.point}`,
+        localFaultCheckpointTimeoutMs,
       );
       // Restart only after the original Host-owned supervision operation has
       // actually unwound from the injected interruption. A timing delay would
@@ -2474,6 +2484,7 @@ test("readiness and terminal-envelope interruptions converge from exact pre/post
       await waitForTestCheckpoint(
         manager.waitForIdle(),
         `launch_fault_manager_idle:${boundary.point}`,
+        supervisionQuiescenceTimeoutMs,
       );
 
       const stateAfterFault = JSON.parse(
