@@ -85,6 +85,8 @@ test("real-provider result serialization rejects secrets, session material, and 
     { unrestrictedLog: "all logs" },
     { environmentDump: "NAME=value" },
     { reusableSessionMaterial: "cookie" },
+    { browserSessionId: "controller-session-0123456789abcdef" },
+    { providerSessionId: "provider-session-0123456789abcdef" },
     { machineSpecificSecretPath: "/private/secret" },
     { fullSkillContent: "complete instructions" },
   ]) {
@@ -93,6 +95,24 @@ test("real-provider result serialization rejects secrets, session material, and 
   }
   assert.throws(() => serializeSanitizedRealProviderResult({
     result: { value: "/home/person/project" },
+  }), /real_provider_result_not_sanitized/);
+  for (const machinePath of [
+    "C:\\Users\\alice\\project",
+    "D:\\sandking\\state",
+    "\\\\host\\credentials\\provider.json",
+  ]) {
+    assert.throws(() => serializeSanitizedRealProviderResult({
+      result: { value: machinePath },
+    }), /real_provider_result_not_sanitized/);
+    assert.throws(() => serializeSanitizedRealProviderResult({
+      result: { value: `retained path: ${machinePath}` },
+      prohibitedValues: [machinePath],
+    }), /real_provider_result_not_sanitized/);
+  }
+  const escapedProhibitedValue = "private\\credential\"segment";
+  assert.throws(() => serializeSanitizedRealProviderResult({
+    result: { value: `prefix ${escapedProhibitedValue} suffix` },
+    prohibitedValues: [escapedProhibitedValue],
   }), /real_provider_result_not_sanitized/);
   for (const secret of [
     "sk-1234567890abcdef",
@@ -109,6 +129,13 @@ test("real-provider result serialization rejects secrets, session material, and 
       result: { value: secret },
     }), /real_provider_result_not_sanitized/);
   }
+  assert.doesNotThrow(() => serializeSanitizedRealProviderResult({
+    result: {
+      sourcePath: "src/production-sandcastle-adapter/sandcastle-v4.mjs",
+      configurationSource: ".sandcastle/Dockerfile",
+      repository: "https://github.com/mattpocock/sandcastle.git",
+    },
+  }));
 });
 
 test("the real-Sandcastle runner recognizes a rejected launch before model invocation", () => {

@@ -2,7 +2,7 @@ const commitPattern = /^[a-f0-9]{40}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const idPattern = /^(?:harness|harness-run|harness-log|audit)-[a-f0-9]{24}$/;
 const prohibitedKeyPattern = new RegExp([
-  "credential|account|transcript|bootstrap|cookie|sessionMaterial",
+  "credential|account|transcript|bootstrap|cookie|session",
   "environmentDump|unrestrictedLog|logContent|diagnosticContent",
   "skillContent|fullSkillContent|promptText|promptContent|fullContents",
   "raw[A-Z_]|machineSpecificSecretPath",
@@ -12,6 +12,8 @@ const providerSecretPattern =
 const sessionMaterialPattern = /(?:bootstrap\?token=|sandking_session=)/i;
 const namedSecretPattern =
   /(?:ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|GITHUB_TOKEN|SANDKING_CONTROLLER_SECRET)\s*=/i;
+const machinePathPattern =
+  /(?:^|[^A-Za-z0-9._/\\-])(?:\/(?!\/)|[A-Za-z]:[\\/]|\\\\[^\\/])/;
 
 export const realSandcastleScenario = Object.freeze({
   id: "production-sandcastle-delegation/commits-real-project-work",
@@ -66,9 +68,22 @@ export const inspectRealSandcastleRunState = (state) => {
   return { status: "pending" };
 };
 
-const inspectKeys = (value, path = []) => {
+// Inspect values before JSON encoding so Windows separators and other escaped
+// characters cannot hide prohibited result material.
+const inspectResult = (value, prohibitedValues, path = []) => {
+  if (typeof value === "string") {
+    if (
+      machinePathPattern.test(value)
+      || prohibitedValues.some((prohibited) => value.includes(prohibited))
+    ) {
+      throw new Error("real_provider_result_not_sanitized");
+    }
+    return;
+  }
   if (Array.isArray(value)) {
-    value.forEach((item, index) => inspectKeys(item, [...path, String(index)]));
+    for (const [index, item] of value.entries()) {
+      inspectResult(item, prohibitedValues, [...path, String(index)]);
+    }
     return;
   }
   if (!value || typeof value !== "object") return;
@@ -76,20 +91,20 @@ const inspectKeys = (value, path = []) => {
     if (prohibitedKeyPattern.test(key)) {
       throw new Error(`real_provider_result_prohibited_field:${[...path, key].join(".")}`);
     }
-    inspectKeys(child, [...path, key]);
+    inspectResult(child, prohibitedValues, [...path, key]);
   }
 };
 
 export const serializeSanitizedRealProviderResult = ({ result, prohibitedValues = [] }) => {
-  inspectKeys(result);
+  const retainedProhibitedValues = prohibitedValues.filter((value) =>
+    typeof value === "string" && value);
+  inspectResult(result, retainedProhibitedValues);
   const text = `${JSON.stringify(result, null, 2)}\n`;
   if (
     Buffer.byteLength(text, "utf8") > 65_536
-    || prohibitedValues.some((value) => typeof value === "string" && value && text.includes(value))
     || providerSecretPattern.test(text)
     || sessionMaterialPattern.test(text)
     || namedSecretPattern.test(text)
-    || /(?:^|["\s])(?:\/home\/|\/Users\/|[A-Za-z]:\\Users\\)/.test(text)
   ) {
     throw new Error("real_provider_result_not_sanitized");
   }
