@@ -19,6 +19,12 @@ import { createProjectRegistry } from "../src/project-registration.mjs";
 
 const execFileAsync = promisify(execFile);
 const localHostPath = join(process.cwd(), "src", "local-host.mjs");
+const conformanceAdapterSourcePath = join(
+  process.cwd(),
+  "src",
+  "conformance-harness-adapter",
+  "conformance.mjs",
+);
 
 const projectConfiguration = {
   issueWorkflow: { provider: "github", kind: "issues" },
@@ -201,6 +207,16 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
     assert.deepEqual(
       await readdir(join(harnessState.harnesses[0].workspacePath, "adapters")),
       ["conformance.mjs"],
+    );
+    assert.equal(
+      Buffer.compare(
+        await readFile(
+          join(harnessState.harnesses[0].workspacePath, "adapters", "conformance.mjs"),
+        ),
+        await readFile(conformanceAdapterSourcePath),
+      ),
+      0,
+      "workspace adapter must match the standalone source byte-for-byte",
     );
     assert.equal(
       (await execFileAsync("git", [
