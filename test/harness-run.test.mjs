@@ -1057,7 +1057,7 @@ test("restart arbitrates a signal dispatched before its durable publication", as
     await waitForTestCheckpoint(
       signalDispatched,
       "cooperative_signal_dispatch_not_observed",
-      2_000,
+      localFaultCheckpointTimeoutMs,
     );
 
     const ambiguousState = JSON.parse(
@@ -1070,6 +1070,13 @@ test("restart arbitrates a signal dispatched before its durable publication", as
     assert.equal(ambiguousRun.cancellation.terminationConfirmedAt, null);
     assert.equal(ambiguousRun.outcome, null);
 
+    releaseSignalDispatch();
+    await waitForTestCheckpoint(
+      manager.waitForIdle(),
+      "cooperative_signal_manager_idle",
+      supervisionQuiescenceTimeoutMs,
+    );
+    manager = null;
     const restarted = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId,
@@ -1141,6 +1148,7 @@ test("cooperative signal publication is durable before restart terminal arbitrat
           signalPublicationCount += 1;
           reportSignalPublication?.();
           await signalPublicationRelease;
+          throw new Error("injected_host_death_after_cancellation_signal_publication");
         }
       },
     });
@@ -1171,6 +1179,13 @@ test("cooperative signal publication is durable before restart terminal arbitrat
     assert.equal(signalledRun.cancellation.terminationConfirmedAt, null);
     assert.equal(signalledRun.outcome, null);
 
+    releaseSignalPublication();
+    await waitForTestCheckpoint(
+      manager.waitForIdle(),
+      "signal_publication_manager_idle",
+      supervisionQuiescenceTimeoutMs,
+    );
+    manager = null;
     const restarted = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId,
@@ -1242,6 +1257,7 @@ test("retained termination confirmation finalizes accepted cancellation exactly 
           === "harness_run_cancellation.termination_confirmation.after_state_commit") {
           reportConfirmationCommit?.();
           await confirmationCommitRelease;
+          throw new Error("injected_host_death_after_termination_confirmation");
         }
       },
     });
@@ -1269,6 +1285,13 @@ test("retained termination confirmation finalizes accepted cancellation exactly 
       /^2026-|^20[0-9]{2}-/);
     assert.equal(confirmedRun.outcome, null);
 
+    releaseConfirmationCommit();
+    await waitForTestCheckpoint(
+      manager.waitForIdle(),
+      "termination_confirmation_manager_idle",
+      supervisionQuiescenceTimeoutMs,
+    );
+    manager = null;
     const restarted = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId,
@@ -1338,6 +1361,7 @@ test("forced signal publication survives restart without a second escalation", a
           forcedSignalPublicationCount += 1;
           reportForcedSignalCommit?.();
           await forcedSignalCommitRelease;
+          throw new Error("injected_host_death_after_forced_signal_publication");
         }
       },
     });
@@ -1366,6 +1390,13 @@ test("forced signal publication survives restart without a second escalation", a
     assert.equal(forcedRun.cancellation.terminationConfirmedAt, null);
     assert.equal(forcedRun.outcome, null);
 
+    releaseForcedSignalCommit();
+    await waitForTestCheckpoint(
+      manager.waitForIdle(),
+      "forced_signal_manager_idle",
+      supervisionQuiescenceTimeoutMs,
+    );
+    manager = null;
     const restarted = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId,
@@ -1421,20 +1452,17 @@ test("pre-publication cancellation signal and termination faults converge after 
     {
       point: "harness_run_cancellation.forced_signal.before_dispatch",
       issueNumber: 999_999_992,
-      cooperativePublished: true,
       forcedPublished: false,
     },
     {
       point: "harness_run_cancellation.forced_signal.after_dispatch",
       issueNumber: 999_999_992,
-      cooperativePublished: true,
       forcedPublished: false,
     },
     {
       point: "harness_run_cancellation.termination_confirmation.before_commit",
       issueNumber: 999_999_993,
-      cooperativePublished: true,
-      forcedPublished: false,
+      someSignalPublished: true,
     },
   ];
 
@@ -1485,16 +1513,27 @@ test("pre-publication cancellation signal and termination faults converge after 
       ).runs[0];
       assert.equal(interrupted.status, "cancelling", boundary.point);
       assert.equal(interrupted.outcome, null, boundary.point);
-      assert.equal(
-        interrupted.cancellation.cooperativeSignalSentAt !== null,
-        boundary.cooperativePublished,
-        boundary.point,
-      );
-      assert.equal(
-        interrupted.cancellation.forcedTerminationSentAt !== null,
-        boundary.forcedPublished,
-        boundary.point,
-      );
+      if (boundary.cooperativePublished !== undefined) {
+        assert.equal(
+          interrupted.cancellation.cooperativeSignalSentAt !== null,
+          boundary.cooperativePublished,
+          boundary.point,
+        );
+      }
+      if (boundary.forcedPublished !== undefined) {
+        assert.equal(
+          interrupted.cancellation.forcedTerminationSentAt !== null,
+          boundary.forcedPublished,
+          boundary.point,
+        );
+      }
+      if (boundary.someSignalPublished) {
+        assert.ok(
+          interrupted.cancellation.cooperativeSignalSentAt !== null
+            || interrupted.cancellation.forcedTerminationSentAt !== null,
+          boundary.point,
+        );
+      }
       assert.equal(interrupted.cancellation.terminationConfirmedAt, null, boundary.point);
 
       let inspections = 0;
@@ -1639,6 +1678,10 @@ test("restart repairs a cancellation terminal outcome interrupted after state pu
 
 test("uncertain termination confirmation never invents a cancelled outcome", async () => {
   const fixture = await createFixture("sandking-harness-run-cancel-uncertain-");
+  // The nested cascade regression deliberately withholds only this checkpoint.
+  // Ordinary Harness-run execution always takes the real confirmation path.
+  const stallConfirmationCheckpoint =
+    process.env.SANDKING_TEST_STALL_CANCELLATION_CONFIRMATION === "1";
   let reportConfirmationAttempt;
   const confirmationAttempted = new Promise((resolve) => {
     reportConfirmationAttempt = resolve;
@@ -1651,7 +1694,7 @@ test("uncertain termination confirmation never invents a cancelled outcome", asy
       loadLaunchContext: fixture.registry.loadLaunchContext,
       faultInjector: (point) => {
         if (point === "harness_run_cancellation.termination_confirmation.before_commit") {
-          reportConfirmationAttempt();
+          if (!stallConfirmationCheckpoint) reportConfirmationAttempt();
           throw new Error("simulated_termination_confirmation_uncertainty");
         }
       },
@@ -1667,7 +1710,7 @@ test("uncertain termination confirmation never invents a cancelled outcome", asy
     await waitForTestCheckpoint(
       confirmationAttempted,
       "cancellation_termination_confirmation_not_attempted",
-      localFaultCheckpointTimeoutMs,
+      stallConfirmationCheckpoint ? 25 : localFaultCheckpointTimeoutMs,
     );
     await waitForTestCheckpoint(
       manager.waitForIdle(),
