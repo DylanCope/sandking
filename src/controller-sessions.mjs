@@ -448,6 +448,19 @@ const openProviderControl = async (context) => {
   let controlSocket;
   /** @type {NodeJS.Timeout | undefined} */
   let timeout;
+  let operationProcessing = Promise.resolve();
+  let controlInputFinished = false;
+  /** @type {() => void} */
+  let resolveControlInputFinished = () => undefined;
+  /** @type {Promise<void>} */
+  const controlInputEnded = new Promise((resolve) => {
+    resolveControlInputFinished = () => resolve();
+  });
+  const finishControlInput = () => {
+    if (controlInputFinished) return;
+    controlInputFinished = true;
+    resolveControlInputFinished();
+  };
   /** @type {Map<string, string>} */
   const controllerAuditByRetainedOutcome = new Map();
   /** @type {(value: z.infer<typeof providerReadySchema>) => void} */
@@ -484,7 +497,6 @@ const openProviderControl = async (context) => {
     controlSocket = socket;
     let input = "";
     let readyReceived = false;
-    let operationProcessing = Promise.resolve();
     socket.setEncoding("utf8");
     socket.on("data", (chunk) => {
       input += chunk;
@@ -674,7 +686,9 @@ const openProviderControl = async (context) => {
       if (!readySettled) {
         finishReady(new ControllerSessionError("provider_control_protocol_invalid"));
       }
+      finishControlInput();
     });
+    socket.once("close", finishControlInput);
   });
   server.maxConnections = 1;
   try {
@@ -708,6 +722,7 @@ const openProviderControl = async (context) => {
     closed = true;
     clearTimeout(timeout);
     controlSocket?.destroy();
+    finishControlInput();
     await new Promise((resolve) => server.close(() => resolve(undefined)));
     if (controlDirectory) {
       await rm(controlDirectory, { recursive: true, force: true });
@@ -717,10 +732,21 @@ const openProviderControl = async (context) => {
     endpoint,
     ready,
     expectReady,
+    drain: async () => {
+      // PTY exit and control-socket EOF are independent event sources. Keep
+      // terminal publication behind every frame the provider flushed first.
+      await controlInputEnded;
+      await operationProcessing;
+    },
     /** @param {ControllerSessionError} error */
     fail: (error) => {
+      const exitedBeforeReady = !readySettled;
       finishReady(error);
-      controlSocket?.destroy();
+      if (exitedBeforeReady) {
+        controlSocket?.destroy();
+        finishControlInput();
+      }
+      return exitedBeforeReady;
     },
     close,
   };
@@ -974,59 +1000,68 @@ export const createControllerSessionManager = async (options) => {
 
     terminal.onExit(({ exitCode, signal }) => {
       runtimeSession.running = false;
-      const exitReason = reportedExitReason ?? (signal
-        ? { code: "runtime_terminated", retryable: false, source: "controller-runtime" }
-        : exitCode === 0
-          ? {
-              code: "provider_session_completed",
-              retryable: false,
-              source: selectedProviderId === "claude-code"
-                ? "claude-cli"
-                : "conformance-provider",
-            }
-          : {
-              code: "provider_process_exit_unclassified",
-              retryable: true,
-              source: "sandking-adapter",
-            });
-      runtimeSession.exitReason = exitReason;
-      if (retainedSession) {
-        retainedSession.terminal.status = "exited";
-        retainedSession.terminal.exitedAt = new Date().toISOString();
-        retainedSession.terminal.exitCode = exitCode;
-        retainedSession.terminal.signal = signal ?? null;
-        retainedSession.terminal.exitReason = exitReason;
-      }
-      const eofFrame = {
-        streamId,
-        sequence: runtimeSession.outputSequence,
-        eof: true,
-        data: Buffer.alloc(0),
-      };
-      runtimeSession.outputSequence += 1;
-      bufferedFrames.push(eofFrame);
-      if (runtimeSession.writableSocket?.readyState === 1) {
-        runtimeSession.onOutput?.(runtimeSession.writableSocket, eofFrame);
-      }
-      for (const readOnlySocket of runtimeSession.readOnlySockets) {
-        if (readOnlySocket.readyState === 1) {
-          runtimeSession.outputHandlers.get(readOnlySocket)?.(readOnlySocket, eofFrame);
+      const exitedBeforeReady = providerControl.fail(
+        new ControllerSessionError("provider_session_exited_before_ready"),
+      );
+      const publishExit = () => {
+        const exitReason = reportedExitReason ?? (signal
+          ? { code: "runtime_terminated", retryable: false, source: "controller-runtime" }
+          : exitCode === 0
+            ? {
+                code: "provider_session_completed",
+                retryable: false,
+                source: selectedProviderId === "claude-code"
+                  ? "claude-cli"
+                  : "conformance-provider",
+              }
+            : {
+                code: "provider_process_exit_unclassified",
+                retryable: true,
+                source: "sandking-adapter",
+              });
+        runtimeSession.exitReason = exitReason;
+        if (retainedSession) {
+          retainedSession.terminal.status = "exited";
+          retainedSession.terminal.exitedAt = new Date().toISOString();
+          retainedSession.terminal.exitCode = exitCode;
+          retainedSession.terminal.signal = signal ?? null;
+          retainedSession.terminal.exitReason = exitReason;
         }
+        const eofFrame = {
+          streamId,
+          sequence: runtimeSession.outputSequence,
+          eof: true,
+          data: Buffer.alloc(0),
+        };
+        runtimeSession.outputSequence += 1;
+        bufferedFrames.push(eofFrame);
+        if (runtimeSession.writableSocket?.readyState === 1) {
+          runtimeSession.onOutput?.(runtimeSession.writableSocket, eofFrame);
+        }
+        for (const readOnlySocket of runtimeSession.readOnlySockets) {
+          if (readOnlySocket.readyState === 1) {
+            runtimeSession.outputHandlers.get(readOnlySocket)?.(readOnlySocket, eofFrame);
+          }
+        }
+        if (retainedSession) {
+          persist().catch(() => undefined);
+        }
+        options.recordAudit("controller.session.exit", "observed", {
+          sessionId,
+          providerSessionId,
+          streamId,
+          exitCode,
+          signal,
+          exitReason,
+        }).catch(() => undefined);
+        providerControl.close().catch(() => undefined);
+        resolveExit(undefined);
+      };
+      if (exitedBeforeReady) {
+        publishExit();
+      } else {
+        providerControl.drain().then(publishExit);
       }
-      if (retainedSession) {
-        persist().catch(() => undefined);
-      }
-      options.recordAudit("controller.session.exit", "observed", {
-        sessionId,
-        providerSessionId,
-        streamId,
-        exitCode,
-        signal,
-        exitReason,
-      }).catch(() => undefined);
-      providerControl.fail(new ControllerSessionError("provider_session_exited_before_ready"));
-      providerControl.close().catch(() => undefined);
-      resolveExit(undefined);
     });
 
     providerControl.expectReady();

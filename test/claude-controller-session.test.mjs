@@ -489,6 +489,10 @@ if (args.length === 1 && args[0] === "--version") {
         SANDKING_CLAUDE_EXECUTABLE: fakeClaudePath,
       },
       recordAudit: async (action, outcome, details = {}) => {
+        if (action === "controller.session.failure") {
+          // Exercise the ordering contract with slower durable audit I/O.
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
         audits.push({ action, outcome, details });
         return `audit-${String(audits.length).padStart(24, "0")}`;
       },
@@ -526,7 +530,7 @@ if (args.length === 1 && args[0] === "--version") {
       retryable: true,
       source: "claude-stop-failure",
     });
-    await waitFor(() => audits.some((entry) => entry.action === "controller.session.failure"
+    assert.ok(audits.some((entry) => entry.action === "controller.session.failure"
       && entry.details.code === "provider_network_unavailable"));
   } finally {
     await manager?.shutdown();
