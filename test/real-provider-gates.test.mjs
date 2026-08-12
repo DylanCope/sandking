@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
+import { BrowserProtocolError, parseBrowserControl } from "../src/browser-protocol.mjs";
+import { ProtocolError, writeFrame } from "../src/protocol.mjs";
 import {
   inspectRealSandcastleRunState,
   serializeSanitizedRealProviderResult,
@@ -130,32 +132,30 @@ test("the real-Sandcastle runner recognizes a rejected launch before model invoc
   });
 });
 
-test("fault injection remains outside production control and browser contracts", async () => {
-  const productionSources = await Promise.all([
-    "../src/cli.mjs",
-    "../src/local-host.mjs",
-    "../src/protocol.mjs",
-    "../src/browser-protocol.mjs",
-    "../src/runtime.mjs",
-    "../src/runtime-daemon.mjs",
-    "../src/cockpit.js",
-  ].map((path) => readFile(new URL(path, import.meta.url), "utf8")));
-  const [cli, host, protocol, browserProtocol, runtime, daemon, cockpit] = productionSources;
-
-  assert.doesNotMatch(cli, /--host-mode|\bhostMode\b/);
-  assert.doesNotMatch(runtime, /--host-mode|\bhostMode\b/);
-  assert.doesNotMatch(daemon, /--host-mode|\bhostMode\b/);
-  assert.doesNotMatch(host, /--mode|\bmode ===/);
-  for (const faultMode of [
-    "exit-before-ack",
-    "hang-before-ack",
-    "malformed-frame",
-    "secret-probe",
-    "pause-after-project-registration",
-    "delayed-harness-run-launch-response",
+test("production Host and Cockpit protocols reject fault-injection controls", () => {
+  for (const message of [
+    {
+      type: "host.fault.inject",
+      requestId: "reject-host-fault-mode",
+      mode: "hang-before-ack",
+    },
+    {
+      type: "harness.run.fault.inject",
+      requestId: "reject-harness-run-fault-point",
+      faultPoint: "harness_run_lifecycle.adapter_ready.before_commit",
+    },
   ]) {
-    assert.doesNotMatch(host, new RegExp(faultMode));
+    assert.throws(
+      () => writeFrame(new PassThrough(), message),
+      (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+    );
+    assert.throws(
+      () => parseBrowserControl({
+        channel: "control",
+        message: { ...message, type: `browser.${message.type}` },
+      }),
+      (error) => error instanceof BrowserProtocolError
+        && error.code === "browser_control_schema_invalid",
+    );
   }
-  assert.doesNotMatch([host, protocol, browserProtocol, daemon, cockpit].join("\n"),
-    /pause-after-harness-run-cancellation-acceptance|harness_run_(?:terminal_envelope|lifecycle)\.|faultInjector/);
 });

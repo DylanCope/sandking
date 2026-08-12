@@ -130,7 +130,10 @@ test("an installed production package launches outside the source checkout", asy
     const hostCommand = join(installDirectory, "node_modules", ".bin", "sandking-host");
     await assert.rejects(execFileAsync(hostCommand, [
       "--mode", "hang-before-ack", "--data-dir", prohibitedFaultState,
-    ], { cwd: root, env: process.env }));
+    ], { cwd: root, env: process.env }), (error) => {
+      assert.match(error.stderr, /host_option_unsupported/);
+      return true;
+    });
     await assert.rejects(access(prohibitedFaultState));
 
     const { stdout } = await execFileAsync(command, [
