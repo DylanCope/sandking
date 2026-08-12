@@ -128,12 +128,14 @@ made — flagging them so the next call is a deliberate one.
    necessity. Worth deciding: delete and let the boundary test check against
    git history instead, or keep as-is.
 
-3. **No general CI pipeline.** The sole workflow is a path-scoped check that
-   rebuilds the Linux native process-tree helpers. Typecheck, unit tests,
-   browser tests, and every other guarantee still depend entirely on local
-   `npm test`/`npm run typecheck` discipline holding on every change, including
-   the overnight autonomous runs. Nothing re-verifies those checks
-   automatically.
+3. **General CI is now split by feedback speed.** Pull requests and pushes to
+   `main` run typecheck, unit, and browser jobs independently on the repository's
+   pinned Node version. The browser job exercises the bundled Chromium through
+   the same launch gate as local tests. Linux cancellation cases affected by
+   the open guardian-lifetime defect (#221) remain visible in explicitly
+   non-blocking quarantine jobs; the remaining checks are required. The
+   separately path-scoped native helper workflow retains its pinned Zig rebuild
+   check.
 
 4. **Linux native process-tree helper is a deliberately prebuilt asset.**
    `posix-process-tree-helper.c` compiles to static-musl binaries checked into
@@ -196,9 +198,7 @@ made — flagging them so the next call is a deliberate one.
 If real delegated work (item #2 above) is the near-term goal, that's a
 concretely scoped follow-up ticket, not a redesign — see the "what closing
 this gap looks like" note above. The loose ends in the previous section are
-independent of that and can be picked up on their own schedule; items 3 and 4
-(no CI, unverified native binary) are the ones with the highest
-silent-failure risk if left alone.
+independent of that and can be picked up on their own schedule.
 
 Repo convention (`docs/agents/domain.md`) points at `docs/adr/` for recorded
 architectural decisions. None of the items above are decisions yet — they're
