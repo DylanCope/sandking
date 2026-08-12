@@ -21,7 +21,7 @@ import {
 import { acceptHostIdentity, readHostIdentity } from "./host-identity.mjs";
 import { appendPrivateJsonLine } from "./private-state.mjs";
 import { createProjectRegistry } from "./project-registration.mjs";
-import { createHarnessRunManager } from "./harness-runs.mjs";
+import { createHarnessRunManager, HarnessRunStateError } from "./harness-runs.mjs";
 
 /** @param {string[]} argv */
 const parseArgs = (argv) => {
@@ -465,7 +465,18 @@ const main = async () => {
 };
 
 main().catch((error) => {
-  const code = error instanceof ProtocolError ? error.code : "host_internal_error";
-  process.stderr.write(`${code}\n`);
+  const diagnostic = error instanceof HarnessRunStateError
+    ? error.message
+    : error instanceof ProtocolError
+      ? error.code
+      : "host_internal_error";
+  if (error instanceof HarnessRunStateError) {
+    process.stderr.write(`${diagnostic}\n`, () => {
+      process.exitCode = 1;
+      process.stdin.destroy();
+    });
+    return;
+  }
+  process.stderr.write(`${diagnostic}\n`);
   process.exitCode = 1;
 });

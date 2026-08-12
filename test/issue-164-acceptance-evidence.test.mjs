@@ -58,7 +58,6 @@ test("issue 164 merge gate maps every canonical durability boundary to executabl
     "cancellation signalling and termination",
     "restart reconciliation",
     "recovery intent and action",
-    "legacy-state migration",
   ]);
   for (const boundary of manifest.verification.faultMatrix) {
     assert.ok(boundary.faultPoints.some((point) => point.includes("before")));
@@ -122,7 +121,7 @@ test("fault injection remains outside production CLI, Host, protocol, and browse
     "../src/cockpit.js",
   ].map((path) => readFile(new URL(path, import.meta.url), "utf8")))).join("\n");
   assert.doesNotMatch(publicContractText,
-    /pause-after-harness-run-cancellation-acceptance|harness_run_(?:migration|terminal_envelope|lifecycle)\.|faultInjector/);
+    /pause-after-harness-run-cancellation-acceptance|harness_run_(?:terminal_envelope|lifecycle)\.|faultInjector/);
 });
 
 test("retained issue 164 evidence identifies a current sanitized packaged qualification", {

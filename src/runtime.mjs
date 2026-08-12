@@ -90,6 +90,12 @@ const startupDiagnosisDetails = Object.freeze({
     explanation: "The local Host became unavailable during negotiation.",
     retryGuidance: "Restart the local Host, then retry the launch.",
   },
+  harness_run_state_schema_unsupported: {
+    type: "runtime_startup_failure",
+    retryable: false,
+    explanation: "The local Harness-run state is incompatible with this Sand-King build.",
+    retryGuidance: "Delete the Sand-King state directory, then retry the launch.",
+  },
   controller_identity_invalid: {
     type: "host_negotiation_failure",
     retryable: true,

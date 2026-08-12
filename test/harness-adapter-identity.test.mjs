@@ -21,7 +21,6 @@ import {
   harnessRunExecutionSnapshotSchema,
   harnessRunOutcomeSchema,
   harnessRunSchema,
-  retainedLegacyHarnessRunSchema,
 } from "../src/harness-runs.mjs";
 import { validateHarnessLaunch } from "../src/harness-launch.mjs";
 import { ProtocolError, writeFrame } from "../src/protocol.mjs";
@@ -167,21 +166,6 @@ const harnessRun = (adapterId) => ({
   launchIdempotencyKeyHash: null,
 });
 
-const retainedLegacyHarnessRun = (adapterId) => {
-  const run = harnessRun(adapterId);
-  delete run.parameters;
-  delete run.source;
-  delete run.launchAuditId;
-  delete run.launchIdempotencyKeyHash;
-  return {
-    ...run,
-    launchRequestId: `launch-request-${"8".repeat(24)}`,
-    launchRequestRevision: 2,
-    controllerSessionId: `controller-session-${"9".repeat(24)}`,
-    startAuditId: `audit-${"a".repeat(24)}`,
-  };
-};
-
 const harnessRunOutcome = (adapterId) => ({
   outcomeId: `harness-outcome-${"b".repeat(24)}`,
   status: "succeeded",
@@ -218,29 +202,6 @@ const harnessRunObservation = (runAdapterId, outcomeAdapterId) => ({
   outcome: harnessRunOutcome(outcomeAdapterId),
   logStreams: [],
   terminalEnvelopeValidation: null,
-});
-
-const retainedLegacyStartOutcome = (run) => ({
-  type: "harness.run.start.result",
-  requestId: "retained-legacy-bundled-adapter",
-  code: "harness_run_created",
-  authorizationClass: "approved_launch_request_execution",
-  idempotencyKeyHash: `sha256:${"d".repeat(64)}`,
-  expectedRevision: 2,
-  launchRequestRevision: 2,
-  revision: 3,
-  idempotentReplay: false,
-  auditId: `audit-${"e".repeat(24)}`,
-  run,
-});
-
-const retainedHarnessRunLookupResult = (launchOutcome) => ({
-  type: "harness.run.lookup.result",
-  requestId: "lookup-retained-bundled-adapter",
-  code: "harness_run_launch_outcome_found",
-  idempotencyKeyHash: launchOutcome.idempotencyKeyHash,
-  found: true,
-  launchOutcome,
 });
 
 const projectHarnessPinResult = (projectAdapterId, harnessAdapterId, harnessKind) => ({
@@ -361,17 +322,11 @@ test("Project, retained run, and browser-boundary models preserve either bundled
   assert.equal(harnessRunSchema.safeParse(mismatchedSnapshot).success, false);
 });
 
-test("retained and public composite models preserve agreements and reject every disagreement", () => {
+test("public composite models preserve agreements and reject every disagreement", () => {
   for (const [adapterId, kind] of [
     [CONFORMANCE_HARNESS_ADAPTER_ID, "conformance"],
     [SANDCASTLE_HARNESS_ADAPTER_ID, "production"],
   ]) {
-    const legacyRun = retainedLegacyHarnessRun(adapterId);
-    assert.equal(retainedLegacyHarnessRunSchema.parse(legacyRun).adapterId, adapterId);
-    assert.doesNotThrow(() => writeFrame(
-      new PassThrough(),
-      retainedHarnessRunLookupResult(retainedLegacyStartOutcome(legacyRun)),
-    ));
     assert.equal(
       projectPreparationProjection(
         projectRegistration(adapterId),
@@ -401,18 +356,6 @@ test("retained and public composite models preserve agreements and reject every 
     [CONFORMANCE_HARNESS_ADAPTER_ID, SANDCASTLE_HARNESS_ADAPTER_ID, "production"],
     [SANDCASTLE_HARNESS_ADAPTER_ID, CONFORMANCE_HARNESS_ADAPTER_ID, "conformance"],
   ]) {
-    const legacyRun = retainedLegacyHarnessRun(retainedAdapterId);
-    legacyRun.executionSnapshot.adapter.adapterId = nestedAdapterId;
-    assert.equal(retainedLegacyHarnessRunSchema.safeParse(legacyRun).success, false);
-
-    assert.throws(
-      () => writeFrame(
-        new PassThrough(),
-        retainedHarnessRunLookupResult(retainedLegacyStartOutcome(legacyRun)),
-      ),
-      (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
-    );
-
     assert.throws(
       () => projectPreparationProjection(
         projectRegistration(retainedAdapterId),

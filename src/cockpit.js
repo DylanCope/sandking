@@ -26,7 +26,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:61a41df507acce32a1b9639662328efe2aef2ea16fc1ec8bd1e051770b37bef3",
+  schemaDigest: "sha256:e24f728f8abe326a662460855be5144b0ffae82c02cbc28ec0a09d27bd93a5d3",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -1201,8 +1201,8 @@ const renderHarnessRun = (observation) => {
   section.dataset.projectId = run.projectId;
   section.dataset.harnessPin = run.harnessPinnedRevision;
   section.dataset.controllerSessionId = run.controllerSessionId ?? "";
-  const launchAuditId = run.launchAuditId ?? run.startAuditId;
-  const launchSource = run.source ?? "legacy-approved-launch";
+  const launchAuditId = run.launchAuditId;
+  const launchSource = run.source;
   const snapshot = run.executionSnapshot;
   section.dataset.launchAuditId = launchAuditId;
   section.dataset.launchSource = launchSource;

@@ -68,7 +68,6 @@ const auditIdSchema = z.string().regex(/^audit-[a-f0-9]{24}$/);
 const hostIdSchema = z.string().regex(/^host-[a-f0-9]{24}$/);
 const projectIdSchema = z.string().regex(/^project-[a-f0-9]{24}$/);
 const harnessIdSchema = z.string().regex(/^harness-[a-f0-9]{24}$/);
-const legacyLaunchRequestIdSchema = z.string().regex(/^launch-request-[a-f0-9]{24}$/);
 const harnessRunIdSchema = z.string().regex(/^harness-run-[a-f0-9]{24}$/);
 const outcomeIdSchema = z.string().regex(/^harness-outcome-[a-f0-9]{24}$/);
 const eventIdSchema = z.string().regex(/^harness-event-[a-f0-9]{24}$/);
@@ -198,15 +197,6 @@ export const harnessRunCancellationSchema = z.object({
   terminationConfirmedAt: z.string().datetime().nullable(),
 }).strict();
 
-const previousHarnessRunRecoverySchema = z.object({
-  code: z.literal("harness_process_termination_unconfirmed"),
-  previousStatus: z.enum(["starting", "running", "cancelling"]),
-  detectedAt: z.string().datetime(),
-  platform: z.enum(["linux", "win32", "darwin"]),
-  terminationEvidence: z.literal("unconfirmed"),
-  reconciliationAuditId: auditIdSchema,
-}).strict();
-
 export const harnessRunRecoveryActionSchema = z.enum([
   "recheck",
   "terminate_confirmed_tree",
@@ -303,7 +293,7 @@ const harnessRunCancellationReconciliationSchema = z.object({
   reconciliationAuditId: auditIdSchema,
 }).strict();
 
-const previousHarnessRunSchema = z.object({
+const baseHarnessRunSchema = z.object({
   harnessRunId: harnessRunIdSchema,
   revision: z.number().int().positive(),
   status: runStatusSchema,
@@ -324,43 +314,19 @@ const previousHarnessRunSchema = z.object({
   launchAuditId: auditIdSchema,
 }).strict();
 
-// Schema v1 runs are durable execution history. Keep their exact public shape
-// readable after the launch-request command path is retired instead of
-// inventing parameters or an invocation source that v1 did not retain.
-const previousLegacyHarnessRunSchema = z.object({
-  harnessRunId: harnessRunIdSchema,
-  revision: z.number().int().positive(),
-  status: runStatusSchema,
-  launchRequestId: legacyLaunchRequestIdSchema,
-  launchRequestRevision: z.number().int().positive(),
-  hostId: hostIdSchema,
-  projectId: projectIdSchema,
-  harnessId: harnessIdSchema,
-  harnessPinnedRevision: commitSchema,
-  adapterId: harnessAdapterIdSchema,
-  adapterProtocol: z.literal("1.0.0"),
-  adapterEntryPoint: harnessAdapterEntryPointSchema,
-  controllerId: controllerIdSchema,
-  controllerSessionId: controllerSessionIdSchema,
-  createdAt: z.string().datetime(),
-  adapterReadyAt: z.string().datetime().nullable(),
-  completedAt: z.string().datetime().nullable(),
-  startAuditId: auditIdSchema,
-}).strict();
-
 export const harnessRunExecutionSnapshotSchema = z.object({
   schemaVersion: z.literal(1),
-  capture: z.enum(["launch", "migration"]),
+  capture: z.literal("launch"),
   hostId: hostIdSchema,
   projectRegistration: z.object({
     projectId: projectIdSchema,
-    revision: z.number().int().positive().nullable(),
-    displayName: z.string().min(1).max(255).nullable(),
+    revision: z.number().int().positive(),
+    displayName: z.string().min(1).max(255),
   }).strict(),
   harness: z.object({
     harnessId: harnessIdSchema,
-    revision: z.number().int().positive().nullable(),
-    name: z.string().min(1).max(120).nullable(),
+    revision: z.number().int().positive(),
+    name: z.string().min(1).max(120),
     pinnedRevision: commitSchema,
   }).strict(),
   adapter: z.object({
@@ -368,15 +334,15 @@ export const harnessRunExecutionSnapshotSchema = z.object({
     protocol: z.literal("1.0.0"),
     entryPoint: harnessAdapterEntryPointSchema,
   }).strict(),
-  parameters: launchParametersSchema.nullable(),
-  source: z.enum(["controller-cli", "cockpit"]).nullable(),
+  parameters: launchParametersSchema,
+  source: z.enum(["controller-cli", "cockpit"]),
   attribution: z.object({
     controllerId: controllerIdSchema,
     controllerSessionId: controllerSessionIdSchema.nullable(),
   }).strict(),
   createdAt: z.string().datetime(),
   credentialCapabilityReferences: z.array(credentialCapabilityReferenceSchema)
-    .max(8).nullable(),
+    .max(8),
   productionHarness: z.object({
     skillSetLockDigest: productionHarnessPreparationSchema.shape.skillSetLockDigest,
     resolvedSkills: productionHarnessPreparationSchema.shape.resolvedSkills,
@@ -418,48 +384,19 @@ export const requireHarnessRunOutcomeAdapterIdentityAgreement = (composite, cont
   }
 };
 
-const previousCurrentHarnessRunSchema = previousHarnessRunSchema.extend({
+const currentHarnessRunSchema = baseHarnessRunSchema.extend({
   executionSnapshot: harnessRunExecutionSnapshotSchema,
-}).strict();
-const previousLegacyHarnessRunWithSnapshotSchema = previousLegacyHarnessRunSchema.extend({
-  executionSnapshot: harnessRunExecutionSnapshotSchema,
-}).strict();
-const previousCurrentHarnessRunWithCancellationSchema = previousCurrentHarnessRunSchema.extend({
-  cancellation: harnessRunCancellationSchema.nullable(),
-  launchIdempotencyKeyHash: digestSchema.nullable().default(null),
-}).strict();
-const previousLegacyHarnessRunWithCancellationSchema =
-  previousLegacyHarnessRunWithSnapshotSchema.extend({
-    cancellation: harnessRunCancellationSchema.nullable(),
-  }).strict();
-const previousV7CurrentHarnessRunSchema = previousCurrentHarnessRunSchema.extend({
-  cancellation: harnessRunCancellationSchema.nullable(),
-  recovery: previousHarnessRunRecoverySchema.nullable().default(null),
-  launchIdempotencyKeyHash: digestSchema.nullable().default(null),
-}).strict();
-const previousV7LegacyHarnessRunSchema = previousLegacyHarnessRunWithSnapshotSchema.extend({
-  cancellation: harnessRunCancellationSchema.nullable(),
-  recovery: previousHarnessRunRecoverySchema.nullable().default(null),
-}).strict();
-const currentHarnessRunSchema = previousCurrentHarnessRunSchema.extend({
   cancellation: harnessRunCancellationSchema.nullable(),
   recovery: harnessRunRecoverySchema.nullable().default(null),
   launchIdempotencyKeyHash: digestSchema.nullable().default(null),
-}).strict();
-const legacyHarnessRunSchema = previousLegacyHarnessRunWithSnapshotSchema.extend({
-  cancellation: harnessRunCancellationSchema.nullable(),
-  recovery: harnessRunRecoverySchema.nullable().default(null),
 }).strict();
 
 /** @param {any} run @param {import("zod").RefinementCtx} context */
 const requireConsistentRetainedAdapterIdentity = (run, context) => {
   if (
-    "executionSnapshot" in run
-    && (
-      run.executionSnapshot.adapter.adapterId !== run.adapterId
-      || run.executionSnapshot.adapter.protocol !== run.adapterProtocol
-      || run.executionSnapshot.adapter.entryPoint !== run.adapterEntryPoint
-    )
+    run.executionSnapshot.adapter.adapterId !== run.adapterId
+    || run.executionSnapshot.adapter.protocol !== run.adapterProtocol
+    || run.executionSnapshot.adapter.entryPoint !== run.adapterEntryPoint
   ) {
     context.addIssue({
       code: "custom",
@@ -470,72 +407,20 @@ const requireConsistentRetainedAdapterIdentity = (run, context) => {
   requireHarnessRunOutcomeAdapterIdentityAgreement({ run, outcome: run.outcome }, context);
 };
 
-export const harnessRunSchema = z.union([
-  currentHarnessRunSchema,
-  legacyHarnessRunSchema,
-]).superRefine(requireConsistentRetainedAdapterIdentity);
-export const retainedLegacyHarnessRunSchema = z.union([
-  legacyHarnessRunSchema,
-  previousLegacyHarnessRunSchema,
-]).superRefine(requireConsistentRetainedAdapterIdentity);
+export const harnessRunSchema = currentHarnessRunSchema
+  .superRefine(requireConsistentRetainedAdapterIdentity);
 
-const previousStoredRunFields = {
+const storedRunFields = {
   events: z.array(harnessRunEventSchema).max(MAX_RETAINED_RUN_EVENTS),
   outcome: harnessRunOutcomeSchema.nullable(),
   terminalEnvelopeValidation: terminalEnvelopeValidationSchema,
   logStreams: z.tuple([logStreamSchema, logStreamSchema]),
-};
-const storedRunFields = {
-  ...previousStoredRunFields,
   cancellationReconciliation: harnessRunCancellationReconciliationSchema
     .nullable().default(null),
 };
-const previousCurrentStoredRunSchema = previousHarnessRunSchema
-  .extend(previousStoredRunFields).strict();
-const previousLegacyStoredRunSchema = previousLegacyHarnessRunSchema
-  .extend(previousStoredRunFields).strict();
-const previousStoredRunSchema = z.union([
-  previousCurrentStoredRunSchema,
-  previousLegacyStoredRunSchema,
-]).superRefine(requireConsistentRetainedAdapterIdentity);
-const previousCurrentStoredRunWithSnapshotSchema = previousCurrentHarnessRunSchema
-  .extend(previousStoredRunFields).strict();
-const previousLegacyStoredRunWithSnapshotSchema = previousLegacyHarnessRunWithSnapshotSchema
-  .extend(previousStoredRunFields).strict();
-const previousStoredRunWithSnapshotSchema = z.union([
-  previousCurrentStoredRunWithSnapshotSchema,
-  previousLegacyStoredRunWithSnapshotSchema,
-]).superRefine(requireConsistentRetainedAdapterIdentity);
-const previousCurrentStoredRunWithCancellationSchema =
-  previousCurrentHarnessRunWithCancellationSchema.extend(previousStoredRunFields).strict();
-const previousLegacyStoredRunWithCancellationSchema =
-  previousLegacyHarnessRunWithCancellationSchema.extend(previousStoredRunFields).strict();
-const previousStoredRunWithCancellationSchema = z.union([
-  previousCurrentStoredRunWithCancellationSchema,
-  previousLegacyStoredRunWithCancellationSchema,
-]).superRefine(requireConsistentRetainedAdapterIdentity);
 const currentStoredRunSchema = currentHarnessRunSchema.extend(storedRunFields).strict();
-const legacyStoredRunSchema = legacyHarnessRunSchema.extend(storedRunFields).strict();
-const storedRunSchema = z.union([
-  currentStoredRunSchema,
-  legacyStoredRunSchema,
-]).superRefine(requireConsistentRetainedAdapterIdentity);
-const previousV7CurrentStoredRunSchema = previousV7CurrentHarnessRunSchema
-  .extend(storedRunFields).strict();
-const previousV7LegacyStoredRunSchema = previousV7LegacyHarnessRunSchema
-  .extend(storedRunFields).strict();
-const previousV7StoredRunSchema = z.union([
-  previousV7CurrentStoredRunSchema,
-  previousV7LegacyStoredRunSchema,
-]).superRefine(requireConsistentRetainedAdapterIdentity);
-const previousCurrentStoredRunWithHostLossReconciliationSchema =
-  previousV7CurrentHarnessRunSchema.extend(previousStoredRunFields).strict();
-const previousLegacyStoredRunWithHostLossReconciliationSchema =
-  previousV7LegacyHarnessRunSchema.extend(previousStoredRunFields).strict();
-const previousStoredRunWithHostLossReconciliationSchema = z.union([
-  previousCurrentStoredRunWithHostLossReconciliationSchema,
-  previousLegacyStoredRunWithHostLossReconciliationSchema,
-]).superRefine(requireConsistentRetainedAdapterIdentity);
+const storedRunSchema = currentStoredRunSchema
+  .superRefine(requireConsistentRetainedAdapterIdentity);
 const retainedOutcomeSchema = z.object({
   idempotencyKeyHash: digestSchema,
   requestFingerprint: digestSchema,
@@ -559,53 +444,6 @@ const stateSchema = z.object({
   launchOutcomes: z.array(retainedOutcomeSchema),
   cancellationOutcomes: z.array(retainedOutcomeSchema),
   recoveryMutations: z.array(retainedRecoveryMutationSchema),
-  legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
-}).strict();
-const previousStateWithCancellationRestartSchema = z.object({
-  schemaVersion: z.literal(7),
-  runs: z.array(previousV7StoredRunSchema),
-  launchOutcomes: z.array(retainedOutcomeSchema),
-  cancellationOutcomes: z.array(retainedOutcomeSchema),
-  legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
-}).strict();
-const previousStateWithHostLossReconciliationSchema = z.object({
-  schemaVersion: z.literal(6),
-  runs: z.array(previousStoredRunWithHostLossReconciliationSchema),
-  launchOutcomes: z.array(retainedOutcomeSchema),
-  cancellationOutcomes: z.array(retainedOutcomeSchema),
-  legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
-}).strict();
-const previousStateWithCancellationSchema = z.object({
-  schemaVersion: z.literal(4),
-  runs: z.array(previousStoredRunWithCancellationSchema),
-  launchOutcomes: z.array(retainedOutcomeSchema),
-  cancellationOutcomes: z.array(retainedOutcomeSchema),
-  legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
-}).strict();
-const previousStateWithReconciliationSchema = z.object({
-  schemaVersion: z.literal(5),
-  runs: z.array(previousStoredRunWithCancellationSchema),
-  launchOutcomes: z.array(retainedOutcomeSchema),
-  cancellationOutcomes: z.array(retainedOutcomeSchema),
-  legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
-}).strict();
-const previousStateWithSnapshotsSchema = z.object({
-  schemaVersion: z.literal(3),
-  runs: z.array(previousStoredRunWithSnapshotSchema),
-  launchOutcomes: z.array(retainedOutcomeSchema),
-  legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
-}).strict();
-const previousStateSchema = z.object({
-  schemaVersion: z.literal(2),
-  runs: z.array(previousStoredRunSchema),
-  launchOutcomes: z.array(retainedOutcomeSchema),
-  legacyStartOutcomes: z.array(retainedOutcomeSchema).default([]),
-}).strict();
-const legacyStateSchema = z.object({
-  schemaVersion: z.literal(1),
-  runs: z.array(previousLegacyStoredRunSchema
-    .superRefine(requireConsistentRetainedAdapterIdentity)),
-  startOutcomes: z.array(retainedOutcomeSchema),
 }).strict();
 
 const initialState = () => ({
@@ -614,10 +452,24 @@ const initialState = () => ({
   launchOutcomes: [],
   cancellationOutcomes: [],
   recoveryMutations: [],
-  legacyStartOutcomes: [],
 });
 /** @param {string} dataDir */
 const statePath = (dataDir) => join(dataDir, "harness-runs.json");
+
+export class HarnessRunStateError extends Error {
+  /** @param {string} stateDirectory */
+  constructor(stateDirectory) {
+    super(
+      `harness_run_state_schema_unsupported: `
+      + `Harness-run state is incompatible with this local build; `
+      + `delete the Sand-King state directory at ${stateDirectory} and relaunch`,
+    );
+    this.name = "HarnessRunStateError";
+    this.code = "harness_run_state_schema_unsupported";
+    this.stateDirectory = stateDirectory;
+  }
+}
+
 /** @param {string} dataDir @param {string} harnessRunId @param {"stdout" | "stderr"} producer */
 const logPath = (dataDir, harnessRunId, producer) =>
   join(dataDir, "harness-runs", harnessRunId, `${producer}.log`);
@@ -642,20 +494,6 @@ const launchRequestFingerprint = (request) => fingerprint({
   source: request.source,
   authorizationClass: request.authorizationClass,
 });
-/**
- * Schemas v2-v4 treated the ephemeral Controller runtime as material launch
- * content. Retain this comparison only for outcomes, such as rejected
- * launches, that do not carry enough immutable request facts to normalize.
- * @param {any} request
- */
-const legacyLaunchRequestFingerprint = (request) => fingerprint({
-  projectId: request.projectId,
-  parameters: request.parameters === undefined ? {} : request.parameters,
-  controllerId: request.controllerId,
-  controllerSessionId: request.controllerSessionId,
-  source: request.source,
-  authorizationClass: request.authorizationClass,
-});
 /** @param {any} request */
 const cancellationRequestFingerprint = (request) => fingerprint({
   harnessRunId: request.harnessRunId,
@@ -671,51 +509,6 @@ const recoveryRequestFingerprint = (request) => fingerprint({
   source: request.source,
   authorizationClass: request.authorizationClass,
 });
-/**
- * Schema v6 treated the ephemeral Controller runtime as cancellation content.
- * Keep the legacy comparison for retained outcomes while new acceptances bind
- * only the durable caller/session attribution.
- * @param {any} request
- */
-const legacyCancellationRequestFingerprint = (request) => fingerprint({
-  harnessRunId: request.harnessRunId,
-  controllerId: request.controllerId,
-  controllerSessionId: request.controllerSessionId,
-  source: request.source,
-  authorizationClass: request.authorizationClass,
-});
-/**
- * Schema-v4 launch fingerprints included the ephemeral Controller runtime.
- * Every real Controller/Host connection retained that identity in the
- * Host-private negotiation audit before it could submit a launch. Those
- * historical identities let an upgrade compare the rest of a rejected
- * request exactly without treating the replacement Controller as content.
- * @param {string} dataDir
- */
-const readRetainedControllerIds = async (dataDir) => {
-  const source = await readFile(join(dataDir, "audit.jsonl"), "utf8").catch((error) => {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return "";
-    }
-    throw error;
-  });
-  const controllerIds = new Set();
-  for (const line of source.split("\n")) {
-    if (!line) continue;
-    try {
-      const audit = JSON.parse(line);
-      const candidate = audit?.action === "host.negotiate"
-        && audit?.outcome === "accepted"
-        ? audit?.details?.controllerId
-        : null;
-      const parsed = controllerIdSchema.safeParse(candidate);
-      if (parsed.success) controllerIds.add(parsed.data);
-    } catch {
-      // Malformed unrelated audit history cannot establish compatibility.
-    }
-  }
-  return [...controllerIds];
-};
 /** @param {any} request */
 const requestIdempotencyKeyHash = (request) => {
   const suppliedHash = digestSchema.safeParse(request.idempotencyKeyHash);
@@ -729,7 +522,7 @@ const requestIdempotencyKeyHash = (request) => {
 
 /** @param {z.infer<typeof storedRunSchema>} run */
 const publicRun = (run) => {
-  const common = {
+  return harnessRunSchema.parse({
     harnessRunId: run.harnessRunId,
     revision: run.revision,
     status: run.status,
@@ -748,227 +541,10 @@ const publicRun = (run) => {
     executionSnapshot: structuredClone(run.executionSnapshot),
     cancellation: structuredClone(run.cancellation),
     recovery: structuredClone(run.recovery),
-  };
-  return harnessRunSchema.parse("launchRequestId" in run ? {
-    ...common,
-    launchRequestId: run.launchRequestId,
-    launchRequestRevision: run.launchRequestRevision,
-    startAuditId: run.startAuditId,
-  } : {
-    ...common,
     parameters: structuredClone(run.parameters),
     source: run.source,
     launchAuditId: run.launchAuditId,
     launchIdempotencyKeyHash: run.launchIdempotencyKeyHash,
-  });
-};
-
-/** @param {z.infer<typeof previousStoredRunSchema>} run */
-const migrateExecutionSnapshot = (run) => harnessRunExecutionSnapshotSchema.parse({
-  schemaVersion: 1,
-  capture: "migration",
-  hostId: run.hostId,
-  projectRegistration: {
-    projectId: run.projectId,
-    revision: null,
-    displayName: null,
-  },
-  harness: {
-    harnessId: run.harnessId,
-    revision: null,
-    name: null,
-    pinnedRevision: run.harnessPinnedRevision,
-  },
-  adapter: {
-    adapterId: run.adapterId,
-    protocol: run.adapterProtocol,
-    entryPoint: run.adapterEntryPoint,
-  },
-  parameters: "parameters" in run ? structuredClone(run.parameters) : null,
-  source: "source" in run ? run.source : null,
-  attribution: {
-    controllerId: run.controllerId,
-    controllerSessionId: run.controllerSessionId,
-  },
-  createdAt: run.createdAt,
-  credentialCapabilityReferences: null,
-  productionHarness: null,
-  launchAuditId: "launchAuditId" in run ? run.launchAuditId : run.startAuditId,
-});
-
-/** @param {z.infer<typeof previousStoredRunSchema>} run */
-const migrateStoredRun = (run) => storedRunSchema.parse({
-  ...structuredClone(run),
-  executionSnapshot: migrateExecutionSnapshot(run),
-  cancellation: null,
-});
-
-/** @param {z.infer<typeof previousStoredRunWithSnapshotSchema>} run */
-const migrateStoredRunWithSnapshot = (run) => storedRunSchema.parse({
-  ...structuredClone(run),
-  cancellation: null,
-});
-
-/** @param {z.infer<typeof previousStoredRunWithCancellationSchema>} run */
-const migrateStoredRunWithCancellation = (run) => storedRunSchema.parse({
-  ...structuredClone(run),
-  recovery: null,
-});
-
-/** @param {z.infer<typeof previousHarnessRunRecoverySchema> | null} recovery */
-const migrateRecovery = (recovery) => recovery
-  ? harnessRunRecoverySchema.parse({
-      ...structuredClone(recovery),
-      evidenceSchemaVersion: 1,
-      processObservation: {
-        schemaVersion: 1,
-        observedAt: recovery.detectedAt,
-        platform: recovery.platform,
-        terminationEvidence: "unconfirmed",
-        relatedProcessState: "unknown",
-        identityProof: "unavailable",
-        terminationScope: "complete_process_tree",
-        processCount: null,
-        launchSettled: null,
-        treeEmpty: null,
-        safeToTerminate: false,
-        processIdentifiersExposed: false,
-        unrestrictedProcessHandleExposed: false,
-      },
-      initialProcessObservation: {
-        schemaVersion: 1,
-        observedAt: recovery.detectedAt,
-        platform: recovery.platform,
-        terminationEvidence: "unconfirmed",
-        relatedProcessState: "unknown",
-        identityProof: "unavailable",
-        terminationScope: "complete_process_tree",
-        processCount: null,
-        launchSettled: null,
-        treeEmpty: null,
-        safeToTerminate: false,
-        processIdentifiersExposed: false,
-        unrestrictedProcessHandleExposed: false,
-      },
-      initialAvailableActions: ["recheck"],
-      availableActions: ["recheck"],
-    })
-  : null;
-
-/** @param {z.infer<typeof previousStoredRunWithHostLossReconciliationSchema>} run */
-const migrateStoredRunWithHostLossReconciliation = (run) => storedRunSchema.parse({
-  ...structuredClone(run),
-  recovery: migrateRecovery(run.recovery),
-  cancellationReconciliation: null,
-});
-
-/** @param {z.infer<typeof previousV7StoredRunSchema>} run */
-const migrateStoredRunWithCancellationRestart = (run) => storedRunSchema.parse({
-  ...structuredClone(run),
-  recovery: migrateRecovery(run.recovery),
-});
-
-/**
- * Retained mutation outcomes are immutable accepted responses. Add only the
- * execution snapshot field introduced by schema v3; lifecycle changes in the
- * canonical run must never rewrite the launch-time projection that a retry
- * replays.
- * @param {z.infer<typeof retainedOutcomeSchema>} outcome
- * @param {Array<z.infer<typeof storedRunSchema>>} runs
- */
-const migrateRetainedOutcome = (outcome, runs) => {
-  const migrated = structuredClone(outcome);
-  const harnessRunId = /** @type {any} */ (migrated.response)?.run?.harnessRunId;
-  const run = typeof harnessRunId === "string"
-    ? runs.find((candidate) => candidate.harnessRunId === harnessRunId)
-    : null;
-  const responseRun = /** @type {any} */ (migrated.response)?.run;
-  if (run && responseRun && typeof responseRun === "object") {
-    responseRun.executionSnapshot = structuredClone(run.executionSnapshot);
-    responseRun.cancellation = null;
-    responseRun.recovery = null;
-    if ("launchIdempotencyKeyHash" in run) {
-      responseRun.launchIdempotencyKeyHash = outcome.idempotencyKeyHash;
-    }
-  }
-  return retainedOutcomeSchema.parse(migrated);
-};
-
-/**
- * Derive the current launch fingerprint only from facts that were durably
- * accepted with the run. Outcomes without a canonical current-style run are
- * left byte-for-byte compatible with their original request fingerprint.
- * @param {z.infer<typeof retainedOutcomeSchema>} outcome
- * @param {Array<z.infer<typeof storedRunSchema>>} runs
- */
-const normalizeRetainedLaunchOutcomeFingerprint = (outcome, runs) => {
-  const normalized = structuredClone(outcome);
-  const harnessRunId = /** @type {any} */ (normalized.response)?.run?.harnessRunId;
-  const run = typeof harnessRunId === "string"
-    ? runs.find((candidate) => candidate.harnessRunId === harnessRunId)
-    : null;
-  if (run && "parameters" in run && "source" in run) {
-    normalized.requestFingerprint = launchRequestFingerprint({
-      projectId: run.projectId,
-      parameters: run.parameters,
-      controllerSessionId: run.controllerSessionId,
-      source: run.source,
-      authorizationClass: "harness_run_launch",
-    });
-  }
-  return retainedOutcomeSchema.parse(normalized);
-};
-
-/**
- * Successful launch outcomes can be upgraded to the current fingerprint from
- * their immutable run facts. This lets the Cockpit reconnect after its
- * ephemeral Controller runtime is replaced. Rejected launches have no run
- * snapshot, so their original fingerprint is retained and matched through the
- * legacy comparison in launch().
- * @param {z.infer<typeof retainedOutcomeSchema>} outcome
- * @param {Array<z.infer<typeof storedRunSchema>>} runs
- */
-const migrateRetainedLaunchOutcome = (outcome, runs) =>
-  normalizeRetainedLaunchOutcomeFingerprint(migrateRetainedOutcome(outcome, runs), runs);
-
-/**
- * @param {z.infer<typeof previousStateWithCancellationRestartSchema> | z.infer<typeof previousStateWithHostLossReconciliationSchema> | z.infer<typeof previousStateWithReconciliationSchema> | z.infer<typeof previousStateWithCancellationSchema> | z.infer<typeof previousStateWithSnapshotsSchema> | z.infer<typeof previousStateSchema> | z.infer<typeof legacyStateSchema>} previous
- */
-const migrateState = (previous) => {
-  const runs = previous.schemaVersion === 7
-    ? previous.runs.map(migrateStoredRunWithCancellationRestart)
-    : previous.schemaVersion === 6
-      ? previous.runs.map(migrateStoredRunWithHostLossReconciliation)
-    : previous.schemaVersion === 4 || previous.schemaVersion === 5
-      ? previous.runs.map(migrateStoredRunWithCancellation)
-      : previous.schemaVersion === 3
-        ? previous.runs.map(migrateStoredRunWithSnapshot)
-        : previous.runs.map(migrateStoredRun);
-  const launchOutcomes = previous.schemaVersion === 1 ? [] : previous.launchOutcomes;
-  for (const outcome of launchOutcomes) {
-    const harnessRunId = /** @type {any} */ (outcome.response)?.run?.harnessRunId;
-    const run = runs.find((candidate) => candidate.harnessRunId === harnessRunId);
-    if (run && "launchIdempotencyKeyHash" in run) {
-      run.launchIdempotencyKeyHash = outcome.idempotencyKeyHash;
-    }
-  }
-  const legacyStartOutcomes = previous.schemaVersion === 1
-    ? previous.startOutcomes
-    : previous.legacyStartOutcomes;
-  return stateSchema.parse({
-    schemaVersion: 8,
-    runs,
-    launchOutcomes: launchOutcomes.map((outcome) =>
-      migrateRetainedLaunchOutcome(outcome, runs)),
-    cancellationOutcomes: previous.schemaVersion === 4
-      || previous.schemaVersion === 5
-      || previous.schemaVersion === 6
-      || previous.schemaVersion === 7
-      ? previous.cancellationOutcomes
-      : [],
-    recoveryMutations: [],
-    legacyStartOutcomes: legacyStartOutcomes
-      .map((outcome) => migrateRetainedOutcome(outcome, runs)),
   });
 };
 
@@ -1624,7 +1200,7 @@ const superviseHarnessAdapter = async (run, context, observer) => {
  *   loadLaunchContext: (projectId: string) => Promise<any>,
  *   now?: () => Date,
  *   cancellationGraceMs?: number,
- *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_state_commit" | "harness_run_launch.after_commit" | "harness_run_lifecycle.adapter_ready.before_commit" | "harness_run_lifecycle.adapter_ready.after_state_commit" | "harness_run_terminal_envelope.before_commit" | "harness_run_terminal_envelope.after_state_commit" | "harness_run_cancellation.before_commit" | "harness_run_cancellation.after_state_commit" | "harness_run_cancellation.after_commit" | "harness_run_cancellation.cooperative_signal.before_dispatch" | "harness_run_cancellation.cooperative_signal.after_dispatch" | "harness_run_cancellation.cooperative_signal.after_state_commit" | "harness_run_cancellation.forced_signal.before_dispatch" | "harness_run_cancellation.forced_signal.after_dispatch" | "harness_run_cancellation.forced_signal.after_state_commit" | "harness_run_cancellation.termination_confirmation.before_commit" | "harness_run_cancellation.termination_confirmation.after_state_commit" | "harness_run_outcome.before_commit" | "harness_run_outcome.after_state_commit" | "harness_run_reconciliation.before_commit" | "harness_run_reconciliation.after_state_commit" | "harness_run_reconciliation.after_commit" | "harness_run_recovery.before_intent_commit" | "harness_run_recovery.after_intent_commit" | "harness_run_recovery.before_action" | "harness_run_recovery.after_action" | "harness_run_recovery.before_result_commit" | "harness_run_recovery.after_state_commit" | "harness_run_recovery.after_commit" | "harness_run_migration.before_commit" | "harness_run_migration.after_state_commit" | "harness_run_migration.after_commit") => Promise<void> | void,
+ *   faultInjector?: (point: "harness_run_launch.before_commit" | "harness_run_launch.after_state_commit" | "harness_run_launch.after_commit" | "harness_run_lifecycle.adapter_ready.before_commit" | "harness_run_lifecycle.adapter_ready.after_state_commit" | "harness_run_terminal_envelope.before_commit" | "harness_run_terminal_envelope.after_state_commit" | "harness_run_cancellation.before_commit" | "harness_run_cancellation.after_state_commit" | "harness_run_cancellation.after_commit" | "harness_run_cancellation.cooperative_signal.before_dispatch" | "harness_run_cancellation.cooperative_signal.after_dispatch" | "harness_run_cancellation.cooperative_signal.after_state_commit" | "harness_run_cancellation.forced_signal.before_dispatch" | "harness_run_cancellation.forced_signal.after_dispatch" | "harness_run_cancellation.forced_signal.after_state_commit" | "harness_run_cancellation.termination_confirmation.before_commit" | "harness_run_cancellation.termination_confirmation.after_state_commit" | "harness_run_outcome.before_commit" | "harness_run_outcome.after_state_commit" | "harness_run_reconciliation.before_commit" | "harness_run_reconciliation.after_state_commit" | "harness_run_reconciliation.after_commit" | "harness_run_recovery.before_intent_commit" | "harness_run_recovery.after_intent_commit" | "harness_run_recovery.before_action" | "harness_run_recovery.after_action" | "harness_run_recovery.before_result_commit" | "harness_run_recovery.after_state_commit" | "harness_run_recovery.after_commit") => Promise<void> | void,
  *   inspectInterruptedRunTermination?: (run: z.infer<typeof harnessRunSchema>) => Promise<{platform: "linux" | "win32" | "darwin", status: "confirmed" | "unconfirmed", relatedProcessState?: "unknown" | "running_confirmed", identityProof?: "unavailable" | "retained_supervision_identity", processCount?: number | null, launchSettled?: boolean | null, treeEmpty?: boolean | null, safeToTerminate?: boolean}>,
  *   terminateConfirmedInterruptedRun?: (run: z.infer<typeof harnessRunSchema>, actionIdentity: {auditId: string, idempotencyKeyHash: string}) => Promise<{platform: "linux" | "win32" | "darwin", status: "confirmed" | "unconfirmed", relatedProcessState?: "unknown" | "running_confirmed", identityProof?: "unavailable" | "retained_supervision_identity", processCount?: number | null, launchSettled?: boolean | null, treeEmpty?: boolean | null, safeToTerminate?: boolean}>,
  * }} options
@@ -1884,105 +1460,11 @@ export const createHarnessRunManager = async (options) => {
       }
     }
   };
-  /** @param {z.infer<typeof stateSchema>} migrated */
-  const publishMigratedState = async (migrated) => {
-    // All legacy schema upgrades converge through the same atomic publication
-    // and audit-repair seam. This keeps every supported source schema subject
-    // to one deterministic interruption contract.
-    await options.faultInjector?.("harness_run_migration.before_commit");
-    await writePrivateJson(statePath(options.dataDir), migrated);
-    await options.faultInjector?.("harness_run_migration.after_state_commit");
-    await ensureAcceptedLaunchAudits(migrated);
-    await ensureAcceptedCancellationAudits(migrated);
-    await ensureOutcomeAudits(migrated);
-    await ensureReconciliationAudits(migrated);
-    await ensureRecoveryAudits(migrated);
-    await options.faultInjector?.("harness_run_migration.after_commit");
-    return migrated;
-  };
   const readState = async () => {
     const raw = await readJson(statePath(options.dataDir), initialState());
-    if (
-      raw
-      && typeof raw === "object"
-      && "schemaVersion" in raw
-      && raw.schemaVersion === 1
-    ) {
-      const legacy = legacyStateSchema.parse(raw);
-      const migrated = migrateState(legacy);
-      return publishMigratedState(migrated);
-    }
-    if (
-      raw
-      && typeof raw === "object"
-      && "schemaVersion" in raw
-      && raw.schemaVersion === 2
-    ) {
-      const previous = previousStateSchema.parse(raw);
-      const migrated = migrateState(previous);
-      return publishMigratedState(migrated);
-    }
-    if (
-      raw
-      && typeof raw === "object"
-      && "schemaVersion" in raw
-      && raw.schemaVersion === 3
-    ) {
-      const previous = previousStateWithSnapshotsSchema.parse(raw);
-      const migrated = migrateState(previous);
-      return publishMigratedState(migrated);
-    }
-    if (
-      raw
-      && typeof raw === "object"
-      && "schemaVersion" in raw
-      && raw.schemaVersion === 4
-    ) {
-      const previous = previousStateWithCancellationSchema.parse(raw);
-      const migrated = migrateState(previous);
-      return publishMigratedState(migrated);
-    }
-    if (
-      raw
-      && typeof raw === "object"
-      && "schemaVersion" in raw
-      && raw.schemaVersion === 5
-    ) {
-      const previous = previousStateWithReconciliationSchema.parse(raw);
-      const migrated = migrateState(previous);
-      return publishMigratedState(migrated);
-    }
-    if (
-      raw
-      && typeof raw === "object"
-      && "schemaVersion" in raw
-      && raw.schemaVersion === 6
-    ) {
-      const previous = previousStateWithHostLossReconciliationSchema.parse(raw);
-      const migrated = migrateState(previous);
-      return publishMigratedState(migrated);
-    }
-    if (
-      raw
-      && typeof raw === "object"
-      && "schemaVersion" in raw
-      && raw.schemaVersion === 7
-    ) {
-      const previous = previousStateWithCancellationRestartSchema.parse(raw);
-      const migrated = migrateState(previous);
-      return publishMigratedState(migrated);
-    }
-    const retained = stateSchema.parse(raw);
-    const normalizedLaunchOutcomes = retained.launchOutcomes.map((outcome) =>
-      normalizeRetainedLaunchOutcomeFingerprint(outcome, retained.runs));
-    if (normalizedLaunchOutcomes.some((outcome, index) =>
-      outcome.requestFingerprint !== retained.launchOutcomes[index].requestFingerprint)) {
-      retained.launchOutcomes = normalizedLaunchOutcomes;
-      // Repair schema-v5 snapshots written by the initial reconciliation
-      // implementation before exposing lookup or lifecycle operations. The
-      // atomic rewrite is deterministic, so interruption simply retries it.
-      await writePrivateJson(statePath(options.dataDir), retained);
-    }
+    const parsed = stateSchema.safeParse(raw);
+    if (!parsed.success) throw new HarnessRunStateError(options.dataDir);
+    const retained = parsed.data;
     await ensureAcceptedLaunchAudits(retained);
     await ensureAcceptedCancellationAudits(retained);
     await ensureOutcomeAudits(retained);
@@ -2180,15 +1662,13 @@ export const createHarnessRunManager = async (options) => {
     await ensureRecoveryAudits(retained);
     await options.faultInjector?.("harness_run_reconciliation.after_commit");
   };
-  // Complete migration, terminal-view repair, and active-run reconciliation
+  // Complete terminal-view repair and active-run reconciliation
   // before exposing observation or mutation methods to the framed Host loop.
   await reconcileInterruptedRuns();
   /** @param {z.infer<typeof stateSchema>} state @param {string | null} idempotencyKeyHash */
   const retainedLaunchOutcome = (state, idempotencyKeyHash) => idempotencyKeyHash
     ? state.launchOutcomes.find((outcome) =>
-        outcome.idempotencyKeyHash === idempotencyKeyHash)
-      ?? state.legacyStartOutcomes.find((outcome) =>
-        outcome.idempotencyKeyHash === idempotencyKeyHash)
+        outcome.idempotencyKeyHash === idempotencyKeyHash) ?? null
     : null;
   /** @param {z.infer<typeof stateSchema>} state @param {string | null} idempotencyKeyHash */
   const retainedCancellationOutcome = (state, idempotencyKeyHash) => idempotencyKeyHash
@@ -2701,22 +2181,10 @@ export const createHarnessRunManager = async (options) => {
     const authorizationClass = "harness_run_launch";
     const idempotencyKeyHash = requestIdempotencyKeyHash(request);
     const requestFingerprint = launchRequestFingerprint(request);
-    const compatibleRequestFingerprints = new Set([
-      requestFingerprint,
-      legacyLaunchRequestFingerprint(request),
-    ]);
     const retained = await readState();
     const existing = retainedLaunchOutcome(retained, idempotencyKeyHash);
     if (existing) {
-      if (!compatibleRequestFingerprints.has(existing.requestFingerprint)) {
-        for (const retainedControllerId of await readRetainedControllerIds(options.dataDir)) {
-          compatibleRequestFingerprints.add(legacyLaunchRequestFingerprint({
-            ...request,
-            controllerId: retainedControllerId,
-          }));
-        }
-      }
-      if (!compatibleRequestFingerprints.has(existing.requestFingerprint)) {
+      if (existing.requestFingerprint !== requestFingerprint) {
         const auditId = await options.recordAudit("harness.run.launch", "rejected", {
           code: "idempotency_key_conflict",
           authorizationClass,
@@ -2739,17 +2207,6 @@ export const createHarnessRunManager = async (options) => {
             projectWrite: false,
           },
         };
-      }
-      if (
-        existing.requestFingerprint !== requestFingerprint
-        && retained.launchOutcomes.includes(existing)
-      ) {
-        // Once a legacy fingerprint has been matched exactly, make the repair
-        // durable so later Controller replacements no longer depend on the
-        // compatibility audit history. An interruption before this atomic
-        // rewrite can safely repeat the same proof on the next retry.
-        existing.requestFingerprint = requestFingerprint;
-        await persist(retained);
       }
       await options.recordAudit("harness.run.launch", "observed", {
         authorizationClass,
@@ -3076,22 +2533,10 @@ export const createHarnessRunManager = async (options) => {
     const authorizationClass = "harness_run_cancellation";
     const idempotencyKeyHash = requestIdempotencyKeyHash(request);
     const requestFingerprint = cancellationRequestFingerprint(request);
-    const compatibleRequestFingerprints = new Set([
-      requestFingerprint,
-      legacyCancellationRequestFingerprint(request),
-    ]);
     const retained = await readState();
     const existing = retainedCancellationOutcome(retained, idempotencyKeyHash);
     if (existing) {
-      if (!compatibleRequestFingerprints.has(existing.requestFingerprint)) {
-        for (const retainedControllerId of await readRetainedControllerIds(options.dataDir)) {
-          compatibleRequestFingerprints.add(legacyCancellationRequestFingerprint({
-            ...request,
-            controllerId: retainedControllerId,
-          }));
-        }
-      }
-      if (!compatibleRequestFingerprints.has(existing.requestFingerprint)) {
+      if (existing.requestFingerprint !== requestFingerprint) {
         const auditId = await options.recordAudit("harness.run.cancel", "rejected", {
           code: "idempotency_key_conflict",
           authorizationClass,

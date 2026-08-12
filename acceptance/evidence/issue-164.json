@@ -1138,78 +1138,6 @@
             }
           ],
           "passed": true
-        },
-        {
-          "boundary": "legacy-state migration",
-          "atomicPublication": "all schemas v1-v7 converge through one deterministic schema-v8 snapshot and idempotent audit repair seam",
-          "faultPoints": [
-            "harness_run_migration.before_commit",
-            "harness_run_migration.after_state_commit",
-            "harness_run_migration.after_commit"
-          ],
-          "pointResults": [
-            {
-              "boundary": "legacy-state migration",
-              "faultPoint": "harness_run_migration.before_commit",
-              "injected": true,
-              "restarted": true,
-              "converged": true,
-              "passed": true,
-              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
-              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
-              "cursorResynchronized": true,
-              "publicInspection": {
-                "afterRestart": {
-                  "status": "succeeded",
-                  "eventCount": 4,
-                  "outcomeCode": "conformance_run_succeeded",
-                  "observationMode": "resynchronize"
-                },
-                "afterReplay": null
-              }
-            },
-            {
-              "boundary": "legacy-state migration",
-              "faultPoint": "harness_run_migration.after_state_commit",
-              "injected": true,
-              "restarted": true,
-              "converged": true,
-              "passed": true,
-              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
-              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
-              "cursorResynchronized": true,
-              "publicInspection": {
-                "afterRestart": {
-                  "status": "succeeded",
-                  "eventCount": 4,
-                  "outcomeCode": "conformance_run_succeeded",
-                  "observationMode": "resynchronize"
-                },
-                "afterReplay": null
-              }
-            },
-            {
-              "boundary": "legacy-state migration",
-              "faultPoint": "harness_run_migration.after_commit",
-              "injected": true,
-              "restarted": true,
-              "converged": true,
-              "passed": true,
-              "executableEvidence": "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
-              "packagedPublicSeam": "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host",
-              "cursorResynchronized": true,
-              "publicInspection": {
-                "afterRestart": {
-                  "status": "succeeded",
-                  "eventCount": 4,
-                  "outcomeCode": "conformance_run_succeeded",
-                  "observationMode": "resynchronize"
-                },
-                "afterReplay": null
-              }
-            }
-          ],
-          "passed": true
         }
       ],
       "invariantAssertions": {
@@ -1219,7 +1147,6 @@
         "immutableSnapshotsUnchanged": true,
         "keyedMutationsNotDuplicated": true,
         "terminalTruthUnique": true,
-        "migrationsRetrySafely": true,
         "productionFaultApiAbsent": true,
         "noEntityRevisionPrecondition": true
       }

@@ -156,3 +156,67 @@ test("the framed Host launches a fresh Project with one revision-free message", 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("the framed Host explains how to recover from stale local Harness-run state", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-stale-launch-host-"));
+  const statePath = join(dataDir, "harness-runs.json");
+  const staleStateText = `${JSON.stringify({
+    schemaVersion: 7,
+    runs: [],
+    launchOutcomes: [],
+    cancellationOutcomes: [],
+    legacyStartOutcomes: [],
+  }, null, 2)}\n`;
+  await writeFile(statePath, staleStateText);
+  const child = spawn(process.execPath, [
+    localHostPath,
+    "--data-dir", dataDir,
+    "--allow-host-identity-create",
+  ], { stdio: ["pipe", "pipe", "pipe"], env: { LANG: "C.UTF-8" } });
+  let diagnostic = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => {
+    diagnostic += chunk;
+  });
+
+  try {
+    writeFrame(child.stdin, {
+      type: "hello",
+      protocol: protocolVersion,
+      release: releaseVersion,
+      identity: "controller-runtime",
+      controllerId: `runtime-${"6".repeat(24)}`,
+      expectedPeerIdentity: "local-host",
+      expectedHostId: `host-${"7".repeat(24)}`,
+      capabilities: { required: [...hostCapabilities], optional: [] },
+      schemaDigest: HOST_SCHEMA_DIGEST,
+      framing: { maxFrameBytes: MAX_FRAME_BYTES, maxBulkChunkBytes: MAX_BULK_CHUNK_BYTES },
+      observationCursor: null,
+    });
+    assert.equal((await readFrame(child.stdout)).type, "hello-ack");
+    writeFrame(child.stdin, {
+      type: "host.identity.accept",
+      requestId: "accept-stale-state-host",
+      hostId: `host-${"7".repeat(24)}`,
+      authorizationClass: "controller_host_identity_binding",
+      idempotencyKey: "accept-stale-state-host",
+      expectedRevision: 0,
+    });
+    assert.equal((await readFrame(child.stdout)).type, "host.identity.result");
+
+    const exit = await new Promise((resolve) => child.once("close", (code, signal) => {
+      resolve({ code, signal });
+    }));
+    assert.deepEqual(exit, { code: 1, signal: null });
+    assert.match(diagnostic, /harness_run_state_schema_unsupported/);
+    assert.match(diagnostic, /delete the Sand-King state directory/i);
+    assert.match(diagnostic, new RegExp(dataDir.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.equal(await readFile(statePath, "utf8"), staleStateText);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

@@ -88,7 +88,6 @@ first.
 | New module | Source lines | ~Size |
 |---|---|---|
 | `harness-runs/schemas.mjs` | 66–480 | 415 |
-| `harness-runs/legacy-schemas.mjs` + `migrations.mjs` | 421–610, 766–979 | 405 |
 | `harness-runs/fingerprints.mjs` | 619–730 | 110 |
 | `harness-runs/store.mjs` | paths, persist, audit backfill | 315 |
 | `harness-runs/adapter-supervision.mjs` | 1,076–1,631 | 555 |
@@ -96,10 +95,9 @@ first.
 | `harness-runs/operations/{launch,cancel,recover,queries}.mjs` | 2,699–3,601 | 900 |
 | `harness-runs/index.mjs` | thin wiring | small |
 
-**Isolating the legacy schemas and migrations matters beyond tidiness**: it
-quarantines the ~405-line phantom v2–v7 migration surface (see
-`docs/test-strategy.md` — there is no deployed prior state to migrate) so it
-can be deleted as one unit.
+The ~405-line phantom v2–v7 migration surface was removed by #211 rather than
+being extracted into the decomposed layout; there is no deployed prior state
+to migrate (see `docs/test-strategy.md`).
 
 ### `runtime-daemon.mjs` (3,336 → ~8 modules)
 
