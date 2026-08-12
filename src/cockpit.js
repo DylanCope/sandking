@@ -15,7 +15,6 @@ const browserProtocol = Object.freeze({
       "cockpit.structured-control.v1",
       "cockpit.opaque-stream.v1",
       "cockpit.resynchronization.v1",
-      "cockpit.planning-spine.v1",
       "cockpit.controller-terminal.v1",
       "cockpit.controller-terminal-resize.v1",
       "cockpit.project-preparation.v1",
@@ -27,7 +26,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:b71eeed3b7ba8dda8681295898a0279a2c73d8c4606b24590330a9037a9ab894",
+  schemaDigest: "sha256:61a41df507acce32a1b9639662328efe2aef2ea16fc1ec8bd1e051770b37bef3",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -533,7 +532,7 @@ const attachTerminalSurface = ({
 };
 
 const mutationKey = () => globalThis.crypto?.randomUUID?.()
-  ?? `planning-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  ?? `mutation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 const harnessLaunchRetryHash = () => {
   const bytes = new Uint8Array(32);
@@ -604,20 +603,6 @@ const readPendingHarnessRecovery = () => {
     sessionStorage.removeItem(pendingHarnessRecoveryStorageKey);
     return null;
   }
-};
-
-const submitPlanningMutation = async (path, body, expectedRevision, csrfToken) => {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-sandking-csrf": csrfToken,
-      "x-sandking-idempotency-key": mutationKey(),
-      "x-sandking-expected-revision": String(expectedRevision),
-    },
-    body: JSON.stringify(body),
-  });
-  return { status: response.status, body: await response.json() };
 };
 
 const renderPreparedProject = (current) => {
@@ -1589,167 +1574,6 @@ const applyHarnessRunObservation = (observation) => {
   }
 };
 
-const renderPlanning = (planning, session) => {
-  const section = element("section", {
-    id: "planning-spine",
-    "data-planning-ready": "true",
-    "data-adapter-fixture": String(planning.adapter.fixture),
-    "data-host-impact": "unaffected",
-  });
-  section.append(
-    element("h2", {}, "Planning Journey Rail"),
-    element("p", { "data-projection-provenance": planning.adapter.adapterId },
-      planning.adapter.label),
-  );
-
-  const feedback = element("p", { id: "planning-feedback", role: "status" });
-  const sessionPanel = element("section", {
-    id: "focused-controller-session",
-    "data-session-state": "closed",
-    hidden: true,
-  });
-
-  for (const journey of planning.journeys) {
-    const journeyNode = element("article", {
-      "data-journey-id": journey.journeyId,
-      "data-freshness": journey.projection.freshness,
-      "data-projection-id": journey.projection.projectionId,
-      "data-projection-digest": journey.projection.projectionDigest,
-      "data-ordinary-work-blocked": String(journey.ordinaryWork.blocked),
-    });
-    journeyNode.append(element("h3", {}, journey.title));
-    if (journey.projection.freshness === "stale") {
-      journeyNode.append(element(
-        "p",
-        { role: "alert", "data-stale-code": journey.projection.refreshFailure?.code ?? "stale" },
-        "GitHub canonical projection is visibly stale; mutation is disabled and no write is queued.",
-      ));
-    }
-    journeyNode.append(element(
-      "p",
-      { "data-ordinary-work-status": journey.ordinaryWork.status },
-      "Ordinary work remains available; Planning is optional.",
-    ));
-    const rail = element("ol", { "data-journey-rail": "built-in" });
-    for (const stage of journey.stages) {
-      const stageNode = element("li", {
-        "data-stage-id": stage.stageId,
-        "data-stage-status": stage.status,
-        "data-stage-revision": String(stage.revision),
-        "data-work-context-id": stage.workContext.workContextId,
-      });
-      const status = element("span", { "data-stage-status-label": "true" }, stage.status);
-      stageNode.append(
-        element("strong", {}, stage.label),
-        document.createTextNode(" — "),
-        status,
-        element("p", {}, `Fixture artifact: ${stage.artifact.title}`),
-      );
-      const mutationEnabled = journey.projection.mutationsEnabled && stage.mutation.enabled;
-      const openSession = element("button", {
-        type: "button",
-        "data-action": "open-session",
-        "data-planning-mutation": "true",
-        disabled: !mutationEnabled,
-      }, "Open focused session");
-      openSession.addEventListener("click", async () => {
-        openSession.disabled = true;
-        const outcome = await submitPlanningMutation(
-          "/planning/sessions/open",
-          { workContextId: stage.workContext.workContextId },
-          0,
-          session.csrfToken,
-        );
-        if (outcome.body.type !== "mutation_result") {
-          feedback.textContent = `Focused session failed safely: ${outcome.body.code}`;
-          openSession.disabled = !mutationEnabled;
-          return;
-        }
-        sessionPanel.hidden = false;
-        sessionPanel.dataset.sessionState = "open";
-        sessionPanel.dataset.sessionId = outcome.body.session.sessionId;
-        sessionPanel.dataset.workContextId = outcome.body.session.workContext.workContextId;
-        sessionPanel.dataset.providerId = outcome.body.session.provider.providerId;
-        sessionPanel.dataset.providerAdapterId = outcome.body.session.provider.adapterId;
-        sessionPanel.dataset.providerSessionId = outcome.body.session.provider.providerSessionId;
-        sessionPanel.dataset.providerControlProtocol =
-          outcome.body.session.provider.readiness.controlProtocol;
-        sessionPanel.dataset.providerReadySignal =
-          outcome.body.session.provider.readiness.signal;
-        sessionPanel.dataset.providerObservedTty = String(
-          outcome.body.session.provider.readiness.providerObservedTty,
-        );
-        sessionPanel.dataset.terminalStreamId = outcome.body.session.terminal.streamId;
-        sessionPanel.dataset.terminalAttachmentId =
-          outcome.body.session.terminal.writableAttachment.attachmentId;
-        sessionPanel.dataset.ptyRuntimeOwned = String(
-          outcome.body.session.terminal.runtimeOwned,
-        );
-        sessionPanel.dataset.terminalAttachment = "attaching";
-        updateWorkbenchChrome({ focusedControllerSession: outcome.body.session });
-        attachTerminalSurface({
-          focused: outcome.body.session,
-          panel: sessionPanel,
-          outputId: "controller-terminal-output",
-          accessibleLabel: "Planning Controller terminal",
-          requestedMode: "read-write",
-          description: [
-            element("p", {}, "Focused conformance Controller session opened for "
-              + `${outcome.body.session.workContext.workContextId} `
-              + `(${outcome.body.session.sessionId}).`),
-          ],
-        });
-        feedback.textContent = "Selected Planning work opened in an independently identified session.";
-      });
-      const notUsed = element("button", {
-        type: "button",
-        "data-action": "not-used",
-        "data-planning-mutation": "true",
-        disabled: !mutationEnabled || !stage.optional,
-      }, "Mark Not used");
-      notUsed.addEventListener("click", async () => {
-        notUsed.disabled = true;
-        const outcome = await submitPlanningMutation(
-          "/planning/stages/not-used",
-          { journeyId: journey.journeyId, stageId: stage.stageId },
-          stage.revision,
-          session.csrfToken,
-        );
-        if (outcome.body.type !== "mutation_result") {
-          feedback.textContent = `Not used failed safely: ${outcome.body.code}`;
-          notUsed.disabled = !mutationEnabled;
-          return;
-        }
-        stage.status = outcome.body.stage.status;
-        stage.revision = outcome.body.stage.revision;
-        stageNode.dataset.stageStatus = outcome.body.stage.status;
-        stageNode.dataset.stageRevision = String(outcome.body.stage.revision);
-        status.textContent = outcome.body.stage.status;
-        for (const button of stageNode.querySelectorAll("button[data-planning-mutation]")) {
-          button.disabled = true;
-        }
-        journeyNode.dataset.ordinaryWorkBlocked = String(outcome.body.ordinaryWorkBlocked);
-        feedback.textContent = "Stage marked Not used. Ordinary work remains available.";
-      });
-      stageNode.append(openSession, notUsed);
-      rail.append(stageNode);
-    }
-    journeyNode.append(rail);
-    section.append(journeyNode);
-  }
-  section.append(
-    sessionPanel,
-    feedback,
-    element(
-      "p",
-      { "data-planning-scope": "thin-spine" },
-      "This thin Planning spine does not include skill-owned reasoning, private Specifications, "
-        + "Ticket-set publication, complete optional or out-of-order behavior, or downstream Needs review.",
-    ),
-  );
-  return section;
-};
-
 const workbenchLink = (label, destination, active = false, attributes = {}) => element("a", {
   ...attributes,
   class: `workbench-nav__link${active ? " is-active" : ""}`,
@@ -1777,20 +1601,9 @@ const synchronizeWorkbenchChrome = () => {
   const currentProject = workbenchChromeState.currentProject;
   const focused = workbenchChromeState.focusedControllerSession;
   const focusedContextId = focused?.workContext?.workContextId ?? "";
-  const selectedProject = document.getElementById("workbench-selected-project");
-  if (selectedProject) {
-    selectedProject.dataset.projectId = currentProject?.projectId ?? "";
-    selectedProject.textContent = currentProject?.displayName ?? "No Project selected";
-  }
   const breadcrumb = document.getElementById("workbench-project-breadcrumb");
   if (breadcrumb) {
     breadcrumb.textContent = `Projects / ${currentProject?.displayName ?? "Select a Project"}`;
-  }
-  const focusedWorkContext = document.getElementById("workbench-focused-work-context");
-  if (focusedWorkContext) {
-    focusedWorkContext.dataset.workContextId = focusedContextId;
-    focusedWorkContext.textContent = focusedContextId || "No focused work context";
-    setWorkbenchDestinationActive(focusedWorkContext, Boolean(focused));
   }
   for (const destination of document.querySelectorAll(
     "[data-workbench-controller-destination]",
@@ -1898,7 +1711,6 @@ const renderWorkbench = (message) => {
     viewModel.controllerProviders,
     focused,
   );
-  const planning = renderPlanning(viewModel.planning, message.session);
   const harnessRun = renderHarnessRun(observation);
   const shell = element("div", {
     id: "workbench-shell",
@@ -1920,48 +1732,16 @@ const renderWorkbench = (message) => {
     "aria-label": "Product destinations",
   });
   productNavigation.append(
-    workbenchLink("Home", "#workbench-main"),
     workbenchLink("Projects", "#project-preparation", true),
-    workbenchLink("Harnesses", "#harness-run-observation"),
-    workbenchLink("Hosts", "#connection-status"),
-  );
-  const projectNavigation = element("nav", {
-    class: "workbench-nav workbench-nav--project",
-    "aria-label": "Project workspace destinations",
-  });
-  projectNavigation.append(
-    element("p", { class: "workbench-eyebrow" }, "Selected Project"),
-    workbenchLink(
-      currentProject?.displayName ?? "No Project selected",
-      "#project-preparation",
-      true,
-      {
-        id: "workbench-selected-project",
-        "data-project-id": currentProject?.projectId ?? "",
-      },
-    ),
-    element("p", { class: "workbench-eyebrow" }, "Project workspace"),
     workbenchLink(
       "Controller",
       "#project-focused-controller-session",
       Boolean(focused),
       { "data-workbench-controller-destination": "true" },
     ),
-    workbenchLink("Planning", "#planning-spine"),
     workbenchLink("Runs", "#harness-run-observation"),
-    workbenchLink("Project", "#project-readiness"),
-    element("p", { class: "workbench-eyebrow" }, "Work contexts"),
-    workbenchLink(
-      focused?.workContext?.workContextId ?? "No focused work context",
-      "#project-focused-controller-session",
-      Boolean(focused),
-      {
-        id: "workbench-focused-work-context",
-        "data-work-context-id": focused?.workContext?.workContextId ?? "",
-      },
-    ),
   );
-  navigation.append(brand, productNavigation, projectNavigation);
+  navigation.append(brand, productNavigation);
 
   const main = element("main", { id: "workbench-main", class: "workbench-main" });
   const topbar = element("header", { class: "workbench-topbar" });
@@ -1987,21 +1767,6 @@ const renderWorkbench = (message) => {
       ? `Connected to ${viewModel.host.identity} with protocol ${message.protocol.version}`
       : `Disconnected · Host ${viewModel.host.hostId}; Project and Harness state is stale`,
   );
-  const externalProviderFeedback = element("span", {
-    id: "external-provider-feedback",
-    class: "workbench-visually-hidden",
-    role: "status",
-  });
-  const externalProvider = element("button", {
-    id: "external-provider-escape",
-    class: "workbench-button workbench-button--secondary",
-    type: "button",
-    "aria-describedby": "external-provider-feedback",
-  }, "Provider CLI escape hatch");
-  externalProvider.addEventListener("click", () => {
-    externalProviderFeedback.textContent =
-      "Use the destination-local provider CLI directly. Sand-King did not copy credentials or mutate the Controller session.";
-  });
   const contextToggle = element("button", {
     id: "workbench-context-toggle",
     class: "workbench-drawer-toggle workbench-drawer-toggle--context",
@@ -2018,8 +1783,6 @@ const renderWorkbench = (message) => {
     },
       `Projects / ${currentProject?.displayName ?? "Select a Project"}`),
     connectionStatus,
-    externalProvider,
-    externalProviderFeedback,
     contextToggle,
   );
 
@@ -2035,22 +1798,7 @@ const renderWorkbench = (message) => {
       ? `Work context ${focused.workContext.workContextId}`
       : "Open a Project and focused Controller"),
   );
-  const workspaceDestinations = element("nav", {
-    class: "workbench-tabs",
-    "aria-label": "Project workspace",
-  });
-  workspaceDestinations.append(
-    workbenchLink(
-      "Controller",
-      "#project-focused-controller-session",
-      Boolean(focused),
-      { "data-workbench-controller-destination": "true" },
-    ),
-    workbenchLink("Planning", "#planning-spine"),
-    workbenchLink("Runs", "#harness-run-observation"),
-    workbenchLink("Project", "#project-readiness"),
-  );
-  stageHeader.append(title, workspaceDestinations);
+  stageHeader.append(title);
   stage.append(stageHeader, project);
   main.append(topbar, stage);
 
@@ -2090,7 +1838,7 @@ const renderWorkbench = (message) => {
     element("h3", {}, "No pending person action"),
     element("p", {}, "Launch uses its own optional confirmation preference."),
   );
-  context.append(contextHeader, attachment, personAction, planning, harnessRun);
+  context.append(contextHeader, attachment, personAction, harnessRun);
   shell.append(navigation, main, context);
   queueMicrotask(synchronizeWorkbenchChrome);
 
@@ -2211,7 +1959,7 @@ socket.addEventListener("message", (event) => {
       connectionStatus.setAttribute("role", "alert");
       connectionStatus.textContent =
         `Host ${message.hostId} is disconnected. Project and Harness views are stale; `
-        + "unaffected Controller and Planning views remain available.";
+        + "Controller sessions remain available.";
     }
     const projectPreparation = document.getElementById("project-preparation");
     if (projectPreparation) {
@@ -2229,10 +1977,6 @@ socket.addEventListener("message", (event) => {
       )) {
         recoveryButton.disabled = true;
       }
-    }
-    const planning = document.getElementById("planning-spine");
-    if (planning) {
-      planning.dataset.hostImpact = "unaffected";
     }
     clearTimeout(harnessObservationTimer);
     return;
@@ -2454,10 +2198,6 @@ socket.addEventListener("message", (event) => {
         || message.viewModel.host.failure?.code === "host_protocol_invalid"
         || message.viewModel.host.failure?.code
           === "host_observation_resynchronization_failed");
-  const planningCompatible = message?.viewModel?.planning?.kind === "cockpit.planning-spine"
-    && message.viewModel.planning.adapter?.fixture === true
-    && JSON.stringify(message.viewModel.planning.builtInStages)
-      === JSON.stringify(["wayfinding", "speccing", "ticketing"]);
   const projectPreparationCompatible =
     message?.viewModel?.projectPreparation?.kind === "cockpit.project-preparation"
     && message.viewModel.projectPreparation.selection?.mode === "explicit-host-path"
@@ -2509,7 +2249,6 @@ socket.addEventListener("message", (event) => {
     || !framingCompatible
     || !durableIdentitiesCompatible
     || !hostConnectionCompatible
-    || !planningCompatible
     || !projectPreparationCompatible
     || !controllerProvidersCompatible
     || !focusedControllerSessionCompatible

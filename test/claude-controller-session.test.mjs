@@ -526,7 +526,7 @@ if (args.length === 1 && args[0] === "--version") {
       retryable: true,
       source: "claude-stop-failure",
     });
-    assert.ok(audits.some((entry) => entry.action === "controller.session.failure"
+    await waitFor(() => audits.some((entry) => entry.action === "controller.session.failure"
       && entry.details.code === "provider_network_unavailable"));
   } finally {
     await manager?.shutdown();

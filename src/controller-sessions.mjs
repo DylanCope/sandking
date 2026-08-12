@@ -179,10 +179,8 @@ const providerReadySchema = z.object({
   sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
   providerSessionId: providerSessionIdSchema,
   workContext: z.object({
-    workContextId: identifierSchema,
-    canonicalReference: z.string().regex(
-      /^(?:github:fixture:issue:[0-9]+|sandking:project:project-[a-f0-9]{24})$/,
-    ),
+    workContextId: z.string().regex(/^project-[a-f0-9]{24}$/),
+    canonicalReference: z.string().regex(/^sandking:project:project-[a-f0-9]{24}$/),
   }).strict(),
   sessionIdentity: sessionIdentitySchema.optional(),
   process: z.object({
@@ -233,20 +231,12 @@ const providerExitSchema = z.object({
   providerSessionId: providerSessionIdSchema,
   reason: providerExitReasonSchema,
 }).strict();
-const planningWorkContextSchema = z.object({
-  workContextId: identifierSchema,
-  kind: z.literal("planning-stage"),
-  canonicalReference: z.string().regex(/^github:fixture:issue:[0-9]+$/),
-}).strict();
 const projectWorkContextSchema = z.object({
   workContextId: z.string().regex(/^project-[a-f0-9]{24}$/),
   kind: z.literal("project"),
   canonicalReference: z.string().regex(/^sandking:project:project-[a-f0-9]{24}$/),
 }).strict();
-const workContextSchema = z.discriminatedUnion("kind", [
-  planningWorkContextSchema,
-  projectWorkContextSchema,
-]);
+const workContextSchema = projectWorkContextSchema;
 const providerOperationRequestSchema = z.object({
   type: z.literal("provider.operation.request"),
   controlProtocol: adapterProtocolSchema,
@@ -282,10 +272,8 @@ const retainedSessionSchema = z.object({
   providerAvailability: availabilitySchema.optional(),
   sessionIdentity: sessionIdentitySchema.optional(),
   workContextId: identifierSchema,
-  workContextKind: z.enum(["planning-stage", "project"]).optional(),
-  canonicalReference: z.string().regex(
-    /^(?:github:fixture:issue:[0-9]+|sandking:project:project-[a-f0-9]{24})$/,
-  ),
+  workContextKind: z.literal("project").optional(),
+  canonicalReference: z.string().regex(/^sandking:project:project-[a-f0-9]{24}$/),
   providerControl: z.object({
     protocol: z.literal("1.0.0"),
     readySignal: z.literal("provider.session.ready"),
@@ -824,7 +812,6 @@ export const createControllerSessionManager = async (options) => {
       !isAbsolute(workingDirectory)
       || workingDirectory.includes("\0")
       || workingDirectory.length > 4_096
-      || (selectedProviderId === "claude-code" && selectedWorkContext.kind !== "project")
     ) {
       throw new ControllerSessionError("provider_work_context_invalid");
     }

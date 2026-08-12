@@ -105,7 +105,7 @@ try {
         tablet700WorkbenchAndDrawers: "passed",
         terminalAttachmentAndResizeAuthority: "passed",
         projectPreparation: "passed",
-        planningProjectionAndMutation: "passed",
+        builtAreaNavigation: "passed",
         launchRequestInteraction: "passed",
         activeAndTerminalHarnessRunObservation: "passed",
         diagnosticsAndStructuredOutcome: "passed",

@@ -16,6 +16,7 @@ import {
   encodeBrowserOpaqueFrame,
   parseBrowserControl,
   runtimeControlEnvelopeSchema,
+  runtimeRequiredBrowserCapabilities,
   serializeRuntimeControl,
 } from "../src/browser-protocol.mjs";
 
@@ -26,6 +27,37 @@ const runtimePids = new Map();
 test("the served Cockpit advertises the current browser schema digest", async () => {
   const cockpitSource = await readFile(join(process.cwd(), "src", "cockpit.js"), "utf8");
   assert.ok(cockpitSource.includes(`schemaDigest: "${BROWSER_SCHEMA_DIGEST}"`));
+});
+
+test("the browser contract advertises only built Cockpit areas", () => {
+  assert.equal(
+    [...browserCapabilities, ...runtimeRequiredBrowserCapabilities]
+      .some((capability) => capability.includes("planning")),
+    false,
+  );
+
+  const connectionState = {
+    type: "runtime.connection-state",
+    boundary: "host",
+    hostId: `host-${"1".repeat(24)}`,
+    status: "disconnected",
+    freshness: "stale",
+    failure: {
+      code: "host_disconnected",
+      retryable: true,
+      auditId: `audit-${"2".repeat(24)}`,
+      observedAt: "2026-08-12T00:00:00.000Z",
+    },
+    affectedViews: ["project-preparation", "harness-run-observation"],
+    unaffectedViews: ["controller-sessions"],
+    retainedObservationCursor: "host:origin",
+  };
+  assert.deepEqual(
+    runtimeControlEnvelopeSchema.parse(JSON.parse(
+      serializeRuntimeControl(connectionState),
+    )).message,
+    connectionState,
+  );
 });
 
 const stop = async (dataDir) => {
@@ -301,7 +333,7 @@ test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and 
     }, { status: "connected", freshness: "current", failure: null });
     assert.deepEqual(Object.keys(ack.viewModel).sort(), [
       "controllerProviders", "focusedControllerSession", "harnessRunObservation", "host", "kind",
-      "negotiation", "planning", "projectPreparation", "runtime",
+      "negotiation", "projectPreparation", "runtime",
     ]);
     assert.equal(ack.viewModel.focusedControllerSession, null);
     assert.deepEqual(ack.viewModel.harnessRunObservation, {

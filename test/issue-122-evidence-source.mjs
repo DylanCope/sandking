@@ -16,7 +16,6 @@ export const ISSUE_122_DEMONSTRATED_PATHS = Object.freeze([
   "test/installed-package.mjs",
   "test/issue-122-evidence-source.mjs",
   "test/launch-request.test.mjs",
-  "test/planning-spine.test.mjs",
   "test/protocol.test.mjs",
   "test/run-issue-122-acceptance.mjs",
   "test/truthful-failure.browser.test.mjs",

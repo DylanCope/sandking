@@ -616,8 +616,6 @@ test("Host loss after accepted Project registration preserves its identity and e
       assert.match(await page.locator("#project-readiness").textContent(), /Harness: missing/);
       assert.equal(await page.locator("#project-preparation")
         .getAttribute("data-host-freshness"), "stale");
-      assert.equal(await page.locator("#planning-spine")
-        .getAttribute("data-host-impact"), "unaffected");
 
       const [projectStateAfter, auditsAfter] = await Promise.all([
         readJson(join(dataDir, "project-registrations.json")),
@@ -663,7 +661,6 @@ test("Host loss after accepted Project registration preserves its identity and e
               retainedProjectVisible: true,
               launchRequestReady: false,
               hostFreshness: "stale",
-              planningHostImpact: "unaffected",
             },
             canonicalState: {
               projectCount: projectStateAfter.projects.length,
@@ -737,7 +734,7 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
       });
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
-      await page.waitForSelector("#planning-spine[data-planning-ready='true']");
+      await page.waitForSelector("#project-preparation[data-host-freshness='current']");
 
       await page.waitForSelector(
         "#connection-status[data-host-status='disconnected'][data-failure-code='host_protocol_invalid']",
@@ -762,27 +759,9 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
       assert.equal(browserSocketClosed, false);
       assert.equal(await page.locator("#project-preparation")
         .getAttribute("data-host-freshness"), "stale");
-      assert.equal(await page.locator("#planning-spine")
-        .getAttribute("data-host-impact"), "unaffected");
-      assert.equal(await page.locator("#planning-spine").count(), 1);
-
-      const freshJourney = page.locator(
-        "[data-journey-id='journey-fixture-optional-planning']",
-      );
-      await freshJourney.locator(
-        "[data-stage-id='speccing'] button[data-action='open-session']",
-      ).click();
-      await page.waitForSelector(
-        "#focused-controller-session[data-terminal-attachment='read-write']",
-        { timeout: 90_000 },
-      );
-      assert.equal(await page.locator("#focused-controller-session")
-        .getAttribute("data-session-state"), "open");
-      const ticketing = freshJourney.locator("[data-stage-id='ticketing']");
-      await ticketing.locator("button[data-action='not-used']").click();
-      await page.waitForFunction(() => document.querySelector(
-        "[data-journey-id='journey-fixture-optional-planning'] [data-stage-id='ticketing']",
-      )?.getAttribute("data-stage-status") === "Not used");
+      assert.equal(await page.locator("#project-focused-controller-session").count(), 1);
+      assert.match(await page.locator("#connection-status").textContent(),
+        /Controller sessions remain available/);
 
       const audits = await readFile(join(dataDir, "audit.jsonl"), "utf8")
         .then((text) => text.trim().split("\n").filter(Boolean).map(JSON.parse));
@@ -796,7 +775,6 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
         "harness-run-observation",
       ]);
       assert.deepEqual(protocolFailureAudit.details.unaffectedViews, [
-        "planning-spine",
         "controller-sessions",
       ]);
       if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
@@ -818,10 +796,7 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
             browserSocketRetained: !browserSocketClosed,
             cockpit: {
               projectFreshness: "stale",
-              planningHostImpact: "unaffected",
-              planningVisible: true,
-              controllerSessionOpened: true,
-              planningMutationSucceeded: true,
+              controllerSessionsAvailable: true,
             },
             audit: protocolFailureAudit,
           }, null, 2)}\n`,

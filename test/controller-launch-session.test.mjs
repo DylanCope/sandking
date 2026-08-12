@@ -211,9 +211,9 @@ test("retained Controller sessions distinguish main-era capabilities from invali
       stable: true,
       source: "controller-assigned-supported-cli-flag",
     },
-    workContextId: "planning-stage-upgrade",
-    workContextKind: "planning-stage",
-    canonicalReference: "github:fixture:issue:119",
+    workContextId: `project-${"8".repeat(24)}`,
+    workContextKind: "project",
+    canonicalReference: `sandking:project:project-${"8".repeat(24)}`,
     providerControl: {
       protocol: "1.0.0",
       readySignal: "provider.session.ready",
@@ -269,6 +269,28 @@ test("retained Controller sessions distinguish main-era capabilities from invali
       }).then(async (invalidManager) => {
         await invalidManager.shutdown();
         return invalidManager;
+      }),
+      (error) => error?.name === "ZodError",
+    );
+  } finally {
+    await manager?.shutdown();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("Controller sessions reject retired fixture Planning work contexts", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "sandking-retired-planning-context-"));
+  let manager;
+  try {
+    manager = await createControllerSessionManager({
+      dataDir,
+      recordAudit: async () => `audit-${"0".repeat(24)}`,
+    });
+    await assert.rejects(
+      manager.start({
+        workContextId: "retired-planning-stage",
+        kind: "planning-stage",
+        canonicalReference: "github:fixture:issue:119",
       }),
       (error) => error?.name === "ZodError",
     );

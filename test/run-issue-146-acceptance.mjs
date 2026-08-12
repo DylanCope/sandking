@@ -113,7 +113,7 @@ try {
       },
       inheritedBrowserScenarios: {
         projectPreparation: "passed",
-        planningProjectionAndMutation: "passed",
+        builtAreaNavigation: "passed",
         launchRequestInteraction: "passed",
         activeAndTerminalHarnessRunObservation: "passed",
         diagnosticsAndStructuredOutcome: "passed",
