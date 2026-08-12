@@ -177,7 +177,6 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
         "cockpit.structured-control.v1",
         "cockpit.opaque-stream.v1",
         "cockpit.resynchronization.v1",
-        "cockpit.planning-spine.v1",
         "cockpit.controller-terminal.v1",
         "cockpit.controller-terminal-resize.v1",
         "cockpit.project-preparation.v1",

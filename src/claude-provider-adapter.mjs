@@ -42,7 +42,7 @@ const adapterPath = fileURLToPath(import.meta.url);
 const controllerSessionPattern = /^controller-session-[a-f0-9]{24}$/;
 const providerSessionPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const workContextPattern = /^[a-zA-Z0-9._:-]{1,160}$/;
-const canonicalReferencePattern = /^(?:github:fixture:issue:[0-9]+|sandking:project:project-[a-f0-9]{24})$/;
+const canonicalReferencePattern = /^sandking:project:project-[a-f0-9]{24}$/;
 const claudeStopFailureTypes = new Set([
   "authentication_failed",
   "oauth_org_not_allowed",

@@ -27,7 +27,7 @@ const capabilities = Object.freeze([
 ]);
 const identifierPattern = /^[a-zA-Z0-9._:-]{1,160}$/;
 const providerSessionPattern = /^conformance-provider-session-[a-f0-9]{24}$/;
-const canonicalReferencePattern = /^(?:github:fixture:issue:[0-9]+|sandking:project:project-[a-f0-9]{24})$/;
+const canonicalReferencePattern = /^sandking:project:project-[a-f0-9]{24}$/;
 const controlEndpointPattern = /^.{1,512}$/;
 
 /** @param {string[]} argv */

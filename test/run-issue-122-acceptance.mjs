@@ -129,8 +129,7 @@ try {
         !== "host_protocol_invalid"
       || postNegotiationHostProtocol.browserProtocolFailureMisattributed !== false
       || postNegotiationHostProtocol.browserSocketRetained !== true
-      || postNegotiationHostProtocol.cockpit?.controllerSessionOpened !== true
-      || postNegotiationHostProtocol.cockpit?.planningMutationSucceeded !== true
+      || postNegotiationHostProtocol.cockpit?.controllerSessionsAvailable !== true
       || observation.staleStateEvidence?.acceptedProjectSessionIdempotency
         ?.replayReturnedOriginalAudit !== true
       || observation.staleStateEvidence?.acceptedProjectSessionIdempotency

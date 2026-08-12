@@ -120,6 +120,29 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     assert.equal(await page.locator("aside#workbench-navigation").count(), 1);
     assert.equal(await page.locator("aside#workbench-context").count(), 1);
     assert.equal(await page.locator(".prototype-switcher, [data-prototype-variant]").count(), 0);
+    const navigationDestinations = await page.locator(
+      "#workbench-navigation nav[aria-label='Product destinations'] a",
+    ).evaluateAll((links) => links.map((link) => ({
+      label: link.textContent,
+      destination: link.getAttribute("href"),
+    })));
+    assert.deepEqual(navigationDestinations, [
+      { label: "Projects", destination: "#project-preparation" },
+      { label: "Controller", destination: "#project-focused-controller-session" },
+      { label: "Runs", destination: "#harness-run-observation" },
+    ]);
+    assert.equal(
+      new Set(navigationDestinations.map(({ destination }) => destination)).size,
+      navigationDestinations.length,
+    );
+    for (const { destination } of navigationDestinations) {
+      assert.equal(await page.locator(destination).count(), 1);
+    }
+    assert.equal(await page.locator("[data-planning-ready], #external-provider-escape").count(), 0);
+    assert.deepEqual(await page.evaluate(async () => Promise.all([
+      "/planning/sessions/open",
+      "/planning/stages/not-used",
+    ].map(async (path) => (await fetch(path, { method: "POST" })).status))), [404, 404]);
     await page.locator(".workbench-brand").focus();
     assert.notEqual(await page.locator(".workbench-brand").evaluate((node) =>
       getComputedStyle(node).outlineStyle), "none");
@@ -134,11 +157,6 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       "data-project-id",
     );
     assert.match(selectedProjectId, /^project-[a-f0-9]{24}$/);
-    assert.equal(await page.locator("#workbench-selected-project").getAttribute(
-      "data-project-id",
-    ), selectedProjectId);
-    assert.match(await page.locator("#workbench-selected-project").textContent(),
-      /selected-project/);
     assert.match(await page.locator("#workbench-project-breadcrumb").textContent(),
       /Projects \/ selected-project/);
     let controllerAttached = false;
@@ -327,10 +345,7 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
     assert.equal(await page.locator("#workbench-context-toggle").isVisible(), true);
     assert.equal(await page.locator("#connection-status").isVisible(), true);
     assert.match(await page.locator("#connection-status").textContent(), /Connected/);
-    assert.equal(await page.locator("#external-provider-escape").isVisible(), true);
-    await page.locator("#external-provider-escape").click();
-    assert.match(await page.locator("#external-provider-feedback").textContent(),
-      /destination-local provider CLI directly/);
+    assert.equal(await page.locator("#external-provider-escape").count(), 0);
     await page.locator("#workbench-navigation-toggle").click();
     assert.equal(await page.locator("#workbench-navigation-toggle").getAttribute(
       "aria-expanded",
@@ -366,8 +381,7 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       "data-person-action",
     ), "none");
     const liveChrome = {
-      selectedProjectCurrent: true,
-      focusedWorkContextCurrent: true,
+      navigationDestinationsCurrent: true,
       providerAndAttachmentCurrent: true,
       pendingPersonActionAbsent: true,
     };
@@ -385,9 +399,6 @@ test("the served Controller terminal interprets split ANSI and alternate-screen 
       "#project-focused-controller-session[data-reconnected='true'][data-terminal-attachment='read-write']",
       { timeout: 60_000 },
     );
-    assert.equal(await reconnectPage.locator("#workbench-selected-project").getAttribute(
-      "data-project-id",
-    ), selectedProjectId);
     assert.equal(await reconnectPage.locator("#workbench-focused-context").getAttribute(
       "data-work-context-id",
     ), focusedContextId);

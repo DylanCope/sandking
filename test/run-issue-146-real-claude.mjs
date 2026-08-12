@@ -92,7 +92,7 @@ try {
   });
   const projectId = await page.locator("#project-readiness").getAttribute("data-project-id");
   await page.waitForFunction((selectedProjectId) => {
-    const selectedProject = document.querySelector("#workbench-selected-project");
+    const selectedProject = document.querySelector("#project-readiness");
     const breadcrumb = document.querySelector("#workbench-project-breadcrumb");
     return selectedProject?.getAttribute("data-project-id") === selectedProjectId
       && breadcrumb?.textContent?.includes("Projects / ");

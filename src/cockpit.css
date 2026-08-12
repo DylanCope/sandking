@@ -247,10 +247,8 @@ h3 {
   color: #fb7185;
 }
 
-.workbench-button,
 .workbench-drawer-toggle,
 #project-preparation button,
-#planning-spine button,
 #harness-run-observation button {
   min-height: 36px;
   border: 1px solid #3f3f46;
@@ -259,9 +257,7 @@ h3 {
   padding: 7px 11px;
 }
 
-.workbench-button:hover,
-#project-preparation button:hover:not(:disabled),
-#planning-spine button:hover:not(:disabled) {
+#project-preparation button:hover:not(:disabled) {
   border-color: #71717a;
 }
 
@@ -286,15 +282,6 @@ button:disabled {
 
 .workbench-stage__header .workbench-eyebrow {
   margin: 0 0 4px;
-}
-
-.workbench-tabs {
-  display: flex;
-  gap: 4px;
-}
-
-.workbench-tabs .workbench-nav__link {
-  padding: 8px 11px;
 }
 
 #project-preparation {
@@ -336,8 +323,7 @@ button:disabled {
   background: #090d18;
 }
 
-#project-focused-controller-session:not([hidden]),
-#focused-controller-session:not([hidden]) {
+#project-focused-controller-session:not([hidden]) {
   display: grid;
   order: -1;
   gap: 8px;
@@ -357,7 +343,6 @@ button:disabled {
 
 .workbench-context__header,
 .workbench-context__section,
-#planning-spine,
 #harness-run-observation {
   padding: 16px;
   border-bottom: 1px solid var(--cockpit-border);
@@ -394,26 +379,19 @@ button:disabled {
   color: #fbbf24;
 }
 
-#planning-spine,
 #harness-run-observation {
   font-size: 12px;
 }
 
-#planning-spine h2,
 #harness-run-observation h2 {
   margin-bottom: 6px;
 }
 
-#planning-spine [data-stage-id],
 #harness-run-observation li {
   margin: 6px 0;
   padding: 8px;
   border: 1px solid var(--cockpit-border);
   border-radius: 8px;
-}
-
-#planning-spine button {
-  margin: 4px 4px 0 0;
 }
 
 #harness-run-diagnostics pre,
@@ -526,8 +504,7 @@ button:disabled {
     display: none;
   }
 
-  .workbench-status,
-  #external-provider-escape {
+  .workbench-status {
     font-size: 0;
   }
 
@@ -541,11 +518,6 @@ button:disabled {
     font-size: 11px;
   }
 
-  #external-provider-escape::after {
-    content: "Provider CLI";
-    font-size: 11px;
-  }
-
   .workbench-stage {
     padding: 10px;
   }
@@ -553,11 +525,6 @@ button:disabled {
   .workbench-stage__header {
     align-items: stretch;
     flex-direction: column;
-  }
-
-  .workbench-tabs {
-    max-width: 100%;
-    overflow-x: auto;
   }
 
   #project-preparation {

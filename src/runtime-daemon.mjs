@@ -30,7 +30,6 @@ import {
   removePrivateFile,
   writePrivateJson,
 } from "./private-state.mjs";
-import { createPlanningSpine } from "./planning-spine.mjs";
 import {
   projectPreparationProjection,
 } from "./project-registration.mjs";
@@ -155,8 +154,6 @@ let hostProcess;
 let httpServer;
 /** @type {WebSocketServer | undefined} */
 let websocketServer;
-/** @type {Awaited<ReturnType<typeof createPlanningSpine>> | undefined} */
-let planningSpine;
 let currentProjectPreparation = projectPreparationProjection();
 /** @type {string | null} */
 let currentProjectPath = null;
@@ -234,7 +231,6 @@ const hostAffectedViews = Object.freeze([
   "harness-run-observation",
 ]);
 const hostUnaffectedViews = Object.freeze([
-  "planning-spine",
   "controller-sessions",
 ]);
 
@@ -1792,28 +1788,18 @@ const handleProviderOperation = async (request) => {
     ? request.input
     : {};
   if (request.operation === "work-context.inspect") {
-    if (request.workContext.kind === "project") {
-      const project = currentProjectPreparation.current;
-      if (!project || project.projectId !== request.workContext.workContextId || !project.harness) {
-        throw new ControllerSessionError("project_work_context_unavailable");
-      }
-      return {
-        type: "project.work-context",
-        projectId: project.projectId,
-        revision: project.revision,
-        displayName: project.displayName,
-        harnessId: project.harness.harnessId,
-        pinnedRevision: project.harness.pinnedRevision,
-      };
+    const project = currentProjectPreparation.current;
+    if (!project || project.projectId !== request.workContext.workContextId || !project.harness) {
+      throw new ControllerSessionError("project_work_context_unavailable");
     }
     return {
-      type: "planning.work-context",
-      workContextId: request.workContext.workContextId,
-      canonicalReference: request.workContext.canonicalReference,
+      type: "project.work-context",
+      projectId: project.projectId,
+      revision: project.revision,
+      displayName: project.displayName,
+      harnessId: project.harness.harnessId,
+      pinnedRevision: project.harness.pinnedRevision,
     };
-  }
-  if (request.workContext.kind !== "project") {
-    throw new ControllerSessionError("provider_operation_unsupported");
   }
   if (request.operation === "controller-cli.describe") {
     const project = currentProjectPreparation.current;
@@ -2760,7 +2746,6 @@ const handleBrowserConnection = (socket, sessionId, session) => {
           projectPreparation: currentProjectPreparation,
           focusedControllerSession: currentProjectControllerSession,
           controllerProviders: controllerProviderProjection,
-          planning: await planningSpine?.project(),
           harnessRunObservation: currentHarnessRunObservation,
         },
       });
@@ -2862,12 +2847,6 @@ const main = async () => {
       },
       terminal: probe.terminal,
     }));
-    planningSpine = await createPlanningSpine({
-      dataDir: args.dataDir,
-      recordAudit,
-      startControllerSession: controllerSessions.start,
-      terminateControllerSession: controllerSessions.terminate,
-    });
     const negotiationAuditId = await recordAudit("host.negotiate", "accepted", {
       controllerIdentity: "controller-runtime",
       controllerId: runtimeId,
@@ -3060,41 +3039,6 @@ const main = async () => {
               ? String(record.providerId)
               : "conformance-controller-v1",
           });
-          sendJson(response, outcome.status, outcome.body);
-          return;
-        }
-
-        if (
-          request.method === "POST"
-          && (
-            request.url === "/planning/sessions/open"
-            || request.url === "/planning/stages/not-used"
-          )
-        ) {
-          const body = await readJsonBody(request);
-          const record = body && typeof body === "object" ? body : {};
-          const { idempotencyKeyHash, expectedRevision } = readMutationHeaders(request);
-          const authorizationAccepted = exactOriginAccepted(request)
-            && request.headers["x-sandking-csrf"] === activeSession.csrfToken;
-          const outcome = request.url === "/planning/sessions/open"
-            ? await planningSpine?.openFocusedSession({
-                authorizationAccepted,
-                idempotencyKeyHash,
-                expectedRevision,
-                workContextId: "workContextId" in record
-                  ? String(record.workContextId)
-                  : "",
-              })
-            : await planningSpine?.markStageNotUsed({
-                authorizationAccepted,
-                idempotencyKeyHash,
-                expectedRevision,
-                journeyId: "journeyId" in record ? String(record.journeyId) : "",
-                stageId: "stageId" in record ? String(record.stageId) : "",
-              });
-          if (!outcome) {
-            throw new Error("planning_spine_unavailable");
-          }
           sendJson(response, outcome.status, outcome.body);
           return;
         }

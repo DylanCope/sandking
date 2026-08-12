@@ -20,7 +20,6 @@ export const ISSUE_146_DEMONSTRATED_PATHS = Object.freeze([
   "test/security-boundary.test.mjs",
   "test/workbench-terminal.browser.test.mjs",
   "test/project-preparation.browser.test.mjs",
-  "test/planning-spine.browser.test.mjs",
   "test/launch-request.browser.test.mjs",
   "test/harness-run.browser.test.mjs",
   "test/reconnect-canonical.browser.test.mjs",

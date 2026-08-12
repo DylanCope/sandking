@@ -44,8 +44,6 @@
     "acceptance:issue-121:update-evidence": "node test/run-issue-121-acceptance.mjs acceptance/issue-121.manifest.json --update-evidence",
     "acceptance:issue-122": "node test/run-issue-122-acceptance.mjs acceptance/issue-122.manifest.json",
     "acceptance:issue-122:update-evidence": "node test/run-issue-122-acceptance.mjs acceptance/issue-122.manifest.json --update-evidence",
-    "acceptance:issue-123": "node test/run-issue-123-acceptance.mjs acceptance/issue-123.manifest.json",
-    "acceptance:issue-123:update-evidence": "node test/run-issue-123-acceptance.mjs acceptance/issue-123.manifest.json --update-evidence",
     "acceptance:issue-124": "node test/run-issue-124-acceptance.mjs acceptance/issue-124.manifest.json",
     "acceptance:issue-124:update-evidence": "node test/run-issue-124-acceptance.mjs acceptance/issue-124.manifest.json --update-evidence",
     "acceptance:issue-124:real": "node test/run-installed-claude-acceptance.mjs acceptance/issue-124.manifest.json",
