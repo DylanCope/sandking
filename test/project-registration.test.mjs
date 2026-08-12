@@ -15,6 +15,10 @@ import {
   releaseVersion,
   writeFrame,
 } from "../src/protocol.mjs";
+import {
+  CONFORMANCE_HARNESS_ADAPTER_ID,
+  conformanceHarnessLaunchParametersDeclaration,
+} from "../src/harness-adapter-protocol.mjs";
 import { createProjectRegistry } from "../src/project-registration.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -145,6 +149,14 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
     assert.equal(harnessRegistration.code, "conformance_harness_registered");
     assert.match(harnessRegistration.harness.harnessId, /^harness-[a-f0-9]{24}$/);
     assert.match(harnessRegistration.harness.immutableRevision, /^[a-f0-9]{40}$/);
+    assert.equal(
+      harnessRegistration.harness.adapterId,
+      CONFORMANCE_HARNESS_ADAPTER_ID,
+    );
+    assert.deepEqual(
+      harnessRegistration.harness.launchParameters,
+      conformanceHarnessLaunchParametersDeclaration,
+    );
     assert.equal(harnessRegistration.harness.workspace.versionControl, "git");
     assert.equal(harnessRegistration.harness.workspace.independent, true);
 
