@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { rm } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createHarnessRunFixture } from "./harness-run-fixture.mjs";
 import { waitForTestCheckpoint } from "./test-checkpoint.mjs";
@@ -10,6 +10,10 @@ import { waitForTestCheckpoint } from "./test-checkpoint.mjs";
 const hostId = `host-${"1".repeat(24)}`;
 const controllerId = `runtime-${"2".repeat(24)}`;
 const controllerSessionId = `controller-session-${"3".repeat(24)}`;
+const linuxProcessTreeHelper = fileURLToPath(new URL(
+  `../src/native/linux-${process.arch}/posix-process-tree-helper`,
+  import.meta.url,
+));
 
 const launchRequest = (projectId, issueNumber) => ({
   requestId: `launch-${issueNumber}`,
@@ -36,11 +40,12 @@ const cancellationRequest = (harnessRunId) => ({
 });
 
 const schedulerStarvationControllerSource = String.raw`
-  import { readdir, readFile, readlink } from "node:fs/promises";
+  import { readFile, readlink } from "node:fs/promises";
 
-  const [hostPidText, adapterWorkingDirectory] = process.argv.slice(1);
+  const [hostPidText, helperPath] = process.argv.slice(1);
   const hostPid = Number(hostPidText);
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + 10_000;
+  const childrenPath = "/proc/" + hostPid + "/task/" + hostPid + "/children";
   const resumeHost = () => {
     try {
       process.kill(hostPid, "SIGCONT");
@@ -53,22 +58,26 @@ const schedulerStarvationControllerSource = String.raw`
   process.once("SIGINT", () => process.exit(130));
   process.send?.("armed");
   while (Date.now() < deadline) {
-    process.kill(hostPid, "SIGSTOP");
-    const entries = await readdir("/proc", { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !/^[0-9]+$/.test(entry.name)) continue;
+    let childPids = [];
+    try {
+      childPids = (await readFile(childrenPath, "utf8"))
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+    } catch {
+      process.exit(1);
+    }
+    for (const childPid of childPids) {
       try {
-        const argv = (await readFile(
-          "/proc/" + entry.name + "/cmdline",
-          "utf8",
-        )).split("\0");
-        const cwd = await readlink("/proc/" + entry.name + "/cwd");
+        const executable = await readlink("/proc/" + childPid + "/exe");
+        const argv = (await readFile("/proc/" + childPid + "/cmdline", "utf8"))
+          .split("\0");
         if (
-          cwd !== adapterWorkingDirectory
-          || !argv[0]?.endsWith("/posix-process-tree-helper")
+          executable !== helperPath
           || argv[1] !== "subreaper"
         ) continue;
-        process.send?.("supervision-started");
+        process.kill(hostPid, "SIGSTOP");
+        process.send?.("supervision-starved");
         // Keep only the Host-side test process starved. The shipped native
         // guardian, supervisor, and short-lived Harness adapter continue for
         // longer than the pending cancellation timer, deterministically
@@ -77,31 +86,24 @@ const schedulerStarvationControllerSource = String.raw`
         process.kill(hostPid, "SIGCONT");
         process.exit(0);
       } catch {
-        // The candidate exited while procfs was being inspected.
+        // A different direct child exited while procfs was being inspected.
       }
     }
-    // Brief running slices let the Host advance launch while keeping it from
-    // overtaking supervision between helper spawn and the next procfs scan.
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    process.kill(hostPid, "SIGCONT");
-    await new Promise((resolve) => setTimeout(resolve, 1));
+    // Supervision has not started yet, so leave the Host runnable. Reading its
+    // direct-child list avoids a load-sensitive system-wide procfs walk while
+    // still observing the packaged helper before its adapter can complete.
+    await new Promise((resolve) => setImmediate(resolve));
   }
-  process.kill(hostPid, "SIGCONT");
   process.exit(1);
 `;
 
-const startSchedulerStarvation = async (fixture) => {
-  const harnessWorkspace = join(
-    dirname(fixture.dataDir),
-    `${basename(fixture.dataDir)}-harness-workspaces`,
-    fixture.harness.harness.harnessId,
-  );
+const startSchedulerStarvation = async () => {
   const controller = spawn(process.execPath, [
     "--input-type=module",
     "--eval",
     schedulerStarvationControllerSource,
     String(process.pid),
-    harnessWorkspace,
+    linuxProcessTreeHelper,
   ], {
     stdio: ["ignore", "ignore", "inherit", "ipc"],
   });
@@ -122,8 +124,8 @@ test("a source-created Linux termination-confirmation stall fails boundedly", as
   );
   let schedulerStarvation;
   try {
-    schedulerStarvation = await startSchedulerStarvation(fixture);
-    const supervisionStarted = once(schedulerStarvation.controller, "message");
+    schedulerStarvation = await startSchedulerStarvation();
+    const supervisionStarved = once(schedulerStarvation.controller, "message");
     let reportLaunched;
     const launchedRun = new Promise((resolve) => {
       reportLaunched = resolve;
@@ -148,8 +150,8 @@ test("a source-created Linux termination-confirmation stall fails boundedly", as
     ));
     reportLaunched(launched);
     await waitForTestCheckpoint(
-      supervisionStarted,
-      "harness_supervision_not_observed_by_scheduler_controller",
+      supervisionStarved,
+      "harness_supervision_not_starved_by_scheduler_controller",
       10_000,
     );
     const accepted = await cancellation;
