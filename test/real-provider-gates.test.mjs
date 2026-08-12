@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 import { BrowserProtocolError, parseBrowserControl } from "../src/browser-protocol.mjs";
-import { ProtocolError, writeFrame } from "../src/protocol.mjs";
+import { ProtocolError, readFrame, writeFrame } from "../src/protocol.mjs";
 import {
   inspectRealSandcastleRunState,
   serializeSanitizedRealProviderResult,
@@ -132,7 +132,12 @@ test("the real-Sandcastle runner recognizes a rejected launch before model invoc
   });
 });
 
-test("production Host and Cockpit protocols reject fault-injection controls", () => {
+test("production Host and Cockpit protocols exclude fault-injection controls", async () => {
+  const injectedFaultFields = {
+    hostMode: "hang-before-ack",
+    faultPoint: "harness_run_lifecycle.adapter_ready.before_commit",
+    faultInjector: "pause-before-commit",
+  };
   for (const message of [
     {
       type: "host.fault.inject",
@@ -158,4 +163,28 @@ test("production Host and Cockpit protocols reject fault-injection controls", ()
         && error.code === "browser_control_schema_invalid",
     );
   }
+
+  const hostControl = new PassThrough();
+  writeFrame(hostControl, {
+    type: "ping",
+    requestId: "host-control-with-injected-fault-fields",
+    ...injectedFaultFields,
+  });
+  assert.deepEqual(await readFrame(hostControl), {
+    type: "ping",
+    requestId: "host-control-with-injected-fault-fields",
+  });
+
+  assert.throws(
+    () => parseBrowserControl({
+      channel: "control",
+      message: {
+        type: "browser.ping",
+        requestId: "browser-control-with-injected-fault-fields",
+        ...injectedFaultFields,
+      },
+    }),
+    (error) => error instanceof BrowserProtocolError
+      && error.code === "browser_control_schema_invalid",
+  );
 });
