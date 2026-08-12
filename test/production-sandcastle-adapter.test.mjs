@@ -685,6 +685,8 @@ test("production cancellation and reconnection converge on the same canonical ru
       schemaVersion: 1,
       provider: { kind: "controlled-worker-fixture", ready: true },
       scenario: "cancellable",
+    }, {
+      cancellationGraceMs: 10_000,
     });
     const launched = await fixture.manager.launch(launchRequest(
       fixture.project.project.projectId,
