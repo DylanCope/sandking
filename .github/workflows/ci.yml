@@ -93,10 +93,14 @@ jobs:
 
   # Quarantined under https://github.com/DylanCope/sandking/issues/221:
   # - all of test/harness-run.test.mjs (whole-file fault aggregation);
-  # - the four named Linux/POSIX cancellation cases in
-  #   test/posix-process-tree.test.mjs;
-  # - the named production cancellation case in
-  #   test/production-sandcastle-adapter.test.mjs.
+  # - `POSIX cancellation retains a descendant that creates a new session`;
+  # - `Linux cancellation terminates an escaped descendant without pidfds`;
+  # - `legacy Linux keeps exact force delivery reliable until tree exit is
+  #   confirmed`;
+  # - `POSIX cancellation retains a daemon after its unobserved intermediate
+  #   exits`;
+  # - `production cancellation and reconnection converge on the same canonical
+  #   run`.
   # Their assertions and deadlines are unchanged. GitHub's runner exposed the
   # guardian-lifetime defect under contention, so this job reports it without
   # making unrelated unit regressions permanently red.
