@@ -31,6 +31,22 @@ const hostId = `host-${"1".repeat(24)}`;
 const controllerId = `runtime-${"2".repeat(24)}`;
 const controllerSessionId = `controller-session-${"3".repeat(24)}`;
 
+const waitForTestCheckpoint = async (checkpoint, name, timeoutMs = 10_000) => {
+  let timeout;
+  try {
+    return await Promise.race([
+      checkpoint,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(
+          new Error(`harness_run_test_checkpoint_timeout:${name}`),
+        ), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
 const waitForTerminal = async (manager, harnessRunId) => {
   const deadline = Date.now() + 60_000;
   let lastObservation = null;
@@ -1048,11 +1064,11 @@ test("restart arbitrates a signal dispatched before its durable publication", as
     });
     const accepted = await manager.cancel(request);
     assert.equal(accepted.code, "harness_run_cancellation_accepted");
-    await Promise.race([
+    await waitForTestCheckpoint(
       signalDispatched,
-      new Promise((_, reject) => setTimeout(() =>
-        reject(new Error("cooperative_signal_dispatch_not_observed")), 2_000)),
-    ]);
+      "cooperative_signal_dispatch_not_observed",
+      2_000,
+    );
 
     const ambiguousState = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
@@ -1100,7 +1116,9 @@ test("restart arbitrates a signal dispatched before its durable publication", as
     );
   } finally {
     releaseSignalDispatch?.();
-    await manager?.waitForIdle();
+    if (manager) {
+      await waitForTestCheckpoint(manager.waitForIdle(), "cooperative_signal_manager_idle");
+    }
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
@@ -1142,11 +1160,11 @@ test("cooperative signal publication is durable before restart terminal arbitrat
     });
     const accepted = await manager.cancel(request);
     assert.equal(accepted.code, "harness_run_cancellation_accepted");
-    await Promise.race([
+    await waitForTestCheckpoint(
       signalPublished,
-      new Promise((_, reject) => setTimeout(() =>
-        reject(new Error("cooperative_signal_publication_not_observed")), 2_000)),
-    ]);
+      "cooperative_signal_publication_not_observed",
+      2_000,
+    );
 
     const signalledState = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
@@ -1197,7 +1215,9 @@ test("cooperative signal publication is durable before restart terminal arbitrat
     );
   } finally {
     releaseSignalPublication?.();
-    await manager?.waitForIdle();
+    if (manager) {
+      await waitForTestCheckpoint(manager.waitForIdle(), "signal_publication_manager_idle");
+    }
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
@@ -1236,11 +1256,11 @@ test("retained termination confirmation finalizes accepted cancellation exactly 
       idempotencyKey: "restart-after-cancellation-termination-confirmation",
     });
     await manager.cancel(request);
-    await Promise.race([
+    await waitForTestCheckpoint(
       confirmationCommitted,
-      new Promise((_, reject) => setTimeout(() =>
-        reject(new Error("cancellation_confirmation_commit_not_observed")), 2_000)),
-    ]);
+      "cancellation_confirmation_commit_not_observed",
+      2_000,
+    );
 
     const confirmedState = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
@@ -1285,7 +1305,12 @@ test("retained termination confirmation finalizes accepted cancellation exactly 
     );
   } finally {
     releaseConfirmationCommit?.();
-    await manager?.waitForIdle();
+    if (manager) {
+      await waitForTestCheckpoint(
+        manager.waitForIdle(),
+        "termination_confirmation_manager_idle",
+      );
+    }
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
@@ -1326,11 +1351,11 @@ test("forced signal publication survives restart without a second escalation", a
       idempotencyKey: "restart-after-forced-cancellation-signal",
     });
     await manager.cancel(request);
-    await Promise.race([
+    await waitForTestCheckpoint(
       forcedSignalCommitted,
-      new Promise((_, reject) => setTimeout(() =>
-        reject(new Error("forced_signal_commit_not_observed")), 2_000)),
-    ]);
+      "forced_signal_commit_not_observed",
+      2_000,
+    );
 
     const forcedState = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
@@ -1375,7 +1400,9 @@ test("forced signal publication survives restart without a second escalation", a
     );
   } finally {
     releaseForcedSignalCommit?.();
-    await manager?.waitForIdle();
+    if (manager) {
+      await waitForTestCheckpoint(manager.waitForIdle(), "forced_signal_manager_idle");
+    }
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
@@ -1439,13 +1466,15 @@ test("pre-publication cancellation signal and termination faults converge after 
       });
       const accepted = await manager.cancel(request);
       assert.equal(accepted.code, "harness_run_cancellation_accepted");
-      await Promise.race([
+      await waitForTestCheckpoint(
         faultReached,
-        new Promise((_, reject) => setTimeout(() => reject(
-          new Error(`cancellation_signal_boundary_not_reached:${boundary.point}`),
-        ), 5_000)),
-      ]);
-      await manager.waitForIdle();
+        `cancellation_signal_boundary_not_reached:${boundary.point}`,
+        5_000,
+      );
+      await waitForTestCheckpoint(
+        manager.waitForIdle(),
+        `cancellation_signal_boundary_manager_idle:${boundary.point}`,
+      );
 
       const interrupted = JSON.parse(
         await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
@@ -1557,11 +1586,11 @@ test("restart repairs a cancellation terminal outcome interrupted after state pu
       idempotencyKey: "restart-after-cancelled-outcome-publication",
     });
     await manager.cancel(request);
-    await Promise.race([
+    await waitForTestCheckpoint(
       outcomeStateCommitted,
-      new Promise((_, reject) => setTimeout(() =>
-        reject(new Error("cancellation_outcome_state_commit_not_observed")), 2_000)),
-    ]);
+      "cancellation_outcome_state_commit_not_observed",
+      2_000,
+    );
 
     const committed = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
@@ -1631,8 +1660,14 @@ test("uncertain termination confirmation never invents a cancelled outcome", asy
     await manager.cancel(cancellationRequest(launched.run.harnessRunId, {
       idempotencyKey: "uncertain-termination-confirmation-key",
     }));
-    await confirmationAttempted;
-    await manager.waitForIdle();
+    await waitForTestCheckpoint(
+      confirmationAttempted,
+      "cancellation_termination_confirmation_not_attempted",
+    );
+    await waitForTestCheckpoint(
+      manager.waitForIdle(),
+      "uncertain_termination_manager_idle",
+    );
 
     const observation = await manager.observe({
       requestId: "observe-uncertain-cancellation",
@@ -1725,7 +1760,10 @@ test("cancellation accepted before terminal commit wins the serialized race", as
       fixture.registered.project.projectId,
       161,
     ));
-    await outcomeCommitReached;
+    await waitForTestCheckpoint(
+      outcomeCommitReached,
+      "completed_outcome_commit_not_reached",
+    );
     process.kill = (pid, signal) => {
       if (pid < 0 && signal !== 0) staleGroupSignals.push({ pid, signal });
       return originalProcessKill(pid, signal);
@@ -1794,7 +1832,10 @@ test("late cancellation confirms the complete process tree before recording canc
       fixture.registered.project.projectId,
       999_999_992,
     ));
-    await outcomeCommitReached;
+    await waitForTestCheckpoint(
+      outcomeCommitReached,
+      "late_outcome_commit_not_reached",
+    );
     process.kill = (pid, signal) => {
       if (pid < 0 && signal !== 0) {
         unboundGroupSignals.push({ pid, signal });
@@ -1860,7 +1901,10 @@ test("cancellation acceptance commits before the cooperative signal is dispatche
       launched.run.harnessRunId,
       { idempotencyKey: "cancel-commit-order-key" },
     ));
-    await stateCommitReached;
+    await waitForTestCheckpoint(
+      stateCommitReached,
+      "cancellation_state_commit_not_reached",
+    );
 
     const committed = JSON.parse(
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
@@ -2419,24 +2463,18 @@ test("readiness and terminal-envelope interruptions converge from exact pre/post
         164,
         { idempotencyKey: `lifecycle-boundary-launch-${index}` },
       ));
-      let faultTimeout;
-      try {
-        await Promise.race([
-          reachedFault,
-          new Promise((_, reject) => {
-            faultTimeout = setTimeout(() => reject(
-              new Error(`lifecycle_boundary_not_reached:${boundary.point}`),
-            ), 10_000);
-          }),
-        ]);
-      } finally {
-        clearTimeout(faultTimeout);
-      }
+      await waitForTestCheckpoint(
+        reachedFault,
+        `lifecycle_boundary_not_reached:${boundary.point}`,
+      );
       // Restart only after the original Host-owned supervision operation has
       // actually unwound from the injected interruption. A timing delay would
       // leave this canonical recovery proof vulnerable to a cross-manager
       // write race.
-      await manager.waitForIdle();
+      await waitForTestCheckpoint(
+        manager.waitForIdle(),
+        `launch_fault_manager_idle:${boundary.point}`,
+      );
 
       const stateAfterFault = JSON.parse(
         await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
