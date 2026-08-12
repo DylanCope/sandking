@@ -127,6 +127,7 @@ jobs:
         run: npm ci
 
       - name: Run quarantined unit tests
+        id: quarantined-tests
         continue-on-error: true
         shell: bash
         run: |
@@ -139,6 +140,17 @@ jobs:
           if (( harness_status != 0 || focused_status != 0 )); then
             exit 1
           fi
+
+      - name: Report allowed quarantine failure
+        if: steps.quarantined-tests.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning title=Allowed #221 quarantine failure::Linux cancellation unit tests failed without blocking this pull request check."
+          {
+            echo "### Allowed #221 quarantine failure"
+            echo
+            echo "Linux cancellation unit tests failed under the documented guardian-lifetime quarantine. See [issue #221](https://github.com/DylanCope/sandking/issues/221)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Quarantined under https://github.com/DylanCope/sandking/issues/221:
   # - `packaged Cockpit recovers every canonical boundary` (the hosted run
@@ -168,5 +180,17 @@ jobs:
         run: npm ci
 
       - name: Run quarantined browser tests
+        id: quarantined-tests
         continue-on-error: true
         run: NODE_OPTIONS="--test-name-pattern=${BROWSER_QUARANTINE_PATTERN}" npm run test:browser
+
+      - name: Report allowed quarantine failure
+        if: steps.quarantined-tests.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning title=Allowed #221 quarantine failure::Linux cancellation browser tests failed without blocking this pull request check."
+          {
+            echo "### Allowed #221 quarantine failure"
+            echo
+            echo "Linux cancellation browser tests failed under the documented guardian-lifetime quarantine. See [issue #221](https://github.com/DylanCope/sandking/issues/221)."
+          } >> "$GITHUB_STEP_SUMMARY"
