@@ -829,6 +829,7 @@ test("a live incompatible runtime returns an idempotent typed audited launch fai
 test("launch reports typed reset guidance for stale local Harness-run state", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-stale-runtime-harness-runs-"));
   const statePath = join(dataDir, "harness-runs.json");
+  const retryGuidance = `Delete the Sand-King state directory at ${dataDir}, then retry the launch.`;
   const staleStateText = `${JSON.stringify({
     schemaVersion: 7,
     runs: [],
@@ -837,17 +838,20 @@ test("launch reports typed reset guidance for stale local Harness-run state", as
     legacyStartOutcomes: [],
   }, null, 2)}\n`;
   await writeFile(statePath, staleStateText);
+  const launchArgs = [
+    "launch",
+    "--startup-timeout-ms",
+    "10000",
+    "--data-dir",
+    dataDir,
+    "--idempotency-key",
+    "stale-state-reset-guidance",
+    "--json",
+    "--no-open",
+  ];
 
   try {
-    const failure = await runFailingCli([
-      "launch",
-      "--startup-timeout-ms",
-      "10000",
-      "--data-dir",
-      dataDir,
-      "--json",
-      "--no-open",
-    ]);
+    const failure = await runFailingCli(launchArgs);
     assert.equal(failure.stderr, "");
     const publicOutcome = JSON.parse(failure.stdout);
     assert.deepEqual(publicOutcome, {
@@ -857,11 +861,18 @@ test("launch reports typed reset guidance for stale local Harness-run state", as
         code: "harness_run_state_schema_unsupported",
         retryable: false,
         explanation: "The local Harness-run state is incompatible with this Sand-King build.",
-        retryGuidance: "Delete the Sand-King state directory, then retry the launch.",
+        retryGuidance,
         auditId: publicOutcome.diagnosis.auditId,
       },
     });
     assert.match(publicOutcome.diagnosis.auditId, /^audit-/);
+    const replayFailure = await runFailingCli(launchArgs);
+    assert.equal(replayFailure.stderr, "");
+    assert.deepEqual(JSON.parse(replayFailure.stdout), publicOutcome);
+    const retainedDiagnosis = JSON.parse(
+      await readFile(join(dataDir, "last-startup-error.json"), "utf8"),
+    );
+    assert.equal(retainedDiagnosis.retryGuidance, retryGuidance);
     assert.equal(await readFile(statePath, "utf8"), staleStateText);
     await waitForProcessCount(dataDir, 0);
   } finally {
