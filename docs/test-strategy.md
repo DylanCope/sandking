@@ -3,8 +3,8 @@
 > **Status: partially acted on (2026-08-11).** The evidence-freshness
 > tripwires and the descriptively-named evidence receipt files have been
 > retired — see "What has been retired" at the end. The remaining
-> recommendations (evidence JSON, manifests, non-gated runners, schema
-> migrations) are still open.
+> recommendations (evidence JSON, manifests, and non-gated runners) are still
+> open. The phantom Harness-run schema migrations were retired by #211.
 
 An audit of all 102 files / 34,505 lines in `test/` plus the 30 files /
 15,321 lines in `acceptance/`, done to answer one question: **what is
@@ -98,7 +98,7 @@ Consequences, all observed rather than theorised:
 ~2,677 lines of tests verify code that is unreachable from the shipped
 product.
 
-## Schema migrations for a past that never shipped
+## Retired: schema migrations for a past that never shipped
 
 `test/harness-run.test.mjs` devotes **~1,015 lines** to durable-state
 migration tests across schema v2 → v7 plus a "main-era" case. Sand-King is
@@ -139,7 +139,7 @@ what is being tested.
 | `issue-*-evidence-source.mjs` + `retained-evidence-supersession.mjs` | 907 | **Retire** — dies with the tripwire |
 | Other `issue-*` helpers | 484 | **Retire** |
 | Issue-numbered evidence tests (152/164/174/175) | 865 | **Replace** — extract the ~150 lines of fail-closed safety tests, drop the rest |
-| Legacy schema-migration tests in `harness-run.test.mjs` | ~1,015 | **Retire** — no deployed prior state exists |
+| Legacy schema-migration tests in `harness-run.test.mjs` | ~1,015 | **Retired by #211** — no deployed prior state exists |
 | Tests of the unreachable adapter payload | 1,763 | **Conditional** — keep if the manifest gate is fixed (they become coverage for a working feature); retire if the adapter is rewritten |
 | Planning tests | 871 | **Retire with the Planning feature**, if that strip-back proceeds |
 | Gated real-provider runners (174-real-sandcastle, 146-real-claude, installed-claude) | 1,225 | **Keep, consolidate** — the only executable path to a real provider; heavy duplication between the three |

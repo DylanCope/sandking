@@ -90,6 +90,12 @@ const startupDiagnosisDetails = Object.freeze({
     explanation: "The local Host became unavailable during negotiation.",
     retryGuidance: "Restart the local Host, then retry the launch.",
   },
+  harness_run_state_schema_unsupported: {
+    type: "runtime_startup_failure",
+    retryable: false,
+    explanation: "The local Harness-run state is incompatible with this Sand-King build.",
+    retryGuidance: "Delete the Sand-King state directory, then retry the launch.",
+  },
   controller_identity_invalid: {
     type: "host_negotiation_failure",
     retryable: true,
@@ -158,22 +164,37 @@ const startupDiagnosisDetails = Object.freeze({
   },
 });
 
-/** @param {string} code @param {string | undefined} auditId @returns {StartupDiagnosis} */
-const startupDiagnosisForCode = (code, auditId) => {
+/**
+ * @param {string} code
+ * @param {string | undefined} auditId
+ * @param {string | undefined} stateDirectory
+ * @returns {StartupDiagnosis}
+ */
+const startupDiagnosisForCode = (code, auditId, stateDirectory) => {
   const sanitizedCode = Object.hasOwn(startupDiagnosisDetails, code)
     ? code
     : "runtime_start_failed";
   return {
     code: sanitizedCode,
     ...startupDiagnosisDetails[sanitizedCode],
+    ...(sanitizedCode === "harness_run_state_schema_unsupported" && stateDirectory
+      ? {
+          retryGuidance:
+            `Delete the Sand-King state directory at ${stateDirectory}, then retry the launch.`,
+        }
+      : {}),
     ...(auditId ? { auditId } : {}),
   };
 };
 
 export class RuntimeStartupError extends Error {
-  /** @param {string} code @param {string | undefined} [auditId] */
-  constructor(code, auditId) {
-    const diagnosis = startupDiagnosisForCode(code, auditId);
+  /**
+   * @param {string} code
+   * @param {string | undefined} [auditId]
+   * @param {string | undefined} [stateDirectory]
+   */
+  constructor(code, auditId, stateDirectory) {
+    const diagnosis = startupDiagnosisForCode(code, auditId, stateDirectory);
     super(diagnosis.code);
     this.name = "RuntimeStartupError";
     this.diagnosis = diagnosis;
@@ -963,6 +984,7 @@ export const launchRuntime = async (options = {}) => {
         throw new RuntimeStartupError(
           existingOutcome.failure.code,
           existingOutcome.failure.auditId,
+          resolvedDataDir,
         );
       }
       if (!existingOutcome.response) {
@@ -1085,7 +1107,11 @@ export const launchRuntime = async (options = {}) => {
           },
         );
         const publicAuditId = startupError.diagnosis.auditId ?? runtimeStartAuditId;
-        const publicError = new RuntimeStartupError(startupError.diagnosis.code, publicAuditId);
+        const publicError = new RuntimeStartupError(
+          startupError.diagnosis.code,
+          publicAuditId,
+          resolvedDataDir,
+        );
         outcomes.push({
           idempotencyKeyHash,
           expectedRevision,

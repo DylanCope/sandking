@@ -247,7 +247,6 @@ try {
           immutableSnapshotsUnchanged: true,
           keyedMutationsNotDuplicated: true,
           terminalTruthUnique: true,
-          migrationsRetrySafely: true,
           productionFaultApiAbsent: true,
           noEntityRevisionPrecondition: true,
         },

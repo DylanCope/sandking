@@ -289,54 +289,6 @@ test("Harness-run lookup, cursor observation, and ranged logs are typed Host ope
   );
 });
 
-test("Harness-run lookup carries retained main-era start outcomes after an upgrade", async () => {
-  const stream = new PassThrough();
-  const idempotencyKeyHash = `sha256:${"1".repeat(64)}`;
-  const legacyStartOutcome = {
-    type: "harness.run.start.result",
-    requestId: "main-era-start-request",
-    code: "harness_run_created",
-    authorizationClass: "approved_launch_request_execution",
-    idempotencyKeyHash,
-    expectedRevision: 2,
-    launchRequestRevision: 2,
-    revision: 3,
-    idempotentReplay: false,
-    auditId: `audit-${"2".repeat(24)}`,
-    run: {
-      harnessRunId: `harness-run-${"3".repeat(24)}`,
-      revision: 3,
-      status: "succeeded",
-      launchRequestId: `launch-request-${"4".repeat(24)}`,
-      launchRequestRevision: 2,
-      hostId: `host-${"5".repeat(24)}`,
-      projectId: `project-${"6".repeat(24)}`,
-      harnessId: `harness-${"7".repeat(24)}`,
-      harnessPinnedRevision: "8".repeat(40),
-      adapterId: "conformance-harness-adapter-v1",
-      adapterProtocol: "1.0.0",
-      adapterEntryPoint: "adapters/conformance.mjs",
-      controllerId: `runtime-${"9".repeat(24)}`,
-      controllerSessionId: `controller-session-${"a".repeat(24)}`,
-      createdAt: "2026-08-01T10:00:00.000Z",
-      adapterReadyAt: "2026-08-01T10:00:01.000Z",
-      completedAt: "2026-08-01T10:00:02.000Z",
-      startAuditId: `audit-${"b".repeat(24)}`,
-    },
-  };
-  const lookup = {
-    type: "harness.run.lookup.result",
-    requestId: "lookup-main-era-start",
-    code: "harness_run_launch_outcome_found",
-    idempotencyKeyHash,
-    found: true,
-    launchOutcome: legacyStartOutcome,
-  };
-
-  writeFrame(stream, lookup);
-  assert.deepEqual(await readFrame(stream), lookup);
-});
-
 test("wire-level protocol errors include sanitized explanations and retry guidance", async () => {
   const stream = new PassThrough();
   const diagnosis = {

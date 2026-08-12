@@ -981,6 +981,7 @@ const sanitizedRuntimeCode = (error) => {
       "host_disconnected",
       "host_protocol_invalid",
       "host_observation_resynchronization_failed",
+      "harness_run_state_schema_unsupported",
       "controller_identity_invalid",
       "controller_host_identity_mismatch",
       "controller_protocol_major_mismatch",
@@ -1168,24 +1169,26 @@ const launchHost = async (runtimeId) => {
         throw new Error("host_protocol_error");
       }
       hostIdentityOutcome = outcome;
-    } else {
-      const requestId = `ping-${randomBytes(8).toString("hex")}`;
-      writeFrame(child.stdin, { type: "ping", requestId });
-      const pong = await readFrame(child.stdout);
-      if (pong.type !== "pong" || pong.requestId !== requestId) {
-        throw new Error("host_unavailable");
-      }
+    }
+
+    const readinessRequestId = `ping-${randomBytes(8).toString("hex")}`;
+    writeFrame(child.stdin, { type: "ping", requestId: readinessRequestId });
+    const pong = await readFrame(child.stdout);
+    if (pong.type !== "pong" || pong.requestId !== readinessRequestId) {
+      throw new Error("host_unavailable");
     }
 
     return { host: response, hostIdentityOutcome };
   } catch (error) {
     await stopChild(child);
-    if (
-      error instanceof ProtocolError
-      && error.code === "frame_truncated"
-      && hostDiagnostic.trim() === "host_internal_error"
-    ) {
-      throw new Error("host_unavailable");
+    if (error instanceof ProtocolError && error.code === "frame_truncated") {
+      const diagnosticCode = hostDiagnostic.trim().split(":", 1)[0];
+      if (diagnosticCode === "harness_run_state_schema_unsupported") {
+        throw new Error(diagnosticCode);
+      }
+      if (diagnosticCode === "host_internal_error") {
+        throw new Error("host_unavailable");
+      }
     }
     throw error;
   }

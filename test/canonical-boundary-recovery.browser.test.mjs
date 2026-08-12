@@ -265,7 +265,6 @@ const expectedStatusAfterRestart = (faultPoint) => {
   if (
     faultPoint === "harness_run_terminal_envelope.after_state_commit"
     || faultPoint === "harness_run_outcome.after_state_commit"
-    || faultPoint.startsWith("harness_run_migration.")
   ) return "succeeded";
   if (faultPoint.startsWith("harness_run_recovery.")) return "recovery_required";
   if (faultPoint.startsWith("harness_run_cancellation.")) {
@@ -474,33 +473,6 @@ const prepareRecoverySeed = async (options) => {
   );
 };
 
-const downgradeTerminalSeedToSchemaV2 = async (dataDir) => {
-  const current = await readJson(join(dataDir, "harness-runs.json"));
-  const legacy = structuredClone(current);
-  legacy.schemaVersion = 2;
-  delete legacy.cancellationOutcomes;
-  delete legacy.recoveryMutations;
-  for (const run of legacy.runs) {
-    delete run.executionSnapshot;
-    delete run.cancellation;
-    delete run.recovery;
-    delete run.cancellationReconciliation;
-    delete run.launchIdempotencyKeyHash;
-  }
-  for (const outcome of [...legacy.launchOutcomes, ...legacy.legacyStartOutcomes]) {
-    if (!outcome.response?.run) continue;
-    delete outcome.response.run.executionSnapshot;
-    delete outcome.response.run.cancellation;
-    delete outcome.response.run.recovery;
-    delete outcome.response.run.launchIdempotencyKeyHash;
-  }
-  await writeFile(
-    join(dataDir, "harness-runs.json"),
-    `${JSON.stringify(legacy, null, 2)}\n`,
-    { mode: 0o600 },
-  );
-};
-
 const writeResults = async (results) => {
   const resultDirectory = process.env.SANDKING_ACCEPTANCE_RESULT_DIR;
   if (!resultDirectory) return;
@@ -597,17 +569,13 @@ test("packaged Cockpit recovers every canonical boundary", {
       environment,
     });
 
-    await downgradeTerminalSeedToSchemaV2(terminalSeedDir);
-
     for (const [index, declaration] of selectedDeclarations.entries()) {
       const { boundary, faultPoint } = declaration;
       process.stdout.write(`qualifying packaged Cockpit boundary ${index + 1}/${selectedDeclarations.length}: ${faultPoint}\n`);
       const caseRoot = join(root, `case-${String(index).padStart(2, "0")}`);
       const dataDir = join(caseRoot, "host-state");
       await mkdir(caseRoot, { recursive: true });
-      const seedDir = faultPoint.startsWith("harness_run_migration.")
-        ? terminalSeedDir
-        : faultPoint.startsWith("harness_run_reconciliation.")
+      const seedDir = faultPoint.startsWith("harness_run_reconciliation.")
           ? reconciliationSeedDir
           : faultPoint.startsWith("harness_run_recovery.")
             ? recoverySeedDir
@@ -616,8 +584,7 @@ test("packaged Cockpit recovers every canonical boundary", {
       const markerPath = join(caseRoot, "fault-reached");
       await pauseInstalledHostOnceAtHarnessRunFault(installed, faultPoint, markerPath);
 
-      const isStartupBoundary = faultPoint.startsWith("harness_run_migration.")
-        || faultPoint.startsWith("harness_run_reconciliation.");
+      const isStartupBoundary = faultPoint.startsWith("harness_run_reconciliation.");
       let interruptedState;
       let pendingMutation = null;
       let pendingStorageKey = null;

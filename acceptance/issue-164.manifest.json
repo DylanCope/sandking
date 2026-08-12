@@ -197,7 +197,7 @@
       "id": "durable-execution/recovers-every-canonical-boundary",
       "requirements": [
         "#158 stable acceptance scenario durable-execution/recovers-every-canonical-boundary",
-        "#164 deterministic fault, migration, protocol, state, security, and packaged-browser merge gate"
+        "#164 deterministic fault, protocol, state, security, and packaged-browser merge gate"
       ],
       "environmentAndTransport": [
         "test-only deterministic fault callback instrumented only into a temporary npm-packed Host copy",
@@ -205,14 +205,14 @@
         "supported Linux, Windows, and macOS process supervision suites"
       ],
       "initialState": [
-        "fresh, active, cancelling, recovery_required, terminal, and legacy-schema state fixtures",
+        "fresh, active, cancelling, recovery_required, and terminal state fixtures",
         "bounded raw key, credential, environment, process, and Project-change security markers"
       ],
       "actionsAndFaultPoints": [
         "interrupt immediately before and after every faultMatrix publication or action point",
         "restart repeatedly from the exact retained Host-private bytes",
         "retry launch, cancellation, and recovery with matching and conflicting request fingerprints",
-        "refresh/reconnect observation cursors and migrate every supported legacy state"
+        "refresh/reconnect observation cursors"
       ],
       "expectedTypedResults": [
         "pre-commit faults leave no claimed accepted effect",
@@ -222,7 +222,7 @@
       "canonicalInvariants": [
         "immutable snapshot and ordered event history agree with the current view",
         "acknowledged effects survive and unacknowledged effects are never claimed",
-        "keyed mutations, terminal outcomes, signals, recovery actions, and migrations do not duplicate",
+        "keyed mutations, terminal outcomes, signals, and recovery actions do not duplicate",
         "no operation accepts an expected Harness-run entity revision"
       ],
       "prohibitedSideEffects": [
@@ -346,19 +346,6 @@
         "executableEvidence": [
           "test/harness-run.test.mjs",
           "test/host-death-reconciliation.browser.test.mjs",
-          "test/canonical-boundary-recovery.browser.test.mjs"
-        ]
-      },
-      {
-        "boundary": "legacy-state migration",
-        "atomicPublication": "all schemas v1-v7 converge through one deterministic schema-v8 snapshot and idempotent audit repair seam",
-        "faultPoints": [
-          "harness_run_migration.before_commit",
-          "harness_run_migration.after_state_commit",
-          "harness_run_migration.after_commit"
-        ],
-        "executableEvidence": [
-          "test/harness-run.test.mjs",
           "test/canonical-boundary-recovery.browser.test.mjs"
         ]
       }
