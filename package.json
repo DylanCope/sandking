@@ -25,6 +25,8 @@
     "x64"
   ],
   "scripts": {
+    "build:native-helpers": "node scripts/build-linux-process-tree-helpers.mjs --write",
+    "check:native-helpers": "node scripts/build-linux-process-tree-helpers.mjs --check",
     "pretest": "node test/ensure-playwright.mjs",
     "sandcastle": "tsx .sandcastle/main.mts",
     "sandcastle:quick": "tsx .sandcastle/quick.mts",
