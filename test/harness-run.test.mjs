@@ -21,6 +21,7 @@ import {
   scheduleCancellationEscalation,
 } from "../src/harness-runs.mjs";
 import { createProjectRegistry } from "../src/project-registration.mjs";
+import { createHarnessRunFixture } from "./harness-run-fixture.mjs";
 import {
   qualifyIssue164FaultPoint,
   retainIssue164FaultPointResults,
@@ -84,76 +85,8 @@ const waitForDiagnosticCommits = async (manager, harnessRunId) => {
   throw new Error("harness_run_diagnostic_commit_timeout");
 };
 
-const createFixture = async (prefix, managerOptions = {}) => {
-  const root = await mkdtemp(join(tmpdir(), prefix));
-  const dataDir = join(root, "host-state");
-  const projectPath = join(root, "selected-project");
-  const audits = [];
-  const recordAudit = async (action, outcome, details = {}, requestedAuditId) => {
-    if (requestedAuditId && audits.some((audit) => audit.auditId === requestedAuditId)) {
-      return requestedAuditId;
-    }
-    const auditId = requestedAuditId
-      ?? `audit-${String(audits.length + 1).padStart(24, "0")}`;
-    audits.push({ auditId, action, outcome, details });
-    return auditId;
-  };
-  await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
-  await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
-  const registry = await createProjectRegistry({ dataDir, recordAudit });
-  const registered = await registry.registerProject({
-    requestId: "register-run-project",
-    path: projectPath,
-    configuration: {
-      issueWorkflow: { provider: "github", kind: "issues" },
-      checks: [
-        { checkId: "typecheck", command: "npm run typecheck" },
-        { checkId: "test", command: "npm run test" },
-      ],
-    },
-    authorizationClass: "host_local_project_registration",
-    idempotencyKey: "register-run-project",
-    expectedRevision: 0,
-  });
-  const harness = await registry.registerConformanceHarness({
-    requestId: "register-run-harness",
-    name: "Sand-King Conformance Harness",
-    authorizationClass: "host_local_harness_registration",
-    idempotencyKey: "register-run-harness",
-    expectedRevision: 0,
-  });
-  await registry.pinConformanceHarness({
-    requestId: "pin-run-harness",
-    projectId: registered.project.projectId,
-    harnessId: harness.harness.harnessId,
-    immutableRevision: harness.harness.immutableRevision,
-    boundedConfiguration: {
-      adapterProtocol: "1.0.0",
-      launchProfile: "delegated-work",
-    },
-    authorizationClass: "host_local_project_configuration",
-    idempotencyKey: "pin-run-harness",
-    expectedRevision: 1,
-  });
-  const manager = await createHarnessRunManager({
-    dataDir,
-    hostId,
-    recordAudit,
-    loadLaunchContext: registry.loadLaunchContext,
-    ...managerOptions,
-  });
-  return {
-    root,
-    dataDir,
-    projectPath,
-    audits,
-    registry,
-    registered,
-    harness,
-    manager,
-    recordAudit,
-  };
-};
+const createFixture = (prefix, managerOptions = {}) =>
+  createHarnessRunFixture(prefix, hostId, managerOptions);
 
 const launchRequest = (projectId, issueNumber, overrides = {}) => ({
   requestId: `launch-${issueNumber}`,
@@ -1678,10 +1611,6 @@ test("restart repairs a cancellation terminal outcome interrupted after state pu
 
 test("uncertain termination confirmation never invents a cancelled outcome", async () => {
   const fixture = await createFixture("sandking-harness-run-cancel-uncertain-");
-  // The nested cascade regression deliberately withholds only this checkpoint.
-  // Ordinary Harness-run execution always takes the real confirmation path.
-  const stallConfirmationCheckpoint =
-    process.env.SANDKING_TEST_STALL_CANCELLATION_CONFIRMATION === "1";
   let reportConfirmationAttempt;
   const confirmationAttempted = new Promise((resolve) => {
     reportConfirmationAttempt = resolve;
@@ -1694,7 +1623,7 @@ test("uncertain termination confirmation never invents a cancelled outcome", asy
       loadLaunchContext: fixture.registry.loadLaunchContext,
       faultInjector: (point) => {
         if (point === "harness_run_cancellation.termination_confirmation.before_commit") {
-          if (!stallConfirmationCheckpoint) reportConfirmationAttempt();
+          reportConfirmationAttempt();
           throw new Error("simulated_termination_confirmation_uncertainty");
         }
       },
@@ -1710,7 +1639,7 @@ test("uncertain termination confirmation never invents a cancelled outcome", asy
     await waitForTestCheckpoint(
       confirmationAttempted,
       "cancellation_termination_confirmation_not_attempted",
-      stallConfirmationCheckpoint ? 25 : localFaultCheckpointTimeoutMs,
+      localFaultCheckpointTimeoutMs,
     );
     await waitForTestCheckpoint(
       manager.waitForIdle(),
