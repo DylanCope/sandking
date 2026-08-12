@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -555,31 +555,6 @@ test("browser credentials are non-persistent and expire in the runtime", async (
     assert.equal(expiryAudit.outcome, "observed");
     assert.equal(expiryAudit.details.authorizationClass, "runtime_browser_session");
     assert.match(expiryAudit.details.sessionAuditId, /^audit-/);
-    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-      await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, {
-        recursive: true,
-        mode: 0o700,
-      });
-      await writeFile(
-        join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "browser-session-expiry.json"),
-        `${JSON.stringify({
-          kind: "browser_session_expiry",
-          ttlMs: 5000,
-          persistentCookieAttributesIssued: /(?:max-age|expires)=/i.test(setCookie),
-          socketCloseCode: 1008,
-          socketCloseReason: "session_expired",
-          expiredHttpStatus: expiredRequest.status,
-          expiredHttpCode: "session_expired",
-          expiryAudit: {
-            auditId: expiryAudit.auditId,
-            action: expiryAudit.action,
-            outcome: expiryAudit.outcome,
-            details: expiryAudit.details,
-          },
-        }, null, 2)}\n`,
-        { mode: 0o600 },
-      );
-    }
   } finally {
     await stop(dataDir);
     await rm(dataDir, { recursive: true, force: true });

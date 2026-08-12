@@ -85,19 +85,6 @@ const terminateMatchingProcesses = async (dataDir) => {
   }
 };
 
-/** @param {string} file @param {unknown} value */
-const writeAcceptanceResult = async (file, value) => {
-  if (!process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-    return;
-  }
-  await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, { recursive: true, mode: 0o700 });
-  await writeFile(
-    join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, file),
-    `${JSON.stringify(value, null, 2)}\n`,
-    { mode: 0o600 },
-  );
-};
-
 test("concurrent launches reuse one ready runtime and retain full Host negotiation", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "sandking-runtime-"));
 
@@ -808,14 +795,6 @@ test("a live incompatible runtime returns an idempotent typed audited launch fai
     ).outcomes;
     assert.equal(outcomes.at(-1).failure.code, "runtime_incompatible");
     assert.equal(outcomes.at(-1).failure.auditId, publicOutcome.diagnosis.auditId);
-    await writeAcceptanceResult("runtime-live-incompatible.json", {
-      kind: "runtime_reuse_failure",
-      mode: "live-incompatible",
-      diagnosis: publicOutcome.diagnosis,
-      mutationOutcome: outcomes.at(-1),
-      lifecycleAudit: rejectedAudit,
-      competingRuntimeSpawned: false,
-    });
     const after = JSON.parse(await readFile(statePath, "utf8"));
     assert.equal(after.pid, original.pid);
     assert.equal(after.runtimeId, original.runtimeId);
@@ -930,14 +909,6 @@ test("an unauthenticated live runtime returns a typed audited launch failure", a
     ).outcomes;
     assert.equal(outcomes.at(-1).failure.code, "runtime_not_ready");
     assert.equal(outcomes.at(-1).failure.auditId, publicOutcome.diagnosis.auditId);
-    await writeAcceptanceResult("runtime-live-not-ready.json", {
-      kind: "runtime_reuse_failure",
-      mode: "live-unauthenticated-readiness",
-      diagnosis: publicOutcome.diagnosis,
-      mutationOutcome: outcomes.at(-1),
-      lifecycleAudit: rejectedAudit,
-      competingRuntimeSpawned: false,
-    });
   } finally {
     if (original) {
       await writeFile(statePath, `${JSON.stringify(original)}\n`, { mode: 0o600 });

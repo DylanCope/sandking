@@ -19,25 +19,13 @@ import {
   installCurrentPackage,
   pauseInstalledHostOnceAtHarnessRunFault,
 } from "./installed-package.mjs";
+import { harnessRunFaultDeclarations } from "./harness-run-fault-coverage.mjs";
 
 const execFileAsync = promisify(execFile);
-const manifest = JSON.parse(await readFile(
-  new URL("../acceptance/issue-164.manifest.json", import.meta.url),
-  "utf8",
-));
-const declarations = manifest.verification.faultMatrix.flatMap((boundary) =>
-  boundary.faultPoints.map((faultPoint) => ({
-    boundary: boundary.boundary,
-    faultPoint,
-  })));
 const selectedDeclarations = process.env.SANDKING_TEST_FAULT_POINT
-  ? declarations.filter(({ faultPoint }) =>
+  ? harnessRunFaultDeclarations.filter(({ faultPoint }) =>
       faultPoint === process.env.SANDKING_TEST_FAULT_POINT)
-  : declarations;
-const packagedPublicSeam =
-  "loopback Cockpit -> authenticated WebSocket -> Controller runtime -> framed local Host";
-const resultFileName = "canonical-boundary-results.json";
-
+  : harnessRunFaultDeclarations;
 const readJson = (path) => readFile(path, "utf8").then(JSON.parse);
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -473,17 +461,6 @@ const prepareRecoverySeed = async (options) => {
   );
 };
 
-const writeResults = async (results) => {
-  const resultDirectory = process.env.SANDKING_ACCEPTANCE_RESULT_DIR;
-  if (!resultDirectory) return;
-  await mkdir(resultDirectory, { recursive: true, mode: 0o700 });
-  await writeFile(
-    join(resultDirectory, resultFileName),
-    `${JSON.stringify({ schemaVersion: 2, issue: 164, results }, null, 2)}\n`,
-    { mode: 0o600 },
-  );
-};
-
 test("packaged Cockpit recovers every canonical boundary", {
   skip: process.platform !== "linux"
     ? "the deterministic installed-Host pause driver uses Linux process signals"
@@ -528,7 +505,7 @@ test("packaged Cockpit recovers every canonical boundary", {
   };
   const browser = await launchBrowser({ niceAdjustment: 10 });
   const context = await browser.newContext();
-  const results = [];
+  const coveredFaultPoints = [];
 
   try {
     await prepareProjectBaseline({
@@ -570,7 +547,7 @@ test("packaged Cockpit recovers every canonical boundary", {
     });
 
     for (const [index, declaration] of selectedDeclarations.entries()) {
-      const { boundary, faultPoint } = declaration;
+      const { faultPoint } = declaration;
       process.stdout.write(`qualifying packaged Cockpit boundary ${index + 1}/${selectedDeclarations.length}: ${faultPoint}\n`);
       const caseRoot = join(root, `case-${String(index).padStart(2, "0")}`);
       const dataDir = join(caseRoot, "host-state");
@@ -709,17 +686,15 @@ test("packaged Cockpit recovers every canonical boundary", {
         `issue-164-restart-runtime-${index}`,
       );
       const reopened = await openCockpit(context, restart.bootstrapUrl);
-      let publicInspection;
       try {
         await reopenWithCursorResynchronization(reopened.page);
         const expectedStatus = expectedStatusAfterRestart(faultPoint);
-        const afterRestart = await inspectCockpitTruth(
+        await inspectCockpitTruth(
           reopened.page,
           dataDir,
           expectedStatus,
           snapshotBefore,
         );
-        let afterReplay = null;
 
         if (pendingMutation && pendingStorageKey) {
           if (faultPoint === "harness_run_launch.before_commit") {
@@ -734,14 +709,13 @@ test("packaged Cockpit recovers every canonical boundary", {
             pendingMutation,
             replayStatus,
           );
-          afterReplay = await inspectCockpitTruth(
+          await inspectCockpitTruth(
             reopened.page,
             dataDir,
             replayStatus,
             snapshotBefore,
           );
         }
-        publicInspection = { afterRestart, afterReplay };
 
         const converged = await readJson(join(dataDir, "harness-runs.json"));
         assert.equal(converged.schemaVersion, 8, faultPoint);
@@ -766,24 +740,11 @@ test("packaged Cockpit recovers every canonical boundary", {
         await stopRuntime(installed, dataDir, executionDirectory, environment);
       }
 
-      results.push({
-        boundary,
-        faultPoint,
-        injected: true,
-        restarted: true,
-        converged: true,
-        passed: true,
-        executableEvidence:
-          "test/canonical-boundary-recovery.browser.test.mjs:packaged Cockpit recovers every canonical boundary",
-        packagedPublicSeam,
-        cursorResynchronized: true,
-        publicInspection,
-      });
+      coveredFaultPoints.push(faultPoint);
     }
 
-    assert.deepEqual(results.map(({ faultPoint }) => faultPoint),
+    assert.deepEqual(coveredFaultPoints,
       selectedDeclarations.map(({ faultPoint }) => faultPoint));
-    if (!process.env.SANDKING_TEST_FAULT_POINT) await writeResults(results);
   } finally {
     await context.close();
     await browser.close();

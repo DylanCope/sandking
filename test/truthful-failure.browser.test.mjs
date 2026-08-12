@@ -252,30 +252,6 @@ test("Host loss during an active Cockpit mutation returns one typed idempotent f
       assert.ok(failureAudit);
       assert.ok(replayAudit);
       assert.ok(conflictAudit);
-      if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-        await writeFile(
-          join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "active-host-loss-contract.json"),
-          `${JSON.stringify({
-            kind: "active_host_loss_contract",
-            packagedPublicSeam: installed.observation,
-            typedFailure: failure,
-            idempotency: {
-              replayStatus: replay.status,
-              replayCode: replay.body.code,
-              replayIdempotent: replay.body.idempotentReplay,
-              replayReturnedOriginalAudit: replay.body.auditId === failure.body.auditId,
-              changedContentStatus: changedUse.status,
-              changedContentCode: changedUse.body.code,
-            },
-            audit: {
-              failure: failureAudit,
-              replay: replayAudit,
-              conflict: conflictAudit,
-            },
-          }, null, 2)}\n`,
-          { mode: 0o600 },
-        );
-      }
       await context.close();
     } finally {
       await browser.close();
@@ -422,31 +398,6 @@ test("accepted Cockpit Project preparation replays its public outcome after Host
       assert.ok(replayAudit);
       assert.ok(conflictAudit);
 
-      if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-        await writeFile(
-          join(
-            process.env.SANDKING_ACCEPTANCE_RESULT_DIR,
-            "accepted-project-open-replay-contract.json",
-          ),
-          `${JSON.stringify({
-            kind: "accepted_project_open_replay_contract",
-            packagedPublicSeam: installed.observation,
-            accepted,
-            replay,
-            changedUse,
-            canonicalState: {
-              projectCount: projectState.projects.length,
-              projectId: projectState.projects[0].projectId,
-            },
-            audit: {
-              accepted: acceptedAudit,
-              replay: replayAudit,
-              conflict: conflictAudit,
-            },
-          }, null, 2)}\n`,
-          { mode: 0o600 },
-        );
-      }
       await context.close();
     } finally {
       await browser.close();
@@ -640,43 +591,6 @@ test("Host loss after accepted Project registration preserves its identity and e
         && entry.details.originalAuditId === failure.body.auditId
         && entry.details.projectId === acceptedProject.projectId);
       assert.ok(queuedReplayAudit);
-      if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-        await writeFile(
-          join(
-            process.env.SANDKING_ACCEPTANCE_RESULT_DIR,
-            "accepted-project-host-loss-contract.json",
-          ),
-          `${JSON.stringify({
-            kind: "accepted_project_host_loss_contract",
-            packagedPublicSeam: installed.observation,
-            typedFailure: failure,
-            queuedReplay: duplicateFailure,
-            acceptedProject: {
-              projectId: acceptedProject.projectId,
-              revision: acceptedProject.revision,
-              readiness: acceptedProject.readiness,
-              registrationAuditId: acceptedRegistrationAudit.auditId,
-            },
-            cockpit: {
-              retainedProjectVisible: true,
-              launchRequestReady: false,
-              hostFreshness: "stale",
-            },
-            canonicalState: {
-              projectCount: projectStateAfter.projects.length,
-              projectId: projectStateAfter.projects[0].projectId,
-              registrationAuditRetained: auditsAfter.some((entry) =>
-                entry.auditId === acceptedRegistrationAudit.auditId),
-            },
-            audit: {
-              registration: acceptedRegistrationAudit,
-              failure: failureAudit,
-              replay: queuedReplayAudit,
-            },
-          }, null, 2)}\n`,
-          { mode: 0o600 },
-        );
-      }
       await context.close();
     } finally {
       await browser.close();
@@ -777,32 +691,6 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
       assert.deepEqual(protocolFailureAudit.details.unaffectedViews, [
         "controller-sessions",
       ]);
-      if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-        await writeFile(
-          join(
-            process.env.SANDKING_ACCEPTANCE_RESULT_DIR,
-            "post-negotiation-host-protocol-contract.json",
-          ),
-          `${JSON.stringify({
-            kind: "post_negotiation_host_protocol_contract",
-            packagedPublicSeam: installed.observation,
-            negotiatedHostObserved: true,
-            typedConnectionFailure: receivedMessages.find((message) =>
-              message?.type === "runtime.connection-state"
-              && message.failure.code === "host_protocol_invalid"),
-            browserProtocolFailureMisattributed: receivedMessages.some((message) =>
-              message?.type === "runtime.protocol-error"
-              && message.code === "browser_protocol_invalid"),
-            browserSocketRetained: !browserSocketClosed,
-            cockpit: {
-              projectFreshness: "stale",
-              controllerSessionsAvailable: true,
-            },
-            audit: protocolFailureAudit,
-          }, null, 2)}\n`,
-          { mode: 0o600 },
-        );
-      }
       await context.close();
     } finally {
       await browser.close();

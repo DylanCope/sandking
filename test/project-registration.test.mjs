@@ -369,30 +369,6 @@ test("path identity changes return typed resolution guidance without silently re
     assert.ok(audits.filter((entry) => entry.action === "project.inspect").every((entry) =>
       entry.outcome === "rejected"
       && entry.details.directoryScanPerformed === false));
-    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-      await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, {
-        recursive: true,
-        mode: 0o700,
-      });
-      await writeFile(
-        join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "project-path-resolution.json"),
-        `${JSON.stringify({
-          kind: "project_path_resolution",
-          outcomes: {
-            missing: { code: missing.code, guidance: missing.resolution.actions },
-            moved: { code: moved.code, guidance: moved.resolution.actions },
-            replaced: { code: replaced.code, guidance: replaced.resolution.actions },
-            tombstoned: { code: tombstoned.code, guidance: tombstoned.resolution.actions },
-            conflict: { code: conflict.code, guidance: conflict.resolution.actions },
-          },
-          silentlyReattached: false,
-          directoryScanPerformed: false,
-          secretFixtureRetained: retained.includes(secretFixture),
-          auditReferences: audits,
-        }, null, 2)}\n`,
-        { mode: 0o600 },
-      );
-    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -551,49 +527,6 @@ test("registration and pinning reject changed retries, stale revisions, and inva
       && entry.details.code === "mutation_revision_conflict"));
     assert.ok(audits.filter((entry) => entry.action === "project.harness.pin").every((entry) =>
       entry.details.projectFileWrite === false || entry.outcome === "observed"));
-    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-      await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, {
-        recursive: true,
-        mode: 0o700,
-      });
-      await writeFile(
-        join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "project-mutation-contract.json"),
-        `${JSON.stringify({
-          kind: "project_mutation_contract",
-          registration: {
-            projectId: registration.project.projectId,
-            expectedRevision: registration.expectedRevision,
-            revision: registration.revision,
-            auditId: registration.auditId,
-          },
-          idempotency: {
-            changedRequestCode: changedRetry.code,
-            changedRequestRetryable: changedRetry.retryable,
-            replayCode: replay.code,
-            replayAuditId: replay.auditId,
-            replayIdempotent: replay.idempotentReplay,
-            replayReturnedOriginalAudit: replay.auditId === pinned.auditId,
-          },
-          staleRevision: {
-            code: staleRegistration.code,
-            actualRevision: staleRegistration.actualRevision,
-          },
-          invalidFailures: {
-            path: invalidPath.code,
-            configuration: invalidConfiguration.code,
-            invalidPinConfiguration: invalidPinConfiguration.code,
-            preservedUnpinnedState: invalidFailuresPreservedUnpinned,
-          },
-          pin: {
-            expectedRevision: pinned.expectedRevision,
-            revision: pinned.revision,
-            auditId: pinned.auditId,
-          },
-          auditReferences: audits,
-        }, null, 2)}\n`,
-        { mode: 0o600 },
-      );
-    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

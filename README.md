@@ -187,107 +187,32 @@ notification-only `StopFailure` HTTP hook preserves typed provider failures and
 never mediates a tool call or Harness launch. Credentials stay
 in the destination-local Claude store and are excluded from the adapter command
 environment, browser models, prompts supplied by Sand-King, logs, state, audit,
-and retained evidence. Conformance remains the deterministic Harness oracle;
+and runner output. Conformance remains the deterministic Harness oracle;
 Claude uses the same one-action launch and run-observation interfaces.
 
-Run the executable issue-117 acceptance manifest, including its npm-pinned real
-Chromium gate, with:
-
-```bash
-npm run acceptance:issue-117
-```
-
-The retained sanitized evidence is in
-`acceptance/evidence/issue-117.json`. Maintainers can regenerate it after a
-successful acceptance run with `npm run acceptance:issue-117:update-evidence`.
-The manifest distinguishes GitHub's exact specification-body bytes from the
-parent PRD's legacy line-terminated text export, so source provenance does not
-depend on an implicit trailing-newline convention.
-
-Run the explicit-Project and conformance-Harness preparation scenario with:
-
-```bash
-npm run acceptance:issue-118
-```
-
-Its retained sanitized evidence is generated with
-`npm run acceptance:issue-118:update-evidence` and stored in
-`acceptance/evidence/issue-118.json`.
-
-Run the historical issue-119 acceptance scenario with:
-
-```bash
-npm run acceptance:issue-119
-```
-
-Its retained sanitized evidence is generated with
-`npm run acceptance:issue-119:update-evidence` and stored in
-`acceptance/evidence/issue-119.json`.
-
-Run the approved conformance Harness and Cockpit observation scenario with:
-
-```bash
-npm run acceptance:issue-120
-```
-
-Its retained sanitized evidence is generated with
-`npm run acceptance:issue-120:update-evidence` and stored in
-`acceptance/evidence/issue-120.json`.
-
-Run the canonical reconnect and ambiguous-outcome lookup scenario with:
-
-```bash
-npm run acceptance:issue-121
-```
-
-Its retained sanitized evidence is generated with
-`npm run acceptance:issue-121:update-evidence` and stored in
-`acceptance/evidence/issue-121.json`.
-
-Run the truthful Harness and connection-failure scenario with:
-
-```bash
-npm run acceptance:issue-122
-```
-
-Its retained sanitized evidence is generated with
-`npm run acceptance:issue-122:update-evidence` and stored in
-`acceptance/evidence/issue-122.json`.
-
-Run the installed-Claude Controller contract and Cockpit scenario without
-requiring a real model interaction with:
-
-```bash
-npm run acceptance:issue-124
-```
-
-Its deterministic retained evidence is generated with
-`npm run acceptance:issue-124:update-evidence` and stored in
-`acceptance/evidence/issue-124.json`. The final authenticated acceptance child
-is intentionally separate and human-driven. On a known per-user development
-environment with an installed, authenticated `claude` CLI and an explicit Git
-Project, run:
+The ordinary test suite is the regression oracle. Real-provider qualifications
+remain separate, explicit, and fail closed so routine tests cannot invoke a
+billed model. On a machine with an installed, authenticated `claude` CLI and an
+explicit Git Project, run the applicable human-driven workflow:
 
 ```bash
 SANDKING_REAL_CLAUDE_ACCEPTANCE=1 \
 SANDKING_REAL_CLAUDE_PROJECT=/absolute/path \
 npm run acceptance:issue-124:real
+
+SANDKING_REAL_CLAUDE_ACCEPTANCE=1 \
+SANDKING_REAL_CLAUDE_PROJECT=/absolute/path \
+npm run acceptance:issue-146:real
+
+SANDKING_REAL_CLAUDE_ACCEPTANCE=1 \
+SANDKING_REAL_CLAUDE_PROJECT=/absolute/path \
+npm run acceptance:issue-152:real
 ```
 
-The gated runner opens the Cockpit, prints the exact ordinary-CLI launch,
-structured-outcome, and browser-detach checklist, then verifies the durable
-canonical records. It never copies credentials or treats terminal prose as a
-launch operation.
-
-Run the deterministic issue-174 evidence contract with:
-
-```bash
-npm run acceptance:issue-174
-```
-
-The real-provider proof is deliberately separate and may run only once for a
-clean demonstrated revision. On a destination with the exact authenticated
-`codex-cli 0.146.0` and a running Docker provider, run:
+The installed-Claude runners verify durable canonical records and never copy
+credentials or treat terminal prose as a launch operation. On a destination
+with the exact authenticated `codex-cli 0.146.0` and a running Docker provider,
+run:
 
 ```bash
 SANDKING_REAL_SANDCASTLE_ACCEPTANCE=1 npm run acceptance:issue-174:real
@@ -301,11 +226,9 @@ runner restores any pre-existing image tag (or removes its temporary tag) when
 the scenario ends. Success
 requires one structured successful Harness outcome and one exact child commit;
 exit status, progress, and diagnostic text are never accepted as substitutes.
-The retained `acceptance/evidence/issue-174.real.json` contains only pinned
-revision and integrity facts, Project commit and artifact digests, the
-structured result, audit identities, and bounded diagnostic range references.
-Credentials, provider transcripts, unrestricted logs, environment dumps,
-session material, machine-specific paths, and full skill contents are excluded.
+The sanitized result is written to stdout; credentials, provider transcripts,
+unrestricted logs, environment dumps, session material, machine-specific paths,
+and full skill contents are excluded.
 If the gate, exact provider, or authentication is unavailable, the command
-emits an explicit non-success qualification and produces no production
-evidence; it never falls back to the conformance or controlled fixture.
+emits an explicit non-success qualification and never falls back to the
+conformance or controlled fixture.

@@ -1,33 +1,13 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { probeClaude } from "../src/claude-provider-adapter.mjs";
 import { launchBrowser } from "./browser-launch.mjs";
 import { installCurrentPackage } from "./installed-package.mjs";
-import {
-  captureCleanIssue146EvidenceRevision,
-  ISSUE_146_DEMONSTRATED_PATHS,
-  verifyIssue146EvidenceRevisionUnchanged,
-} from "./issue-146-evidence-source.mjs";
 
 const execFileAsync = promisify(execFile);
-const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
-const manifestPath = resolve(
-  process.argv.find((argument) => argument.endsWith(".json"))
-    ?? "acceptance/issue-146.manifest.json",
-);
-const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-if (
-  manifest.issue !== 146
-  || manifest.parentPrd !== 125
-  || manifest.environmentGate?.name !== "SANDKING_REAL_CLAUDE_ACCEPTANCE"
-  || manifest.environmentGate?.workerMayApproveLaunchRequest !== false
-) {
-  throw new Error("issue_146_real_acceptance_manifest_invalid");
-}
 if (process.env.SANDKING_REAL_CLAUDE_ACCEPTANCE !== "1") {
   throw new Error(
     "issue_146_real_acceptance_gate_closed:set SANDKING_REAL_CLAUDE_ACCEPTANCE=1 explicitly",
@@ -52,11 +32,6 @@ if (probe.availability.status !== "available") {
       ?? probe.availability.status}`,
   );
 }
-const evidenceSourceRevision = await captureCleanIssue146EvidenceRevision({
-  repositoryRoot,
-  demonstratedPaths: ISSUE_146_DEMONSTRATED_PATHS,
-});
-
 const root = await mkdtemp(join(tmpdir(), "sandking-issue-146-real-"));
 const dataDir = join(root, "state");
 const executionDirectory = join(root, "outside-project");
@@ -120,11 +95,9 @@ try {
         "#project-controller-terminal-output .xterm-accessibility-tree [role='listitem']",
       ).length >= 5;
   }, undefined, { timeout: 30_000 });
-  const initialDimensions = {
-    columns: Number(await panel.getAttribute("data-terminal-columns")),
-    rows: Number(await panel.getAttribute("data-terminal-rows")),
-    sequence: Number(await panel.getAttribute("data-terminal-resize-sequence")),
-  };
+  const initialResizeSequence = Number(
+    await panel.getAttribute("data-terminal-resize-sequence"),
+  );
   const terminal = page.locator("#project-controller-terminal-output .xterm-helper-textarea");
   await terminal.focus();
   await page.keyboard.type("/help");
@@ -139,12 +112,7 @@ try {
   await page.waitForFunction((previous) => Number(document.querySelector(
     "#project-focused-controller-session",
   )?.getAttribute("data-terminal-resize-sequence")) > previous,
-  initialDimensions.sequence);
-  const resizedDimensions = {
-    columns: Number(await panel.getAttribute("data-terminal-columns")),
-    rows: Number(await panel.getAttribute("data-terminal-rows")),
-    sequence: Number(await panel.getAttribute("data-terminal-resize-sequence")),
-  };
+  initialResizeSequence);
   const sessionId = await panel.getAttribute("data-session-id");
   const streamId = await panel.getAttribute("data-terminal-stream-id");
   await page.close();
@@ -207,79 +175,7 @@ try {
   if (projectStatusAfter !== projectStatusBefore) {
     throw new Error("issue_146_real_acceptance_project_state_changed");
   }
-  await verifyIssue146EvidenceRevisionUnchanged({
-    repositoryRoot,
-    demonstratedPaths: ISSUE_146_DEMONSTRATED_PATHS,
-    expectedRevision: evidenceSourceRevision,
-  });
-
-  const evidence = {
-    schemaVersion: 2,
-    issue: 146,
-    parentPrd: 125,
-    generatedFromCommit: evidenceSourceRevision,
-    scenario: "cockpit-workbench/operates-real-installed-claude-terminal",
-    recordedAt: new Date().toISOString(),
-    environment: {
-      provider: "claude-code",
-      version: probe.availability.version,
-      availability: probe.availability.status,
-      authentication: probe.availability.authentication.status,
-      credentialSource: "destination-local",
-      credentialsTransferred: false,
-    },
-    observations: {
-      productionPublicPath: true,
-      workbenchRendered: true,
-      workbenchChromeCurrent: true,
-      fullScreenRowsRendered: true,
-      terminalFocused: true,
-      printableInput: true,
-      enterUsed: true,
-      escape: true,
-      tab: true,
-      arrows: true,
-      controlSequence: true,
-      initialDimensions,
-      resizedDimensions,
-      browserReconnection: true,
-      ptyRuntimeOwned: true,
-      sessionId,
-      streamId,
-      inputAuditCount: inputAudits.length,
-      resizeAuditCount: resizeAudits.length,
-    },
-    prohibitedEffects: {
-      launchRequestPrepared: false,
-      launchRequestApproved: false,
-      harnessRunStarted: false,
-      dangerousMode: false,
-      projectStateChanged: false,
-      terminalTranscriptRetained: false,
-      providerAccountMetadataRetained: false,
-    },
-    auditReferences: [...inputAudits.slice(-2), ...resizeAudits.slice(-2)].map((entry) => ({
-      auditId: entry.auditId,
-      action: entry.action,
-      outcome: entry.outcome,
-      details: entry.details,
-    })),
-  };
-  const evidenceText = `${JSON.stringify(evidence, null, 2)}\n`;
-  if (
-    evidenceText.includes(projectPath)
-    || /bootstrap\?token=|sandking_session=|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN/i
-      .test(evidenceText)
-  ) {
-    throw new Error("issue_146_real_acceptance_evidence_not_sanitized");
-  }
-  const evidencePath = resolve(
-    process.env.SANDKING_REAL_CLAUDE_EVIDENCE_PATH
-      ?? join(repositoryRoot, "acceptance", "evidence", "issue-146.real.json"),
-  );
-  await mkdir(dirname(evidencePath), { recursive: true, mode: 0o700 });
-  await writeFile(evidencePath, evidenceText, { mode: 0o600 });
-  process.stdout.write(`Retained sanitized real-Claude evidence: ${evidencePath}\n`);
+  process.stdout.write("Real-Claude terminal acceptance passed for issue #146.\n");
 } finally {
   await browser?.close().catch(() => undefined);
   if (runtimeStarted) {

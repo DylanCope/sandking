@@ -7,12 +7,10 @@ import {
   realpath,
   rm,
   stat,
-  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { probeClaude } from "../src/claude-provider-adapter.mjs";
 import {
@@ -20,32 +18,19 @@ import {
   selectInstalledClaudeProjectRegistration,
 } from "./installed-claude-acceptance-audits.mjs";
 import { installCurrentPackage } from "./installed-package.mjs";
-import { captureCleanIssue152EvidenceRevision } from "./issue-152-evidence-source.mjs";
 
 const execFileAsync = promisify(execFile);
-const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
-const manifestPath = resolve(
-  process.argv.find((argument) => argument.endsWith(".json"))
-    ?? "acceptance/issue-152.manifest.json",
-);
-const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-const issue = manifest.issue;
-const scenarioIndex = issue === 152 ? 1 : 0;
+const issueArgumentIndex = process.argv.indexOf("--issue");
+const configuredIssue = issueArgumentIndex === -1
+  ? 152
+  : Number(process.argv[issueArgumentIndex + 1]);
+if (configuredIssue !== 124 && configuredIssue !== 152) {
+  throw new Error("installed_claude_real_acceptance_issue_invalid: expected 124 or 152");
+}
+/** @type {124 | 152} */
+const issue = configuredIssue;
 const acceptanceError = (suffix) => `issue_${issue}_real_acceptance_${suffix}`;
 
-if (
-  !(
-    (issue === 152
-      && manifest.schemaVersion === 1
-      && manifest.parentPrd === null
-      && manifest.scenarios?.[scenarioIndex]?.id
-        === "harness-launch/uses-real-installed-claude-controller")
-    || (issue === 124 && manifest.schemaVersion === 2 && manifest.parentPrd === 125)
-  )
-  || manifest.environmentGate?.name !== "SANDKING_REAL_CLAUDE_ACCEPTANCE"
-) {
-  throw new Error(acceptanceError("manifest_invalid"));
-}
 if (process.env.SANDKING_REAL_CLAUDE_ACCEPTANCE !== "1") {
   throw new Error(
     `${acceptanceError("gate_closed")}: set SANDKING_REAL_CLAUDE_ACCEPTANCE=1 explicitly`,
@@ -78,13 +63,11 @@ if (probe.availability.status !== "available") {
   );
 }
 
-const evidenceSourceRevision = await captureCleanIssue152EvidenceRevision({ repositoryRoot });
 const acceptanceRoot = await mkdtemp(join(tmpdir(), "sandking-real-claude-acceptance-"));
 const dataDir = join(acceptanceRoot, "state");
 const outsideCheckout = join(acceptanceRoot, "work");
 let cliPath;
 let packagedEnvironment;
-let tarballSha256;
 try {
   await Promise.all([
     mkdir(dataDir, { recursive: true }),
@@ -97,14 +80,12 @@ try {
     ...process.env,
     PATH: `${dirname(cliPath)}:${process.env.PATH ?? ""}`,
   };
-  tarballSha256 = installed.observation.tarballSha256;
 } catch (error) {
   await rm(acceptanceRoot, { recursive: true, force: true });
   throw error;
 }
 const lifecycleKey = `issue-${issue}-real-${randomBytes(12).toString("hex")}`;
 let runtimeStarted = false;
-let evidenceWritten = false;
 
 try {
   const { stdout } = await execFileAsync(cliPath, [
@@ -181,7 +162,7 @@ try {
     throw new Error(acceptanceError("requires_one_structured_harness_outcome"));
   }
   const audits = auditText.trim().split("\n").map((line) => JSON.parse(line));
-  const requiredAudits = selectInstalledClaudeAcceptanceAuditChain({
+  selectInstalledClaudeAcceptanceAuditChain({
     issue,
     audits,
     session,
@@ -195,102 +176,7 @@ try {
     throw new Error(acceptanceError("project_state_changed"));
   }
 
-  const run = runs[0];
-  const cliDescriptionAudit = requiredAudits.find((entry) =>
-    entry.action === "controller.provider.operation"
-    && entry.details?.operation === "controller-cli.describe");
-  const evidence = {
-    schemaVersion: 1,
-    issue,
-    parentPrd: manifest.parentPrd,
-    scenario: manifest.scenarios[scenarioIndex].id,
-    generatedFromCommit: evidenceSourceRevision,
-    recordedAt: new Date().toISOString(),
-    execution: "final-human-environment-acceptance-child",
-    environment: {
-      claudeVersion: probe.availability.version,
-      availability: probe.availability.status,
-      authentication: probe.availability.authentication.status,
-      credentialSource: "destination-local",
-      credentialsTransferred: false,
-      modelInteractionPerformedByHuman: true,
-      controllerCommand: "ordinary-sandking-cli",
-      pluginInstalled: false,
-      packageInstalledOutsideCheckout: true,
-      packagedTarballSha256: tarballSha256,
-    },
-    observations: {
-      projectFocusedControllerSessionOpened: true,
-      providerId: session.providerId,
-      providerAdapterId: session.providerAdapterId,
-      stableProviderSessionIdentity: session.sessionIdentity?.stable === true,
-      ptyRuntimeOwned: session.terminal.runtimeOwned,
-      browserDisconnectionSurvivalHumanConfirmed: true,
-      browserControllerReattachmentObserved: true,
-      acceptedControllerTerminalAttachmentCount: requiredAudits.filter((entry) =>
-        entry.action === "controller.terminal.attach"
-        && entry.outcome === "accepted").length,
-      selectedProjectId: projectRegistration.projectId,
-      selectedWorkContextId: session.workContextId,
-      selectedWorkContextCanonicalReference: session.canonicalReference,
-      ordinaryCliDiscoveredByController: requiredAudits.some((entry) =>
-        entry.action === "controller.provider.operation"
-        && entry.details?.operation === "controller-cli.describe"),
-      acceptedCliDescriptionCount: requiredAudits.filter((entry) =>
-        entry.action === "controller.provider.operation"
-        && entry.details?.operation === "controller-cli.describe").length,
-      ordinaryCliProtocol: cliDescriptionAudit?.details?.cliProtocol,
-      ordinaryCliCommand: cliDescriptionAudit?.details?.cliCommand,
-      projectArgumentOptional: cliDescriptionAudit?.details?.projectArgumentOptional,
-      pluginRequired: cliDescriptionAudit?.details?.pluginRequired,
-      cliDiscoveryPrecededLaunch: true,
-      ordinaryCliLaunchObserved: true,
-      acceptedLaunchOperationCount: requiredAudits.filter((entry) =>
-        entry.action === "controller.provider.operation"
-        && entry.details?.operation === "harness-run.launch").length,
-      selectedLaunchIssueNumber: run.parameters.issueNumber,
-      selectedTargetBranch: run.parameters.targetBranch,
-      retiredControllerCapabilitiesAbsent: true,
-      retiredLaunchLifecycleAuditsAbsent: true,
-      launchRequestCreated: false,
-      approvalRecorded: false,
-      separateStartRequired: false,
-      harnessRunId: run.harnessRunId,
-      structuredHarnessOutcome: {
-        status: run.outcome.status,
-        code: run.outcome.code,
-        incompleteResult: run.outcome.incompleteResult,
-        exactlyOneTerminalEnvelope: run.terminalEnvelopeValidation.exactlyOne,
-      },
-    },
-    auditReferences: requiredAudits.map(({ auditId, action, outcome }) => ({
-      auditId,
-      action,
-      outcome,
-    })),
-    securityAssertions: {
-      projectPathRetained: false,
-      credentialValueRetained: false,
-      browserApprovalAssertion: false,
-      projectSandKingStateWrite: false,
-    },
-  };
-  const evidenceText = `${JSON.stringify(evidence, null, 2)}\n`;
-  if (
-    evidenceText.includes(projectPath)
-    || /ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|bootstrap\?token=|sandking_session=/i
-      .test(evidenceText)
-  ) {
-    throw new Error(acceptanceError("evidence_not_sanitized"));
-  }
-  const evidencePath = resolve(
-    process.env.SANDKING_REAL_CLAUDE_EVIDENCE_PATH
-      ?? join(repositoryRoot, "acceptance", "evidence", `issue-${issue}.real.json`),
-  );
-  await mkdir(dirname(evidencePath), { recursive: true, mode: 0o700 });
-  await writeFile(evidencePath, evidenceText, { mode: 0o600 });
-  evidenceWritten = true;
-  process.stdout.write(`Retained sanitized real-environment evidence: ${evidencePath}\n`);
+  process.stdout.write(`Installed-Claude acceptance passed for issue #${issue}.\n`);
 } finally {
   if (runtimeStarted) {
     await execFileAsync(cliPath, [
@@ -300,7 +186,4 @@ try {
     ], { cwd: outsideCheckout, env: packagedEnvironment }).catch(() => undefined);
   }
   await rm(acceptanceRoot, { recursive: true, force: true });
-  if (!evidenceWritten) {
-    process.stderr.write("No real-environment acceptance evidence was retained.\n");
-  }
 }

@@ -1,10 +1,10 @@
 # Test suite audit: what guards correctness, what is ceremony
 
-> **Status: partially acted on (2026-08-11).** The evidence-freshness
-> tripwires and the descriptively-named evidence receipt files have been
-> retired — see "What has been retired" at the end. The remaining
-> recommendations (evidence JSON, manifests, and non-gated runners) are still
-> open. The phantom Harness-run schema migrations were retired by #211.
+> **Status: acted on (2026-08-12).** The per-ticket evidence, manifests,
+> non-gated runners, and freshness machinery have been retired. Real-provider
+> runners remain explicitly gated, and their safety contracts live in the
+> ordinary test suite. The phantom Harness-run schema migrations were retired
+> by #211.
 
 An audit of all 102 files / 34,505 lines in `test/` plus the 30 files /
 15,321 lines in `acceptance/`, done to answer one question: **what is
