@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Real-provider acceptance is a manual, credentialed operation. CI keeps every
+# paid-model gate closed and never receives provider credentials.
+env:
+  SANDCASTLE_REAL_CLAUDE_ISSUES: ""
+  SANDKING_REAL_CLAUDE_ACCEPTANCE: "0"
+  SANDKING_REAL_SANDCASTLE_ACCEPTANCE: "0"
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Use the repository Node.js version
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ".nvmrc"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check types
+        run: npm run typecheck
+
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Use the repository Node.js version
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ".nvmrc"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+  browser-tests:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Use the repository Node.js version
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ".nvmrc"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run browser tests
+        run: npm run test:browser
