@@ -13,6 +13,7 @@ on:
       - "src/posix-process-tree-helper.c"
       - "src/native/linux-arm64/posix-process-tree-helper"
       - "src/native/linux-x64/posix-process-tree-helper"
+      - "test/native-helper-build.test.mjs"
   push:
     branches:
       - main
@@ -24,6 +25,7 @@ on:
       - "src/posix-process-tree-helper.c"
       - "src/native/linux-arm64/posix-process-tree-helper"
       - "src/native/linux-x64/posix-process-tree-helper"
+      - "test/native-helper-build.test.mjs"
 
 permissions:
   contents: read
@@ -57,3 +59,6 @@ jobs:
 
       - name: Compare both prebuilt helpers with source
         run: npm run check:native-helpers
+
+      - name: Prove a source-only edit is rejected
+        run: node --test test/native-helper-build.test.mjs

@@ -67,31 +67,23 @@ const createZigCompiler = async (root, zigPath) => {
 /**
  * Rebuild or verify both prebuilt Linux process-tree helpers.
  *
- * @param {{
- *   root?: string,
- *   mode: "check" | "write",
- *   compile?: (input: {
- *     sourcePath: string,
- *     target: string,
- *     zigTarget: string,
- *     outputPath: string,
- *   }) => Promise<void>,
- * }} options
+ * @param {"check" | "write"} mode
  */
-export const buildLinuxProcessTreeHelpers = async (options) => {
-  if (options.mode !== "check" && options.mode !== "write") {
-    throw new Error(`native_helper_build_mode_invalid: ${options.mode}`);
+const buildLinuxProcessTreeHelpers = async (mode) => {
+  if (mode !== "check" && mode !== "write") {
+    throw new Error(`native_helper_build_mode_invalid: ${mode}`);
   }
-  const root = options.root ?? defaultRoot;
+  const root = defaultRoot;
   const sourcePath = join(root, "src", "posix-process-tree-helper.c");
   const buildDirectory = await mkdtemp(
     join(tmpdir(), "sandking-native-helpers-"),
   );
 
   try {
-    const compile =
-      options.compile ??
-      (await createZigCompiler(root, process.env.SANDKING_ZIG ?? "zig"));
+    const compile = await createZigCompiler(
+      root,
+      process.env.SANDKING_ZIG ?? "zig",
+    );
     const builds = await Promise.all(
       targets.map(async (target) => {
         const outputPath = join(buildDirectory, target.name);
@@ -110,7 +102,7 @@ export const buildLinuxProcessTreeHelpers = async (options) => {
       }),
     );
 
-    if (options.mode === "check") {
+    if (mode === "check") {
       const staleTargets = [];
       for (const build of builds) {
         const [built, committed] = await Promise.all([
@@ -159,7 +151,7 @@ if (invokedPath === import.meta.url) {
     );
     process.exitCode = 2;
   } else {
-    buildLinuxProcessTreeHelpers({ mode })
+    buildLinuxProcessTreeHelpers(mode)
       .then(() => {
         process.stdout.write(
           mode === "check"
