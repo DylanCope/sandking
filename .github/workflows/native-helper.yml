@@ -1,0 +1,57 @@
+name: Linux native helper freshness
+
+# This is the narrow safety gate for issue #215. General typecheck, unit, and
+# browser CI remains owned by issue #214 and can preserve or call this job.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/native-helper.yml"
+      - "package.json"
+      - "scripts/build-linux-process-tree-helpers.mjs"
+      - "src/posix-process-tree-helper.c"
+      - "src/native/linux-arm64/posix-process-tree-helper"
+      - "src/native/linux-x64/posix-process-tree-helper"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/native-helper.yml"
+      - "package.json"
+      - "scripts/build-linux-process-tree-helpers.mjs"
+      - "src/posix-process-tree-helper.c"
+      - "src/native/linux-arm64/posix-process-tree-helper"
+      - "src/native/linux-x64/posix-process-tree-helper"
+
+permissions:
+  contents: read
+
+jobs:
+  compare-prebuilt-helpers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Use the repository Node version
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ".nvmrc"
+
+      # Pin and verify the compiler: byte comparison is meaningful only when
+      # every rebuild uses the documented toolchain rather than runner state.
+      - name: Install Zig 0.13.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/zig-linux-x86_64-0.13.0.tar.xz"
+          curl --fail --location --silent --show-error \
+            https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz \
+            --output "$archive"
+          echo "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea  $archive" \
+            | sha256sum --check
+          tar -xJf "$archive" --directory "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-linux-x86_64-0.13.0" >> "$GITHUB_PATH"
+
+      - name: Compare both prebuilt helpers with source
+        run: npm run check:native-helpers

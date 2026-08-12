@@ -128,21 +128,21 @@ made — flagging them so the next call is a deliberate one.
    necessity. Worth deciding: delete and let the boundary test check against
    git history instead, or keep as-is.
 
-3. **No CI pipeline at all.** Zero `.github/workflows`. Every guarantee in
-   this codebase — typecheck, the full test suite, the native-binary-arch
-   check below — currently depends entirely on local `npm test`/`npm run
-   typecheck` discipline holding on every change, including the overnight
-   autonomous runs. Nothing re-verifies anything automatically.
+3. **No general CI pipeline.** The sole workflow is a path-scoped check that
+   rebuilds the Linux native process-tree helpers. Typecheck, unit tests,
+   browser tests, and every other guarantee still depend entirely on local
+   `npm test`/`npm run typecheck` discipline holding on every change, including
+   the overnight autonomous runs. Nothing re-verifies those checks
+   automatically.
 
-4. **Linux native process-tree helper has no build automation.**
-   `posix-process-tree-helper.c` compiles to prebuilt binaries checked into
-   `src/native/{linux-x64,linux-arm64}/`. There's no `postinstall`/`prepare`
-   script and no CI to rebuild them. `test/package-command.test.mjs` only
-   checks the binaries are present and match the target architecture's ELF
-   header — it does not check they're actually built from the current `.c`
-   source. If the `.c` file is ever edited, nothing catches a stale committed
-   binary; it has to be remembered and done by hand. Combined with (3), this
-   is the least-observable risk in the repo.
+4. **Linux native process-tree helper is a deliberately prebuilt asset.**
+   `posix-process-tree-helper.c` compiles to static-musl binaries checked into
+   `src/native/{linux-x64,linux-arm64}/`, avoiding a compiler requirement for
+   people installing Sand-King. `npm run build:native-helpers` reproduces both
+   with pinned Zig 0.13.0, and a path-scoped GitHub Actions workflow runs
+   `npm run check:native-helpers` to compare both builds byte-for-byte whenever
+   the source, binaries, or recipe changes. This catches stale assets but does
+   not establish that a source-level process-supervision behavior is correct.
 
 5. **Three structurally different per-OS process-containment mechanisms**
    (Linux: native C helper; macOS: pure JS + `.cjs` containment file;

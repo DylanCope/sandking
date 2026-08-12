@@ -31,6 +31,25 @@ npm run typecheck
 npm test
 ```
 
+### Updating the Linux process-tree helpers
+
+Linux process supervision ships prebuilt x64 and arm64 helpers so installing
+Sand-King does not require a C toolchain. They are reproducible static-musl
+builds made with Zig 0.13.0. After changing
+`src/posix-process-tree-helper.c`, install that exact Zig version and run:
+
+```bash
+npm run build:native-helpers
+npm run check:native-helpers
+```
+
+Commit both files under `src/native/`. The native-helper GitHub Actions
+workflow runs the check with the pinned compiler whenever the source, binaries,
+or build tooling changes. The byte-for-byte comparison proves that the shipped
+binaries came from the committed source and recipe; it does not prove the C
+implementation itself is correct, so the process-tree behavior tests remain
+necessary.
+
 Start the bootstrap Sandcastle harness when the issue tracker has eligible
 implementation work:
 
