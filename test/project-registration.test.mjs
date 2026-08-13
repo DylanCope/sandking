@@ -427,20 +427,15 @@ test("path identity changes return typed resolution guidance without silently re
     assert.ok(rejectedHostInspections.every((entry) =>
       entry.outcome === "rejected"
       && entry.details.directoryScanPerformed === false));
-    // Production has no action that creates either retained state. Keep the
-    // pre-existing fail-closed coverage without inventing a test-only Host mutation.
-    const retainedAudits = [];
-    const recordAudit = async (action, outcome, details) => {
-      const auditId = `audit-${String(retainedAudits.length + 1).padStart(24, "0")}`;
-      retainedAudits.push({ auditId, action, outcome, details });
-      return auditId;
-    };
-    const registry = await createProjectRegistry({ dataDir, recordAudit });
+    // Production has no action that creates either retained state. The narrow
+    // #220 fixture exception stages them privately, but observation still goes
+    // through the shipped Host boundary.
     const statePath = join(dataDir, "project-registrations.json");
     const retainedState = JSON.parse(await readFile(statePath, "utf8"));
     retainedState.projects[0].status = "tombstoned";
     await writeFile(statePath, `${JSON.stringify(retainedState, null, 2)}\n`);
-    const tombstoned = await registry.inspectProject({
+    const tombstoned = await requestHost(child, {
+      type: "project.inspect",
       requestId: "inspect-tombstoned-project",
       path: originalPath,
     });
@@ -454,16 +449,24 @@ test("path identity changes return typed resolution guidance without silently re
       projectId: `project-${"f".repeat(24)}`,
     });
     await writeFile(statePath, `${JSON.stringify(retainedState, null, 2)}\n`);
-    const conflict = await registry.inspectProject({
+    const conflict = await requestHost(child, {
+      type: "project.inspect",
       requestId: "inspect-conflicting-project",
       path: originalPath,
     });
     assert.equal(conflict.type, "project.operation.failure");
     assert.equal(conflict.code, "project_path_conflict");
     assert.deepEqual(conflict.resolution.actions, ["resolve_conflicting_registrations"]);
-    assert.equal(retainedAudits.length, 2);
-    assert.ok(retainedAudits.every((entry) =>
-      entry.outcome === "rejected"
+    const retainedStateAudits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map(JSON.parse)
+      .filter((entry) => ["project_path_tombstoned", "project_path_conflict"]
+        .includes(entry.details.code));
+    assert.equal(retainedStateAudits.length, 2);
+    assert.ok(retainedStateAudits.every((entry) =>
+      entry.action === "project.inspect"
+      && entry.outcome === "rejected"
       && entry.details.directoryScanPerformed === false));
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
