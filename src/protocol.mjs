@@ -53,7 +53,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.recovery.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-project-registration-resolution")
+  .update("sandking-host-control-schema-v1-with-truthful-project-registration-failures")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -447,7 +447,32 @@ const projectOperationFailureSchema = z.object({
     harnessPinWrite: z.literal(false),
     approvalRequest: z.literal(false),
   }).strip(),
-}).strip();
+}).strip().superRefine((failure, context) => {
+  if (
+    failure.code === "project_path_conflict"
+    && (
+      !failure.registrations
+      || failure.registrations.length < 2
+      || failure.registrations.some((registration) => registration.status !== "active")
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Project path conflicts require at least two active registrations",
+      path: ["registrations"],
+    });
+  }
+  if (
+    failure.code === "project_path_tombstoned"
+    && !failure.registrations?.some((registration) => registration.status === "tombstoned")
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Tombstoned Project paths require a tombstoned registration",
+      path: ["registrations"],
+    });
+  }
+});
 
 const harnessRunAuthorizationClassSchema = z.literal("harness_run_launch");
 const harnessRunLaunchSourceSchema = z.enum(["controller-cli", "cockpit"]);

@@ -76,6 +76,7 @@ test("Project registration resolution is one capability-negotiated Host operatio
   assert.ok(hostCapabilities.includes("sandking.project-registration-resolution.v1"));
   const stream = new PassThrough();
   const projectId = `project-${"1".repeat(24)}`;
+  const conflictingProjectId = `project-${"3".repeat(24)}`;
   const registration = {
     type: "project.register",
     requestId: "register-selected-path-as-new",
@@ -111,13 +112,22 @@ test("Project registration resolution is one capability-negotiated Host operatio
       summary: "project_path_conflict",
       actions: ["resolve_conflicting_registrations"],
     },
-    registrations: [{
-      projectId,
-      revision: 3,
-      displayName: "project",
-      canonicalPath: "/selected/project",
-      status: "active",
-    }],
+    registrations: [
+      {
+        projectId,
+        revision: 3,
+        displayName: "project",
+        canonicalPath: "/selected/project",
+        status: "active",
+      },
+      {
+        projectId: conflictingProjectId,
+        revision: 1,
+        displayName: "conflicting-project",
+        canonicalPath: "/selected/project",
+        status: "active",
+      },
+    ],
     prohibitedSideEffects: {
       directoryScan: false,
       projectFileWrite: false,
@@ -134,6 +144,16 @@ test("Project registration resolution is one capability-negotiated Host operatio
   assert.deepEqual(await readFrame(stream), failure);
   assert.throws(
     () => writeFrame(stream, { ...resolution, action: "inherit_existing" }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+  assert.throws(
+    () => writeFrame(stream, {
+      ...failure,
+      registrations: [{
+        ...failure.registrations[0],
+        status: "tombstoned",
+      }],
+    }),
     (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
   );
 });
