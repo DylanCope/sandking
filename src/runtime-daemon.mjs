@@ -408,6 +408,7 @@ const mutationFailure = (code, authorizationClass, expectedRevision, actualRevis
  * @param {unknown} requestContent
  * @param {number} actualRevision
  * @param {Record<string, boolean>} prohibitedSideEffects
+ * @param {(existing: {status: number, response: any}) => Promise<{status: number, body: any} | null>} [validateReplay]
  */
 const replayHostMutationOutcome = async (
   action,
@@ -417,6 +418,7 @@ const replayHostMutationOutcome = async (
   requestContent,
   actualRevision,
   prohibitedSideEffects,
+  validateReplay,
 ) => {
   const fingerprint = hostMutationRequestFingerprint(action, expectedRevision, requestContent);
   const outcomeKey = `${action}\0${idempotencyKeyHash}`;
@@ -458,6 +460,10 @@ const replayHostMutationOutcome = async (
         prohibitedSideEffects,
       },
     };
+  }
+  if (validateReplay) {
+    const replacement = await validateReplay(existing);
+    if (replacement) return replacement;
   }
   await recordAudit(action, "observed", {
     code: existing.response.code,
@@ -1460,6 +1466,8 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     trackedSandKingFileWrite: false,
     approvalRequest: false,
   };
+  /** @param {string} label */
+  const requestId = (label) => `${label}-${randomBytes(8).toString("hex")}`;
   if (mutationContractValid) {
     const retained = await replayHostMutationOutcome(
       "project.prepare",
@@ -1469,6 +1477,45 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       requestContent,
       currentProjectPreparation.current?.revision ?? 0,
       prohibitedSideEffects,
+      async (existing) => {
+        if (
+          existing.status !== 200
+          || existing.response.code !== "project_ready"
+          || !existing.response.project
+        ) {
+          return null;
+        }
+        const inspection = await requestHostOperation({
+          type: "project.inspect",
+          requestId: requestId("project-replay-inspect"),
+          path: typeof request.path === "string" ? request.path : "",
+        });
+        if (inspection.type === "project.operation.failure") {
+          return {
+            status: projectFailureStatus[inspection.code] ?? 409,
+            body: inspection,
+          };
+        }
+        if (inspection.type !== "project.inspect.result") {
+          throw new Error("host_protocol_error");
+        }
+        if (
+          !inspection.project
+          || inspection.project.projectId !== existing.response.project.projectId
+        ) {
+          return {
+            status: 409,
+            body: await runtimeProjectFailure(
+              "project_path_conflict",
+              request.expectedRevision,
+              inspection.actualRevision,
+              request.idempotencyKeyHash,
+              ["resolve_conflicting_registrations"],
+            ),
+          };
+        }
+        return null;
+      },
     );
     if (retained) {
       return retained;
@@ -1508,8 +1555,6 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     return outcome;
   };
 
-  /** @param {string} label */
-  const requestId = (label) => `${label}-${randomBytes(8).toString("hex")}`;
   const inspection = await requestHostOperation({
     type: "project.inspect",
     requestId: requestId("project-inspect"),

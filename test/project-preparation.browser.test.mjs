@@ -421,6 +421,15 @@ test("a person can create and inspect conflicting and tombstoned Project paths i
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
+      const projectRequests = [];
+      page.on("request", (request) => {
+        if (request.method() === "POST" && request.url().endsWith("/projects/open")) {
+          projectRequests.push({
+            postData: request.postData(),
+            headers: request.headers(),
+          });
+        }
+      });
       await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
         timeout: 10_000,
@@ -477,6 +486,33 @@ test("a person can create and inspect conflicting and tombstoned Project paths i
         await page.locator("#project-feedback").textContent(),
         /restore_registration, register_as_new/,
       );
+
+      const registerAsNewRequest = projectRequests.find(({ postData }) =>
+        JSON.parse(postData).resolutionAction === "register_as_new");
+      assert.ok(registerAsNewRequest);
+      const replayAfterTombstone = await page.evaluate(async (request) => {
+        const response = await fetch("/projects/open", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-sandking-csrf": request.headers["x-sandking-csrf"],
+            "x-sandking-idempotency-key": request.headers[
+              "x-sandking-idempotency-key"
+            ],
+            "x-sandking-expected-revision": request.headers[
+              "x-sandking-expected-revision"
+            ],
+          },
+          body: request.postData,
+        });
+        return { status: response.status, body: await response.json() };
+      }, registerAsNewRequest);
+      assert.equal(replayAfterTombstone.status, 409);
+      assert.equal(replayAfterTombstone.body.code, "project_path_tombstoned");
+      assert.deepEqual(replayAfterTombstone.body.resolution.actions, [
+        "restore_registration",
+        "register_as_new",
+      ]);
 
       const state = JSON.parse(
         await readFile(join(dataDir, "project-registrations.json"), "utf8"),
