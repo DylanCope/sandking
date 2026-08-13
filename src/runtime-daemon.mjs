@@ -1403,6 +1403,16 @@ const runtimeProjectFailure = async (
 };
 
 /**
+ * Normalize Project-open content before any outcome is fingerprinted.
+ * @param {{path: unknown, configuration: unknown, harnessAdapterId?: unknown}} request
+ */
+const normalizeProjectPreparationRequestContent = (request) => ({
+  path: request.path,
+  configuration: request.configuration,
+  harnessAdapterId: request.harnessAdapterId ?? null,
+});
+
+/**
  * @param {{path: unknown, configuration: unknown, harnessAdapterId?: unknown, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number}} request
  */
 const prepareExplicitProject = (request) => withProjectPreparationLock(async () => {
@@ -1417,11 +1427,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       && request.harnessAdapterId !== SANDCASTLE_HARNESS_ADAPTER_ID)
   );
 
-  const requestContent = {
-    path: request.path,
-    configuration: request.configuration,
-    harnessAdapterId: request.harnessAdapterId ?? null,
-  };
+  const requestContent = normalizeProjectPreparationRequestContent(request);
   const prohibitedSideEffects = {
     directoryScan: false,
     projectFileWrite: false,
@@ -2999,7 +3005,7 @@ const main = async () => {
                 "host_local_project_preparation",
                 expectedRevision,
                 idempotencyKeyHash,
-                requestContent,
+                normalizeProjectPreparationRequestContent(requestContent),
                 error instanceof ControllerSessionError ? error.retainedOutcome : null,
               );
             } else {
