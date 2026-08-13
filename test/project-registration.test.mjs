@@ -343,6 +343,7 @@ test("path identity changes return typed resolution guidance without silently re
   const dataDir = join(root, "host-state");
   const originalPath = join(root, "original-project");
   const movedPath = join(root, "moved-project");
+  const movedAgainPath = join(root, "moved-again-project");
   const secretFixture = "project-secret-fixture-must-not-appear";
   await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", originalPath]);
   await writeFile(join(originalPath, "secret.txt"), `${secretFixture}\n`);
@@ -427,44 +428,96 @@ test("path identity changes return typed resolution guidance without silently re
     assert.ok(rejectedHostInspections.every((entry) =>
       entry.outcome === "rejected"
       && entry.details.directoryScanPerformed === false));
-    // Production has no action that creates either retained state. Keep the
-    // pre-existing fail-closed coverage without inventing a test-only Host mutation.
-    const retainedAudits = [];
-    const recordAudit = async (action, outcome, details) => {
-      const auditId = `audit-${String(retainedAudits.length + 1).padStart(24, "0")}`;
-      retainedAudits.push({ auditId, action, outcome, details });
-      return auditId;
-    };
-    const registry = await createProjectRegistry({ dataDir, recordAudit });
-    const statePath = join(dataDir, "project-registrations.json");
-    const retainedState = JSON.parse(await readFile(statePath, "utf8"));
-    retainedState.projects[0].status = "tombstoned";
-    await writeFile(statePath, `${JSON.stringify(retainedState, null, 2)}\n`);
-    const tombstoned = await registry.inspectProject({
-      requestId: "inspect-tombstoned-project",
-      path: originalPath,
-    });
-    assert.equal(tombstoned.type, "project.operation.failure");
-    assert.equal(tombstoned.code, "project_path_tombstoned");
-    assert.deepEqual(tombstoned.resolution.actions, ["restore_registration", "register_as_new"]);
 
-    retainedState.projects[0].status = "active";
-    retainedState.projects.push({
-      ...retainedState.projects[0],
-      projectId: `project-${"f".repeat(24)}`,
+    const registerAsNewRequest = {
+      type: "project.register",
+      requestId: "register-moved-project-as-new",
+      path: movedPath,
+      configuration: projectConfiguration,
+      resolutionAction: "register_as_new",
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "register-moved-project-as-new",
+      expectedRevision: registered.revision,
+    };
+    const registeredAsNew = await requestHost(child, registerAsNewRequest);
+    assert.equal(registeredAsNew.type, "project.register.result");
+    assert.equal(registeredAsNew.code, "project_registered");
+    assert.notEqual(registeredAsNew.project.projectId, registered.project.projectId);
+    const registerAsNewReplay = await requestHost(child, {
+      ...registerAsNewRequest,
+      requestId: "replay-register-moved-project-as-new",
     });
-    await writeFile(statePath, `${JSON.stringify(retainedState, null, 2)}\n`);
-    const conflict = await registry.inspectProject({
+    assert.deepEqual(registerAsNewReplay, {
+      ...registeredAsNew,
+      requestId: "replay-register-moved-project-as-new",
+      idempotentReplay: true,
+    });
+    const changedRegisterAsNew = await requestHost(child, {
+      ...registerAsNewRequest,
+      requestId: "change-register-moved-project-as-new",
+      resolutionAction: undefined,
+    });
+    assert.equal(changedRegisterAsNew.code, "idempotency_key_conflict");
+    assert.equal(changedRegisterAsNew.retryable, false);
+
+    await rename(movedPath, movedAgainPath);
+    const conflict = await requestHost(child, {
+      type: "project.inspect",
       requestId: "inspect-conflicting-project",
-      path: originalPath,
+      path: movedAgainPath,
     });
     assert.equal(conflict.type, "project.operation.failure");
     assert.equal(conflict.code, "project_path_conflict");
     assert.deepEqual(conflict.resolution.actions, ["resolve_conflicting_registrations"]);
-    assert.equal(retainedAudits.length, 2);
-    assert.ok(retainedAudits.every((entry) =>
-      entry.outcome === "rejected"
-      && entry.details.directoryScanPerformed === false));
+
+    const forgetRequest = {
+      type: "project.registration.forget",
+      requestId: "forget-new-project-registration",
+      projectId: registeredAsNew.project.projectId,
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "forget-new-project-registration",
+      expectedRevision: registeredAsNew.revision,
+    };
+    const forgotten = await requestHost(child, forgetRequest);
+    assert.equal(forgotten.type, "project.registration.forget.result");
+    assert.equal(forgotten.code, "project_registration_forgotten");
+    assert.equal(forgotten.project.status, "tombstoned");
+    const forgetReplay = await requestHost(child, {
+      ...forgetRequest,
+      requestId: "replay-forget-new-project-registration",
+    });
+    assert.deepEqual(forgetReplay, {
+      ...forgotten,
+      requestId: "replay-forget-new-project-registration",
+      idempotentReplay: true,
+    });
+    const changedForget = await requestHost(child, {
+      ...forgetRequest,
+      requestId: "change-forget-new-project-registration",
+      projectId: registered.project.projectId,
+    });
+    assert.equal(changedForget.code, "idempotency_key_conflict");
+    assert.equal(changedForget.retryable, false);
+    const staleForget = await requestHost(child, {
+      ...forgetRequest,
+      requestId: "stale-forget-new-project-registration",
+      idempotencyKey: "stale-forget-new-project-registration",
+    });
+    assert.equal(staleForget.code, "mutation_revision_conflict");
+    assert.equal(staleForget.actualRevision, forgotten.revision);
+
+    await mkdir(movedPath);
+    const tombstoned = await requestHost(child, {
+      type: "project.inspect",
+      requestId: "inspect-tombstoned-project",
+      path: movedPath,
+    });
+    assert.equal(tombstoned.type, "project.operation.failure");
+    assert.equal(tombstoned.code, "project_path_tombstoned");
+    assert.deepEqual(tombstoned.resolution.actions, [
+      "restore_registration",
+      "register_as_new",
+    ]);
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGTERM");

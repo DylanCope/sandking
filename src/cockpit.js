@@ -741,6 +741,21 @@ const renderProjectPreparation = (
   let currentNode = renderPreparedProject(preparation.current);
   let currentProject = preparation.current;
   let expectedRevision = preparation.current?.revision ?? 0;
+  const registerAsNewButton = element("button", {
+    id: "register-project-as-new",
+    type: "button",
+    "data-action": "register-project-as-new",
+    "data-host-mutation": "true",
+    disabled: true,
+    hidden: true,
+  }, "Register moved path as a new Project");
+  const forgetRegistrationButton = element("button", {
+    id: "forget-project-registration",
+    type: "button",
+    "data-action": "forget-project-registration",
+    "data-host-mutation": "true",
+    disabled: hostConnectionStatus !== "connected" || !preparation.current,
+  }, "Forget current Project registration");
   const openController = element("button", {
     id: "open-project-controller",
     type: "button",
@@ -913,10 +928,15 @@ const renderProjectPreparation = (
     openClaudeController.disabled = hostConnectionStatus !== "connected"
       || !projectReady
       || !claudeAvailable;
+    forgetRegistrationButton.disabled = hostConnectionStatus !== "connected"
+      || !currentProject;
+    registerAsNewButton.disabled = hostConnectionStatus !== "connected"
+      || registerAsNewButton.hidden;
   };
 
-  openButton.addEventListener("click", async () => {
+  const openSelectedProject = async (resolutionAction) => {
     openButton.disabled = true;
+    registerAsNewButton.disabled = true;
     feedback.textContent = "Opening the selected Project path…";
     const response = await fetch("/projects/open", {
       method: "POST",
@@ -929,6 +949,7 @@ const renderProjectPreparation = (
       body: JSON.stringify({
         path: pathInput.value,
         harnessAdapterId: harnessSelect.value,
+        ...(resolutionAction ? { resolutionAction } : {}),
         configuration: {
           issueWorkflow: { provider: "github", kind: "issues" },
           checks: [
@@ -940,6 +961,9 @@ const renderProjectPreparation = (
     });
     const outcome = await response.json();
     if (!response.ok) {
+      const canRegisterAsNew = outcome.code === "project_path_moved"
+        && outcome.resolution?.actions?.includes("register_as_new");
+      registerAsNewButton.hidden = !canRegisterAsNew;
       if (outcome.project) {
         expectedRevision = outcome.project.revision;
         currentProject = outcome.project;
@@ -964,8 +988,10 @@ const renderProjectPreparation = (
       openButton.disabled = hostConnectionStatus !== "connected";
       return;
     }
+    registerAsNewButton.hidden = true;
     expectedRevision = outcome.project.revision;
     currentProject = outcome.project;
+    harnessSelect.disabled = Boolean(currentProject.harness);
     updateLaunchParameterFields();
     const replacement = renderPreparedProject(outcome.project);
     currentNode.replaceWith(replacement);
@@ -974,6 +1000,56 @@ const renderProjectPreparation = (
     feedback.textContent = `Project and ${outcome.project.harness.name} are ready to launch.`;
     updateProjectActionAvailability();
     openButton.disabled = hostConnectionStatus !== "connected";
+  };
+  openButton.addEventListener("click", () => openSelectedProject());
+  registerAsNewButton.addEventListener("click", () =>
+    openSelectedProject("register_as_new"));
+  forgetRegistrationButton.addEventListener("click", async () => {
+    if (
+      !currentProject
+      || !window.confirm(
+        `Forget Project registration ${currentProject.projectId}? The Host will retain a tombstone so this path cannot be silently reused.`,
+      )
+    ) {
+      return;
+    }
+    const projectId = currentProject.projectId;
+    forgetRegistrationButton.disabled = true;
+    feedback.textContent = `Forgetting Project registration ${projectId}…`;
+    const response = await fetch("/projects/registration/forget", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-sandking-csrf": session.csrfToken,
+        "x-sandking-idempotency-key": mutationKey(),
+        "x-sandking-expected-revision": String(currentProject.revision),
+      },
+      body: JSON.stringify({ projectId }),
+    });
+    const outcome = await response.json();
+    if (!response.ok) {
+      if (
+        outcome.code === "mutation_revision_conflict"
+        && Number.isSafeInteger(outcome.actualRevision)
+      ) {
+        expectedRevision = outcome.actualRevision;
+      }
+      feedback.textContent = `Project registration was not forgotten: ${outcome.code}. ${
+        outcome.resolution?.actions?.join(", ") ?? "Review the typed guidance."}`;
+      updateProjectActionAvailability();
+      return;
+    }
+    currentProject = null;
+    expectedRevision = 0;
+    harnessSelect.disabled = false;
+    registerAsNewButton.hidden = true;
+    updateLaunchParameterFields();
+    const replacement = renderPreparedProject(null);
+    currentNode.replaceWith(replacement);
+    currentNode = replacement;
+    updateWorkbenchChrome({ currentProject: null });
+    feedback.textContent = `Project registration ${projectId} was forgotten safely.`;
+    updateProjectActionAvailability();
   });
 
   const attachFocusedController = (focused, reconnected) => {
@@ -1057,8 +1133,10 @@ const renderProjectPreparation = (
     harnessLabel,
     harnessSelect,
     openButton,
+    registerAsNewButton,
     feedback,
     currentNode,
+    forgetRegistrationButton,
     element("h3", {}, "Launch Harness"),
     launchParameterFields,
     launchButton,

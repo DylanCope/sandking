@@ -386,3 +386,126 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a person can create and inspect conflicting and tombstoned Project paths in the Cockpit", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-project-resolution-browser-"));
+  const dataDir = join(root, "host-state");
+  const executionDirectory = join(root, "outside-checkout");
+  const userHome = join(root, "user-home");
+  const originalPath = join(root, "original-project");
+  const movedPath = join(root, "moved-project");
+  const movedAgainPath = join(root, "moved-again-project");
+  await Promise.all([
+    mkdir(dataDir, { recursive: true }),
+    mkdir(executionDirectory, { recursive: true }),
+    mkdir(userHome, { recursive: true }),
+    execFileAsync("git", ["init", "--quiet", "--initial-branch=main", originalPath]),
+  ]);
+  await writeFile(join(originalPath, "README.md"), "resolution Project content\n");
+  const installed = await installCurrentPackage(root);
+  const productEnvironment = { ...process.env, HOME: userHome };
+
+  try {
+    const { stdout } = await execFileAsync(installed.command, [
+      "launch",
+      "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
+      "--idempotency-key", "project-resolution-browser-launch",
+      "--expected-revision", "0",
+      "--json",
+      "--no-open",
+    ], { cwd: executionDirectory, env: productEnvironment });
+    const launch = JSON.parse(stdout);
+    const browser = await launchBrowser({ niceAdjustment: 10 });
+
+    try {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
+        timeout: 10_000,
+      });
+      await page.locator("#project-harness-adapter")
+        .selectOption("conformance-harness-adapter-v1");
+      await page.locator("#project-path").fill(originalPath);
+      await page.locator("#open-project").click();
+      await page.waitForSelector("#project-readiness[data-harness-launch-ready='true']", {
+        timeout: 10_000,
+      });
+      const originalProjectId = await page.locator("#project-readiness")
+        .getAttribute("data-project-id");
+
+      await rename(originalPath, movedPath);
+      await page.locator("#project-path").fill(movedPath);
+      await page.locator("#open-project").click();
+      await page.waitForFunction(() => document.querySelector("#project-feedback")
+        ?.textContent?.includes("project_path_moved"));
+      assert.match(
+        await page.locator("#project-feedback").textContent(),
+        /update_registration, forget_registration, register_as_new/,
+      );
+
+      await page.locator("#register-project-as-new").click();
+      await page.waitForFunction((projectId) => {
+        const readiness = document.querySelector("#project-readiness");
+        return readiness?.getAttribute("data-harness-launch-ready") === "true"
+          && readiness.getAttribute("data-project-id") !== projectId;
+      }, originalProjectId);
+      const replacementProjectId = await page.locator("#project-readiness")
+        .getAttribute("data-project-id");
+      assert.match(replacementProjectId, /^project-[a-f0-9]{24}$/);
+
+      await rename(movedPath, movedAgainPath);
+      await page.locator("#project-path").fill(movedAgainPath);
+      await page.locator("#open-project").click();
+      await page.waitForFunction(() => document.querySelector("#project-feedback")
+        ?.textContent?.includes("project_path_conflict"));
+      assert.match(
+        await page.locator("#project-feedback").textContent(),
+        /resolve_conflicting_registrations/,
+      );
+
+      page.once("dialog", (dialog) => dialog.accept());
+      await page.locator("#forget-project-registration").click();
+      await page.waitForSelector("#project-not-selected[data-project-selected='false']");
+      await mkdir(movedPath);
+      await page.locator("#project-path").fill(movedPath);
+      await page.locator("#open-project").click();
+      await page.waitForFunction(() => document.querySelector("#project-feedback")
+        ?.textContent?.includes("project_path_tombstoned"));
+      assert.match(
+        await page.locator("#project-feedback").textContent(),
+        /restore_registration, register_as_new/,
+      );
+
+      const state = JSON.parse(
+        await readFile(join(dataDir, "project-registrations.json"), "utf8"),
+      );
+      assert.deepEqual(
+        state.projects.map(({ projectId, status }) => ({ projectId, status })),
+        [
+          { projectId: originalProjectId, status: "active" },
+          { projectId: replacementProjectId, status: "tombstoned" },
+        ],
+      );
+      const auditText = await readFile(join(dataDir, "audit.jsonl"), "utf8");
+      const audits = auditText.trim().split("\n").map(JSON.parse);
+      assert.ok(audits.some((entry) => entry.action === "project.registration.forget"
+        && entry.outcome === "accepted"));
+      assert.ok(audits.some((entry) => entry.action === "project.inspect"
+        && entry.outcome === "rejected"
+        && entry.details.code === "project_path_conflict"));
+      assert.ok(audits.some((entry) => entry.action === "project.inspect"
+        && entry.outcome === "rejected"
+        && entry.details.code === "project_path_tombstoned"));
+      await context.close();
+    } finally {
+      await browser.close();
+    }
+  } finally {
+    await execFileAsync(installed.command, [
+      "stop", "--data-dir", dataDir, "--json",
+    ], { cwd: executionDirectory, env: productEnvironment }).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
