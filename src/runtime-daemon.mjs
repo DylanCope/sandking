@@ -354,6 +354,33 @@ const sendJson = (response, status, body) => {
 /** @param {unknown} value */
 const mutationRequestFingerprint = (value) => digest(canonicalJson(value));
 
+/**
+ * Normalize optional Project-open content at its retained fingerprint boundary.
+ * @param {{path: unknown, configuration: unknown, harnessAdapterId?: unknown}} request
+ */
+const normalizeProjectPreparationRequestContent = (request) => ({
+  path: request.path,
+  configuration: request.configuration,
+  harnessAdapterId: request.harnessAdapterId ?? null,
+});
+
+/**
+ * @param {string} action
+ * @param {number} expectedRevision
+ * @param {unknown} requestContent
+ */
+const hostMutationRequestFingerprint = (action, expectedRevision, requestContent) =>
+  mutationRequestFingerprint({
+    expectedRevision,
+    requestContent: action === "project.prepare"
+      ? normalizeProjectPreparationRequestContent(
+        /** @type {{path: unknown, configuration: unknown, harnessAdapterId?: unknown}} */ (
+          requestContent
+        ),
+      )
+      : requestContent,
+  });
+
 /** @template T @param {() => Promise<T>} operation */
 const withHostMutationFailureLock = (operation) => {
   const current = hostMutationFailureQueue.catch(() => undefined).then(operation);
@@ -390,10 +417,7 @@ const replayHostMutationOutcome = async (
   actualRevision,
   prohibitedSideEffects,
 ) => {
-  const fingerprint = mutationRequestFingerprint({
-    expectedRevision,
-    requestContent,
-  });
+  const fingerprint = hostMutationRequestFingerprint(action, expectedRevision, requestContent);
   const outcomeKey = `${action}\0${idempotencyKeyHash}`;
   const existing = hostMutationOutcomes.get(outcomeKey);
   if (!existing) {
@@ -475,7 +499,7 @@ const retainHostMutationOutcome = (
   outcome,
 ) => {
   hostMutationOutcomes.set(`${action}\0${idempotencyKeyHash}`, {
-    fingerprint: mutationRequestFingerprint({ expectedRevision, requestContent }),
+    fingerprint: hostMutationRequestFingerprint(action, expectedRevision, requestContent),
     status: outcome.status,
     response: structuredClone(outcome.body),
   });
@@ -1403,16 +1427,6 @@ const runtimeProjectFailure = async (
 };
 
 /**
- * Normalize Project-open content before any outcome is fingerprinted.
- * @param {{path: unknown, configuration: unknown, harnessAdapterId?: unknown}} request
- */
-const normalizeProjectPreparationRequestContent = (request) => ({
-  path: request.path,
-  configuration: request.configuration,
-  harnessAdapterId: request.harnessAdapterId ?? null,
-});
-
-/**
  * @param {{path: unknown, configuration: unknown, harnessAdapterId?: unknown, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number}} request
  */
 const prepareExplicitProject = (request) => withProjectPreparationLock(async () => {
@@ -1427,7 +1441,11 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       && request.harnessAdapterId !== SANDCASTLE_HARNESS_ADAPTER_ID)
   );
 
-  const requestContent = normalizeProjectPreparationRequestContent(request);
+  const requestContent = {
+    path: request.path,
+    configuration: request.configuration,
+    harnessAdapterId: request.harnessAdapterId,
+  };
   const prohibitedSideEffects = {
     directoryScan: false,
     projectFileWrite: false,
@@ -3005,7 +3023,7 @@ const main = async () => {
                 "host_local_project_preparation",
                 expectedRevision,
                 idempotencyKeyHash,
-                normalizeProjectPreparationRequestContent(requestContent),
+                requestContent,
                 error instanceof ControllerSessionError ? error.retainedOutcome : null,
               );
             } else {
