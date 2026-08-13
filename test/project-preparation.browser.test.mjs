@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { projectIdPattern } from "../src/common/identifiers.mjs";
 import { launchBrowser } from "./browser-launch.mjs";
 import { installCurrentPackage } from "./installed-package.mjs";
 
@@ -117,7 +118,7 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
         "conformance-harness-adapter-v1",
       );
       const pinnedRevision = await readiness.getAttribute("data-harness-pin");
-      assert.match(projectId, /^project-[a-f0-9]{24}$/);
+      assert.match(projectId, projectIdPattern);
       assert.match(harnessId, /^harness-[a-f0-9]{24}$/);
       assert.match(pinnedRevision, /^[a-f0-9]{40}$/);
       assert.equal(await readiness.getAttribute("data-project-revision"), "2");
@@ -380,6 +381,142 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
       await browser.close();
     }
   } finally {
+    await execFileAsync(installed.command, [
+      "stop", "--data-dir", dataDir, "--json",
+    ], { cwd: executionDirectory, env: productEnvironment }).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("installed Cockpit resolves tombstones and conflicts after Controller and Host restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-project-resolution-browser-"));
+  const dataDir = join(root, "host-state");
+  const executionDirectory = join(root, "outside-checkout");
+  const userHome = join(root, "user-home");
+  const projectPath = join(root, "selected-project");
+  const movedProjectPath = join(root, "moved-project");
+  await Promise.all([
+    mkdir(dataDir, { recursive: true }),
+    mkdir(executionDirectory, { recursive: true }),
+    mkdir(userHome, { recursive: true }),
+    mkdir(projectPath, { recursive: true }),
+  ]);
+  const installed = await installCurrentPackage(root);
+  const productEnvironment = { ...process.env, HOME: userHome };
+  let browser;
+
+  const launchRuntime = async (idempotencyKey) => JSON.parse((await execFileAsync(
+    installed.command,
+    [
+      "launch",
+      "--data-dir", dataDir,
+      "--startup-timeout-ms", "60000",
+      "--idempotency-key", idempotencyKey,
+      "--json",
+      "--no-open",
+    ],
+    { cwd: executionDirectory, env: productEnvironment },
+  )).stdout);
+  const openCockpit = async (bootstrapUrl) => {
+    browser = await launchBrowser({ niceAdjustment: 10 });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(bootstrapUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#project-preparation[data-explicit-path-only='true']");
+    await page.locator("#project-harness-adapter")
+      .selectOption("conformance-harness-adapter-v1");
+    return { context, page };
+  };
+  const openProject = async (page, path) => {
+    await page.locator("#project-path").fill(path);
+    await page.locator("#open-project").click();
+  };
+
+  try {
+    const launch = await launchRuntime("project-resolution-runtime-launch");
+    let { context, page } = await openCockpit(launch.bootstrapUrl);
+    await openProject(page, projectPath);
+    await page.waitForSelector("#project-readiness[data-harness-launch-ready='true']");
+    const originalProjectId = await page.locator("#project-readiness")
+      .getAttribute("data-project-id");
+    assert.match(originalProjectId, projectIdPattern);
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.locator("#forget-project-registration").click();
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("was forgotten"));
+    await openProject(page, projectPath);
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("project_path_tombstoned"));
+    assert.equal(await page.locator("#project-registration-resolution")
+      .getAttribute("data-registration-failure-code"), "project_path_tombstoned");
+    await page.locator(".restore-project-registration").click();
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("was restored"));
+    await openProject(page, projectPath);
+    await page.waitForSelector(
+      `#project-readiness[data-project-id='${originalProjectId}']`
+        + "[data-harness-launch-ready='true']",
+    );
+
+    await rename(projectPath, movedProjectPath);
+    await openProject(page, movedProjectPath);
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("project_path_moved"));
+    await page.locator("#register-project-as-new").click();
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("project_path_conflict"));
+    const candidateIds = await page.locator(".resolve-project-registration-conflict")
+      .evaluateAll((buttons) => buttons.map((button) => button.dataset.projectId));
+    assert.equal(candidateIds.length, 2);
+    assert.ok(candidateIds.includes(originalProjectId));
+
+    await execFileAsync(installed.command, [
+      "stop", "--data-dir", dataDir, "--json",
+    ], { cwd: executionDirectory, env: productEnvironment });
+    await context.close();
+    await browser.close();
+    browser = undefined;
+
+    const restarted = await launchRuntime("project-resolution-runtime-restart");
+    ({ context, page } = await openCockpit(restarted.bootstrapUrl));
+    assert.notEqual(restarted.runtime.runtimeId, launch.runtime.runtimeId);
+    assert.equal(restarted.host.hostId, launch.host.hostId);
+    await openProject(page, movedProjectPath);
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("project_path_conflict"));
+    assert.deepEqual(
+      (await page.locator(".resolve-project-registration-conflict")
+        .evaluateAll((buttons) => buttons.map((button) => button.dataset.projectId))).sort(),
+      candidateIds.sort(),
+    );
+    await page.locator(
+      `.resolve-project-registration-conflict[data-project-id='${originalProjectId}']`,
+    ).click();
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("was kept"));
+    await openProject(page, movedProjectPath);
+    await page.waitForSelector(
+      `#project-readiness[data-project-id='${originalProjectId}']`
+        + "[data-harness-launch-ready='true']",
+    );
+
+    const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map(JSON.parse);
+    assert.deepEqual(
+      audits.filter((entry) => entry.action === "project.registration.resolve"
+          && entry.outcome === "accepted")
+        .map((entry) => entry.details.action),
+      ["forget", "restore", "resolve_conflict"],
+    );
+    assert.ok(audits.filter((entry) => entry.action === "project.registration.resolve")
+      .every((entry) => entry.details.directoryScanPerformed === false
+        && entry.details.projectFileWrite === false));
+    await context.close();
+  } finally {
+    if (browser) await browser.close();
     await execFileAsync(installed.command, [
       "stop", "--data-dir", dataDir, "--json",
     ], { cwd: executionDirectory, env: productEnvironment }).catch(() => undefined);

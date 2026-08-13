@@ -4,6 +4,7 @@ import {
   readHarnessLaunchParameters,
   renderHarnessLaunchParameterFields,
 } from "/cockpit-launch-parameters.mjs";
+import { createProjectRegistrationResolutionControls } from "/cockpit-project-registration.mjs";
 import {
   hostIdPattern,
   projectIdPattern,
@@ -23,6 +24,7 @@ const browserProtocol = Object.freeze({
       "cockpit.controller-terminal.v1",
       "cockpit.controller-terminal-resize.v1",
       "cockpit.project-preparation.v1",
+      "cockpit.project-registration-resolution.v1",
       "cockpit.harness-run-launch.v2",
       "cockpit.harness-run-observation.v2",
       "cockpit.harness-run-reconciliation.v1",
@@ -31,7 +33,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:e24f728f8abe326a662460855be5144b0ffae82c02cbc28ec0a09d27bd93a5d3",
+  schemaDigest: "sha256:61c6a0fe586a23f10c27f47d7e1d607bf385b96fa740dc8f204c26a332d8876a",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -741,6 +743,7 @@ const renderProjectPreparation = (
   let currentNode = renderPreparedProject(preparation.current);
   let currentProject = preparation.current;
   let expectedRevision = preparation.current?.revision ?? 0;
+  let registrationResolutionControls;
   const openController = element("button", {
     id: "open-project-controller",
     type: "button",
@@ -913,10 +916,26 @@ const renderProjectPreparation = (
     openClaudeController.disabled = hostConnectionStatus !== "connected"
       || !projectReady
       || !claudeAvailable;
+    registrationResolutionControls?.updateAvailability();
   };
 
-  openButton.addEventListener("click", async () => {
+  const clearCurrentProject = () => {
+    currentProject = null;
+    expectedRevision = 0;
+    harnessSelect.disabled = false;
+    updateLaunchParameterFields();
+    const replacement = renderPreparedProject(null);
+    currentNode.replaceWith(replacement);
+    currentNode = replacement;
+    updateWorkbenchChrome({ currentProject: null });
+  };
+  const openSelectedProject = async (resolutionAction, resolutionExpectedRevision) => {
+    const requestExpectedRevision = resolutionAction === "register_as_new"
+      && Number.isSafeInteger(resolutionExpectedRevision)
+      ? resolutionExpectedRevision
+      : expectedRevision;
     openButton.disabled = true;
+    registrationResolutionControls.registerAsNewButton.disabled = true;
     feedback.textContent = "Opening the selected Project path…";
     const response = await fetch("/projects/open", {
       method: "POST",
@@ -924,11 +943,12 @@ const renderProjectPreparation = (
         "content-type": "application/json",
         "x-sandking-csrf": session.csrfToken,
         "x-sandking-idempotency-key": mutationKey(),
-        "x-sandking-expected-revision": String(expectedRevision),
+        "x-sandking-expected-revision": String(requestExpectedRevision),
       },
       body: JSON.stringify({
         path: pathInput.value,
         harnessAdapterId: harnessSelect.value,
+        ...(resolutionAction ? { resolutionAction } : {}),
         configuration: {
           issueWorkflow: { provider: "github", kind: "issues" },
           checks: [
@@ -940,6 +960,10 @@ const renderProjectPreparation = (
     });
     const outcome = await response.json();
     if (!response.ok) {
+      registrationResolutionControls.render(outcome);
+      if (outcome.code === "project_path_conflict") {
+        clearCurrentProject();
+      }
       if (outcome.project) {
         expectedRevision = outcome.project.revision;
         currentProject = outcome.project;
@@ -964,6 +988,7 @@ const renderProjectPreparation = (
       openButton.disabled = hostConnectionStatus !== "connected";
       return;
     }
+    registrationResolutionControls.clear();
     expectedRevision = outcome.project.revision;
     currentProject = outcome.project;
     updateLaunchParameterFields();
@@ -974,7 +999,23 @@ const renderProjectPreparation = (
     feedback.textContent = `Project and ${outcome.project.harness.name} are ready to launch.`;
     updateProjectActionAvailability();
     openButton.disabled = hostConnectionStatus !== "connected";
+  };
+  registrationResolutionControls = createProjectRegistrationResolutionControls({
+    element,
+    csrfToken: session.csrfToken,
+    mutationKey,
+    getHostConnectionStatus: () => hostConnectionStatus,
+    getCurrentProject: () => currentProject,
+    getSelectedPath: () => pathInput.value,
+    clearCurrentProject,
+    openSelectedProject,
+    setFeedback: (message) => {
+      feedback.textContent = message;
+    },
+    updateAvailability: updateProjectActionAvailability,
+    confirmForget: (message) => window.confirm(message),
   });
+  openButton.addEventListener("click", () => openSelectedProject());
 
   const attachFocusedController = (focused, reconnected) => {
     updateWorkbenchChrome({ focusedControllerSession: focused });
@@ -1057,8 +1098,11 @@ const renderProjectPreparation = (
     harnessLabel,
     harnessSelect,
     openButton,
+    registrationResolutionControls.registerAsNewButton,
     feedback,
     currentNode,
+    registrationResolutionControls.forgetRegistrationButton,
+    registrationResolutionControls.resolutionPanel,
     element("h3", {}, "Launch Harness"),
     launchParameterFields,
     launchButton,
