@@ -24,9 +24,9 @@ import {
 import { createProjectRegistry } from "../src/project-registration.mjs";
 import { createHarnessRunFixture } from "./harness-run-fixture.mjs";
 import {
-  qualifyIssue164FaultPoint,
-  retainIssue164FaultPointResults,
-} from "./issue-164-fault-results.mjs";
+  assertHarnessRunFaultCoverage,
+  qualifyHarnessRunFaultPoint,
+} from "./harness-run-fault-coverage.mjs";
 import { waitForTestCheckpoint } from "./test-checkpoint.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -560,7 +560,7 @@ test("startup completes a cancellation accepted before signalling without relaun
     assert.deepEqual(repeated.events, observation.events);
     assert.deepEqual(repeated.outcome, observation.outcome);
     assert.deepEqual((await readdir(fixture.projectPath)).sort(), projectFilesBefore);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       "harness_run_cancellation.after_state_commit",
       "startup completes a cancellation accepted before signalling without relaunching work",
     );
@@ -644,7 +644,7 @@ test("cancellation interrupted after its complete commit replays once after rest
     assert.equal(fixture.audits.filter((audit) =>
       audit.action === "harness.run.cancel" && audit.outcome === "accepted").length, 1);
     assert.deepEqual((await readdir(fixture.projectPath)).sort(), projectFilesBefore);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       "harness_run_cancellation.after_commit",
       "cancellation interrupted after its complete commit replays once after restart",
     );
@@ -724,7 +724,7 @@ test("restart does not invent cancellation when interruption precedes its accept
     });
     assert.equal(retry.code, "harness_run_not_cancellable");
     assert.equal(retry.idempotentReplay, false);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       "harness_run_cancellation.before_commit",
       "restart does not invent cancellation when interruption precedes its acceptance commit",
     );
@@ -1014,7 +1014,7 @@ test("restart arbitrates a signal dispatched before its durable publication", as
     });
     assert.equal(replay.idempotentReplay, true);
     assert.equal(signalDispatchCount, 1);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       "harness_run_cancellation.cooperative_signal.after_dispatch",
       "restart arbitrates a signal dispatched before its durable publication",
     );
@@ -1125,7 +1125,7 @@ test("cooperative signal publication is durable before restart terminal arbitrat
     });
     assert.equal(replay.idempotentReplay, true);
     assert.equal(signalPublicationCount, 1);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       "harness_run_cancellation.cooperative_signal.after_state_commit",
       "cooperative signal publication is durable before restart terminal arbitration",
     );
@@ -1227,7 +1227,7 @@ test("retained termination confirmation finalizes accepted cancellation exactly 
       requestId: "replay-after-confirmed-cancellation-restart",
     });
     assert.equal(replay.idempotentReplay, true);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       "harness_run_cancellation.termination_confirmation.after_state_commit",
       "retained termination confirmation finalizes accepted cancellation exactly once after restart",
     );
@@ -1331,7 +1331,7 @@ test("forced signal publication survives restart without a second escalation", a
     });
     assert.equal(replay.idempotentReplay, true);
     assert.equal(forcedSignalPublicationCount, 1);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       "harness_run_cancellation.forced_signal.after_state_commit",
       "forced signal publication survives restart without a second escalation",
     );
@@ -1494,7 +1494,7 @@ test("pre-publication cancellation signal and termination faults converge after 
       assert.deepEqual(repeatedObservation.events, converged.events, boundary.point);
       assert.deepEqual(repeatedObservation.outcome, converged.outcome, boundary.point);
       assert.deepEqual((await readdir(fixture.projectPath)).sort(), projectFilesBefore);
-      qualifyIssue164FaultPoint(
+      qualifyHarnessRunFaultPoint(
         boundary.point,
         "pre-publication cancellation signal and termination faults converge after restart",
       );
@@ -2128,7 +2128,7 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
     assert.equal(JSON.parse(
       await readFile(join(preCommit.dataDir, "harness-runs.json"), "utf8"),
     ).runs.length, 1);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       pointBeforeCommit,
       "launch commit interruptions leave pre-commit work unclaimed and replay post-commit work",
     );
@@ -2224,7 +2224,7 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
     assert.equal(afterReplay.runs[0].events.at(-1).type, "harness_run_failed");
     assert.equal(afterReplay.runs[0].outcome.code, "host_daemon_interrupted");
     assert.deepEqual((await readdir(stateCommit.projectPath)).sort(), projectFilesBefore);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       pointAfterStateCommit,
       "launch commit interruptions leave pre-commit work unclaimed and replay post-commit work",
     );
@@ -2280,7 +2280,7 @@ test("launch commit interruptions leave pre-commit work unclaimed and replay pos
     assert.equal(postReplay.run.harnessRunId, postState.runs[0].harnessRunId);
     assert.equal(postCommit.audits.filter((audit) =>
       audit.action === "harness.run.launch" && audit.outcome === "accepted").length, 1);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       pointAfterCommit,
       "launch commit interruptions leave pre-commit work unclaimed and replay post-commit work",
     );
@@ -2511,7 +2511,7 @@ test("readiness and terminal-envelope interruptions converge from exact pre/post
       assert.deepEqual(repeatedObservation.events, converged.events, boundary.point);
       assert.deepEqual(repeatedObservation.outcome, converged.outcome, boundary.point);
       assert.deepEqual((await readdir(fixture.projectPath)).sort(), projectFilesBefore);
-      qualifyIssue164FaultPoint(
+      qualifyHarnessRunFaultPoint(
         boundary.point,
         "readiness and terminal-envelope interruptions converge from exact pre/post history",
       );
@@ -3130,7 +3130,7 @@ test("every recovery publication fault resumes one hashed mutation without canon
         audit.action === "harness.run.recover"
         && audit.outcome === "accepted").length, 1);
       assert.doesNotMatch(JSON.stringify({ converged, audits }), new RegExp(rawRetryKey));
-      qualifyIssue164FaultPoint(
+      qualifyHarnessRunFaultPoint(
         faultPoint,
         "every recovery publication fault resumes one hashed mutation without canonical duplication",
       );
@@ -3342,7 +3342,7 @@ test("reconciliation commit boundaries converge idempotently after repeated star
     ), preRecoveredState);
     assert.equal(preCommit.audits.filter((audit) =>
       audit.action === "harness.run.reconcile").length, 1);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       "harness_run_reconciliation.before_commit",
       "reconciliation commit boundaries converge idempotently after repeated startup",
     );
@@ -3382,7 +3382,7 @@ test("reconciliation commit boundaries converge idempotently after repeated star
       audit.action === "harness.run.outcome").length, 1);
     assert.equal(repeated.runs[0].events.filter((event) =>
       event.type === "harness_run_failed").length, 1);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       "harness_run_reconciliation.after_state_commit",
       "reconciliation commit boundaries converge idempotently after repeated startup",
     );
@@ -3414,7 +3414,7 @@ test("reconciliation commit boundaries converge idempotently after repeated star
       audit.action === "harness.run.reconcile").length, 1);
     assert.equal(postCommit.audits.filter((audit) =>
       audit.action === "harness.run.outcome").length, 1);
-    qualifyIssue164FaultPoint(
+    qualifyHarnessRunFaultPoint(
       "harness_run_reconciliation.after_commit",
       "reconciliation commit boundaries converge idempotently after repeated startup",
     );
@@ -3917,7 +3917,6 @@ test("reconciliation retains adapter readiness from durable running history", as
   }
 });
 
-test("issue 164 retains one executed restart result for every declared fault point", async () => {
-  const results = await retainIssue164FaultPointResults();
-  assert.ok(results.every((result) => result.passed));
+test("every declared Harness-run fault point is exercised by an ordinary restart test", () => {
+  assertHarnessRunFaultCoverage();
 });

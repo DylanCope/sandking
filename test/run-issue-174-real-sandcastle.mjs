@@ -8,20 +8,15 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import {
-  captureCleanIssue174EvidenceRevision,
-  verifyIssue174EvidenceRevisionUnchanged,
-} from "./issue-174-evidence-source.mjs";
-import {
-  assertIssue174EvidenceSanitized,
-  createIssue174Qualification,
-  inspectIssue174RetainedRunState,
-  ISSUE_174_SCENARIO,
-  validateIssue174RealEvidence,
-} from "./issue-174-real-evidence.mjs";
+  createRealSandcastleQualification,
+  inspectRealSandcastleRunState,
+  realSandcastleScenario,
+  serializeSanitizedRealProviderResult,
+  validateRealSandcastleResult,
+} from "./real-sandcastle-acceptance.mjs";
 import { waitForIssue174ProductionHarness } from "./issue-174-harness-state.mjs";
 import { snapshotIssue174Projection } from "./issue-174-projection-snapshot.mjs";
 import {
@@ -31,11 +26,6 @@ import {
 } from "./issue-174-sandbox-image.mjs";
 
 const execFileAsync = promisify(execFile);
-const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
-const manifestPath = resolve(
-  process.argv.find((argument) => argument.endsWith(".json"))
-    ?? "acceptance/issue-174.manifest.json",
-);
 const sha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const gitEnvironment = () => ({
   LANG: "C.UTF-8",
@@ -50,43 +40,6 @@ const readJson = (path) => readFile(path, "utf8").then(JSON.parse);
 
 const emitQualification = (qualification) => {
   process.stderr.write(`${JSON.stringify(qualification)}\n`);
-};
-
-const verifyManifest = (manifest) => {
-  if (
-    manifest?.schemaVersion !== 1
-    || manifest.issue !== 174
-    || manifest.parentPrd !== 169
-    || manifest.scenario?.id !== ISSUE_174_SCENARIO
-    || manifest.scenario?.provider?.kind !== "openai-codex"
-    || manifest.scenario?.provider?.simulationAllowed !== false
-    || manifest.scenario?.provider?.sandbox?.provider !== "docker"
-    || manifest.scenario?.provider?.sandbox?.image !== "sandcastle:sandking-real-worker"
-    || manifest.scenario?.provider?.sandbox?.configurationSource !== ".sandcastle/Dockerfile"
-    || manifest.environmentGate?.name !== "SANDKING_REAL_SANDCASTLE_ACCEPTANCE"
-    || manifest.environmentGate?.requiredValue !== "1"
-    || manifest.environmentGate?.fixtureSubstitutionAllowed !== false
-    || manifest.retainedEvidence?.path !== "acceptance/evidence/issue-174.real.json"
-  ) {
-    throw new Error("issue_174_real_acceptance_manifest_invalid");
-  }
-};
-
-const verifySourceIssues = async (manifest) => {
-  for (const [issue, expectedHash] of [
-    [174, manifest.sourceIssue.githubBodyUtf8Sha256],
-    [169, manifest.sourcePrd.githubBodyUtf8Sha256],
-    [168, manifest.sourceSpecification.githubBodyUtf8Sha256],
-  ]) {
-    const { stdout } = await execFileAsync(
-      "gh",
-      ["issue", "view", String(issue), "--json", "body"],
-      { cwd: repositoryRoot, maxBuffer: 1024 * 1024 },
-    );
-    if (sha256(JSON.parse(stdout).body) !== `sha256:${expectedHash}`) {
-      throw new Error(`issue_174_source_revision_mismatch:${issue}`);
-    }
-  }
 };
 
 const probeRealProvider = async (expectedVersion) => {
@@ -138,7 +91,7 @@ const waitForTerminalRun = async (dataDir) => {
   const deadline = Date.now() + 20 * 60_000;
   while (Date.now() < deadline) {
     const state = await readJson(join(dataDir, "harness-runs.json")).catch(() => null);
-    const retained = inspectIssue174RetainedRunState(state);
+    const retained = inspectRealSandcastleRunState(state);
     if (retained.status === "terminal") {
       return retained.run;
     }
@@ -189,21 +142,13 @@ const readAudits = async (dataDir) => (await readFile(join(dataDir, "audit.jsonl
   .trim().split("\n").filter(Boolean).map(JSON.parse);
 
 const main = async () => {
-  let manifest;
-  try {
-    manifest = await readJson(manifestPath);
-    verifyManifest(manifest);
-  } catch {
-    emitQualification(createIssue174Qualification("real_acceptance_manifest_invalid"));
-    return 1;
-  }
   if (process.env.SANDKING_REAL_SANDCASTLE_ACCEPTANCE !== "1") {
-    emitQualification(createIssue174Qualification("real_provider_gate_disabled"));
+    emitQualification(createRealSandcastleQualification("real_provider_gate_disabled"));
     return 1;
   }
-  const provider = await probeRealProvider(manifest.scenario.provider.cliVersion);
+  const provider = await probeRealProvider(realSandcastleScenario.provider.cliVersion);
   if (provider.code) {
-    emitQualification(createIssue174Qualification(provider.code));
+    emitQualification(createRealSandcastleQualification(provider.code));
     return 1;
   }
 
@@ -226,10 +171,6 @@ const main = async () => {
   let sandboxTemporaryImageOwned = false;
   let workspacePath;
   try {
-    await verifySourceIssues(manifest);
-    const evidenceSourceRevision = await captureCleanIssue174EvidenceRevision({
-      repositoryRoot,
-    });
     root = await mkdtemp(join(tmpdir(), "sandking-issue-174-real-"));
     projectPath = join(root, "project");
     dataDir = join(root, "state");
@@ -287,7 +228,7 @@ const main = async () => {
       readState: () => readJson(join(dataDir, "harness-registry.json")),
     });
     workspacePath = initialHarness.workspacePath;
-    sandboxImageName = manifest.scenario.provider.sandbox.image;
+    sandboxImageName = realSandcastleScenario.provider.sandbox.image;
     sandboxImageBefore = await inspectIssue174SandboxImage(sandboxImageName);
     sandboxTemporaryImageName = `${sandboxImageName}-issue-174-${createHash("sha256")
       .update(`${root}\0${process.pid}`)
@@ -299,7 +240,7 @@ const main = async () => {
     sandboxTemporaryImageOwned = true;
     const sandboxConfigurationPath = join(
       workspacePath,
-      ...manifest.scenario.provider.sandbox.configurationSource.split("/"),
+      ...realSandcastleScenario.provider.sandbox.configurationSource.split("/"),
     );
     sandboxConfigurationIntegrity = sha256(await readFile(sandboxConfigurationPath));
     sandboxImageId = await prepareIssue174SandboxImage({
@@ -337,7 +278,7 @@ const main = async () => {
       || run.outcome?.result?.sandbox?.image !== sandboxImageName
       || run.outcome?.result?.sandbox?.imageId !== sandboxImageId
       || run.outcome?.result?.sandbox?.configurationSource
-        !== manifest.scenario.provider.sandbox.configurationSource
+        !== realSandcastleScenario.provider.sandbox.configurationSource
       || run.outcome?.result?.sandbox?.configurationIntegrity !== sandboxConfigurationIntegrity
       || run.outcome?.result?.sandbox?.destinationIsolation !== true
       || run.outcome?.result?.resolvedSkillCount !== 4
@@ -366,7 +307,7 @@ const main = async () => {
       "log", "-1", "--format=%s%n%an%n%ae", afterCommit,
     ]);
     const artifact = await readFile(
-      join(projectPath, manifest.scenario.expectedArtifact.path),
+      join(projectPath, realSandcastleScenario.expectedArtifact.path),
     );
     const projectionAfter = await snapshotIssue174Projection(projectionPath);
     const ignored = await execFileAsync("git", [
@@ -380,9 +321,9 @@ const main = async () => {
     const projectInvariants = {
       exactlyOneChildCommit: childCommitCount === 1,
       expectedArtifactOnly: JSON.stringify(changedFiles)
-        === JSON.stringify([manifest.scenario.expectedArtifact.path]),
+        === JSON.stringify([realSandcastleScenario.expectedArtifact.path]),
       expectedArtifactContent: sha256(artifact)
-        === `sha256:${manifest.scenario.expectedArtifact.contentUtf8Sha256}`,
+        === `sha256:${realSandcastleScenario.expectedArtifact.contentUtf8Sha256}`,
       unrelatedTrackedContentPreserved:
         await readFile(join(projectPath, "README.md"), "utf8") === projectBefore.readme
         && await readFile(join(projectPath, "sandcastle.real-provider.json"), "utf8")
@@ -453,24 +394,16 @@ const main = async () => {
     sandboxFixedTagChanged = false;
     sandboxTemporaryImageOwned = false;
 
-    await verifyIssue174EvidenceRevisionUnchanged({
-      repositoryRoot,
-      expectedRevision: evidenceSourceRevision,
-    });
-    const evidence = {
+    const result = {
       schemaVersion: 1,
       issue: 174,
-      parentPrd: 169,
-      generatedFromCommit: evidenceSourceRevision,
-      recordedAt: new Date().toISOString(),
-      scenario: ISSUE_174_SCENARIO,
+      scenario: realSandcastleScenario.id,
       qualification: {
         status: "passed",
         productionEvidence: true,
         fixtureSubstitution: false,
       },
       installedSandKing: {
-        revision: evidenceSourceRevision,
         command: installed.observation.command,
         installed: installed.observation.installed,
         launchedOutsideCheckout: installed.observation.launchedOutsideCheckout,
@@ -489,14 +422,12 @@ const main = async () => {
         authentication: "destination-local-authenticated",
         realExecution: true,
         simulated: false,
-        model: manifest.scenario.provider.model,
-        effort: manifest.scenario.provider.effort,
         sandbox: {
-          provider: manifest.scenario.provider.sandbox.provider,
+          provider: "docker",
           version: provider.sandboxVersion,
           image: sandboxImageName,
           imageId: sandboxImageId,
-          configurationSource: manifest.scenario.provider.sandbox.configurationSource,
+          configurationSource: realSandcastleScenario.provider.sandbox.configurationSource,
           configurationIntegrity: sandboxConfigurationIntegrity,
           destinationIsolation: true,
           temporaryImageRemoved: true,
@@ -534,7 +465,7 @@ const main = async () => {
         afterCommit,
         parentCommit,
         artifact: {
-          path: manifest.scenario.expectedArtifact.path,
+          path: realSandcastleScenario.expectedArtifact.path,
           contentIntegrity: sha256(artifact),
         },
         invariants: projectInvariants,
@@ -560,9 +491,9 @@ const main = async () => {
       },
       auditReferences,
     };
-    validateIssue174RealEvidence(evidence);
-    const evidenceText = assertIssue174EvidenceSanitized({
-      evidence,
+    validateRealSandcastleResult(result);
+    const resultText = serializeSanitizedRealProviderResult({
+      result,
       prohibitedValues: [
         root,
         projectPath,
@@ -574,11 +505,8 @@ const main = async () => {
         process.env.CODEX_HOME,
       ],
     });
-    const evidencePath = resolve(repositoryRoot, manifest.retainedEvidence.path);
-    await mkdir(dirname(evidencePath), { recursive: true, mode: 0o700 });
-    await writeFile(evidencePath, evidenceText, { mode: 0o600 });
     completed = true;
-    process.stdout.write(`Retained sanitized issue #174 real-provider evidence: ${evidencePath}\n`);
+    process.stdout.write(resultText);
     return 0;
   } catch (error) {
     const modelInvocationMayHaveOccurred = error
@@ -589,7 +517,7 @@ const main = async () => {
     emitQualification({
       schemaVersion: 1,
       issue: 174,
-      scenario: ISSUE_174_SCENARIO,
+      scenario: realSandcastleScenario.id,
       qualification: {
         status: "failed",
         code: "real_provider_proof_failed",

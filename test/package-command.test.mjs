@@ -124,13 +124,21 @@ test("an installed production package launches outside the source checkout", asy
       "launch", "--data-dir", prohibitedFaultState,
       "--host-mode", "pause-after-harness-run-cancellation-acceptance",
       "--json", "--no-open",
-    ], { cwd: root, env: process.env }));
+    ], { cwd: root, env: process.env }), (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Harness launch requires a Project ID or focused Controller Project/);
+      return true;
+    });
     await assert.rejects(access(prohibitedFaultState));
 
     const hostCommand = join(installDirectory, "node_modules", ".bin", "sandking-host");
     await assert.rejects(execFileAsync(hostCommand, [
       "--mode", "hang-before-ack", "--data-dir", prohibitedFaultState,
-    ], { cwd: root, env: process.env }));
+    ], { cwd: root, env: process.env }), (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /host_option_unsupported/);
+      return true;
+    });
     await assert.rejects(access(prohibitedFaultState));
 
     const { stdout } = await execFileAsync(command, [

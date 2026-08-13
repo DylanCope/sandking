@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -326,42 +326,6 @@ test("a clean incompatible Host launch does not accept either durable identity",
     await assert.rejects(access(join(dataDir, "controller-host-binding.json")));
     await assert.rejects(access(join(dataDir, "runtime-lifecycle.json")));
     await assert.rejects(access(join(dataDir, "runtime-state.json")));
-    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-      const productStateFiles = [
-        "host-identity.json",
-        "controller-host-binding.json",
-        "runtime-lifecycle.json",
-        "runtime-state.json",
-      ];
-      const presentFiles = (await Promise.all(productStateFiles.map(async (file) => [
-        file,
-        await access(join(dataDir, file)).then(() => true, () => false),
-      ]))).filter(([, present]) => present).map(([file]) => file);
-      const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
-        .trim().split("\n").map((line) => JSON.parse(line));
-      await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, {
-        recursive: true,
-        mode: 0o700,
-      });
-      await writeFile(
-        join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "clean-host-incompatible-major.json"),
-        `${JSON.stringify({
-          kind: "clean_host_negotiation_failure",
-          mode: "incompatible-major",
-          diagnosis: publicOutcome.diagnosis,
-          productStateFiles,
-          presentFiles,
-          acceptedIdentityStateCreated: presentFiles.length > 0,
-          auditReferences: audits.map((entry) => ({
-            auditId: entry.auditId,
-            action: entry.action,
-            outcome: entry.outcome,
-            details: entry.details,
-          })),
-        }, null, 2)}\n`,
-        { mode: 0o600 },
-      );
-    }
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -440,38 +404,6 @@ for (const [mode, expectedDiagnosis] of failureCases) {
           negotiationAudit.details.expectedHostId,
         );
       }
-      if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-        const runtimeStatePresent = await access(join(dataDir, "runtime-state.json"))
-          .then(() => true, () => false);
-        const acceptedStatePreserved = acceptedStateBefore.sha256 === acceptedStateAfter.sha256;
-        await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, {
-          recursive: true,
-          mode: 0o700,
-        });
-        await writeFile(
-          join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, `host-${mode}.json`),
-          `${JSON.stringify({
-            kind: "host_negotiation_failure",
-            mode,
-            diagnosis: publicOutcome.diagnosis,
-            acceptedState: {
-              files: acceptedStateFiles,
-              beforeSha256: acceptedStateBefore.sha256,
-              afterSha256: acceptedStateAfter.sha256,
-              preserved: acceptedStatePreserved,
-            },
-            runtimeStatePresent,
-            mutationOccurred: !acceptedStatePreserved || runtimeStatePresent,
-            auditReferences: audits.map((entry) => ({
-              auditId: entry.auditId,
-              action: entry.action,
-              outcome: entry.outcome,
-              details: entry.details,
-            })),
-          }, null, 2)}\n`,
-          { mode: 0o600 },
-        );
-      }
     } finally {
       await rm(dataDir, { recursive: true, force: true });
     }
@@ -525,37 +457,6 @@ test("replacing an accepted Host identity produces a typed hard stop without rew
     );
     await assert.rejects(access(join(dataDir, "runtime-state.json")));
 
-    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-      const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
-        .trim().split("\n").map((line) => JSON.parse(line));
-      await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, {
-        recursive: true,
-        mode: 0o700,
-      });
-      await writeFile(
-        join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "host-controller-host-identity-replacement.json"),
-        `${JSON.stringify({
-          kind: "host_negotiation_failure",
-          mode: "accepted-host-identity-replacement",
-          diagnosis: publicOutcome.diagnosis,
-          acceptedState: {
-            files: acceptedStateFiles,
-            beforeSha256: acceptedStateBefore.sha256,
-            afterSha256: acceptedStateAfter.sha256,
-            preserved: acceptedStateBefore.sha256 === acceptedStateAfter.sha256,
-          },
-          runtimeStatePresent: false,
-          mutationOccurred: acceptedStateBefore.sha256 !== acceptedStateAfter.sha256,
-          auditReferences: audits.map((entry) => ({
-            auditId: entry.auditId,
-            action: entry.action,
-            outcome: entry.outcome,
-            details: entry.details,
-          })),
-        }, null, 2)}\n`,
-        { mode: 0o600 },
-      );
-    }
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -584,20 +485,6 @@ test("Controller credentials are not inherited by the local Host process", async
     assert.equal(launch.host.identity, "local-host");
     assert.match(launch.host.hostId, /^host-[a-f0-9]{24}$/);
     assert.doesNotMatch(stdout, new RegExp(secret));
-    if (process.env.SANDKING_ACCEPTANCE_RESULT_DIR) {
-      await mkdir(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, { recursive: true, mode: 0o700 });
-      await writeFile(
-        join(process.env.SANDKING_ACCEPTANCE_RESULT_DIR, "host-credential-boundary.json"),
-        `${JSON.stringify({
-          kind: "host_credential_boundary",
-          mode: "secret-probe",
-          observedHostIdentity: launch.host.identity,
-          controllerSecretForwarded: launch.host.identity === "controller-secret-leaked",
-          negotiationAuditId: launch.audit.negotiationId,
-        }, null, 2)}\n`,
-        { mode: 0o600 },
-      );
-    }
   } finally {
     await execFileAsync(process.execPath, [cliPath, "stop", "--data-dir", dataDir, "--json"], {
       cwd: tmpdir(),
