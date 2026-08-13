@@ -346,7 +346,7 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
   }
 });
 
-test("path identity changes remain typed and fail closed across fresh Host processes", async () => {
+test("path identity changes return typed resolution guidance without silently reattaching", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-project-resolution-"));
   const dataDir = join(root, "host-state");
   const originalPath = join(root, "original-project");
