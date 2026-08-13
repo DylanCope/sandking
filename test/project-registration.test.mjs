@@ -83,6 +83,15 @@ const negotiate = async (child) => {
   assert.equal((await readFrame(child.stdout)).type, "host.identity.result");
 };
 
+/**
+ * @param {import("node:child_process").ChildProcessWithoutNullStreams} child
+ * @param {Record<string, unknown>} request
+ */
+const requestHost = async (child, request) => {
+  writeFrame(child.stdin, request);
+  return readFrame(child.stdout);
+};
+
 test("the framed Host opens, registers, and prepares only an explicitly selected Project", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-project-registration-"));
   const dataDir = join(root, "host-state");
@@ -337,16 +346,25 @@ test("path identity changes return typed resolution guidance without silently re
   const secretFixture = "project-secret-fixture-must-not-appear";
   await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", originalPath]);
   await writeFile(join(originalPath, "secret.txt"), `${secretFixture}\n`);
-  const audits = [];
-  const recordAudit = async (action, outcome, details) => {
-    const auditId = `audit-${String(audits.length + 1).padStart(24, "0")}`;
-    audits.push({ auditId, action, outcome, details });
-    return auditId;
-  };
+  const child = spawn(process.execPath, [
+    localHostPath,
+    "--data-dir",
+    dataDir,
+    "--allow-host-identity-create",
+  ], { stdio: ["pipe", "pipe", "pipe"], env: { LANG: "C.UTF-8" } });
 
   try {
-    const registry = await createProjectRegistry({ dataDir, recordAudit });
-    const registered = await registry.registerProject({
+    await negotiate(child);
+    const invalid = await requestHost(child, {
+      type: "project.inspect",
+      requestId: "inspect-invalid-project",
+      path: "relative/project",
+    });
+    assert.equal(invalid.code, "project_path_invalid");
+    assert.deepEqual(invalid.resolution.actions, ["select_existing_host_directory"]);
+
+    const registered = await requestHost(child, {
+      type: "project.register",
       requestId: "register-resolution-project",
       path: originalPath,
       configuration: projectConfiguration,
@@ -357,7 +375,8 @@ test("path identity changes return typed resolution guidance without silently re
     assert.equal(registered.code, "project_registered");
     await rename(originalPath, movedPath);
 
-    const missing = await registry.inspectProject({
+    const missing = await requestHost(child, {
+      type: "project.inspect",
       requestId: "inspect-missing-project",
       path: originalPath,
     });
@@ -365,7 +384,8 @@ test("path identity changes return typed resolution guidance without silently re
     assert.equal(missing.code, "project_path_missing");
     assert.deepEqual(missing.resolution.actions, ["update_registration", "forget_registration"]);
 
-    const moved = await registry.inspectProject({
+    const moved = await requestHost(child, {
+      type: "project.inspect",
       requestId: "inspect-moved-project",
       path: movedPath,
     });
@@ -377,7 +397,8 @@ test("path identity changes return typed resolution guidance without silently re
     ]);
 
     await mkdir(originalPath);
-    const replaced = await registry.inspectProject({
+    const replaced = await requestHost(child, {
+      type: "project.inspect",
       requestId: "inspect-replaced-project",
       path: originalPath,
     });
@@ -388,10 +409,31 @@ test("path identity changes return typed resolution guidance without silently re
       "select_another_path",
     ]);
 
+    const retained = `${await readFile(
+      join(dataDir, "project-registrations.json"),
+      "utf8",
+    )}\n${await readFile(join(dataDir, "audit.jsonl"), "utf8")}`;
+    assert.doesNotMatch(retained, new RegExp(secretFixture));
+    const hostAudits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map(JSON.parse);
+    assert.ok(hostAudits.filter((entry) => entry.action === "project.inspect").every((entry) =>
+      entry.outcome === "rejected"
+      && entry.details.directoryScanPerformed === false));
+    // Production has no action that creates either retained state. Keep the
+    // pre-existing fail-closed coverage without inventing a test-only Host mutation.
+    const retainedAudits = [];
+    const recordAudit = async (action, outcome, details) => {
+      const auditId = `audit-${String(retainedAudits.length + 1).padStart(24, "0")}`;
+      retainedAudits.push({ auditId, action, outcome, details });
+      return auditId;
+    };
+    const registry = await createProjectRegistry({ dataDir, recordAudit });
     const statePath = join(dataDir, "project-registrations.json");
-    const tombstonedState = JSON.parse(await readFile(statePath, "utf8"));
-    tombstonedState.projects[0].status = "tombstoned";
-    await writeFile(statePath, `${JSON.stringify(tombstonedState, null, 2)}\n`);
+    const retainedState = JSON.parse(await readFile(statePath, "utf8"));
+    retainedState.projects[0].status = "tombstoned";
+    await writeFile(statePath, `${JSON.stringify(retainedState, null, 2)}\n`);
     const tombstoned = await registry.inspectProject({
       requestId: "inspect-tombstoned-project",
       path: originalPath,
@@ -399,25 +441,26 @@ test("path identity changes return typed resolution guidance without silently re
     assert.equal(tombstoned.code, "project_path_tombstoned");
     assert.deepEqual(tombstoned.resolution.actions, ["restore_registration", "register_as_new"]);
 
-    tombstonedState.projects[0].status = "active";
-    tombstonedState.projects.push({
-      ...tombstonedState.projects[0],
+    retainedState.projects[0].status = "active";
+    retainedState.projects.push({
+      ...retainedState.projects[0],
       projectId: `project-${"f".repeat(24)}`,
     });
-    await writeFile(statePath, `${JSON.stringify(tombstonedState, null, 2)}\n`);
+    await writeFile(statePath, `${JSON.stringify(retainedState, null, 2)}\n`);
     const conflict = await registry.inspectProject({
       requestId: "inspect-conflicting-project",
       path: originalPath,
     });
     assert.equal(conflict.code, "project_path_conflict");
     assert.deepEqual(conflict.resolution.actions, ["resolve_conflicting_registrations"]);
-
-    const retained = `${await readFile(statePath, "utf8")}\n${JSON.stringify(audits)}`;
-    assert.doesNotMatch(retained, new RegExp(secretFixture));
-    assert.ok(audits.filter((entry) => entry.action === "project.inspect").every((entry) =>
+    assert.ok(retainedAudits.every((entry) =>
       entry.outcome === "rejected"
       && entry.details.directoryScanPerformed === false));
   } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
     await rm(root, { recursive: true, force: true });
   }
 });
