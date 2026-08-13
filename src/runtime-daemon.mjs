@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
+import { canonicalJson } from "./common/canonical-json.mjs";
+import { digest, digestHex } from "./common/digest.mjs";
+import { hostIdPattern } from "./common/identifiers.mjs";
 import {
   BROWSER_PROTOCOL_VERSION,
   BROWSER_SCHEMA_DIGEST,
@@ -78,7 +81,7 @@ const parseArgs = (argv) => {
   if (!result.dataDir) {
     throw new Error("runtime_data_dir_missing");
   }
-  if (!result.expectedHostId || !/^host-[a-f0-9]{24}$/.test(result.expectedHostId)) {
+  if (!result.expectedHostId || !hostIdPattern.test(result.expectedHostId)) {
     throw new Error("runtime_expected_host_id_missing");
   }
   if (!Number.isSafeInteger(result.lifecycleRevision) || Number(result.lifecycleRevision) < 1) {
@@ -103,6 +106,7 @@ const cockpitScriptPath = fileURLToPath(new URL("./cockpit.js", import.meta.url)
 const cockpitLaunchParametersPath = fileURLToPath(
   new URL("./cockpit-launch-parameters.mjs", import.meta.url),
 );
+const identifierScriptPath = fileURLToPath(new URL("./common/identifiers.mjs", import.meta.url));
 const cockpitStylePath = fileURLToPath(new URL("./cockpit.css", import.meta.url));
 const xtermScriptPath = fileURLToPath(import.meta.resolve("@xterm/xterm/lib/xterm.mjs"));
 const xtermFitScriptPath = fileURLToPath(import.meta.resolve(
@@ -347,24 +351,8 @@ const sendJson = (response, status, body) => {
   response.end(JSON.stringify(body));
 };
 
-/** @param {string} key */
-const hashIdempotencyKey = (key) => `sha256:${createHash("sha256").update(key).digest("hex")}`;
-
-/** @param {unknown} value @returns {string} */
-const canonicalJson = (value) => {
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    const record = /** @type {Record<string, unknown>} */ (value);
-    return `{${Object.keys(record).sort().map((key) =>
-      `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-};
-
 /** @param {unknown} value */
-const mutationRequestFingerprint = (value) => hashIdempotencyKey(canonicalJson(value));
+const mutationRequestFingerprint = (value) => digest(canonicalJson(value));
 
 /** @template T @param {() => Promise<T>} operation */
 const withHostMutationFailureLock = (operation) => {
@@ -628,7 +616,7 @@ const readMutationHeaders = (request) => {
   return {
     idempotencyKey,
     idempotencyKeyHash: idempotencyKey.length > 0 && idempotencyKey.length <= 256
-      ? hashIdempotencyKey(idempotencyKey)
+      ? digest(idempotencyKey)
       : null,
     expectedRevision,
   };
@@ -702,7 +690,7 @@ const exchangeBootstrapToken = async (token, idempotencyKey, expectedRevision) =
       code: "mutation_contract_invalid",
       authorizationClass: "bootstrap_token",
       idempotencyKeyHash: /^[a-f0-9]{64}$/.test(idempotencyKey)
-        ? hashIdempotencyKey(idempotencyKey)
+        ? digest(idempotencyKey)
         : null,
       expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
       actualRevision: 0,
@@ -719,8 +707,8 @@ const exchangeBootstrapToken = async (token, idempotencyKey, expectedRevision) =
       ),
     };
   }
-  const tokenId = createHash("sha256").update(token).digest("hex");
-  const idempotencyKeyHash = hashIdempotencyKey(idempotencyKey);
+  const tokenId = digestHex(token);
+  const idempotencyKeyHash = digest(idempotencyKey);
   const existingExchange = bootstrapExchanges.get(tokenId);
   if (existingExchange) {
     const existing = await existingExchange;
@@ -1238,7 +1226,7 @@ const requestHostOperation = (message) => {
           || bulk.sequence !== response.range.start
           || bulk.eof !== response.range.eof
           || bulk.data.byteLength !== response.byteLength
-          || `sha256:${createHash("sha256").update(bulk.data).digest("hex")}` !== response.sha256
+          || digest(bulk.data) !== response.sha256
         ) {
           throw new Error("host_protocol_error");
         }
@@ -1328,9 +1316,7 @@ const requestFocusedHostMutation = async (action, message, requestContent) => {
 };
 
 /** @param {string} key @param {string} operation */
-const derivedHostIdempotencyKey = (key, operation) => createHash("sha256")
-  .update(`${operation}\0${key}`)
-  .digest("hex");
+const derivedHostIdempotencyKey = (key, operation) => digestHex(`${operation}\0${key}`);
 
 /** @param {any} outcome */
 const projectMutationSummary = (outcome) => outcome ? {
@@ -1893,7 +1879,7 @@ const openProjectControllerSession = (request) => withProjectSessionMutationLock
     || request.providerId === "claude-code"
     ? request.providerId
     : null;
-  const fingerprint = hashIdempotencyKey(JSON.stringify({
+  const fingerprint = digest(JSON.stringify({
     projectId: request.projectId,
     providerId: request.providerId,
     expectedRevision: request.expectedRevision,
@@ -2796,6 +2782,7 @@ const main = async () => {
   const [
     cockpitScript,
     cockpitLaunchParametersScript,
+    identifierScript,
     cockpitStyle,
     xtermScript,
     xtermFitScript,
@@ -2806,6 +2793,7 @@ const main = async () => {
     await Promise.all([
       readFile(cockpitScriptPath, "utf8"),
       readFile(cockpitLaunchParametersPath, "utf8"),
+      readFile(identifierScriptPath, "utf8"),
       readFile(cockpitStylePath, "utf8"),
       readFile(xtermScriptPath, "utf8"),
       readFile(xtermFitScriptPath, "utf8"),
@@ -3082,6 +3070,10 @@ const main = async () => {
           ["/cockpit-launch-parameters.mjs", {
             contentType: "text/javascript; charset=utf-8",
             body: cockpitLaunchParametersScript,
+          }],
+          ["/common/identifiers.mjs", {
+            contentType: "text/javascript; charset=utf-8",
+            body: identifierScript,
           }],
           ["/cockpit.css", { contentType: "text/css; charset=utf-8", body: cockpitStyle }],
           ["/terminal/xterm.mjs", {

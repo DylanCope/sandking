@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmod, open } from "node:fs/promises";
 import { join } from "node:path";
+import { auditIdPattern, hostIdPattern } from "./common/identifiers.mjs";
 import {
   PRIVATE_FILE_MODE,
   ensurePrivateDirectory,
@@ -8,7 +9,6 @@ import {
   readJson,
 } from "./private-state.mjs";
 
-const hostIdPattern = /^host-[a-f0-9]{24}$/;
 const controllerBindingPath = "controller-host-binding.json";
 
 /** @param {unknown} value */
@@ -45,7 +45,7 @@ const validateHostIdentity = (value) => {
     || !/^sha256:[a-f0-9]{64}$/.test(String(record.idempotencyKeyHash))
     || record.expectedRevision !== 0
     || record.revision !== 1
-    || !/^audit-[a-f0-9]{24}$/.test(String(record.auditId))
+    || !auditIdPattern.test(String(record.auditId))
   ) {
     throw new Error("host_identity_state_invalid");
   }

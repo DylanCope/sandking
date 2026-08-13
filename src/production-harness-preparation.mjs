@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -15,6 +15,8 @@ import {
 import { basename, dirname, join, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { digest as sha256 } from "./common/digest.mjs";
+import { identifierSchemas } from "./common/identifiers.mjs";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "./harness-adapter-identity.mjs";
 import {
   harnessCompatibilityManifestSchema,
@@ -30,7 +32,7 @@ import {
 const execFileAsync = promisify(execFile);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-const harnessIdSchema = z.string().regex(/^harness-[a-f0-9]{24}$/);
+const { harnessIdSchema } = identifierSchemas(z);
 const identitySchema = z.string().min(1).max(160).regex(/^[a-z0-9][a-z0-9.-]*$/);
 const relativeProjectionPathSchema = z.string().min(1).max(512).refine((value) =>
   !value.startsWith("/")
@@ -111,9 +113,6 @@ export class ProductionHarnessPreparationError extends Error {
     this.code = code;
   }
 }
-
-/** @param {Buffer | string} value */
-const sha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 
 /** @param {z.infer<typeof productionHarnessSeedManifestSchema>} manifest */
 const seedSourceIntegrity = (manifest) => sha256(
@@ -784,10 +783,12 @@ export const prepareProductionHarness = async (options) => {
   }
   const committedRuntimePaths = committedPaths.filter((path) =>
     path.startsWith(".sandcastle/")
+    || path.startsWith("common/")
     || path === "package.json"
     || path === "package-lock.json").sort();
   const runtimePaths = seedManifest.files.map(({ path }) => path).filter((path) =>
     path.startsWith(".sandcastle/")
+    || path.startsWith("common/")
     || path === "package.json"
     || path === "package-lock.json").sort();
   const lockedSkillPaths = new Set(skillLock.skills.map((skill) => skill.source.path));

@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   mkdir,
   readFile,
@@ -10,6 +9,7 @@ import { dirname, isAbsolute, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { digest as sha256 } from "./common/digest.mjs";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "./harness-adapter-identity.mjs";
 import { harnessCompatibilityManifestSchema } from "./harness-adapter-protocol.mjs";
 
@@ -32,7 +32,7 @@ const sourceUrlSchema = z.url().refine((value) => {
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
 const SAND_KING_SEED_REVISION = "d1b0517a0b5d0cd2ce986fd137bfdca091b2c87b";
 const SAND_KING_SEED_SOURCE_INTEGRITY =
-  "sha256:5d23897fa00f092153c121366fc7a9da151f2257a100db34a7d104bcbc536dea";
+  "sha256:3c252e7ee5ece980e228761509af04c1ec26e5988eef277437bee8b8a6554b7c";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -163,6 +163,12 @@ const productionSeedFileContract = Object.freeze([
     source: "sandking-package",
     executable: false,
   },
+  {
+    path: "common/digest.mjs",
+    sourcePath: "src/common/digest.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
   ...[
     "README.md",
     "harness.json",
@@ -222,9 +228,6 @@ const workerVisibleSkillContract = Object.freeze([
   },
 ]);
 const PRODUCTION_WORKER_SKILL_BUNDLE = "sandking.production-worker-skills";
-
-/** @param {Buffer | string} value */
-const sha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 
 /**
  * @param {{path: string}} left

@@ -33,7 +33,7 @@
       "path": ".sandcastle/real-worker-v2.mjs",
       "sourcePath": "src/production-sandcastle-adapter/real-worker-v2.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:6bcb48bd071ff4cec78715bee80d7344d710ef9bf1d9384a294bf126fbf8fa9e",
+      "integrity": "sha256:c459d0ac7573fbe7b1ccedd0836b41601a0f15fe9d632f7d297ee989a118c171",
       "executable": false
     },
     {
@@ -41,6 +41,13 @@
       "sourcePath": "src/production-sandcastle-adapter/sandcastle-v4.mjs",
       "source": "sandking-package",
       "integrity": "sha256:cb26374b75af14f78552bfe0adac9cad70ea5a9fc0ca22e6a88659f0b41b7c0a",
+      "executable": false
+    },
+    {
+      "path": "common/digest.mjs",
+      "sourcePath": "src/common/digest.mjs",
+      "source": "sandking-package",
+      "integrity": "sha256:301137ae8839b68dd829b471f48ae486f677475064706620a922e872327a7820",
       "executable": false
     },
     {
@@ -64,7 +71,7 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:43e9c301200ca46e91d917d9fd611386acc5b7ec3106128768fc4dfef7b13ed3",
+      "integrity": "sha256:5f93d6f61f27ec33effa57ffb2b3f0ceb5591446617119e05c04532a12bec61e",
       "executable": false
     },
     {

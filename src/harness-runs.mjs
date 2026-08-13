@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
   appendFile,
   mkdtemp,
@@ -12,6 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { canonicalJson } from "./common/canonical-json.mjs";
+import { digest } from "./common/digest.mjs";
+import { identifierSchemas } from "./common/identifiers.mjs";
 import {
   HarnessAdapterProtocolError,
   harnessAdapterEntryPointSchema,
@@ -64,15 +67,17 @@ const publishWindowsProcessBarrierDecision = async (markerPath, decision) => {
 };
 
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-const auditIdSchema = z.string().regex(/^audit-[a-f0-9]{24}$/);
-const hostIdSchema = z.string().regex(/^host-[a-f0-9]{24}$/);
-const projectIdSchema = z.string().regex(/^project-[a-f0-9]{24}$/);
-const harnessIdSchema = z.string().regex(/^harness-[a-f0-9]{24}$/);
+const {
+  auditIdSchema,
+  harnessIdSchema,
+  hostIdSchema,
+  projectIdSchema,
+  runtimeIdSchema: controllerIdSchema,
+} = identifierSchemas(z);
 const harnessRunIdSchema = z.string().regex(/^harness-run-[a-f0-9]{24}$/);
 const outcomeIdSchema = z.string().regex(/^harness-outcome-[a-f0-9]{24}$/);
 const eventIdSchema = z.string().regex(/^harness-event-[a-f0-9]{24}$/);
 const logStreamIdSchema = z.string().regex(/^harness-log-[a-f0-9]{24}$/);
-const controllerIdSchema = z.string().regex(/^runtime-[a-f0-9]{24}$/);
 const controllerSessionIdSchema = z.string().regex(/^controller-session-[a-f0-9]{24}$/);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const runStatusSchema = z.enum([
@@ -473,17 +478,6 @@ export class HarnessRunStateError extends Error {
 /** @param {string} dataDir @param {string} harnessRunId @param {"stdout" | "stderr"} producer */
 const logPath = (dataDir, harnessRunId, producer) =>
   join(dataDir, "harness-runs", harnessRunId, `${producer}.log`);
-/** @param {string | Buffer} value */
-const digest = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
-/** @param {unknown} value @returns {string} */
-const canonicalJson = (value) => {
-  if (value === undefined) return '"<undefined>"';
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const record = /** @type {Record<string, unknown>} */ (value);
-  return `{${Object.keys(record).sort().map((key) =>
-    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
-};
 /** @param {unknown} value */
 const fingerprint = (value) => digest(canonicalJson(value));
 /** @param {any} request */

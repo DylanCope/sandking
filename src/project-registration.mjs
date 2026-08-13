@@ -1,9 +1,12 @@
 import { execFile } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { access, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { canonicalJson } from "./common/canonical-json.mjs";
+import { digest } from "./common/digest.mjs";
+import { identifierSchemas } from "./common/identifiers.mjs";
 import {
   conformanceHarnessLaunchParametersDeclaration as conformanceLaunchParameters,
   harnessAdapterProbeSchema,
@@ -31,9 +34,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-const auditIdSchema = z.string().regex(/^audit-[a-f0-9]{24}$/);
-const projectIdSchema = z.string().regex(/^project-[a-f0-9]{24}$/);
-const harnessIdSchema = z.string().regex(/^harness-[a-f0-9]{24}$/);
+const { auditIdSchema, projectIdSchema, harnessIdSchema } = identifierSchemas(z);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const pathSchema = z.string().min(1).max(4_096).refine((value) => !value.includes("\0"));
 const commandSchema = z.string().min(1).max(256)
@@ -320,28 +321,9 @@ const publicHarness = (harness) => {
 };
 
 /** @param {unknown} value */
-const sha256 = (value) => `sha256:${createHash("sha256")
-  .update(typeof value === "string" ? value : JSON.stringify(value))
-  .digest("hex")}`;
-/** @param {unknown} value @returns {string} */
-const canonicalJson = (value) => {
-  if (value === undefined) {
-    return '"<undefined>"';
-  }
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  const record = /** @type {Record<string, unknown>} */ (value);
-  return `{${Object.keys(record).sort().map((key) =>
-    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
-};
-/** @param {unknown} value */
-const fingerprint = (value) => sha256(canonicalJson(value));
+const fingerprint = (value) => digest(canonicalJson(value));
 /** @param {string} key */
-const idempotencyHash = (key) => sha256(key);
+const idempotencyHash = (key) => digest(key);
 
 /**
  * @param {{projectId: unknown, harnessId: unknown, boundedConfiguration: unknown, authorizationClass: unknown, expectedRevision: unknown}} request
@@ -609,7 +591,7 @@ const resolveProjectLocation = async (state, selectedPath, dataDir) => {
     return { kind: "failure", code: "project_path_invalid", actualRevision: 0 };
   }
 
-  const identityDigest = sha256(`${details.dev}:${details.ino}:${details.birthtimeMs}`);
+  const identityDigest = digest(`${details.dev}:${details.ino}:${details.birthtimeMs}`);
   const atPath = state.projects.filter((project) => project.canonicalPath === canonicalPath);
   if (atPath.length > 1) {
     return {
@@ -873,7 +855,7 @@ export const createProjectRegistry = async (options) => {
     if (location.kind === "failure") {
       const auditId = await options.recordAudit("project.inspect", "rejected", {
         code: location.code,
-        selectedPathHash: sha256(typeof request.path === "string" ? request.path : ""),
+        selectedPathHash: digest(typeof request.path === "string" ? request.path : ""),
         actualRevision: location.actualRevision,
         directoryScanPerformed: false,
       });
@@ -1051,7 +1033,7 @@ export const createProjectRegistry = async (options) => {
           ? request.expectedRevision
           : null,
         actualRevision: 0,
-        selectedPathHash: sha256(typeof request.path === "string" ? request.path : ""),
+        selectedPathHash: digest(typeof request.path === "string" ? request.path : ""),
         directoryScanPerformed: false,
         projectFileWrite: false,
       });
@@ -1076,7 +1058,7 @@ export const createProjectRegistry = async (options) => {
         idempotencyKeyHash: keyHash,
         expectedRevision: request.expectedRevision,
         actualRevision: location.actualRevision,
-        selectedPathHash: sha256(request.path),
+        selectedPathHash: digest(request.path),
         directoryScanPerformed: false,
         projectFileWrite: false,
       });

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { identifierSchemas } from "./common/identifiers.mjs";
 import { projectPreparationProjectionSchema } from "./project-registration.mjs";
 import {
   harnessRunEventSchema,
@@ -16,6 +17,13 @@ import {
   releaseVersion,
   versionSchema,
 } from "./protocol.mjs";
+
+const {
+  auditIdSchema,
+  hostIdSchema,
+  projectIdSchema,
+  runtimeIdSchema,
+} = identifierSchemas(z);
 
 export const BROWSER_PROTOCOL_VERSION = protocolVersion;
 export const MAX_BROWSER_CONTROL_BYTES = 32_768;
@@ -74,7 +82,7 @@ const hostConnectionFailureSchema = z.object({
     "host_observation_resynchronization_failed",
   ]),
   retryable: z.literal(true),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
   observedAt: z.string().datetime(),
 }).strict();
 
@@ -112,7 +120,7 @@ const focusedControllerSessionProjectionSchema = z.object({
     }).strict(),
   }).strict(),
   workContext: z.object({
-    workContextId: z.string().regex(/^project-[a-f0-9]{24}$/),
+    workContextId: projectIdSchema,
     kind: z.literal("project"),
     canonicalReference: z.string().regex(/^sandking:project:project-[a-f0-9]{24}$/),
   }).strict(),
@@ -197,7 +205,7 @@ const browserHarnessRunObserveSchema = z.object({
 const browserHarnessRunLaunchSchema = z.object({
   type: z.literal("browser.harness-run.launch"),
   requestId: identifierSchema,
-  projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
+  projectId: projectIdSchema,
   parameters: launchParametersSchema.optional(),
   idempotencyKeyHash: digestSchema,
   reconnectHarnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/).optional(),
@@ -265,12 +273,12 @@ export const runtimeHelloAckSchema = z.object({
     kind: z.literal("cockpit.connection"),
     runtime: z.object({
       identity: z.literal("controller-runtime"),
-      runtimeId: z.string().regex(/^runtime-[a-f0-9]{24}$/),
+      runtimeId: runtimeIdSchema,
       release: z.string().min(1).max(64),
     }).strict(),
     host: z.object({
       identity: identifierSchema,
-      hostId: z.string().regex(/^host-[a-f0-9]{24}$/),
+      hostId: hostIdSchema,
       release: z.string().min(1).max(64),
       status: z.enum(["connected", "disconnected"]),
       freshness: z.enum(["current", "stale"]),
@@ -377,7 +385,7 @@ const runtimeHarnessRunRecoverResultSchema = z.object({
 export const runtimeConnectionStateSchema = z.object({
   type: z.literal("runtime.connection-state"),
   boundary: z.literal("host"),
-  hostId: z.string().regex(/^host-[a-f0-9]{24}$/),
+  hostId: hostIdSchema,
   status: z.literal("disconnected"),
   freshness: z.literal("stale"),
   failure: hostConnectionFailureSchema,
