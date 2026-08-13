@@ -7,7 +7,15 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 const execFileAsync = promisify(execFile);
-const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+const repositoryRoot = new URL("..", import.meta.url);
+const packageJson = JSON.parse(await readFile(new URL("package.json", repositoryRoot), "utf8"));
+const productionHarnessSeedManifest = JSON.parse(await readFile(
+  new URL("src/bundled-production-harness/seed-manifest.json", repositoryRoot),
+  "utf8",
+));
+const productionHarnessPackageSources = productionHarnessSeedManifest.files
+  .filter(({ source }) => source === "sandking-package")
+  .map(({ path, sourcePath }) => sourcePath ?? path);
 
 test("the stable sandking command is public, executable, and contains module-relative runtime assets", async () => {
   assert.equal(packageJson.private, false);
@@ -19,10 +27,10 @@ test("the stable sandking command is public, executable, and contains module-rel
   assert.notEqual((await stat(cliPath)).mode & 0o111, 0);
 
   const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json"], {
-    cwd: new URL("..", import.meta.url),
+    cwd: repositoryRoot,
   });
   const [{ files }] = JSON.parse(stdout);
-  const packagedFiles = files.map((file) => file.path);
+  const packagedFiles = new Set(files.map((file) => file.path));
   for (const required of [
     "src/cli.mjs",
     "src/runtime.mjs",
@@ -38,10 +46,11 @@ test("the stable sandking command is public, executable, and contains module-rel
     "src/posix-process-tree-helper.c",
     "src/native/linux-arm64/posix-process-tree-helper",
     "src/native/linux-x64/posix-process-tree-helper",
+    ...productionHarnessPackageSources,
     "src/windows-process-barrier.cjs",
     "src/windows-host-loss-witness.cjs",
   ]) {
-    assert.ok(packagedFiles.includes(required), `${required} must be packaged`);
+    assert.ok(packagedFiles.has(required), `${required} must be packaged`);
   }
   for (const [relativePath, expectedMachine] of [
     ["../src/native/linux-arm64/posix-process-tree-helper", 0xb7],
@@ -63,7 +72,7 @@ test("an installed production package launches outside the source checkout", asy
   try {
     const { stdout: packOutput } = await execFileAsync("npm", [
       "pack", "--json", "--pack-destination", root,
-    ], { cwd: new URL("..", import.meta.url) });
+    ], { cwd: repositoryRoot });
     const [{ filename }] = JSON.parse(packOutput);
     const tarball = join(root, filename);
     await execFileAsync("npm", [

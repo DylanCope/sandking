@@ -1,6 +1,0 @@
-# Superseded adapter and Worker revisions remain available from Git history,
-# but must not be installed as callable production package bytes.
-real-worker.mjs
-sandcastle-v1.mjs
-sandcastle-v2.mjs
-sandcastle-v3.mjs
