@@ -194,10 +194,17 @@ export const resolveProjectLocation = async (state, selectedPath, dataDir) => {
     };
   }
   if (matchingIdentity[0]) {
+    const gitDetected = await gitMetadataDetected(canonicalPath);
     return {
       kind: "failure",
       code: "project_path_moved",
       actualRevision: matchingIdentity[0].revision,
+      registrationCandidate: {
+        canonicalPath,
+        identityDigest,
+        displayName: basename(canonicalPath),
+        versionControl: { kind: gitDetected ? "git" : "none", detected: gitDetected },
+      },
     };
   }
   const gitDetected = await gitMetadataDetected(canonicalPath);
