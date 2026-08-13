@@ -99,6 +99,17 @@ export const projectResolutionRegistration = (project) => ({
 const gitMetadataDetected = async (path) => access(join(path, ".git"))
   .then(() => true, () => false);
 
+/** @param {string} canonicalPath @param {string} identityDigest */
+const registrationCandidateAt = async (canonicalPath, identityDigest) => {
+  const gitDetected = await gitMetadataDetected(canonicalPath);
+  return {
+    canonicalPath,
+    identityDigest,
+    displayName: basename(canonicalPath),
+    versionControl: { kind: gitDetected ? "git" : "none", detected: gitDetected },
+  };
+};
+
 /** @param {string} parent @param {string} child */
 const containsPath = (parent, child) => {
   const pathFromParent = relative(parent, child);
@@ -200,6 +211,7 @@ export const resolveProjectLocation = async (state, selectedPath, dataDir) => {
       code: "project_path_replaced",
       actualRevision: activeAtPath[0].revision,
       registrations: [projectResolutionRegistration(activeAtPath[0])],
+      registrationCandidate: await registrationCandidateAt(canonicalPath, identityDigest),
     };
   }
   const matchingIdentity = state.projects.filter((project) =>
@@ -228,6 +240,7 @@ export const resolveProjectLocation = async (state, selectedPath, dataDir) => {
       code: "project_path_tombstoned",
       actualRevision: latest.revision,
       registrations: tombstonedAtPath.map(projectResolutionRegistration),
+      registrationCandidate: await registrationCandidateAt(canonicalPath, identityDigest),
     };
   }
   if (matchingIdentity.length > 1) {
@@ -239,13 +252,7 @@ export const resolveProjectLocation = async (state, selectedPath, dataDir) => {
       selectedCanonicalPath: canonicalPath,
     };
   }
-  const gitDetected = await gitMetadataDetected(canonicalPath);
-  const registrationCandidate = {
-    canonicalPath,
-    identityDigest,
-    displayName: basename(canonicalPath),
-    versionControl: { kind: gitDetected ? "git" : "none", detected: gitDetected },
-  };
+  const registrationCandidate = await registrationCandidateAt(canonicalPath, identityDigest);
   if (matchingIdentity[0]) {
     return {
       kind: "failure",

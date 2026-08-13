@@ -442,6 +442,8 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
         "#project-preparation[data-explicit-path-only='true']",
         { timeout: 10_000 },
       );
+      await restartedPage.locator("#project-harness-adapter")
+        .selectOption("conformance-harness-adapter-v1");
       await restartedPage.locator("#project-path").fill(movedProjectPath);
       await restartedPage.locator("#open-project").click();
       await restartedPage.waitForFunction(() => document.querySelector("#project-feedback")
@@ -468,6 +470,8 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
         { timeout: 10_000 },
       );
       await restartedPage.locator("#project-path").fill(projectPath);
+      await mkdir(projectPath, { recursive: true });
+      await writeFile(join(projectPath, "replacement.txt"), "replacement Project content\n");
       await restartedPage.locator("#open-project").click();
       await restartedPage.waitForFunction(() => document.querySelector("#project-feedback")
         ?.textContent?.includes("project_path_tombstoned"));
@@ -475,11 +479,47 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
         await restartedPage.locator("#project-readiness").getAttribute("data-project-id"),
         newProjectId,
       );
-      const lifecycleAudits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      await restartedPage.locator("#register-project-as-new").click();
+      await restartedPage.waitForFunction((previousProjectId) => {
+        const readiness = document.querySelector(
+          "#project-readiness[data-harness-launch-ready='true']",
+        );
+        return readiness?.getAttribute("data-project-id") !== previousProjectId
+          || document.querySelector("#project-feedback")?.textContent
+            ?.includes("Project was not changed");
+      }, newProjectId);
+      assert.match(
+        await restartedPage.locator("#project-feedback").textContent(),
+        /ready to launch/i,
+      );
+      const replacementProjectId = await restartedPage.locator("#project-readiness")
+        .getAttribute("data-project-id");
+      assert.match(replacementProjectId, /^project-[a-f0-9]{24}$/);
+      assert.notEqual(replacementProjectId, projectId);
+      assert.notEqual(replacementProjectId, newProjectId);
+      const recoveredState = JSON.parse(
+        await readFile(join(dataDir, "project-registrations.json"), "utf8"),
+      );
+      const retainedOriginal = recoveredState.projects.find((project) =>
+        project.projectId === projectId);
+      assert.equal(retainedOriginal?.status, "tombstoned");
+      assert.equal(
+        recoveredState.projects.find((project) => project.projectId === replacementProjectId)
+          ?.canonicalPath,
+        projectPath,
+      );
+      const finalAudits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
         .trim()
         .split("\n")
-        .map(JSON.parse)
-        .filter((entry) =>
+        .map(JSON.parse);
+      const replacementAudit = finalAudits.find((entry) =>
+        entry.action === "project.register"
+        && entry.outcome === "accepted"
+        && entry.details.projectId === replacementProjectId);
+      assert.equal(replacementAudit?.details.resolutionAction, "register_as_new");
+      assert.equal(replacementAudit?.details.expectedRevision, retainedOriginal.revision);
+      assert.equal(replacementAudit?.details.actualRevision, retainedOriginal.revision);
+      const lifecycleAudits = finalAudits.filter((entry) =>
           entry.action === "project.registration.resolve" && entry.outcome === "accepted");
       assert.deepEqual(
         lifecycleAudits.map((entry) => entry.details.action),

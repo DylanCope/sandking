@@ -1511,16 +1511,20 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     requestId: requestId("project-inspect"),
     path: typeof request.path === "string" ? request.path : "",
   });
-  const resolvingMovedRegistration = inspection.type === "project.operation.failure"
-    && inspection.code === "project_path_moved"
+  const registeringSelectedPathAsNew = inspection.type === "project.operation.failure"
+    && [
+      "project_path_moved",
+      "project_path_replaced",
+      "project_path_tombstoned",
+    ].includes(inspection.code)
     && request.resolutionAction === "register_as_new";
-  if (inspection.type === "project.operation.failure" && !resolvingMovedRegistration) {
+  if (inspection.type === "project.operation.failure" && !registeringSelectedPathAsNew) {
     return retainProjectPreparation({
       status: projectFailureStatus[inspection.code] ?? 409,
       body: inspection,
     });
   }
-  if (inspection.type !== "project.inspect.result" && !resolvingMovedRegistration) {
+  if (inspection.type !== "project.inspect.result" && !registeringSelectedPathAsNew) {
     throw new Error("host_protocol_error");
   }
 

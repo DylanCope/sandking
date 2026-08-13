@@ -742,6 +742,7 @@ const renderProjectPreparation = (
   let currentNode = renderPreparedProject(preparation.current);
   let currentProject = preparation.current;
   let expectedRevision = preparation.current?.revision ?? 0;
+  let registerAsNewExpectedRevision = null;
   const registerAsNewButton = element("button", {
     id: "register-project-as-new",
     type: "button",
@@ -749,7 +750,7 @@ const renderProjectPreparation = (
     "data-host-mutation": "true",
     disabled: true,
     hidden: true,
-  }, "Register moved path as a new Project");
+  }, "Register selected path as a new Project");
   const forgetRegistrationButton = element("button", {
     id: "forget-project-registration",
     type: "button",
@@ -944,6 +945,7 @@ const renderProjectPreparation = (
     resolutionPanel.replaceChildren();
     resolutionPanel.hidden = true;
     registerAsNewButton.hidden = true;
+    registerAsNewExpectedRevision = null;
   };
   const clearCurrentProject = () => {
     currentProject = null;
@@ -1002,10 +1004,11 @@ const renderProjectPreparation = (
   const renderResolutionActions = (outcome) => {
     clearResolutionActions();
     if (
-      outcome.code === "project_path_moved"
-      && outcome.resolution?.actions?.includes("register_as_new")
+      outcome.resolution?.actions?.includes("register_as_new")
+      && Number.isSafeInteger(outcome.actualRevision)
     ) {
       registerAsNewButton.hidden = false;
+      registerAsNewExpectedRevision = outcome.actualRevision;
     }
     const registrations = Array.isArray(outcome.registrations)
       ? outcome.registrations.filter((registration) =>
@@ -1042,6 +1045,10 @@ const renderProjectPreparation = (
   };
 
   const openSelectedProject = async (resolutionAction) => {
+    const requestExpectedRevision = resolutionAction === "register_as_new"
+      && Number.isSafeInteger(registerAsNewExpectedRevision)
+      ? registerAsNewExpectedRevision
+      : expectedRevision;
     openButton.disabled = true;
     registerAsNewButton.disabled = true;
     feedback.textContent = "Opening the selected Project path…";
@@ -1051,7 +1058,7 @@ const renderProjectPreparation = (
         "content-type": "application/json",
         "x-sandking-csrf": session.csrfToken,
         "x-sandking-idempotency-key": mutationKey(),
-        "x-sandking-expected-revision": String(expectedRevision),
+        "x-sandking-expected-revision": String(requestExpectedRevision),
       },
       body: JSON.stringify({
         path: pathInput.value,

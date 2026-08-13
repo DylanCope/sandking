@@ -240,6 +240,9 @@ export const createProjectRegistry = async (options) => {
       && request.idempotencyKey.length > 0
       && request.idempotencyKey.length <= 256;
     const keyHash = keyValid ? idempotencyHash(request.idempotencyKey) : null;
+    const resolutionAuditDetails = request.resolutionAction === "register_as_new"
+      ? { resolutionAction: request.resolutionAction }
+      : {};
     const requestFingerprint = fingerprint({
       path: request.path,
       configuration: request.configuration,
@@ -255,6 +258,7 @@ export const createProjectRegistry = async (options) => {
       const auditId = await options.recordAudit(action, "rejected", {
         code,
         authorizationClass,
+        ...resolutionAuditDetails,
         idempotencyKeyHash: keyHash,
         expectedRevision: request.expectedRevision,
         actualRevision: project.revision,
@@ -285,6 +289,7 @@ export const createProjectRegistry = async (options) => {
         const auditId = await options.recordAudit(action, "rejected", {
           code: "idempotency_key_conflict",
           authorizationClass,
+          ...resolutionAuditDetails,
           idempotencyKeyHash: keyHash,
           expectedRevision: Number.isSafeInteger(request.expectedRevision)
             ? request.expectedRevision
@@ -327,6 +332,7 @@ export const createProjectRegistry = async (options) => {
       }
       await options.recordAudit(action, "observed", {
         authorizationClass,
+        ...resolutionAuditDetails,
         idempotencyKeyHash: keyHash,
         expectedRevision: request.expectedRevision,
         idempotentReplay: true,
@@ -357,6 +363,7 @@ export const createProjectRegistry = async (options) => {
       const auditId = await options.recordAudit(action, "rejected", {
         code,
         authorizationClass,
+        ...resolutionAuditDetails,
         idempotencyKeyHash: keyHash,
         expectedRevision: Number.isSafeInteger(request.expectedRevision)
           ? request.expectedRevision
@@ -386,7 +393,11 @@ export const createProjectRegistry = async (options) => {
     ));
     if (
       location.kind === "failure"
-      && location.code === "project_path_moved"
+      && [
+        "project_path_moved",
+        "project_path_replaced",
+        "project_path_tombstoned",
+      ].includes(location.code)
       && location.registrationCandidate
       && request.resolutionAction === "register_as_new"
     ) {
@@ -399,6 +410,7 @@ export const createProjectRegistry = async (options) => {
       const auditId = await options.recordAudit(action, "rejected", {
         code: location.code,
         authorizationClass,
+        ...resolutionAuditDetails,
         idempotencyKeyHash: keyHash,
         expectedRevision: request.expectedRevision,
         actualRevision: location.actualRevision,
@@ -421,6 +433,7 @@ export const createProjectRegistry = async (options) => {
       const auditId = await options.recordAudit(action, "rejected", {
         code: "mutation_contract_invalid",
         authorizationClass,
+        ...resolutionAuditDetails,
         idempotencyKeyHash: keyHash,
         expectedRevision: request.expectedRevision,
         actualRevision: location.actualRevision,
@@ -445,6 +458,7 @@ export const createProjectRegistry = async (options) => {
       const auditId = await options.recordAudit(action, "rejected", {
         code: "mutation_revision_conflict",
         authorizationClass,
+        ...resolutionAuditDetails,
         idempotencyKeyHash: keyHash,
         expectedRevision: request.expectedRevision,
         actualRevision: location.actualRevision,
@@ -468,6 +482,7 @@ export const createProjectRegistry = async (options) => {
         const auditId = await options.recordAudit(action, "rejected", {
           code: "project_configuration_conflict",
           authorizationClass,
+          ...resolutionAuditDetails,
           idempotencyKeyHash: keyHash,
           expectedRevision: request.expectedRevision,
           actualRevision: location.actualRevision,
@@ -500,6 +515,7 @@ export const createProjectRegistry = async (options) => {
       }
       const auditId = await options.recordAudit(action, "observed", {
         authorizationClass,
+        ...resolutionAuditDetails,
         idempotencyKeyHash: keyHash,
         expectedRevision: request.expectedRevision,
         actualRevision: location.actualRevision,
@@ -548,9 +564,10 @@ export const createProjectRegistry = async (options) => {
     });
     const auditId = await options.recordAudit(action, "accepted", {
       authorizationClass,
+      ...resolutionAuditDetails,
       idempotencyKeyHash: keyHash,
       expectedRevision: request.expectedRevision,
-      actualRevision: 0,
+      actualRevision: location.actualRevision,
       resultingRevision: 1,
       projectId: project.projectId,
       versionControlDetected: project.versionControl.detected,
