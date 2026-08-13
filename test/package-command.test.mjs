@@ -38,6 +38,9 @@ test("the stable sandking command is public, executable, and contains module-rel
     "src/posix-process-tree-helper.c",
     "src/native/linux-arm64/posix-process-tree-helper",
     "src/native/linux-x64/posix-process-tree-helper",
+    "src/production-sandcastle-adapter/controlled-worker-fixture.mjs",
+    "src/production-sandcastle-adapter/real-worker-v2.mjs",
+    "src/production-sandcastle-adapter/sandcastle-v4.mjs",
     "src/windows-process-barrier.cjs",
     "src/windows-host-loss-witness.cjs",
   ]) {
