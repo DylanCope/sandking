@@ -100,6 +100,7 @@ test("Project registration preserves a tombstone through wrong-path restore and 
   const root = await mkdtemp(join(tmpdir(), "sandking-project-registration-lifecycle-"));
   const dataDir = join(root, "host-state");
   const projectPath = join(root, "selected-project");
+  const movedProjectPath = join(root, "moved-project");
   const unrelatedPath = join(root, "unrelated-project");
   await Promise.all([mkdir(projectPath), mkdir(unrelatedPath)]);
   let child = startHost(dataDir);
@@ -177,6 +178,21 @@ test("Project registration preserves a tombstone through wrong-path restore and 
     await stopHost(child);
     child = startHost(dataDir);
     await negotiate(child);
+    await rename(projectPath, movedProjectPath);
+    const movedTombstone = await requestHost(child, {
+      type: "project.inspect",
+      requestId: "inspect-moved-tombstoned-project",
+      path: movedProjectPath,
+    });
+    assert.equal(movedTombstone.type, "project.operation.failure");
+    assert.equal(movedTombstone.code, "project_path_tombstoned");
+    assert.equal(movedTombstone.actualRevision, forgotten.revision);
+    assert.deepEqual(movedTombstone.resolution.actions, [
+      "restore_registration",
+      "register_as_new",
+    ]);
+    assert.deepEqual(movedTombstone.registrations, tombstoned.registrations);
+    await rename(movedProjectPath, projectPath);
     const wrongPathRestore = await requestHost(child, {
       ...forgetRequest,
       requestId: "reject-wrong-path-restore",
@@ -326,6 +342,35 @@ test("Project registration conflicts retain selectable identities and resolve af
       original.project.projectId,
       registeredAsNew.project.projectId,
     ]);
+    const harnessRegistration = await requestHost(child, {
+      type: "harness.conformance.register",
+      requestId: "register-conflict-conformance-harness",
+      name: "Sand-King Conformance Harness",
+      authorizationClass: "host_local_harness_registration",
+      idempotencyKey: "register-conflict-conformance-harness",
+      expectedRevision: 0,
+    });
+    assert.equal(harnessRegistration.type, "harness.conformance.register.result");
+    const rejectedPin = await requestHost(child, {
+      type: "project.harness.pin",
+      requestId: "reject-conflicting-project-pin",
+      projectId: registeredAsNew.project.projectId,
+      harnessId: harnessRegistration.harness.harnessId,
+      boundedConfiguration: {
+        adapterProtocol: "1.0.0",
+        launchProfile: "delegated-work",
+      },
+      authorizationClass: "host_local_project_configuration",
+      idempotencyKey: "reject-conflicting-project-pin",
+      expectedRevision: registeredAsNew.revision,
+    });
+    assert.equal(rejectedPin.type, "project.operation.failure");
+    assert.equal(rejectedPin.code, "project_path_conflict");
+    assert.equal(rejectedPin.actualRevision, conflict.actualRevision);
+    assert.deepEqual(rejectedPin.resolution.actions, [
+      "resolve_conflicting_registrations",
+    ]);
+    assert.deepEqual(rejectedPin.registrations, conflict.registrations);
     const registrationRetry = await requestHost(child, {
       type: "project.register",
       requestId: "retry-register-moved-project-as-new",
@@ -404,6 +449,10 @@ test("Project registration conflicts retain selectable identities and resolve af
       && entry.outcome === "accepted"
       && entry.details.projectId === registeredAsNew.project.projectId);
     assert.equal(registerAsNewAudit.details.resolutionAction, "register_as_new");
+    const rejectedPinAudit = audits.find((entry) => entry.action === "project.harness.pin"
+      && entry.outcome === "rejected"
+      && entry.details.code === "project_path_conflict");
+    assert.deepEqual(rejectedPinAudit.details.candidateProjectIds, candidateIds);
     assert.ok(audits.some((entry) => entry.action === "project.registration.resolve"
       && entry.outcome === "rejected"
       && entry.details.code === "idempotency_key_conflict"));

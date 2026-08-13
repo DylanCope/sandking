@@ -524,6 +524,17 @@ const operationFailure = (input) => ({
   },
 });
 
+class ProjectLocationError extends Error {
+  /** @param {{code: string, actualRevision: number, registrations?: any[]}} failure */
+  constructor(failure) {
+    super(failure.code);
+    this.name = "ProjectLocationError";
+    this.code = failure.code;
+    this.actualRevision = failure.actualRevision;
+    this.registrations = failure.registrations;
+  }
+}
+
 /** @param {string} path */
 const gitMetadataDetected = async (path) => access(join(path, ".git"))
   .then(() => true, () => false);
@@ -644,14 +655,18 @@ const resolveProjectLocation = async (state, selectedPath, dataDir) => {
     };
   }
   const matchingIdentity = state.projects.filter((project) =>
-    project.filesystemIdentityDigest === identityDigest && project.status === "active");
+    project.filesystemIdentityDigest === identityDigest);
+  const activeMatchingIdentity = matchingIdentity.filter((project) =>
+    project.status === "active");
+  const tombstonedMatchingIdentity = matchingIdentity.filter((project) =>
+    project.status === "tombstoned");
   if (activeAtPath[0]) {
-    if (matchingIdentity.length > 1) {
+    if (activeMatchingIdentity.length > 1) {
       return {
         kind: "failure",
         code: "project_path_conflict",
-        actualRevision: Math.max(...matchingIdentity.map((project) => project.revision)),
-        registrations: matchingIdentity.map(projectResolutionRegistration),
+        actualRevision: Math.max(...activeMatchingIdentity.map((project) => project.revision)),
+        registrations: activeMatchingIdentity.map(projectResolutionRegistration),
         selectedCanonicalPath: canonicalPath,
       };
     }
@@ -672,22 +687,33 @@ const resolveProjectLocation = async (state, selectedPath, dataDir) => {
       registrationCandidate: await registrationCandidateAt(canonicalPath, identityDigest),
     };
   }
-  if (matchingIdentity.length > 1) {
+  if (activeMatchingIdentity.length > 1) {
     return {
       kind: "failure",
       code: "project_path_conflict",
-      actualRevision: Math.max(...matchingIdentity.map((project) => project.revision)),
-      registrations: matchingIdentity.map(projectResolutionRegistration),
+      actualRevision: Math.max(...activeMatchingIdentity.map((project) => project.revision)),
+      registrations: activeMatchingIdentity.map(projectResolutionRegistration),
       selectedCanonicalPath: canonicalPath,
     };
   }
   const registrationCandidate = await registrationCandidateAt(canonicalPath, identityDigest);
-  if (matchingIdentity[0]) {
+  if (activeMatchingIdentity[0]) {
     return {
       kind: "failure",
       code: "project_path_moved",
-      actualRevision: matchingIdentity[0].revision,
-      registrations: [projectResolutionRegistration(matchingIdentity[0])],
+      actualRevision: activeMatchingIdentity[0].revision,
+      registrations: [projectResolutionRegistration(activeMatchingIdentity[0])],
+      registrationCandidate,
+    };
+  }
+  if (tombstonedMatchingIdentity[0]) {
+    const latest = tombstonedMatchingIdentity.reduce((left, right) =>
+      left.revision >= right.revision ? left : right);
+    return {
+      kind: "failure",
+      code: "project_path_tombstoned",
+      actualRevision: latest.revision,
+      registrations: tombstonedMatchingIdentity.map(projectResolutionRegistration),
       registrationCandidate,
     };
   }
@@ -828,10 +854,19 @@ export const createProjectRegistry = async (options) => {
   };
 
   /** @param {unknown} error */
-  const preparationFailureCode = (error) => {
-    if (error instanceof ProductionHarnessPreparationError) return error.code;
-    if (error instanceof Error && error.message in failureGuidance) return error.message;
-    return "harness_projection_failed";
+  const preparationFailure = (error) => {
+    if (error instanceof ProjectLocationError) {
+      return {
+        code: /** @type {keyof typeof failureGuidance} */ (error.code),
+        actualRevision: error.actualRevision,
+        registrations: error.registrations,
+      };
+    }
+    if (error instanceof ProductionHarnessPreparationError) return { code: error.code };
+    if (error instanceof Error && error.message in failureGuidance) {
+      return { code: /** @type {keyof typeof failureGuidance} */ (error.message) };
+    }
+    return { code: /** @type {const} */ ("harness_projection_failed") };
   };
 
   /**
@@ -847,13 +882,40 @@ export const createProjectRegistry = async (options) => {
       project.canonicalPath,
       options.dataDir,
     );
-    if (location.kind === "failure") throw new Error(location.code);
+    if (location.kind === "failure") {
+      throw new ProjectLocationError({
+        code: /** @type {string} */ (location.code),
+        actualRevision: location.actualRevision,
+        registrations: location.registrations,
+      });
+    }
     if (
       location.kind !== "registered"
       || !location.project
       || location.project.projectId !== project.projectId
     ) {
-      throw new Error("project_path_conflict");
+      const registrations = [
+        projectResolutionRegistration(project),
+        ...(location.kind === "registered" && location.project
+          ? [projectResolutionRegistration(location.project)]
+          : []),
+      ].filter((registration, index, retained) => retained.findIndex((candidate) =>
+        candidate.projectId === registration.projectId) === index);
+      const activeRegistrations = registrations.filter((registration) =>
+        registration.status === "active");
+      const code = project.status === "tombstoned"
+        ? "project_path_tombstoned"
+        : activeRegistrations.length > 1
+          ? "project_path_conflict"
+          : "project_path_replaced";
+      throw new ProjectLocationError({
+        code,
+        actualRevision: Math.max(...registrations.map((registration) =>
+          registration.revision)),
+        registrations: code === "project_path_conflict"
+          ? activeRegistrations
+          : [projectResolutionRegistration(project)],
+      });
     }
     return location;
   };
@@ -932,7 +994,8 @@ export const createProjectRegistry = async (options) => {
           location.project,
         );
       } catch (error) {
-        const code = preparationFailureCode(error);
+        const failure = preparationFailure(error);
+        const code = failure.code;
         const auditId = await options.recordAudit("project.inspect", "rejected", {
           code,
           actualRevision: location.actualRevision,
@@ -950,6 +1013,7 @@ export const createProjectRegistry = async (options) => {
           code: /** @type {keyof typeof failureGuidance} */ (code),
           actualRevision: location.actualRevision,
           auditId,
+          registrations: failure.registrations,
         });
       }
     }
@@ -987,15 +1051,19 @@ export const createProjectRegistry = async (options) => {
     });
     /** @param {unknown} error @param {z.infer<typeof legacyStoredProjectSchema>} project */
     const rejectPreparation = async (error, project) => {
-      const code = preparationFailureCode(error);
+      const failure = preparationFailure(error);
+      const code = failure.code;
+      const actualRevision = failure.actualRevision ?? project.revision;
       const auditId = await options.recordAudit(action, "rejected", {
         code,
         authorizationClass,
         ...resolutionAuditDetails,
         idempotencyKeyHash: keyHash,
         expectedRevision: request.expectedRevision,
-        actualRevision: project.revision,
+        actualRevision,
         projectId: project.projectId,
+        candidateProjectIds: failure.registrations?.map((registration) =>
+          registration.projectId) ?? [],
         harnessId: project.harness?.harnessId ?? null,
         directoryScanPerformed: false,
         projectFileWrite: false,
@@ -1010,8 +1078,9 @@ export const createProjectRegistry = async (options) => {
         authorizationClass,
         idempotencyKeyHash: keyHash,
         expectedRevision: request.expectedRevision,
-        actualRevision: project.revision,
+        actualRevision,
         auditId,
+        registrations: failure.registrations,
       });
     };
     const existing = keyHash
@@ -1658,14 +1727,18 @@ export const createProjectRegistry = async (options) => {
     );
     /** @param {unknown} error */
     const rejectPreparation = async (error) => {
-      const code = preparationFailureCode(error);
+      const failure = preparationFailure(error);
+      const code = failure.code;
+      const failureRevision = failure.actualRevision ?? actualRevision;
       const auditId = await options.recordAudit(action, "rejected", {
         code,
         authorizationClass,
         idempotencyKeyHash: keyHash,
         expectedRevision: request.expectedRevision,
-        actualRevision,
+        actualRevision: failureRevision,
         projectId: project?.projectId ?? null,
+        candidateProjectIds: failure.registrations?.map((registration) =>
+          registration.projectId) ?? [],
         harnessId: harness?.harnessId ?? null,
         immutableRevision: harness?.immutableRevision ?? null,
         projectFileWrite: false,
@@ -1680,8 +1753,9 @@ export const createProjectRegistry = async (options) => {
         authorizationClass,
         idempotencyKeyHash: keyHash,
         expectedRevision: request.expectedRevision,
-        actualRevision,
+        actualRevision: failureRevision,
         auditId,
+        registrations: failure.registrations,
       });
     };
     if (existing) {

@@ -120,6 +120,9 @@ export const createProjectRegistrationResolutionControls = (options) => {
       const action = outcome.code === "project_path_tombstoned"
         && registration.status === "tombstoned"
         ? "restore"
+        : outcome.resolution?.actions?.includes("forget_registration")
+          && registration.status === "active"
+          ? "forget"
         : outcome.code === "project_path_conflict"
           && registration.status === "active"
           ? "resolve_conflict"
@@ -129,7 +132,9 @@ export const createProjectRegistrationResolutionControls = (options) => {
         type: "button",
         class: action === "restore"
           ? "restore-project-registration"
-          : "resolve-project-registration-conflict",
+          : action === "forget"
+            ? "forget-retained-project-registration"
+            : "resolve-project-registration-conflict",
         "data-action": action,
         "data-project-id": registration.projectId,
         "data-project-revision": registration.revision,
@@ -137,8 +142,20 @@ export const createProjectRegistrationResolutionControls = (options) => {
         "data-host-mutation": "true",
       }, action === "restore"
         ? `Restore ${registration.projectId}`
-        : `Keep ${registration.projectId} at ${registration.canonicalPath}`);
-      button.addEventListener("click", () => requestResolution(action, registration));
+        : action === "forget"
+          ? `Forget ${registration.projectId} at ${registration.canonicalPath}`
+          : `Keep ${registration.projectId} at ${registration.canonicalPath}`);
+      button.addEventListener("click", () => {
+        if (
+          action === "forget"
+          && !options.confirmForget(
+            `Forget Project registration ${registration.projectId}? The Host will retain a tombstone so this path cannot be silently reused.`,
+          )
+        ) {
+          return;
+        }
+        requestResolution(action, registration);
+      });
       resolutionPanel.append(button);
     }
     resolutionPanel.hidden = resolutionPanel.childElementCount === 0;
