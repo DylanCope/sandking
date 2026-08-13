@@ -1,3 +1,5 @@
+import { posix, win32 } from "node:path";
+
 const commitPattern = /^[a-f0-9]{40}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const idPattern = /^(?:harness|harness-run|harness-log|audit)-[a-f0-9]{24}$/;
@@ -12,8 +14,12 @@ const providerSecretPattern =
 const sessionMaterialPattern = /(?:bootstrap\?token=|sandking_session=)/i;
 const namedSecretPattern =
   /(?:ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|GITHUB_TOKEN|SANDKING_CONTROLLER_SECRET)\s*=/i;
-const machinePathPattern =
+const embeddedMachinePathPattern =
   /(?:^|[^A-Za-z0-9._/\\-])(?:[\\/](?![\\/])|[A-Za-z]:[\\/]|\\\\[^\\/])/;
+const containsMachinePath = (value) =>
+  posix.isAbsolute(value)
+  || win32.isAbsolute(value)
+  || embeddedMachinePathPattern.test(value);
 
 export const realSandcastleScenario = Object.freeze({
   id: "production-sandcastle-delegation/commits-real-project-work",
@@ -73,7 +79,7 @@ export const inspectRealSandcastleRunState = (state) => {
 const inspectResult = (value, prohibitedValues, path = []) => {
   if (typeof value === "string") {
     if (
-      machinePathPattern.test(value)
+      containsMachinePath(value)
       || prohibitedValues.some((prohibited) => value.includes(prohibited))
     ) {
       throw new Error("real_provider_result_not_sanitized");

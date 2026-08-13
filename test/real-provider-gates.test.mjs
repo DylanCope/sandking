@@ -102,9 +102,10 @@ test("real-provider result serialization rejects secrets, session material, and 
     "\\Users\\alice\\project",
     "\\ProgramData\\SandKing\\state",
     "\\\\host\\credentials\\provider.json",
+    "//host/credentials/provider.json",
   ]) {
     assert.throws(() => serializeSanitizedRealProviderResult({
-      result: { value: machinePath },
+      result: { artifact: { path: machinePath } },
     }), /real_provider_result_not_sanitized/);
     assert.throws(() => serializeSanitizedRealProviderResult({
       result: { value: `retained path: ${machinePath}` },
