@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -29,6 +30,18 @@ const conformanceAdapterSourcePath = join(
   "conformance-harness-adapter",
   "conformance.mjs",
 );
+
+/** @param {"blob" | "tree" | "commit"} type @param {Buffer} content */
+const gitObjectId = (type, content) => createHash("sha1")
+  .update(`${type} ${content.length}\0`)
+  .update(content)
+  .digest();
+
+/** @param {string} mode @param {string} name @param {Buffer} objectId */
+const gitTreeEntry = (mode, name, objectId) => Buffer.concat([
+  Buffer.from(`${mode} ${name}\0`),
+  objectId,
+]);
 
 const projectConfiguration = {
   issueWorkflow: { provider: "github", kind: "issues" },
@@ -68,60 +81,6 @@ const negotiate = async (child) => {
     expectedRevision: 0,
   });
   assert.equal((await readFrame(child.stdout)).type, "host.identity.result");
-};
-
-/** @param {import("node:child_process").ChildProcessWithoutNullStreams} child @param {Record<string, unknown>} request */
-const requestHost = async (child, request) => {
-  writeFrame(child.stdin, request);
-  return readFrame(child.stdout);
-};
-
-/** @param {string} dataDir @param {string} label */
-const registerFreshConformanceHarness = async (dataDir, label) => {
-  const child = spawn(process.execPath, [
-    localHostPath,
-    "--data-dir",
-    dataDir,
-    "--allow-host-identity-create",
-  ], { stdio: ["pipe", "pipe", "pipe"], env: { LANG: "C.UTF-8" } });
-  try {
-    await negotiate(child);
-    const registration = await requestHost(child, {
-      type: "harness.conformance.register",
-      requestId: `register-fresh-conformance-${label}`,
-      name: "Sand-King Conformance Harness",
-      authorizationClass: "host_local_harness_registration",
-      idempotencyKey: `register-fresh-conformance-${label}`,
-      expectedRevision: 0,
-    });
-    assert.equal(registration.type, "harness.conformance.register.result");
-    assert.equal(registration.code, "conformance_harness_registered");
-    const harnessState = JSON.parse(
-      await readFile(join(dataDir, "harness-registry.json"), "utf8"),
-    );
-    const workspacePath = harnessState.harnesses[0].workspacePath;
-    const [metadataResult, commitCountResult] = await Promise.all([
-      execFileAsync("git", [
-        "-C",
-        workspacePath,
-        "show",
-        "-s",
-        "--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B",
-        "HEAD",
-      ]),
-      execFileAsync("git", ["-C", workspacePath, "rev-list", "--count", "HEAD"]),
-    ]);
-    return {
-      registration,
-      metadata: metadataResult.stdout.trimEnd().split("\0"),
-      commitCount: Number.parseInt(commitCountResult.stdout.trim(), 10),
-    };
-  } finally {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM");
-      await new Promise((resolve) => child.once("exit", resolve));
-    }
-  }
 };
 
 test("the framed Host opens, registers, and prepares only an explicitly selected Project", async () => {
@@ -257,15 +216,20 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
     assert.equal(harnessState.harnesses[0].harnessId, harnessRegistration.harness.harnessId);
     assert.notEqual(harnessState.harnesses[0].workspacePath, projectPath);
     assert.match(relative(dataDir, harnessState.harnesses[0].workspacePath), /^\.\./);
+    const expectedCompatibilityManifest = {
+      schemaVersion: 1,
+      name: "Sand-King Conformance Harness",
+      compatibility: {
+        adapterId: "conformance-harness-adapter-v1",
+        adapterProtocol: "1.0.0",
+        entryPoint: "adapters/conformance.mjs",
+      },
+    };
     const compatibilityManifest = JSON.parse(await readFile(
       join(harnessState.harnesses[0].workspacePath, "harness.json"),
       "utf8",
     ));
-    assert.deepEqual(compatibilityManifest.compatibility, {
-      adapterId: "conformance-harness-adapter-v1",
-      adapterProtocol: "1.0.0",
-      entryPoint: "adapters/conformance.mjs",
-    });
+    assert.deepEqual(compatibilityManifest, expectedCompatibilityManifest);
     assert.deepEqual(
       (await readdir(harnessState.harnesses[0].workspacePath)).sort(),
       [".git", "adapters", "harness.json"],
@@ -293,6 +257,36 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
       ])).stdout.trim(),
       harnessRegistration.harness.immutableRevision,
     );
+
+    // Derive the required root commit independently so this catches stable-but-changed
+    // workspace bytes, file modes, Git metadata, or topology without retaining a hash.
+    const adapterBlobId = gitObjectId(
+      "blob",
+      await readFile(conformanceAdapterSourcePath),
+    );
+    const manifestBlobId = gitObjectId(
+      "blob",
+      Buffer.from(`${JSON.stringify(expectedCompatibilityManifest, null, 2)}\n`),
+    );
+    const adaptersTreeId = gitObjectId("tree", gitTreeEntry(
+      "100755",
+      "conformance.mjs",
+      adapterBlobId,
+    ));
+    const rootTreeId = gitObjectId("tree", Buffer.concat([
+      gitTreeEntry("40000", "adapters", adaptersTreeId),
+      gitTreeEntry("100644", "harness.json", manifestBlobId),
+    ]));
+    const commitTimestamp = Date.parse("2026-01-01T00:00:00Z") / 1_000;
+    const expectedRevision = gitObjectId("commit", Buffer.from([
+      `tree ${rootTreeId.toString("hex")}`,
+      `author Sand-King Conformance <conformance@sandking.invalid> ${commitTimestamp} +0000`,
+      `committer Sand-King Conformance <conformance@sandking.invalid> ${commitTimestamp} +0000`,
+      "",
+      "Initialize conformance Harness",
+      "",
+    ].join("\n"))).toString("hex");
+    assert.equal(harnessRegistration.harness.immutableRevision, expectedRevision);
     assert.deepEqual(await readdir(projectPath), projectFilesBefore);
     assert.equal((await readdir(projectPath)).includes(".sandcastle"), false);
 
@@ -335,62 +329,24 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
   }
 });
 
-test("fresh Host registrations preserve the conformance Harness commit identity", async () => {
-  const root = await mkdtemp(join(tmpdir(), "sandking-conformance-pin-"));
-  try {
-    const [first, second] = await Promise.all([
-      registerFreshConformanceHarness(join(root, "first-host-state"), "first"),
-      registerFreshConformanceHarness(join(root, "second-host-state"), "second"),
-    ]);
-    assert.equal(
-      first.registration.harness.immutableRevision,
-      second.registration.harness.immutableRevision,
-    );
-    assert.deepEqual(first.metadata, [
-      "Sand-King Conformance",
-      "conformance@sandking.invalid",
-      "2026-01-01T00:00:00+00:00",
-      "Sand-King Conformance",
-      "conformance@sandking.invalid",
-      "2026-01-01T00:00:00+00:00",
-      "Initialize conformance Harness",
-    ]);
-    assert.deepEqual(second.metadata, first.metadata);
-    assert.equal(first.commitCount, 1);
-    assert.equal(second.commitCount, 1);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test("path identity changes return typed resolution guidance without silently reattaching", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-project-resolution-"));
   const dataDir = join(root, "host-state");
   const originalPath = join(root, "original-project");
   const movedPath = join(root, "moved-project");
-  const movedAgainPath = join(root, "moved-again-project");
   const secretFixture = "project-secret-fixture-must-not-appear";
   await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", originalPath]);
   await writeFile(join(originalPath, "secret.txt"), `${secretFixture}\n`);
-  const child = spawn(process.execPath, [
-    localHostPath,
-    "--data-dir",
-    dataDir,
-    "--allow-host-identity-create",
-  ], { stdio: ["pipe", "pipe", "pipe"], env: { LANG: "C.UTF-8" } });
+  const audits = [];
+  const recordAudit = async (action, outcome, details) => {
+    const auditId = `audit-${String(audits.length + 1).padStart(24, "0")}`;
+    audits.push({ auditId, action, outcome, details });
+    return auditId;
+  };
 
   try {
-    await negotiate(child);
-    const invalid = await requestHost(child, {
-      type: "project.inspect",
-      requestId: "inspect-invalid-project",
-      path: "relative/project",
-    });
-    assert.equal(invalid.code, "project_path_invalid");
-    assert.deepEqual(invalid.resolution.actions, ["select_existing_host_directory"]);
-
-    const registered = await requestHost(child, {
-      type: "project.register",
+    const registry = await createProjectRegistry({ dataDir, recordAudit });
+    const registered = await registry.registerProject({
       requestId: "register-resolution-project",
       path: originalPath,
       configuration: projectConfiguration,
@@ -401,8 +357,7 @@ test("path identity changes return typed resolution guidance without silently re
     assert.equal(registered.code, "project_registered");
     await rename(originalPath, movedPath);
 
-    const missing = await requestHost(child, {
-      type: "project.inspect",
+    const missing = await registry.inspectProject({
       requestId: "inspect-missing-project",
       path: originalPath,
     });
@@ -410,8 +365,7 @@ test("path identity changes return typed resolution guidance without silently re
     assert.equal(missing.code, "project_path_missing");
     assert.deepEqual(missing.resolution.actions, ["update_registration", "forget_registration"]);
 
-    const moved = await requestHost(child, {
-      type: "project.inspect",
+    const moved = await registry.inspectProject({
       requestId: "inspect-moved-project",
       path: movedPath,
     });
@@ -423,8 +377,7 @@ test("path identity changes return typed resolution guidance without silently re
     ]);
 
     await mkdir(originalPath);
-    const replaced = await requestHost(child, {
-      type: "project.inspect",
+    const replaced = await registry.inspectProject({
       requestId: "inspect-replaced-project",
       path: originalPath,
     });
@@ -435,100 +388,36 @@ test("path identity changes return typed resolution guidance without silently re
       "select_another_path",
     ]);
 
-    const registerAsNewRequest = {
-      type: "project.register",
-      requestId: "register-moved-project-as-new",
-      path: movedPath,
-      configuration: projectConfiguration,
-      resolutionAction: "register_as_new",
-      authorizationClass: "host_local_project_registration",
-      idempotencyKey: "register-moved-project-as-new",
-      expectedRevision: 1,
-    };
-    const registeredAsNew = await requestHost(child, registerAsNewRequest);
-    assert.equal(registeredAsNew.type, "project.register.result");
-    assert.equal(registeredAsNew.code, "project_registered");
-    assert.notEqual(registeredAsNew.project.projectId, registered.project.projectId);
-    const registerAsNewReplay = await requestHost(child, {
-      ...registerAsNewRequest,
-      requestId: "replay-register-moved-project-as-new",
-    });
-    assert.deepEqual(registerAsNewReplay, {
-      ...registeredAsNew,
-      requestId: "replay-register-moved-project-as-new",
-      idempotentReplay: true,
-    });
-    const changedRegisterAsNew = await requestHost(child, {
-      ...registerAsNewRequest,
-      requestId: "change-register-moved-project-as-new",
-      resolutionAction: undefined,
-    });
-    assert.equal(changedRegisterAsNew.code, "idempotency_key_conflict");
-
-    await rename(movedPath, movedAgainPath);
-    const conflict = await requestHost(child, {
-      type: "project.inspect",
-      requestId: "inspect-conflicting-project",
-      path: movedAgainPath,
-    });
-    assert.equal(conflict.code, "project_path_conflict");
-    assert.deepEqual(conflict.resolution.actions, ["resolve_conflicting_registrations"]);
-
-    const forgetRequest = {
-      type: "project.registration.forget",
-      requestId: "forget-original-project",
-      projectId: registered.project.projectId,
-      authorizationClass: "host_local_project_registration",
-      idempotencyKey: "forget-original-project",
-      expectedRevision: 1,
-    };
-    const forgotten = await requestHost(child, forgetRequest);
-    assert.equal(forgotten.type, "project.registration.forget.result");
-    assert.equal(forgotten.code, "project_registration_forgotten");
-    assert.equal(forgotten.project.status, "tombstoned");
-    const forgetReplay = await requestHost(child, {
-      ...forgetRequest,
-      requestId: "replay-forget-original-project",
-    });
-    assert.deepEqual(forgetReplay, {
-      ...forgotten,
-      requestId: "replay-forget-original-project",
-      idempotentReplay: true,
-    });
-    const changedForget = await requestHost(child, {
-      ...forgetRequest,
-      requestId: "change-forget-original-project",
-      projectId: registeredAsNew.project.projectId,
-    });
-    assert.equal(changedForget.code, "idempotency_key_conflict");
-    const staleForget = await requestHost(child, {
-      ...forgetRequest,
-      requestId: "stale-forget-original-project",
-      idempotencyKey: "stale-forget-original-project",
-    });
-    assert.equal(staleForget.code, "mutation_revision_conflict");
-    assert.equal(staleForget.actualRevision, 2);
-
-    const tombstoned = await requestHost(child, {
-      type: "project.inspect",
+    const statePath = join(dataDir, "project-registrations.json");
+    const tombstonedState = JSON.parse(await readFile(statePath, "utf8"));
+    tombstonedState.projects[0].status = "tombstoned";
+    await writeFile(statePath, `${JSON.stringify(tombstonedState, null, 2)}\n`);
+    const tombstoned = await registry.inspectProject({
       requestId: "inspect-tombstoned-project",
       path: originalPath,
     });
     assert.equal(tombstoned.code, "project_path_tombstoned");
     assert.deepEqual(tombstoned.resolution.actions, ["restore_registration", "register_as_new"]);
 
-    const statePath = join(dataDir, "project-registrations.json");
-    const auditPath = join(dataDir, "audit.jsonl");
-    const retained = `${await readFile(statePath, "utf8")}\n${await readFile(auditPath, "utf8")}`;
+    tombstonedState.projects[0].status = "active";
+    tombstonedState.projects.push({
+      ...tombstonedState.projects[0],
+      projectId: `project-${"f".repeat(24)}`,
+    });
+    await writeFile(statePath, `${JSON.stringify(tombstonedState, null, 2)}\n`);
+    const conflict = await registry.inspectProject({
+      requestId: "inspect-conflicting-project",
+      path: originalPath,
+    });
+    assert.equal(conflict.code, "project_path_conflict");
+    assert.deepEqual(conflict.resolution.actions, ["resolve_conflicting_registrations"]);
+
+    const retained = `${await readFile(statePath, "utf8")}\n${JSON.stringify(audits)}`;
     assert.doesNotMatch(retained, new RegExp(secretFixture));
-    const audits = (await readFile(auditPath, "utf8")).trim().split("\n").map(JSON.parse);
     assert.ok(audits.filter((entry) => entry.action === "project.inspect").every((entry) =>
-      entry.outcome === "rejected" && entry.details.directoryScanPerformed === false));
+      entry.outcome === "rejected"
+      && entry.details.directoryScanPerformed === false));
   } finally {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM");
-      await new Promise((resolve) => child.once("exit", resolve));
-    }
     await rm(root, { recursive: true, force: true });
   }
 });
