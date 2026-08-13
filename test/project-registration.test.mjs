@@ -360,6 +360,7 @@ test("path identity changes return typed resolution guidance without silently re
       requestId: "inspect-invalid-project",
       path: "relative/project",
     });
+    assert.equal(invalid.type, "project.operation.failure");
     assert.equal(invalid.code, "project_path_invalid");
     assert.deepEqual(invalid.resolution.actions, ["select_existing_host_directory"]);
 
@@ -389,6 +390,7 @@ test("path identity changes return typed resolution guidance without silently re
       requestId: "inspect-moved-project",
       path: movedPath,
     });
+    assert.equal(moved.type, "project.operation.failure");
     assert.equal(moved.code, "project_path_moved");
     assert.deepEqual(moved.resolution.actions, [
       "update_registration",
@@ -402,6 +404,7 @@ test("path identity changes return typed resolution guidance without silently re
       requestId: "inspect-replaced-project",
       path: originalPath,
     });
+    assert.equal(replaced.type, "project.operation.failure");
     assert.equal(replaced.code, "project_path_replaced");
     assert.deepEqual(replaced.resolution.actions, [
       "replace_registration",
@@ -441,6 +444,7 @@ test("path identity changes return typed resolution guidance without silently re
       requestId: "inspect-tombstoned-project",
       path: originalPath,
     });
+    assert.equal(tombstoned.type, "project.operation.failure");
     assert.equal(tombstoned.code, "project_path_tombstoned");
     assert.deepEqual(tombstoned.resolution.actions, ["restore_registration", "register_as_new"]);
 
@@ -454,6 +458,7 @@ test("path identity changes return typed resolution guidance without silently re
       requestId: "inspect-conflicting-project",
       path: originalPath,
     });
+    assert.equal(conflict.type, "project.operation.failure");
     assert.equal(conflict.code, "project_path_conflict");
     assert.deepEqual(conflict.resolution.actions, ["resolve_conflicting_registrations"]);
     assert.equal(retainedAudits.length, 2);
