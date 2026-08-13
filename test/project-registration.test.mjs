@@ -92,6 +92,22 @@ const requestHost = async (child, request) => {
   return readFrame(child.stdout);
 };
 
+/** @param {string} dataDir */
+const startHost = (dataDir) => spawn(process.execPath, [
+  localHostPath,
+  "--data-dir",
+  dataDir,
+  "--allow-host-identity-create",
+], { stdio: ["pipe", "pipe", "pipe"], env: { LANG: "C.UTF-8" } });
+
+/** @param {import("node:child_process").ChildProcessWithoutNullStreams} child */
+const stopHost = async (child) => {
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGTERM");
+    await new Promise((resolve) => child.once("exit", resolve));
+  }
+};
+
 test("the framed Host opens, registers, and prepares only an explicitly selected Project", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-project-registration-"));
   const dataDir = join(root, "host-state");
@@ -99,12 +115,7 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
   await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
   await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
   const projectFilesBefore = await readdir(projectPath);
-  const child = spawn(process.execPath, [
-    localHostPath,
-    "--data-dir",
-    dataDir,
-    "--allow-host-identity-create",
-  ], { stdio: ["pipe", "pipe", "pipe"], env: { LANG: "C.UTF-8" } });
+  const child = startHost(dataDir);
 
   try {
     await negotiate(child);
@@ -330,15 +341,12 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
       ["conformance-harness-adapter-v1", "sandcastle-harness-adapter-v1"],
     );
   } finally {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM");
-      await new Promise((resolve) => child.once("exit", resolve));
-    }
+    await stopHost(child);
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("path identity changes return typed resolution guidance without silently reattaching", async () => {
+test("path identity changes remain typed and fail closed across fresh Host processes", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-project-resolution-"));
   const dataDir = join(root, "host-state");
   const originalPath = join(root, "original-project");
@@ -346,12 +354,7 @@ test("path identity changes return typed resolution guidance without silently re
   const secretFixture = "project-secret-fixture-must-not-appear";
   await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", originalPath]);
   await writeFile(join(originalPath, "secret.txt"), `${secretFixture}\n`);
-  const child = spawn(process.execPath, [
-    localHostPath,
-    "--data-dir",
-    dataDir,
-    "--allow-host-identity-create",
-  ], { stdio: ["pipe", "pipe", "pipe"], env: { LANG: "C.UTF-8" } });
+  let child = startHost(dataDir);
 
   try {
     await negotiate(child);
@@ -427,13 +430,17 @@ test("path identity changes return typed resolution guidance without silently re
     assert.ok(rejectedHostInspections.every((entry) =>
       entry.outcome === "rejected"
       && entry.details.directoryScanPerformed === false));
+    await stopHost(child);
+
     // Production has no action that creates either retained state. The narrow
-    // #220 fixture exception stages them privately, but observation still goes
-    // through the shipped Host boundary.
+    // #220 fixture exception stages each one while the Host is stopped; a fresh
+    // shipped Host must then read it and return the preserved typed failure.
     const statePath = join(dataDir, "project-registrations.json");
     const retainedState = JSON.parse(await readFile(statePath, "utf8"));
     retainedState.projects[0].status = "tombstoned";
     await writeFile(statePath, `${JSON.stringify(retainedState, null, 2)}\n`);
+    child = startHost(dataDir);
+    await negotiate(child);
     const tombstoned = await requestHost(child, {
       type: "project.inspect",
       requestId: "inspect-tombstoned-project",
@@ -443,12 +450,15 @@ test("path identity changes return typed resolution guidance without silently re
     assert.equal(tombstoned.code, "project_path_tombstoned");
     assert.deepEqual(tombstoned.resolution.actions, ["restore_registration", "register_as_new"]);
 
+    await stopHost(child);
     retainedState.projects[0].status = "active";
     retainedState.projects.push({
       ...retainedState.projects[0],
       projectId: `project-${"f".repeat(24)}`,
     });
     await writeFile(statePath, `${JSON.stringify(retainedState, null, 2)}\n`);
+    child = startHost(dataDir);
+    await negotiate(child);
     const conflict = await requestHost(child, {
       type: "project.inspect",
       requestId: "inspect-conflicting-project",
@@ -469,10 +479,7 @@ test("path identity changes return typed resolution guidance without silently re
       && entry.outcome === "rejected"
       && entry.details.directoryScanPerformed === false));
   } finally {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM");
-      await new Promise((resolve) => child.once("exit", resolve));
-    }
+    await stopHost(child);
     await rm(root, { recursive: true, force: true });
   }
 });
