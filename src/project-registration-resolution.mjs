@@ -193,10 +193,16 @@ export const applyProjectRegistrationResolution = async (options, request) => {
       location.kind !== "registered"
       || location.project?.projectId !== candidate.projectId
     ) {
-      return reject(location.kind === "failure" ? location.code : "project_path_conflict", {
-        actualRevision: location.actualRevision,
-        registrations: location.registrations
-          ?? [projectResolutionRegistration(project)],
+      if (location.kind === "failure") {
+        return reject(location.code, {
+          actualRevision: location.actualRevision,
+          registrations: location.registrations
+            ?? [projectResolutionRegistration(project)],
+        });
+      }
+      return reject("project_path_tombstoned", {
+        actualRevision: project.revision,
+        registrations: [projectResolutionRegistration(project)],
       });
     }
     project.status = "active";

@@ -96,11 +96,12 @@ const requestHost = async (child, request) => {
   return readFrame(child.stdout);
 };
 
-test("Project registration can be deliberately forgotten and restored across Host restarts", async () => {
+test("Project registration preserves a tombstone through wrong-path restore and Host restart", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-project-registration-lifecycle-"));
   const dataDir = join(root, "host-state");
   const projectPath = join(root, "selected-project");
-  await mkdir(projectPath);
+  const unrelatedPath = join(root, "unrelated-project");
+  await Promise.all([mkdir(projectPath), mkdir(unrelatedPath)]);
   let child = startHost(dataDir);
 
   try {
@@ -176,6 +177,27 @@ test("Project registration can be deliberately forgotten and restored across Hos
     await stopHost(child);
     child = startHost(dataDir);
     await negotiate(child);
+    const wrongPathRestore = await requestHost(child, {
+      ...forgetRequest,
+      requestId: "reject-wrong-path-restore",
+      action: "restore",
+      path: unrelatedPath,
+      idempotencyKey: "reject-wrong-path-restore",
+      expectedRevision: forgotten.revision,
+    });
+    assert.equal(wrongPathRestore.type, "project.operation.failure");
+    assert.equal(wrongPathRestore.code, "project_path_tombstoned");
+    assert.equal(wrongPathRestore.actualRevision, forgotten.revision);
+    assert.deepEqual(wrongPathRestore.resolution.actions, [
+      "restore_registration",
+      "register_as_new",
+    ]);
+    assert.deepEqual(wrongPathRestore.registrations, tombstoned.registrations);
+    assert.equal((await requestHost(child, {
+      type: "project.inspect",
+      requestId: "inspect-after-wrong-path-restore",
+      path: projectPath,
+    })).code, "project_path_tombstoned");
     const restored = await requestHost(child, {
       ...forgetRequest,
       requestId: "restore-lifecycle-project",
@@ -238,6 +260,9 @@ test("Project registration can be deliberately forgotten and restored across Hos
       && entry.details.code === "idempotency_key_conflict"));
     assert.ok(audits.some((entry) => entry.outcome === "rejected"
       && entry.details.code === "mutation_revision_conflict"));
+    assert.ok(audits.some((entry) => entry.outcome === "rejected"
+      && entry.details.code === "project_path_tombstoned"
+      && entry.details.candidateProjectIds[0] === registered.project.projectId));
   } finally {
     await stopHost(child);
     await rm(root, { recursive: true, force: true });
