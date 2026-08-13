@@ -13,7 +13,7 @@ const sessionMaterialPattern = /(?:bootstrap\?token=|sandking_session=)/i;
 const namedSecretPattern =
   /(?:ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|GITHUB_TOKEN|SANDKING_CONTROLLER_SECRET)\s*=/i;
 const machinePathPattern =
-  /(?:^|[^A-Za-z0-9._/\\-])(?:\/(?!\/)|[A-Za-z]:[\\/]|\\\\[^\\/])/;
+  /(?:^|[^A-Za-z0-9._/\\-])(?:[\\/](?![\\/])|[A-Za-z]:[\\/]|\\\\[^\\/])/;
 
 export const realSandcastleScenario = Object.freeze({
   id: "production-sandcastle-delegation/commits-real-project-work",

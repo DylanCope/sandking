@@ -99,6 +99,8 @@ test("real-provider result serialization rejects secrets, session material, and 
   for (const machinePath of [
     "C:\\Users\\alice\\project",
     "D:\\sandking\\state",
+    "\\Users\\alice\\project",
+    "\\ProgramData\\SandKing\\state",
     "\\\\host\\credentials\\provider.json",
   ]) {
     assert.throws(() => serializeSanitizedRealProviderResult({
