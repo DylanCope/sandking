@@ -100,15 +100,22 @@ const registerFreshConformanceHarness = async (dataDir, label) => {
       await readFile(join(dataDir, "harness-registry.json"), "utf8"),
     );
     const workspacePath = harnessState.harnesses[0].workspacePath;
-    const metadata = (await execFileAsync("git", [
-      "-C",
-      workspacePath,
-      "show",
-      "-s",
-      "--format=%an%n%ae%n%aI%n%cn%n%ce%n%cI%n%s",
-      "HEAD",
-    ])).stdout.trim().split("\n");
-    return { registration, metadata };
+    const [metadataResult, commitCountResult] = await Promise.all([
+      execFileAsync("git", [
+        "-C",
+        workspacePath,
+        "show",
+        "-s",
+        "--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B",
+        "HEAD",
+      ]),
+      execFileAsync("git", ["-C", workspacePath, "rev-list", "--count", "HEAD"]),
+    ]);
+    return {
+      registration,
+      metadata: metadataResult.stdout.trimEnd().split("\0"),
+      commitCount: Number.parseInt(commitCountResult.stdout.trim(), 10),
+    };
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGTERM");
@@ -349,6 +356,8 @@ test("fresh Host registrations preserve the conformance Harness commit identity"
       "Initialize conformance Harness",
     ]);
     assert.deepEqual(second.metadata, first.metadata);
+    assert.equal(first.commitCount, 1);
+    assert.equal(second.commitCount, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
