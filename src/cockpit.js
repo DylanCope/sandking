@@ -23,6 +23,7 @@ const browserProtocol = Object.freeze({
       "cockpit.controller-terminal.v1",
       "cockpit.controller-terminal-resize.v1",
       "cockpit.project-preparation.v1",
+      "cockpit.project-registration-resolution.v1",
       "cockpit.harness-run-launch.v2",
       "cockpit.harness-run-observation.v2",
       "cockpit.harness-run-reconciliation.v1",
@@ -31,7 +32,7 @@ const browserProtocol = Object.freeze({
     ],
     optional: [],
   },
-  schemaDigest: "sha256:e24f728f8abe326a662460855be5144b0ffae82c02cbc28ec0a09d27bd93a5d3",
+  schemaDigest: "sha256:61c6a0fe586a23f10c27f47d7e1d607bf385b96fa740dc8f204c26a332d8876a",
   framing: {
     maxControlMessageBytes: 32_768,
     maxOpaqueStreamChunkBytes: 16_384,
@@ -741,6 +742,26 @@ const renderProjectPreparation = (
   let currentNode = renderPreparedProject(preparation.current);
   let currentProject = preparation.current;
   let expectedRevision = preparation.current?.revision ?? 0;
+  const registerAsNewButton = element("button", {
+    id: "register-project-as-new",
+    type: "button",
+    "data-action": "register-project-as-new",
+    "data-host-mutation": "true",
+    disabled: true,
+    hidden: true,
+  }, "Register moved path as a new Project");
+  const forgetRegistrationButton = element("button", {
+    id: "forget-project-registration",
+    type: "button",
+    "data-action": "forget-project-registration",
+    "data-host-mutation": "true",
+    disabled: hostConnectionStatus !== "connected" || !preparation.current,
+  }, "Forget current Project registration");
+  const resolutionPanel = element("div", {
+    id: "project-registration-resolution",
+    "data-registration-resolution": "true",
+    hidden: true,
+  });
   const openController = element("button", {
     id: "open-project-controller",
     type: "button",
@@ -913,10 +934,116 @@ const renderProjectPreparation = (
     openClaudeController.disabled = hostConnectionStatus !== "connected"
       || !projectReady
       || !claudeAvailable;
+    forgetRegistrationButton.disabled = hostConnectionStatus !== "connected"
+      || !currentProject;
+    registerAsNewButton.disabled = hostConnectionStatus !== "connected"
+      || registerAsNewButton.hidden;
   };
 
-  openButton.addEventListener("click", async () => {
+  const clearResolutionActions = () => {
+    resolutionPanel.replaceChildren();
+    resolutionPanel.hidden = true;
+    registerAsNewButton.hidden = true;
+  };
+  const clearCurrentProject = () => {
+    currentProject = null;
+    expectedRevision = 0;
+    harnessSelect.disabled = false;
+    updateLaunchParameterFields();
+    const replacement = renderPreparedProject(null);
+    currentNode.replaceWith(replacement);
+    currentNode = replacement;
+    updateWorkbenchChrome({ currentProject: null });
+  };
+  const requestRegistrationResolution = async (action, registration) => {
+    if (
+      hostConnectionStatus !== "connected"
+      || !projectIdPattern.test(registration?.projectId ?? "")
+      || !Number.isSafeInteger(registration?.revision)
+    ) {
+      feedback.textContent = "Project registration was not changed: refresh and retry.";
+      return;
+    }
+    resolutionPanel.querySelectorAll("button").forEach((button) => {
+      button.disabled = true;
+    });
+    forgetRegistrationButton.disabled = true;
+    const response = await fetch("/projects/registration/resolve", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-sandking-csrf": session.csrfToken,
+        "x-sandking-idempotency-key": mutationKey(),
+        "x-sandking-expected-revision": String(registration.revision),
+      },
+      body: JSON.stringify({
+        action,
+        projectId: registration.projectId,
+        path: pathInput.value,
+      }),
+    });
+    const outcome = await response.json();
+    if (!response.ok) {
+      feedback.textContent = `Project registration was not changed: ${outcome.code}. ${
+        outcome.resolution?.actions?.join(", ") ?? "Refresh and retry."}`;
+      renderResolutionActions(outcome);
+      updateProjectActionAvailability();
+      return;
+    }
+    clearResolutionActions();
+    clearCurrentProject();
+    feedback.textContent = action === "forget"
+      ? `Project registration ${registration.projectId} was forgotten safely.`
+      : action === "restore"
+        ? `Project registration ${registration.projectId} was restored. Open its path to continue.`
+        : `Project registration ${registration.projectId} was kept and its conflicts were retired. Open its path to continue.`;
+    updateProjectActionAvailability();
+  };
+  const renderResolutionActions = (outcome) => {
+    clearResolutionActions();
+    if (
+      outcome.code === "project_path_moved"
+      && outcome.resolution?.actions?.includes("register_as_new")
+    ) {
+      registerAsNewButton.hidden = false;
+    }
+    const registrations = Array.isArray(outcome.registrations)
+      ? outcome.registrations.filter((registration) =>
+        projectIdPattern.test(registration?.projectId ?? "")
+        && Number.isSafeInteger(registration?.revision))
+      : [];
+    for (const registration of registrations) {
+      const action = outcome.code === "project_path_tombstoned"
+        && registration.status === "tombstoned"
+        ? "restore"
+        : outcome.code === "project_path_conflict"
+          && registration.status === "active"
+          ? "resolve_conflict"
+          : null;
+      if (!action) continue;
+      const button = element("button", {
+        type: "button",
+        class: action === "restore"
+          ? "restore-project-registration"
+          : "resolve-project-registration-conflict",
+        "data-action": action,
+        "data-project-id": registration.projectId,
+        "data-project-revision": registration.revision,
+        "data-project-path": registration.canonicalPath,
+        "data-host-mutation": "true",
+      }, action === "restore"
+        ? `Restore ${registration.projectId}`
+        : `Keep ${registration.projectId} at ${registration.canonicalPath}`);
+      button.addEventListener("click", () =>
+        requestRegistrationResolution(action, registration));
+      resolutionPanel.append(button);
+    }
+    resolutionPanel.hidden = resolutionPanel.childElementCount === 0;
+  };
+
+  const openSelectedProject = async (resolutionAction) => {
     openButton.disabled = true;
+    registerAsNewButton.disabled = true;
     feedback.textContent = "Opening the selected Project path…";
     const response = await fetch("/projects/open", {
       method: "POST",
@@ -929,6 +1056,7 @@ const renderProjectPreparation = (
       body: JSON.stringify({
         path: pathInput.value,
         harnessAdapterId: harnessSelect.value,
+        ...(resolutionAction ? { resolutionAction } : {}),
         configuration: {
           issueWorkflow: { provider: "github", kind: "issues" },
           checks: [
@@ -940,6 +1068,10 @@ const renderProjectPreparation = (
     });
     const outcome = await response.json();
     if (!response.ok) {
+      renderResolutionActions(outcome);
+      if (outcome.code === "project_path_conflict") {
+        clearCurrentProject();
+      }
       if (outcome.project) {
         expectedRevision = outcome.project.revision;
         currentProject = outcome.project;
@@ -964,6 +1096,7 @@ const renderProjectPreparation = (
       openButton.disabled = hostConnectionStatus !== "connected";
       return;
     }
+    clearResolutionActions();
     expectedRevision = outcome.project.revision;
     currentProject = outcome.project;
     updateLaunchParameterFields();
@@ -974,6 +1107,20 @@ const renderProjectPreparation = (
     feedback.textContent = `Project and ${outcome.project.harness.name} are ready to launch.`;
     updateProjectActionAvailability();
     openButton.disabled = hostConnectionStatus !== "connected";
+  };
+  openButton.addEventListener("click", () => openSelectedProject());
+  registerAsNewButton.addEventListener("click", () =>
+    openSelectedProject("register_as_new"));
+  forgetRegistrationButton.addEventListener("click", () => {
+    if (
+      !currentProject
+      || !window.confirm(
+        `Forget Project registration ${currentProject.projectId}? The Host will retain a tombstone so this path cannot be silently reused.`,
+      )
+    ) {
+      return;
+    }
+    requestRegistrationResolution("forget", currentProject);
   });
 
   const attachFocusedController = (focused, reconnected) => {
@@ -1057,8 +1204,11 @@ const renderProjectPreparation = (
     harnessLabel,
     harnessSelect,
     openButton,
+    registerAsNewButton,
     feedback,
     currentNode,
+    forgetRegistrationButton,
+    resolutionPanel,
     element("h3", {}, "Launch Harness"),
     launchParameterFields,
     launchButton,

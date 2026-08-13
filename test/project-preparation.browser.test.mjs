@@ -375,7 +375,121 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
           { mode: 0o600 },
         );
       }
+
+      page.once("dialog", (dialog) => dialog.accept());
+      await page.locator("#forget-project-registration").click();
+      await page.waitForFunction(() => document.querySelector("#project-feedback")
+        ?.textContent?.includes("was forgotten safely"));
+      await page.locator("#project-path").fill(projectPath);
+      await page.locator("#open-project").click();
+      await page.waitForFunction(() => document.querySelector("#project-feedback")
+        ?.textContent?.includes("project_path_tombstoned"));
+      const restore = page.locator(
+        `.restore-project-registration[data-project-id='${projectId}']`,
+      );
+      await restore.waitFor({ state: "visible" });
+      assert.equal(await restore.getAttribute("data-project-path"), projectPath);
+      await restore.click();
+      await page.waitForFunction(() => document.querySelector("#project-feedback")
+        ?.textContent?.includes("was restored"));
+      await page.locator("#project-path").fill(projectPath);
+      await page.locator("#open-project").click();
+      await page.waitForSelector(
+        `#project-readiness[data-project-id='${projectId}'][data-harness-launch-ready='true']`,
+        { timeout: 10_000 },
+      );
+
+      await rename(projectPath, movedProjectPath);
+      await page.locator("#project-path").fill(movedProjectPath);
+      await page.locator("#open-project").click();
+      await page.waitForFunction(() => document.querySelector("#project-feedback")
+        ?.textContent?.includes("project_path_moved"));
+      await page.locator("#register-project-as-new").click();
+      await page.waitForFunction(() => document.querySelector("#project-feedback")
+        ?.textContent?.includes("project_path_conflict"));
+      const conflictChoices = page.locator(".resolve-project-registration-conflict");
+      await conflictChoices.first().waitFor({ state: "visible" });
+      assert.equal(await conflictChoices.count(), 2);
+      const candidateIds = await conflictChoices.evaluateAll((buttons) =>
+        buttons.map((button) => button.dataset.projectId));
+      assert.ok(candidateIds.includes(projectId));
+      const newProjectId = candidateIds.find((candidate) => candidate !== projectId);
+      assert.match(newProjectId, /^project-[a-f0-9]{24}$/);
+
       await context.close();
+
+      const stopped = JSON.parse((await execFileAsync(installed.command, [
+        "stop", "--data-dir", dataDir, "--json",
+      ], { cwd: executionDirectory, env: productEnvironment })).stdout);
+      assert.equal(stopped.stopped, true);
+      const restarted = JSON.parse((await execFileAsync(installed.command, [
+        "launch",
+        "--data-dir", dataDir,
+        "--startup-timeout-ms", "60000",
+        "--idempotency-key", "project-registration-resolution-runtime-restart",
+        "--json",
+        "--no-open",
+      ], { cwd: executionDirectory, env: productEnvironment })).stdout);
+      assert.notEqual(restarted.runtime.runtimeId, launch.runtime.runtimeId);
+      assert.equal(restarted.host.hostId, launch.host.hostId);
+
+      await browser.close();
+      const restartedBrowser = await launchBrowser({ niceAdjustment: 10 });
+      const restartedContext = await restartedBrowser.newContext();
+      const restartedPage = await restartedContext.newPage();
+      await restartedPage.goto(restarted.bootstrapUrl, { waitUntil: "domcontentloaded" });
+      await restartedPage.waitForSelector(
+        "#project-preparation[data-explicit-path-only='true']",
+        { timeout: 10_000 },
+      );
+      await restartedPage.locator("#project-path").fill(movedProjectPath);
+      await restartedPage.locator("#open-project").click();
+      await restartedPage.waitForFunction(() => document.querySelector("#project-feedback")
+        ?.textContent?.includes("project_path_conflict"));
+      const restartedChoices = restartedPage.locator(
+        ".resolve-project-registration-conflict",
+      );
+      await restartedChoices.first().waitFor({ state: "visible" });
+      assert.deepEqual(
+        (await restartedChoices.evaluateAll((buttons) =>
+          buttons.map((button) => button.dataset.projectId))).sort(),
+        candidateIds.sort(),
+      );
+      await restartedPage.locator(
+        `.resolve-project-registration-conflict[data-project-id='${newProjectId}']`,
+      ).click();
+      await restartedPage.waitForFunction(() => document.querySelector("#project-feedback")
+        ?.textContent?.includes("was kept and its conflicts were retired"));
+      await restartedPage.locator("#project-path").fill(movedProjectPath);
+      await restartedPage.locator("#open-project").click();
+      await restartedPage.waitForSelector(
+        `#project-readiness[data-project-id='${newProjectId}']`
+          + "[data-harness-launch-ready='true']",
+        { timeout: 10_000 },
+      );
+      await restartedPage.locator("#project-path").fill(projectPath);
+      await restartedPage.locator("#open-project").click();
+      await restartedPage.waitForFunction(() => document.querySelector("#project-feedback")
+        ?.textContent?.includes("project_path_tombstoned"));
+      assert.equal(
+        await restartedPage.locator("#project-readiness").getAttribute("data-project-id"),
+        newProjectId,
+      );
+      const lifecycleAudits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map(JSON.parse)
+        .filter((entry) =>
+          entry.action === "project.registration.resolve" && entry.outcome === "accepted");
+      assert.deepEqual(
+        lifecycleAudits.map((entry) => entry.details.action),
+        ["forget", "restore", "resolve_conflict"],
+      );
+      assert.ok(lifecycleAudits.every((entry) =>
+        entry.details.directoryScanPerformed === false
+        && entry.details.projectFileWrite === false));
+      await restartedContext.close();
+      await restartedBrowser.close();
     } finally {
       await browser.close();
     }

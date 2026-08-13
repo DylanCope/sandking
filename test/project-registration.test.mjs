@@ -377,6 +377,87 @@ test("path identity changes return typed resolution guidance without silently re
       expectedRevision: 0,
     });
     assert.equal(registered.code, "project_registered");
+
+    const forgetRequest = {
+      type: "project.registration.resolve",
+      requestId: "forget-resolution-project",
+      action: "forget",
+      projectId: registered.project.projectId,
+      path: originalPath,
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "forget-resolution-project",
+      expectedRevision: registered.revision,
+    };
+    const forgotten = await requestHost(child, forgetRequest);
+    assert.equal(forgotten.type, "project.registration.resolve.result");
+    assert.equal(forgotten.code, "project_registration_forgotten");
+    assert.equal(forgotten.project.status, "tombstoned");
+    assert.equal(forgotten.revision, 2);
+    assert.deepEqual(await requestHost(child, {
+      ...forgetRequest,
+      requestId: "replay-forget-resolution-project",
+    }), {
+      ...forgotten,
+      requestId: "replay-forget-resolution-project",
+      idempotentReplay: true,
+    });
+    const changedForget = await requestHost(child, {
+      ...forgetRequest,
+      requestId: "change-forget-resolution-project",
+      action: "restore",
+    });
+    assert.equal(changedForget.code, "idempotency_key_conflict");
+    assert.equal(changedForget.retryable, false);
+    const staleForget = await requestHost(child, {
+      ...forgetRequest,
+      requestId: "stale-forget-resolution-project",
+      idempotencyKey: "stale-forget-resolution-project",
+      expectedRevision: registered.revision,
+    });
+    assert.equal(staleForget.code, "mutation_revision_conflict");
+    assert.equal(staleForget.actualRevision, forgotten.revision);
+
+    await stopHost(child);
+    child = startHost(dataDir);
+    await negotiate(child);
+    const tombstoned = await requestHost(child, {
+      type: "project.inspect",
+      requestId: "inspect-tombstoned-project",
+      path: originalPath,
+    });
+    assert.equal(tombstoned.type, "project.operation.failure");
+    assert.equal(tombstoned.code, "project_path_tombstoned");
+    assert.deepEqual(tombstoned.resolution.actions, [
+      "restore_registration",
+      "register_as_new",
+    ]);
+    assert.deepEqual(tombstoned.registrations, [{
+      projectId: registered.project.projectId,
+      revision: 2,
+      displayName: registered.project.displayName,
+      canonicalPath: originalPath,
+      status: "tombstoned",
+    }]);
+
+    const restored = await requestHost(child, {
+      ...forgetRequest,
+      requestId: "restore-resolution-project",
+      action: "restore",
+      idempotencyKey: "restore-resolution-project",
+      expectedRevision: forgotten.revision,
+    });
+    assert.equal(restored.type, "project.registration.resolve.result");
+    assert.equal(restored.code, "project_registration_restored");
+    assert.equal(restored.project.status, "active");
+    assert.equal(restored.revision, 3);
+    const restoredInspection = await requestHost(child, {
+      type: "project.inspect",
+      requestId: "inspect-restored-project",
+      path: originalPath,
+    });
+    assert.equal(restoredInspection.type, "project.inspect.result");
+    assert.equal(restoredInspection.project.projectId, registered.project.projectId);
+
     await rename(originalPath, movedPath);
 
     const missing = await requestHost(child, {
@@ -425,59 +506,140 @@ test("path identity changes return typed resolution guidance without silently re
       .split("\n")
       .map(JSON.parse);
     const rejectedHostInspections = hostAudits.filter((entry) =>
-      entry.action === "project.inspect");
-    assert.equal(rejectedHostInspections.length, 4);
+      entry.action === "project.inspect"
+      && [
+        "project_path_invalid",
+        "project_path_tombstoned",
+        "project_path_missing",
+        "project_path_moved",
+        "project_path_replaced",
+      ].includes(entry.details.code));
+    assert.equal(rejectedHostInspections.length, 5);
     assert.ok(rejectedHostInspections.every((entry) =>
       entry.outcome === "rejected"
       && entry.details.directoryScanPerformed === false));
-    await stopHost(child);
 
-    // Production has no action that creates either retained state. The narrow
-    // #220 fixture exception stages each one while the Host is stopped; a fresh
-    // shipped Host must then read it and return the preserved typed failure.
-    const statePath = join(dataDir, "project-registrations.json");
-    const retainedState = JSON.parse(await readFile(statePath, "utf8"));
-    retainedState.projects[0].status = "tombstoned";
-    await writeFile(statePath, `${JSON.stringify(retainedState, null, 2)}\n`);
-    child = startHost(dataDir);
-    await negotiate(child);
-    const tombstoned = await requestHost(child, {
-      type: "project.inspect",
-      requestId: "inspect-tombstoned-project",
-      path: originalPath,
-    });
-    assert.equal(tombstoned.type, "project.operation.failure");
-    assert.equal(tombstoned.code, "project_path_tombstoned");
-    assert.deepEqual(tombstoned.resolution.actions, ["restore_registration", "register_as_new"]);
-
-    await stopHost(child);
-    retainedState.projects[0].status = "active";
-    retainedState.projects.push({
-      ...retainedState.projects[0],
-      projectId: `project-${"f".repeat(24)}`,
-    });
-    await writeFile(statePath, `${JSON.stringify(retainedState, null, 2)}\n`);
-    child = startHost(dataDir);
-    await negotiate(child);
+    const registerAsNewRequest = {
+      type: "project.register",
+      requestId: "register-moved-project-as-new",
+      path: movedPath,
+      configuration: projectConfiguration,
+      resolutionAction: "register_as_new",
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "register-moved-project-as-new",
+      expectedRevision: restored.revision,
+    };
+    const registeredAsNew = await requestHost(child, registerAsNewRequest);
+    assert.equal(registeredAsNew.type, "project.register.result");
+    assert.equal(registeredAsNew.code, "project_registered");
+    assert.notEqual(registeredAsNew.project.projectId, registered.project.projectId);
+    const conflictCandidates = [
+      {
+        projectId: registered.project.projectId,
+        revision: restored.revision,
+        displayName: registered.project.displayName,
+        canonicalPath: originalPath,
+        status: "active",
+      },
+      {
+        projectId: registeredAsNew.project.projectId,
+        revision: registeredAsNew.revision,
+        displayName: registeredAsNew.project.displayName,
+        canonicalPath: movedPath,
+        status: "active",
+      },
+    ];
     const conflict = await requestHost(child, {
       type: "project.inspect",
       requestId: "inspect-conflicting-project",
-      path: originalPath,
+      path: movedPath,
     });
     assert.equal(conflict.type, "project.operation.failure");
     assert.equal(conflict.code, "project_path_conflict");
     assert.deepEqual(conflict.resolution.actions, ["resolve_conflicting_registrations"]);
+    assert.deepEqual(conflict.registrations, conflictCandidates);
+    const staleRegistrationReplay = await requestHost(child, {
+      ...registerAsNewRequest,
+      requestId: "replay-register-moved-project-as-new",
+    });
+    assert.equal(staleRegistrationReplay.type, "project.operation.failure");
+    assert.equal(staleRegistrationReplay.code, "project_path_conflict");
+
+    await stopHost(child);
+    child = startHost(dataDir);
+    await negotiate(child);
+    const restartedConflict = await requestHost(child, {
+      type: "project.inspect",
+      requestId: "inspect-conflicting-project-after-restart",
+      path: movedPath,
+    });
+    assert.equal(restartedConflict.code, "project_path_conflict");
+    assert.deepEqual(restartedConflict.registrations, conflictCandidates);
+
+    const resolveRequest = {
+      type: "project.registration.resolve",
+      requestId: "resolve-conflicting-projects",
+      action: "resolve_conflict",
+      projectId: registered.project.projectId,
+      path: movedPath,
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "resolve-conflicting-projects",
+      expectedRevision: restored.revision,
+    };
+    const resolved = await requestHost(child, resolveRequest);
+    assert.equal(resolved.type, "project.registration.resolve.result");
+    assert.equal(resolved.code, "project_registration_conflict_resolved");
+    assert.equal(resolved.project.projectId, registered.project.projectId);
+    assert.equal(resolved.project.canonicalPath, movedPath);
+    assert.equal(resolved.project.status, "active");
+    assert.deepEqual(await requestHost(child, {
+      ...resolveRequest,
+      requestId: "replay-resolve-conflicting-projects",
+    }), {
+      ...resolved,
+      requestId: "replay-resolve-conflicting-projects",
+      idempotentReplay: true,
+    });
+    const changedResolution = await requestHost(child, {
+      ...resolveRequest,
+      requestId: "change-resolve-conflicting-projects",
+      projectId: registeredAsNew.project.projectId,
+    });
+    assert.equal(changedResolution.code, "idempotency_key_conflict");
+    assert.equal(changedResolution.retryable, false);
+    const resolvedInspection = await requestHost(child, {
+      type: "project.inspect",
+      requestId: "inspect-resolved-project",
+      path: movedPath,
+    });
+    assert.equal(resolvedInspection.type, "project.inspect.result");
+    assert.equal(resolvedInspection.project.projectId, registered.project.projectId);
+
     const retainedStateAudits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
       .trim()
       .split("\n")
       .map(JSON.parse)
-      .filter((entry) => ["project_path_tombstoned", "project_path_conflict"]
-        .includes(entry.details.code));
-    assert.equal(retainedStateAudits.length, 2);
+      .filter((entry) => entry.action === "project.inspect"
+        && ["project_path_tombstoned", "project_path_conflict"]
+          .includes(entry.details.code));
+    assert.equal(retainedStateAudits.length, 3);
     assert.ok(retainedStateAudits.every((entry) =>
       entry.action === "project.inspect"
       && entry.outcome === "rejected"
       && entry.details.directoryScanPerformed === false));
+    const acceptedResolutions = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map(JSON.parse)
+      .filter((entry) =>
+        entry.action === "project.registration.resolve" && entry.outcome === "accepted");
+    assert.deepEqual(
+      acceptedResolutions.map((entry) => entry.details.action),
+      ["forget", "restore", "resolve_conflict"],
+    );
+    assert.ok(acceptedResolutions.every((entry) =>
+      entry.details.directoryScanPerformed === false
+      && entry.details.projectFileWrite === false));
   } finally {
     await stopHost(child);
     await rm(root, { recursive: true, force: true });

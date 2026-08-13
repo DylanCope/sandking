@@ -54,6 +54,9 @@ import {
   operationFailure,
   resolveProjectLocation,
 } from "./path-resolution.mjs";
+import {
+  resolveProjectRegistration as applyProjectRegistrationResolution,
+} from "./registration-resolution.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -182,6 +185,7 @@ export const createProjectRegistry = async (options) => {
         code: /** @type {keyof typeof failureGuidance} */ (location.code),
         actualRevision: location.actualRevision,
         auditId,
+        registrations: location.registrations,
       });
     }
     if (
@@ -227,7 +231,7 @@ export const createProjectRegistry = async (options) => {
     };
   });
 
-  /** @param {{requestId: string, path: string, configuration: unknown, authorizationClass: string, idempotencyKey: string, expectedRevision: number}} request */
+  /** @param {{requestId: string, path: string, configuration: unknown, resolutionAction?: string, authorizationClass: string, idempotencyKey: string, expectedRevision: number}} request */
   const registerProject = (request) => withMutationLock(async () => {
     const action = "project.register";
     const authorizationClass = "host_local_project_registration";
@@ -239,6 +243,9 @@ export const createProjectRegistry = async (options) => {
     const requestFingerprint = fingerprint({
       path: request.path,
       configuration: request.configuration,
+      ...(request.resolutionAction === undefined
+        ? {}
+        : { resolutionAction: request.resolutionAction }),
       authorizationClass: request.authorizationClass,
       expectedRevision: request.expectedRevision,
     });
@@ -303,13 +310,16 @@ export const createProjectRegistry = async (options) => {
       const retainedProject = typeof retainedProjectId === "string"
         ? state.projects.find((project) => project.projectId === retainedProjectId)
         : null;
-      if (retainedProject?.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID) {
+      if (retainedProject) {
         try {
-          await prepareRetainedProductionProject(
-            state,
-            await readHarnessState(options.dataDir),
-            retainedProject,
-          );
+          await requireRegisteredProjectLocation(state, retainedProject);
+          if (retainedProject.harness?.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID) {
+            await prepareRetainedProductionProject(
+              state,
+              await readHarnessState(options.dataDir),
+              retainedProject,
+            );
+          }
         } catch (error) {
           return rejectPreparation(error, retainedProject);
         }
@@ -337,6 +347,8 @@ export const createProjectRegistry = async (options) => {
       || !keyHash
       || !Number.isSafeInteger(request.expectedRevision)
       || request.expectedRevision < 0
+      || (request.resolutionAction !== undefined
+        && request.resolutionAction !== "register_as_new")
       || !configuration.success
     ) {
       const code = configuration.success
@@ -367,8 +379,23 @@ export const createProjectRegistry = async (options) => {
       });
     }
 
-    const location = await resolveProjectLocation(state, request.path, options.dataDir);
-    if (location.kind === "failure") {
+    let location = /** @type {any} */ (await resolveProjectLocation(
+      state,
+      request.path,
+      options.dataDir,
+    ));
+    if (
+      location.kind === "failure"
+      && location.code === "project_path_moved"
+      && location.registrationCandidate
+      && request.resolutionAction === "register_as_new"
+    ) {
+      location = {
+        kind: "unregistered",
+        ...location.registrationCandidate,
+        actualRevision: location.actualRevision,
+      };
+    } else if (location.kind === "failure") {
       const auditId = await options.recordAudit(action, "rejected", {
         code: location.code,
         authorizationClass,
@@ -388,6 +415,29 @@ export const createProjectRegistry = async (options) => {
         expectedRevision: request.expectedRevision,
         actualRevision: location.actualRevision,
         auditId,
+        registrations: location.registrations,
+      });
+    } else if (request.resolutionAction !== undefined) {
+      const auditId = await options.recordAudit(action, "rejected", {
+        code: "mutation_contract_invalid",
+        authorizationClass,
+        idempotencyKeyHash: keyHash,
+        expectedRevision: request.expectedRevision,
+        actualRevision: location.actualRevision,
+        selectedPathHash: digest(request.path),
+        directoryScanPerformed: false,
+        projectFileWrite: false,
+      });
+      return operationFailure({
+        requestId: request.requestId,
+        operation: action,
+        code: "mutation_contract_invalid",
+        authorizationClass,
+        idempotencyKeyHash: keyHash,
+        expectedRevision: request.expectedRevision,
+        actualRevision: location.actualRevision,
+        auditId,
+        retryable: false,
       });
     }
 
@@ -1202,9 +1252,14 @@ export const createProjectRegistry = async (options) => {
     };
   });
 
+  /** @param {{requestId: string, action: unknown, projectId: unknown, path?: unknown, authorizationClass: unknown, idempotencyKey: unknown, expectedRevision: unknown}} request */
+  const resolveProjectRegistration = (request) => withMutationLock(() =>
+    applyProjectRegistrationResolution(options, request));
+
   return {
     inspectProject,
     registerProject,
+    resolveProjectRegistration,
     inspectConformanceHarness,
     registerConformanceHarness,
     inspectSandcastleHarness,

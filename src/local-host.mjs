@@ -386,6 +386,13 @@ const main = async () => {
       writeFrame(process.stdout, outcome);
       continue;
     }
+    if (frame.message.type === "project.registration.resolve") {
+      writeFrame(
+        process.stdout,
+        await projectRegistry.resolveProjectRegistration(frame.message),
+      );
+      continue;
+    }
     if (frame.message.type === "harness.conformance.inspect") {
       writeFrame(process.stdout, await projectRegistry.inspectConformanceHarness(frame.message));
       continue;

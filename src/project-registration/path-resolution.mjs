@@ -50,6 +50,13 @@ export const failureGuidance = Object.freeze({
  *   actualRevision: number,
  *   auditId: string,
  *   retryable?: boolean,
+ *   registrations?: Array<{
+ *     projectId: string,
+ *     revision: number,
+ *     displayName: string,
+ *     canonicalPath: string,
+ *     status: "active" | "tombstoned",
+ *   }>,
  * }} input
  */
 export const operationFailure = (input) => ({
@@ -69,6 +76,7 @@ export const operationFailure = (input) => ({
     summary: input.code,
     actions: failureGuidance[input.code],
   },
+  ...(input.registrations ? { registrations: input.registrations } : {}),
   prohibitedSideEffects: {
     directoryScan: false,
     projectFileWrite: false,
@@ -76,6 +84,15 @@ export const operationFailure = (input) => ({
     harnessPinWrite: false,
     approvalRequest: false,
   },
+});
+
+/** @param {z.infer<typeof legacyProjectStateSchema>["projects"][number]} project */
+export const projectResolutionRegistration = (project) => ({
+  projectId: project.projectId,
+  revision: project.revision,
+  displayName: project.displayName,
+  canonicalPath: project.canonicalPath,
+  status: project.status,
 });
 
 /** @param {string} path */
@@ -133,25 +150,32 @@ export const resolveProjectLocation = async (state, selectedPath, dataDir) => {
     }
   } catch {
     const stored = state.projects.filter((project) => project.canonicalPath === normalizedPath);
-    if (stored.length > 1) {
+    const active = stored.filter((project) => project.status === "active");
+    const tombstoned = stored.filter((project) => project.status === "tombstoned");
+    if (active.length > 1) {
       return {
         kind: "failure",
         code: "project_path_conflict",
-        actualRevision: Math.max(...stored.map((project) => project.revision)),
+        actualRevision: Math.max(...active.map((project) => project.revision)),
+        registrations: active.map(projectResolutionRegistration),
       };
     }
-    if (stored[0]?.status === "tombstoned") {
-      return {
-        kind: "failure",
-        code: "project_path_tombstoned",
-        actualRevision: stored[0].revision,
-      };
-    }
-    if (stored[0]) {
+    if (active[0]) {
       return {
         kind: "failure",
         code: "project_path_missing",
-        actualRevision: stored[0].revision,
+        actualRevision: active[0].revision,
+        registrations: [projectResolutionRegistration(active[0])],
+      };
+    }
+    if (tombstoned[0]) {
+      const latest = tombstoned.reduce((left, right) =>
+        left.revision >= right.revision ? left : right);
+      return {
+        kind: "failure",
+        code: "project_path_tombstoned",
+        actualRevision: latest.revision,
+        registrations: tombstoned.map(projectResolutionRegistration),
       };
     }
     return { kind: "failure", code: "project_path_invalid", actualRevision: 0 };
@@ -159,54 +183,81 @@ export const resolveProjectLocation = async (state, selectedPath, dataDir) => {
 
   const identityDigest = digest(`${details.dev}:${details.ino}:${details.birthtimeMs}`);
   const atPath = state.projects.filter((project) => project.canonicalPath === canonicalPath);
-  if (atPath.length > 1) {
+  const activeAtPath = atPath.filter((project) => project.status === "active");
+  const tombstonedAtPath = atPath.filter((project) => project.status === "tombstoned");
+  if (activeAtPath.length > 1) {
     return {
       kind: "failure",
       code: "project_path_conflict",
-      actualRevision: Math.max(...atPath.map((project) => project.revision)),
+      actualRevision: Math.max(...activeAtPath.map((project) => project.revision)),
+      registrations: activeAtPath.map(projectResolutionRegistration),
+      selectedCanonicalPath: canonicalPath,
     };
   }
-  if (atPath[0]?.status === "tombstoned") {
-    return {
-      kind: "failure",
-      code: "project_path_tombstoned",
-      actualRevision: atPath[0].revision,
-    };
-  }
-  if (atPath[0] && atPath[0].filesystemIdentityDigest !== identityDigest) {
+  if (activeAtPath[0] && activeAtPath[0].filesystemIdentityDigest !== identityDigest) {
     return {
       kind: "failure",
       code: "project_path_replaced",
-      actualRevision: atPath[0].revision,
+      actualRevision: activeAtPath[0].revision,
+      registrations: [projectResolutionRegistration(activeAtPath[0])],
     };
   }
-  if (atPath[0]) {
-    return { kind: "registered", project: atPath[0], actualRevision: atPath[0].revision };
-  }
-
   const matchingIdentity = state.projects.filter((project) =>
     project.filesystemIdentityDigest === identityDigest && project.status === "active");
+  if (activeAtPath[0]) {
+    if (matchingIdentity.length > 1) {
+      return {
+        kind: "failure",
+        code: "project_path_conflict",
+        actualRevision: Math.max(...matchingIdentity.map((project) => project.revision)),
+        registrations: matchingIdentity.map(projectResolutionRegistration),
+        selectedCanonicalPath: canonicalPath,
+      };
+    }
+    return {
+      kind: "registered",
+      project: activeAtPath[0],
+      actualRevision: activeAtPath[0].revision,
+    };
+  }
+  if (tombstonedAtPath[0]) {
+    const latest = tombstonedAtPath.reduce((left, right) =>
+      left.revision >= right.revision ? left : right);
+    return {
+      kind: "failure",
+      code: "project_path_tombstoned",
+      actualRevision: latest.revision,
+      registrations: tombstonedAtPath.map(projectResolutionRegistration),
+    };
+  }
   if (matchingIdentity.length > 1) {
     return {
       kind: "failure",
       code: "project_path_conflict",
       actualRevision: Math.max(...matchingIdentity.map((project) => project.revision)),
+      registrations: matchingIdentity.map(projectResolutionRegistration),
+      selectedCanonicalPath: canonicalPath,
     };
   }
+  const gitDetected = await gitMetadataDetected(canonicalPath);
+  const registrationCandidate = {
+    canonicalPath,
+    identityDigest,
+    displayName: basename(canonicalPath),
+    versionControl: { kind: gitDetected ? "git" : "none", detected: gitDetected },
+  };
   if (matchingIdentity[0]) {
     return {
       kind: "failure",
       code: "project_path_moved",
       actualRevision: matchingIdentity[0].revision,
+      registrations: [projectResolutionRegistration(matchingIdentity[0])],
+      registrationCandidate,
     };
   }
-  const gitDetected = await gitMetadataDetected(canonicalPath);
   return {
     kind: "unregistered",
-    canonicalPath,
-    identityDigest,
-    displayName: basename(canonicalPath),
-    versionControl: { kind: gitDetected ? "git" : "none", detected: gitDetected },
+    ...registrationCandidate,
     actualRevision: 0,
   };
 };
