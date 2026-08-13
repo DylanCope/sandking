@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { writeSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { digest as sha256 } from "../common/digest.mjs";
 
 const execFileAsync = promisify(execFile);
 export const REAL_PROVIDER_KIND = "openai-codex";
@@ -28,8 +28,6 @@ const PINNED_SKILL_IDENTITIES = Object.freeze([
   "sandking.pull-request-review",
   REAL_DELEGATION_SKILL_ID,
 ]);
-const sha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
-
 const gitEnvironment = () => ({
   LANG: "C.UTF-8",
   ...(process.env.PATH ? { PATH: process.env.PATH } : {}),

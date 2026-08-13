@@ -106,7 +106,7 @@ test("fresh Hosts seed and pin one reproducible production Sandcastle Harness", 
     assert.equal(provenance.sandKing.repository, "https://github.com/DylanCope/sandking.git");
     assert.equal(
       provenance.sandKing.revision,
-      "d1b0517a0b5d0cd2ce986fd137bfdca091b2c87b",
+      "73fe942a63bc489b26156c2a628d4c50f9a63fb1",
     );
     const seedManifest = JSON.parse(await readFile(
       join(workspacePath, "seed-manifest.json"),

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { identifierSchemas } from "./common/identifiers.mjs";
 import {
   projectHarnessAdapterIdentityAgrees,
   harnessRegistrationSchema,
@@ -13,6 +14,14 @@ import {
   harnessRunRecoverySchema,
   harnessRunSchema,
 } from "./harness-runs.mjs";
+
+const {
+  auditIdSchema,
+  harnessIdSchema,
+  hostIdSchema,
+  projectIdSchema,
+  runtimeIdSchema,
+} = identifierSchemas(z);
 
 const FRAME_HEADER_BYTES = 4;
 const CONTROL_CHANNEL = 1;
@@ -82,8 +91,6 @@ export const protocolErrorForCode = (code) => ({
 });
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
-const runtimeIdSchema = z.string().regex(/^runtime-[a-f0-9]{24}$/);
-const hostIdSchema = z.string().regex(/^host-[a-f0-9]{24}$/);
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
 // Known fields remain validated, while additive same-major fields are ignored
@@ -175,7 +182,7 @@ const hostIdentityResultSchema = z.object({
   revision: z.number().int().positive(),
   idempotentReplay: z.boolean(),
   hostId: hostIdSchema,
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
 }).strip();
 
 const hostIdentityFailureSchema = z.object({
@@ -191,7 +198,7 @@ const hostIdentityFailureSchema = z.object({
   idempotencyKeyHash: digestSchema,
   expectedRevision: z.number().int().nonnegative(),
   actualRevision: z.number().int().nonnegative(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
 }).strip();
 
 const projectPathSchema = z.string().max(4_096);
@@ -225,7 +232,7 @@ const projectRegisterResultSchema = z.object({
   expectedRevision: z.number().int().nonnegative(),
   revision: z.number().int().positive(),
   idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
   project: projectRegistrationSchema,
 }).strip();
 const harnessConformanceInspectSchema = z.object({
@@ -262,7 +269,7 @@ const harnessConformanceRegisterResultSchema = z.object({
   expectedRevision: z.number().int().nonnegative(),
   revision: z.number().int().positive(),
   idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
   harness: harnessRegistrationSchema,
 }).strip();
 const harnessSandcastleInspectSchema = z.object({
@@ -299,14 +306,14 @@ const harnessSandcastleRegisterResultSchema = z.object({
   expectedRevision: z.number().int().nonnegative(),
   revision: z.number().int().positive(),
   idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
   harness: harnessRegistrationSchema,
 }).strip();
 const projectHarnessPinSchema = z.object({
   type: z.literal("project.harness.pin"),
   requestId: identifierSchema,
-  projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
-  harnessId: z.string().regex(/^harness-[a-f0-9]{24}$/),
+  projectId: projectIdSchema,
+  harnessId: harnessIdSchema,
   boundedConfiguration: z.unknown(),
   authorizationClass: z.literal("host_local_project_configuration"),
   idempotencyKey: z.string().max(256),
@@ -321,7 +328,7 @@ const projectHarnessPinResultSchema = z.object({
   expectedRevision: z.number().int().nonnegative(),
   revision: z.number().int().positive(),
   idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
   project: projectRegistrationSchema,
   harness: harnessRegistrationSchema,
 }).strip().superRefine((result, context) => {
@@ -385,7 +392,7 @@ const projectOperationFailureSchema = z.object({
   idempotencyKeyHash: digestSchema.nullable(),
   expectedRevision: z.number().int().nonnegative().nullable(),
   actualRevision: z.number().int().nonnegative(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
   resolution: z.object({
     summary: identifierSchema,
     actions: z.array(identifierSchema).min(1).max(4),
@@ -404,7 +411,7 @@ const harnessRunLaunchSourceSchema = z.enum(["controller-cli", "cockpit"]);
 const harnessRunLaunchSchema = z.object({
   type: z.literal("harness.run.launch"),
   requestId: identifierSchema,
-  projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
+  projectId: projectIdSchema,
   parameters: z.unknown().optional(),
   controllerId: runtimeIdSchema,
   controllerSessionId: z.string()
@@ -422,7 +429,7 @@ export const harnessRunLaunchResultSchema = z.object({
   idempotencyKeyHash: digestSchema,
   revision: z.number().int().positive(),
   idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
   run: harnessRunSchema,
 }).strip();
 export const harnessRunLaunchFailureSchema = z.object({
@@ -457,7 +464,7 @@ export const harnessRunLaunchFailureSchema = z.object({
   authorizationClass: harnessRunAuthorizationClassSchema,
   idempotencyKeyHash: digestSchema.nullable(),
   idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
   prohibitedSideEffects: z.object({
     harnessRunCreated: z.literal(false),
     adapterStarted: z.literal(false).default(false),
@@ -496,7 +503,7 @@ export const harnessRunCancelResultSchema = z.object({
   authorizationClass: harnessRunCancellationAuthorizationClassSchema,
   idempotencyKeyHash: digestSchema,
   idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
   harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
   acceptedAt: z.string().datetime(),
   cooperativeDeadlineAt: z.string().datetime(),
@@ -514,7 +521,7 @@ export const harnessRunCancelFailureSchema = z.object({
   authorizationClass: harnessRunCancellationAuthorizationClassSchema,
   idempotencyKeyHash: digestSchema.nullable(),
   idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
   harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/).nullable(),
   prohibitedSideEffects: z.object({
     cancellationAccepted: z.literal(false),
@@ -556,7 +563,7 @@ export const harnessRunRecoverResultSchema = z.object({
   authorizationClass: harnessRunRecoveryAuthorizationClassSchema,
   idempotencyKeyHash: digestSchema,
   idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
   harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/),
   action: harnessRunRecoveryActionSchema,
   run: harnessRunSchema,
@@ -577,7 +584,7 @@ export const harnessRunRecoverFailureSchema = z.object({
   authorizationClass: harnessRunRecoveryAuthorizationClassSchema,
   idempotencyKeyHash: digestSchema.nullable(),
   idempotentReplay: z.boolean(),
-  auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+  auditId: auditIdSchema,
   harnessRunId: z.string().regex(/^harness-run-[a-f0-9]{24}$/).nullable(),
   action: harnessRunRecoveryActionSchema.nullable(),
   prohibitedSideEffects: z.object({

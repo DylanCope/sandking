@@ -4,6 +4,11 @@ import {
   readHarnessLaunchParameters,
   renderHarnessLaunchParameterFields,
 } from "/cockpit-launch-parameters.mjs";
+import {
+  hostIdPattern,
+  projectIdPattern,
+  runtimeIdPattern,
+} from "/common/identifiers.mjs";
 
 const browserProtocol = Object.freeze({
   protocol: { major: 1, minor: 0, patch: 0, version: "1.0.0" },
@@ -548,7 +553,7 @@ const readPendingHarnessLaunch = () => {
   try {
     const launch = JSON.parse(sessionStorage.getItem(pendingHarnessLaunchStorageKey) ?? "null");
     if (
-      !/^project-[a-f0-9]{24}$/.test(launch?.projectId ?? "")
+      !projectIdPattern.test(launch?.projectId ?? "")
       || !/^sha256:[a-f0-9]{64}$/.test(launch?.idempotencyKeyHash ?? "")
       || !launch.parameters
       || typeof launch.parameters !== "object"
@@ -2186,9 +2191,9 @@ socket.addEventListener("message", (event) => {
     && message.framing.maxOpaqueStreamChunkBytes > 0
     && message.framing.maxOpaqueStreamChunkBytes
       <= browserProtocol.framing.maxOpaqueStreamChunkBytes;
-  const durableIdentitiesCompatible = /^runtime-[a-f0-9]{24}$/
+  const durableIdentitiesCompatible = runtimeIdPattern
     .test(message?.viewModel?.runtime?.runtimeId ?? "")
-    && /^host-[a-f0-9]{24}$/.test(message?.viewModel?.host?.hostId ?? "");
+    && hostIdPattern.test(message?.viewModel?.host?.hostId ?? "");
   const hostConnectionCompatible = ["connected", "disconnected"].includes(
     message?.viewModel?.host?.status,
   ) && ["current", "stale"].includes(message?.viewModel?.host?.freshness)

@@ -7,9 +7,12 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as pty from "@lydell/node-pty";
 import { z } from "zod";
+import { identifierSchemas } from "./common/identifiers.mjs";
 import { harnessLaunchParametersDeclarationSchema } from "./harness-adapter-protocol.mjs";
 import { createClaudeDestinationEnvironment } from "./claude-provider-adapter.mjs";
 import { readJson, writePrivateJson } from "./private-state.mjs";
+
+const { projectIdSchema } = identifierSchemas(z);
 
 const conformanceAdapterPath = fileURLToPath(
   new URL("./conformance-provider-adapter.mjs", import.meta.url),
@@ -179,7 +182,7 @@ const providerReadySchema = z.object({
   sessionId: z.string().regex(/^controller-session-[a-f0-9]{24}$/),
   providerSessionId: providerSessionIdSchema,
   workContext: z.object({
-    workContextId: z.string().regex(/^project-[a-f0-9]{24}$/),
+    workContextId: projectIdSchema,
     canonicalReference: z.string().regex(/^sandking:project:project-[a-f0-9]{24}$/),
   }).strict(),
   sessionIdentity: sessionIdentitySchema.optional(),
@@ -232,7 +235,7 @@ const providerExitSchema = z.object({
   reason: providerExitReasonSchema,
 }).strict();
 const projectWorkContextSchema = z.object({
-  workContextId: z.string().regex(/^project-[a-f0-9]{24}$/),
+  workContextId: projectIdSchema,
   kind: z.literal("project"),
   canonicalReference: z.string().regex(/^sandking:project:project-[a-f0-9]{24}$/),
 }).strict();
@@ -257,7 +260,7 @@ const controllerCliDescriptionSchema = z.object({
   type: z.literal("controller.cli.description"),
   protocol: z.literal("1.0.0"),
   command: z.literal("sandking launch"),
-  focusedProjectId: z.string().regex(/^project-[a-f0-9]{24}$/),
+  focusedProjectId: projectIdSchema,
   projectArgumentOptional: z.literal(true),
   pluginRequired: z.literal(false),
   launchParameters: harnessLaunchParametersDeclarationSchema,

@@ -1,13 +1,15 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { createConnection } from "node:net";
 import { isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
+import { canonicalJson } from "./common/canonical-json.mjs";
+import { digest } from "./common/digest.mjs";
+import { projectIdPattern } from "./common/identifiers.mjs";
 import { harnessLaunchParametersDeclarationSchema } from "./harness-adapter-protocol.mjs";
 import { launchParametersSchema } from "./harness-launch.mjs";
 import { readJson, removePrivateFile, writePrivateJson } from "./private-state.mjs";
 
-const projectIdPattern = /^project-[a-f0-9]{24}$/;
 const controllerSessionPattern = /^controller-session-[a-f0-9]{24}$/;
 const harnessRunPattern = /^harness-run-[a-f0-9]{24}$/;
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -90,21 +92,6 @@ const definitiveRecoveryFailureCodes = new Set([
   "harness_recovery_action_not_available",
 ]);
 
-/** @param {unknown} value @returns {string} */
-const canonicalJson = (value) => {
-  if (value === undefined) return '"<undefined>"';
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const record = /** @type {Record<string, unknown>} */ (value);
-  return `{${Object.keys(record).sort().map((key) =>
-    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
-};
-
-/** @param {unknown} value */
-const digest = (value) => `sha256:${createHash("sha256").update(
-  typeof value === "string" ? value : canonicalJson(value),
-).digest("hex")}`;
-
 /** @param {NodeJS.ProcessEnv} environment */
 const retryStateDirectory = (environment) => {
   const directory = environment.SANDKING_CONTROLLER_RETRY_DIRECTORY ?? "";
@@ -139,7 +126,7 @@ const retainPendingLaunch = async (request, environment) => {
   if (!parsed.success) {
     throw new Error("controller_cli_retry_state_invalid");
   }
-  const requestFingerprint = digest(request);
+  const requestFingerprint = digest(canonicalJson(request));
   const existing = parsed.data.launches.find((launch) =>
     launch.requestFingerprint === requestFingerprint);
   if (existing) {
@@ -162,7 +149,7 @@ const retainPendingCancellation = async (request, environment) => {
     launches: [],
   }));
   if (!parsed.success) throw new Error("controller_cli_retry_state_invalid");
-  const requestFingerprint = digest(request);
+  const requestFingerprint = digest(canonicalJson(request));
   const existing = parsed.data.launches.find((entry) =>
     entry.requestFingerprint === requestFingerprint);
   if (existing) return { path, requestFingerprint, retryHash: existing.retryHash };
@@ -183,7 +170,7 @@ const retainPendingRecovery = async (request, environment) => {
     launches: [],
   }));
   if (!parsed.success) throw new Error("controller_cli_retry_state_invalid");
-  const requestFingerprint = digest(request);
+  const requestFingerprint = digest(canonicalJson(request));
   const existing = parsed.data.launches.find((entry) =>
     entry.requestFingerprint === requestFingerprint);
   if (existing) return { path, requestFingerprint, retryHash: existing.retryHash };
@@ -366,7 +353,8 @@ export const requestControllerLaunch = async (request, environment = process.env
   const pending = request.idempotencyKey === undefined
     ? await retainPendingLaunch(correlation, environment)
     : null;
-  const idempotencyKeyHash = pending?.retryHash ?? digest(request.idempotencyKey);
+  const idempotencyKeyHash = pending?.retryHash
+    ?? digest(/** @type {string} */ (request.idempotencyKey));
   try {
     const outcome = await requestControllerOperation({
       operation: "harness-run.launch",

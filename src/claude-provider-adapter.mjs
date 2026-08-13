@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile, spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer as createNetServer } from "node:net";
@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { canonicalJson } from "./common/canonical-json.mjs";
+import { digestHex } from "./common/digest.mjs";
 
 const execFileAsync = promisify(execFile);
 const adapterProtocol = Object.freeze({
@@ -556,20 +558,8 @@ const openRuntimeControl = async (endpoint, readyMessage) => new Promise((resolv
   });
 });
 
-/** @param {unknown} value @returns {string} */
-const canonicalJson = (value) => {
-  if (value === undefined) return '"<undefined>"';
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const record = /** @type {Record<string, unknown>} */ (value);
-  return `{${Object.keys(record).sort().map((key) =>
-    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
-};
-
 /** @param {unknown} value */
-const canonicalDigest = (value) => createHash("sha256")
-  .update(canonicalJson(value))
-  .digest("hex");
+const canonicalDigest = (value) => digestHex(canonicalJson(value));
 
 /**
  * Keep the adapter entry point self-contained while enforcing the same

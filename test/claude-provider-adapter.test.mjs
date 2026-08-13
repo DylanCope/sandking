@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,11 @@ import {
 
 const execFileAsync = promisify(execFile);
 const adapterPath = fileURLToPath(new URL("../src/claude-provider-adapter.mjs", import.meta.url));
+const canonicalJsonPath = fileURLToPath(new URL(
+  "../src/common/canonical-json.mjs",
+  import.meta.url,
+));
+const digestPath = fileURLToPath(new URL("../src/common/digest.mjs", import.meta.url));
 
 test("the Claude adapter probes destination-local CLI readiness without invoking a model", async () => {
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-probe-"));
@@ -557,7 +562,13 @@ test("the Claude adapter entry point executes from a URL-encoded filesystem path
   const fixtureDirectory = await mkdtemp(join(tmpdir(), "sandking-claude-path-"));
   const copiedAdapterPath = join(fixtureDirectory, "adapter with spaces.mjs");
   const fakeClaudePath = join(fixtureDirectory, "claude");
-  await copyFile(adapterPath, copiedAdapterPath);
+  const commonDirectory = join(fixtureDirectory, "common");
+  await mkdir(commonDirectory);
+  await Promise.all([
+    copyFile(adapterPath, copiedAdapterPath),
+    copyFile(canonicalJsonPath, join(commonDirectory, "canonical-json.mjs")),
+    copyFile(digestPath, join(commonDirectory, "digest.mjs")),
+  ]);
   await writeFile(fakeClaudePath, `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === "--version") process.stdout.write("2.1.141 (Claude Code)\\n");

@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { runtimeIdPattern } from "./common/identifiers.mjs";
 import {
   HOST_SCHEMA_DIGEST,
   MAX_BULK_CHUNK_BYTES,
@@ -274,7 +275,7 @@ const main = async () => {
 
   if (
     hello.identity !== "controller-runtime"
-    || !/^runtime-[a-f0-9]{24}$/.test(hello.controllerId)
+    || !runtimeIdPattern.test(hello.controllerId)
     || hello.expectedPeerIdentity !== "local-host"
   ) {
     rejectHandshake("controller_identity_invalid");

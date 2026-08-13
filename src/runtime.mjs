@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
+import { identifierSchemas } from "./common/identifiers.mjs";
 import {
   appendPrivateJsonLine,
   ensurePrivateDirectory,
@@ -21,6 +22,8 @@ import {
   prepareControllerHostBinding,
 } from "./host-identity.mjs";
 import { capabilitySetSchema, framingSchema, releaseVersion, versionSchema } from "./protocol.mjs";
+
+const { auditIdSchema, hostIdSchema, runtimeIdSchema } = identifierSchemas(z);
 
 const COMPATIBILITY_KEY = "runtime-v3-controller-terminal";
 export const BOOTSTRAP_TTL_MS = 60_000;
@@ -217,7 +220,7 @@ const runtimeStateSchema = z.object({
   identity: z.literal("controller-runtime"),
   host: z.object({
     identity: z.string().min(1).max(128),
-    hostId: z.string().regex(/^host-[a-f0-9]{24}$/),
+    hostId: hostIdSchema,
     capabilities: capabilitySetSchema,
     negotiatedCapabilities: z.array(z.string()).max(32),
     schemaDigest: z.string(),
@@ -233,7 +236,7 @@ const runtimeStateSchema = z.object({
         "host_observation_resynchronization_failed",
       ]),
       retryable: z.literal(true),
-      auditId: z.string().regex(/^audit-[a-f0-9]{24}$/),
+      auditId: auditIdSchema,
       observedAt: z.string().datetime(),
     }).strict().nullable().default(null),
   }).strict(),
@@ -243,14 +246,14 @@ const runtimeStateSchema = z.object({
     class: z.enum(["loopback", "public"]),
   }).strict(),
   negotiationAuditId: z.string().min(1).max(128),
-  hostIdentityAuditId: z.string().regex(/^audit-[a-f0-9]{24}$/).nullable().optional(),
+  hostIdentityAuditId: auditIdSchema.nullable().optional(),
   startedAt: z.string(),
 }).strict();
 
 const runtimeLifecycleSchema = z.object({
   revision: z.number().int().nonnegative(),
   status: z.enum(["running", "stopped"]),
-  runtimeId: z.string().regex(/^runtime-[a-f0-9]{24}$/),
+  runtimeId: runtimeIdSchema,
 }).strict();
 
 /** @typedef {{idempotencyKeyHash: string, expectedRevision: number, response: Record<string, any>}} StopOutcome */
