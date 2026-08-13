@@ -418,7 +418,10 @@ test("path identity changes return typed resolution guidance without silently re
       .trim()
       .split("\n")
       .map(JSON.parse);
-    assert.ok(hostAudits.filter((entry) => entry.action === "project.inspect").every((entry) =>
+    const rejectedHostInspections = hostAudits.filter((entry) =>
+      entry.action === "project.inspect");
+    assert.equal(rejectedHostInspections.length, 4);
+    assert.ok(rejectedHostInspections.every((entry) =>
       entry.outcome === "rejected"
       && entry.details.directoryScanPerformed === false));
     // Production has no action that creates either retained state. Keep the
@@ -453,6 +456,7 @@ test("path identity changes return typed resolution guidance without silently re
     });
     assert.equal(conflict.code, "project_path_conflict");
     assert.deepEqual(conflict.resolution.actions, ["resolve_conflicting_registrations"]);
+    assert.equal(retainedAudits.length, 2);
     assert.ok(retainedAudits.every((entry) =>
       entry.outcome === "rejected"
       && entry.details.directoryScanPerformed === false));
