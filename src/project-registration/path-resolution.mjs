@@ -193,24 +193,20 @@ export const resolveProjectLocation = async (state, selectedPath, dataDir) => {
       actualRevision: Math.max(...matchingIdentity.map((project) => project.revision)),
     };
   }
-  const gitDetected = await gitMetadataDetected(canonicalPath);
-  const registrationCandidate = {
-    canonicalPath,
-    identityDigest,
-    displayName: basename(canonicalPath),
-    versionControl: { kind: gitDetected ? "git" : "none", detected: gitDetected },
-  };
   if (matchingIdentity[0]) {
     return {
       kind: "failure",
       code: "project_path_moved",
       actualRevision: matchingIdentity[0].revision,
-      registrationCandidate,
     };
   }
+  const gitDetected = await gitMetadataDetected(canonicalPath);
   return {
     kind: "unregistered",
-    ...registrationCandidate,
+    canonicalPath,
+    identityDigest,
+    displayName: basename(canonicalPath),
+    versionControl: { kind: gitDetected ? "git" : "none", detected: gitDetected },
     actualRevision: 0,
   };
 };

@@ -356,13 +356,12 @@ const mutationRequestFingerprint = (value) => digest(canonicalJson(value));
 
 /**
  * Normalize optional Project-open content at its retained fingerprint boundary.
- * @param {{path: unknown, configuration: unknown, harnessAdapterId?: unknown, resolutionAction?: unknown}} request
+ * @param {{path: unknown, configuration: unknown, harnessAdapterId?: unknown}} request
  */
 const normalizeProjectPreparationRequestContent = (request) => ({
   path: request.path,
   configuration: request.configuration,
   harnessAdapterId: request.harnessAdapterId ?? null,
-  resolutionAction: request.resolutionAction ?? null,
 });
 
 /**
@@ -375,7 +374,7 @@ const hostMutationRequestFingerprint = (action, expectedRevision, requestContent
     expectedRevision,
     requestContent: action === "project.prepare"
       ? normalizeProjectPreparationRequestContent(
-        /** @type {{path: unknown, configuration: unknown, harnessAdapterId?: unknown, resolutionAction?: unknown}} */ (
+        /** @type {{path: unknown, configuration: unknown, harnessAdapterId?: unknown}} */ (
           requestContent
         ),
       )
@@ -408,7 +407,6 @@ const mutationFailure = (code, authorizationClass, expectedRevision, actualRevis
  * @param {unknown} requestContent
  * @param {number} actualRevision
  * @param {Record<string, boolean>} prohibitedSideEffects
- * @param {(existing: {status: number, response: any}) => Promise<{status: number, body: any} | null>} [validateReplay]
  */
 const replayHostMutationOutcome = async (
   action,
@@ -418,7 +416,6 @@ const replayHostMutationOutcome = async (
   requestContent,
   actualRevision,
   prohibitedSideEffects,
-  validateReplay,
 ) => {
   const fingerprint = hostMutationRequestFingerprint(action, expectedRevision, requestContent);
   const outcomeKey = `${action}\0${idempotencyKeyHash}`;
@@ -460,10 +457,6 @@ const replayHostMutationOutcome = async (
         prohibitedSideEffects,
       },
     };
-  }
-  if (validateReplay) {
-    const replacement = await validateReplay(existing);
-    if (replacement) return replacement;
   }
   await recordAudit(action, "observed", {
     code: existing.response.code,
@@ -1403,14 +1396,10 @@ const runtimeProjectFailure = async (
   actualRevision,
   idempotencyKeyHash,
   actions,
-  mutation = {
-    action: "project.prepare",
-    authorizationClass: "host_local_project_preparation",
-  },
 ) => {
-  const auditId = await recordAudit(mutation.action, "rejected", {
+  const auditId = await recordAudit("project.prepare", "rejected", {
     code,
-    authorizationClass: mutation.authorizationClass,
+    authorizationClass: "host_local_project_preparation",
     idempotencyKeyHash,
     expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
     actualRevision,
@@ -1423,7 +1412,7 @@ const runtimeProjectFailure = async (
     code,
     retryable: code !== "bounded_configuration_invalid"
       && code !== "project_configuration_conflict",
-    authorizationClass: mutation.authorizationClass,
+    authorizationClass: "host_local_project_preparation",
     expectedRevision: Number.isSafeInteger(expectedRevision) ? expectedRevision : null,
     actualRevision,
     auditId,
@@ -1438,7 +1427,7 @@ const runtimeProjectFailure = async (
 };
 
 /**
- * @param {{path: unknown, configuration: unknown, harnessAdapterId?: unknown, resolutionAction?: unknown, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number}} request
+ * @param {{path: unknown, configuration: unknown, harnessAdapterId?: unknown, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number}} request
  */
 const prepareExplicitProject = (request) => withProjectPreparationLock(async () => {
   const mutationContractValid = !(
@@ -1447,8 +1436,6 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     || request.idempotencyKey.length > 256
     || !Number.isSafeInteger(request.expectedRevision)
     || request.expectedRevision < 0
-    || (request.resolutionAction !== undefined
-      && request.resolutionAction !== "register_as_new")
     || (request.harnessAdapterId !== undefined
       && request.harnessAdapterId !== CONFORMANCE_HARNESS_ADAPTER_ID
       && request.harnessAdapterId !== SANDCASTLE_HARNESS_ADAPTER_ID)
@@ -1458,7 +1445,6 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     path: request.path,
     configuration: request.configuration,
     harnessAdapterId: request.harnessAdapterId,
-    resolutionAction: request.resolutionAction,
   };
   const prohibitedSideEffects = {
     directoryScan: false,
@@ -1466,8 +1452,6 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     trackedSandKingFileWrite: false,
     approvalRequest: false,
   };
-  /** @param {string} label */
-  const requestId = (label) => `${label}-${randomBytes(8).toString("hex")}`;
   if (mutationContractValid) {
     const retained = await replayHostMutationOutcome(
       "project.prepare",
@@ -1477,45 +1461,6 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       requestContent,
       currentProjectPreparation.current?.revision ?? 0,
       prohibitedSideEffects,
-      async (existing) => {
-        if (
-          existing.status !== 200
-          || existing.response.code !== "project_ready"
-          || !existing.response.project
-        ) {
-          return null;
-        }
-        const inspection = await requestHostOperation({
-          type: "project.inspect",
-          requestId: requestId("project-replay-inspect"),
-          path: typeof request.path === "string" ? request.path : "",
-        });
-        if (inspection.type === "project.operation.failure") {
-          return {
-            status: projectFailureStatus[inspection.code] ?? 409,
-            body: inspection,
-          };
-        }
-        if (inspection.type !== "project.inspect.result") {
-          throw new Error("host_protocol_error");
-        }
-        if (
-          !inspection.project
-          || inspection.project.projectId !== existing.response.project.projectId
-        ) {
-          return {
-            status: 409,
-            body: await runtimeProjectFailure(
-              "project_path_conflict",
-              request.expectedRevision,
-              inspection.actualRevision,
-              request.idempotencyKeyHash,
-              ["resolve_conflicting_registrations"],
-            ),
-          };
-        }
-        return null;
-      },
     );
     if (retained) {
       return retained;
@@ -1555,27 +1500,24 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     return outcome;
   };
 
+  /** @param {string} label */
+  const requestId = (label) => `${label}-${randomBytes(8).toString("hex")}`;
   const inspection = await requestHostOperation({
     type: "project.inspect",
     requestId: requestId("project-inspect"),
     path: typeof request.path === "string" ? request.path : "",
   });
-  const resolvingMovedRegistration = inspection.type === "project.operation.failure"
-    && inspection.code === "project_path_moved"
-    && request.resolutionAction === "register_as_new";
-  if (inspection.type === "project.operation.failure" && !resolvingMovedRegistration) {
+  if (inspection.type === "project.operation.failure") {
     return retainProjectPreparation({
       status: projectFailureStatus[inspection.code] ?? 409,
       body: inspection,
     });
   }
-  if (inspection.type !== "project.inspect.result" && !resolvingMovedRegistration) {
+  if (inspection.type !== "project.inspect.result") {
     throw new Error("host_protocol_error");
   }
 
-  const inspectedProject = inspection.type === "project.inspect.result"
-    ? inspection.project
-    : null;
+  const inspectedProject = inspection.project;
   const selectedHarnessAdapterId = request.harnessAdapterId
     ?? inspectedProject?.harness?.adapterId
     ?? SANDCASTLE_HARNESS_ADAPTER_ID;
@@ -1700,9 +1642,6 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     requestId: requestId("project-register"),
     path: typeof request.path === "string" ? request.path : "",
     configuration: request.configuration,
-    ...(request.resolutionAction === undefined
-      ? {}
-      : { resolutionAction: request.resolutionAction }),
     authorizationClass: "host_local_project_registration",
     idempotencyKey: derivedHostIdempotencyKey(
       request.idempotencyKey,
@@ -1855,110 +1794,6 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     },
   });
 });
-
-/**
- * @param {{projectId: unknown, idempotencyKey: string, idempotencyKeyHash: string | null, expectedRevision: number}} request
- */
-const forgetExplicitProjectRegistration = (request) =>
-  withProjectPreparationLock(async () => {
-    const action = "project.registration.forget";
-    const authorizationClass = "host_local_project_registration";
-    const requestContent = { projectId: request.projectId };
-    const prohibitedSideEffects = {
-      directoryScan: false,
-      projectFileWrite: false,
-      trackedSandKingFileWrite: false,
-      approvalRequest: false,
-    };
-    const mutationContractValid = typeof request.projectId === "string"
-      && /^project-[a-f0-9]{24}$/.test(request.projectId)
-      && typeof request.idempotencyKey === "string"
-      && request.idempotencyKey.length > 0
-      && request.idempotencyKey.length <= 256
-      && request.idempotencyKeyHash !== null
-      && Number.isSafeInteger(request.expectedRevision)
-      && request.expectedRevision >= 0;
-    if (mutationContractValid) {
-      const retained = await replayHostMutationOutcome(
-        action,
-        authorizationClass,
-        request.expectedRevision,
-        /** @type {string} */ (request.idempotencyKeyHash),
-        requestContent,
-        currentProjectPreparation.current?.revision ?? 0,
-        prohibitedSideEffects,
-      );
-      if (retained) return retained;
-    }
-    if (!mutationContractValid) {
-      return {
-        status: 400,
-        body: await runtimeProjectFailure(
-          "mutation_contract_invalid",
-          request.expectedRevision,
-          currentProjectPreparation.current?.revision ?? 0,
-          request.idempotencyKeyHash,
-          ["retry_with_valid_mutation_contract"],
-          { action, authorizationClass },
-        ),
-      };
-    }
-    if (state.host.status === "disconnected") {
-      return hostMutationFailure(
-        "host_disconnected",
-        action,
-        authorizationClass,
-        request.expectedRevision,
-        request.idempotencyKeyHash,
-        requestContent,
-      );
-    }
-
-    const outcome = await requestHostOperation({
-      type: action,
-      requestId: `project-forget-${randomBytes(8).toString("hex")}`,
-      projectId: request.projectId,
-      authorizationClass,
-      idempotencyKey: derivedHostIdempotencyKey(request.idempotencyKey, action),
-      expectedRevision: request.expectedRevision,
-    });
-    if (outcome.type === "project.operation.failure") {
-      const failure = {
-        status: projectFailureStatus[outcome.code] ?? 409,
-        body: outcome,
-      };
-      retainHostMutationOutcome(
-        action,
-        /** @type {string} */ (request.idempotencyKeyHash),
-        request.expectedRevision,
-        requestContent,
-        failure,
-      );
-      return failure;
-    }
-    if (outcome.type !== "project.registration.forget.result") {
-      throw new Error("host_protocol_error");
-    }
-    if (currentProjectPreparation.current?.projectId === request.projectId) {
-      currentProjectPreparation = projectPreparationProjection();
-      currentProjectPath = null;
-    }
-    const success = {
-      status: 200,
-      body: {
-        ...outcome,
-        prohibitedSideEffects,
-      },
-    };
-    retainHostMutationOutcome(
-      action,
-      /** @type {string} */ (request.idempotencyKeyHash),
-      request.expectedRevision,
-      requestContent,
-      success,
-    );
-    return success;
-  });
 
 /** @param {{sessionId: string, providerSessionId: string, workContext: any, operation: string, input: unknown}} request */
 const handleProviderOperation = async (request) => {
@@ -3165,9 +3000,6 @@ const main = async () => {
             harnessAdapterId: "harnessAdapterId" in record
               ? record.harnessAdapterId
               : undefined,
-            resolutionAction: "resolutionAction" in record
-              ? record.resolutionAction
-              : undefined,
           };
           let outcome;
           try {
@@ -3193,66 +3025,6 @@ const main = async () => {
                 idempotencyKeyHash,
                 requestContent,
                 error instanceof ControllerSessionError ? error.retainedOutcome : null,
-              );
-            } else {
-              throw error;
-            }
-          }
-          sendJson(response, outcome.status, outcome.body);
-          return;
-        }
-
-        if (
-          request.method === "POST"
-          && request.url === "/projects/registration/forget"
-        ) {
-          const body = await readJsonBody(request);
-          const record = body && typeof body === "object" ? body : {};
-          const {
-            idempotencyKey,
-            idempotencyKeyHash,
-            expectedRevision,
-          } = readMutationHeaders(request);
-          const authorizationAccepted = exactOriginAccepted(request)
-            && request.headers["x-sandking-csrf"] === activeSession.csrfToken;
-          if (!authorizationAccepted) {
-            const failure = await runtimeProjectFailure(
-              "authorization_failed",
-              expectedRevision,
-              currentProjectPreparation.current?.revision ?? 0,
-              idempotencyKeyHash,
-              ["retry_from_authenticated_cockpit"],
-              {
-                action: "project.registration.forget",
-                authorizationClass: "host_local_project_registration",
-              },
-            );
-            sendJson(response, 403, failure);
-            return;
-          }
-          let outcome;
-          try {
-            outcome = await forgetExplicitProjectRegistration({
-              projectId: "projectId" in record ? record.projectId : null,
-              idempotencyKey,
-              idempotencyKeyHash,
-              expectedRevision,
-            });
-          } catch (error) {
-            const hostFailureCode = error instanceof ControllerSessionError
-              ? error.code
-              : null;
-            if (
-              hostFailureCode === "host_disconnected"
-              || hostFailureCode === "host_protocol_invalid"
-            ) {
-              outcome = await hostMutationFailure(
-                hostFailureCode,
-                "project.registration.forget",
-                "host_local_project_registration",
-                expectedRevision,
-                idempotencyKeyHash,
-                { projectId: "projectId" in record ? record.projectId : null },
               );
             } else {
               throw error;

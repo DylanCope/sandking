@@ -43,7 +43,6 @@ export const hostCapabilities = Object.freeze([
   "sandking.control.slice-1",
   "sandking.bulk-stream.v1",
   "sandking.project-registration.v1",
-  "sandking.project-registration-resolution.v1",
   "sandking.conformance-harness-registration.v1",
   "sandking.production-harness-registration.v1",
   "sandking.harness-run.launch.v2",
@@ -53,7 +52,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.recovery.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-project-registration-resolution")
+  .update("sandking-host-control-schema-v1-with-current-harness-run-state")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -220,30 +219,9 @@ const projectRegisterSchema = z.object({
   requestId: identifierSchema,
   path: projectPathSchema,
   configuration: z.unknown(),
-  resolutionAction: z.literal("register_as_new").optional(),
   authorizationClass: z.literal("host_local_project_registration"),
   idempotencyKey: z.string().max(256),
   expectedRevision: z.number().int().nonnegative(),
-}).strip();
-const projectRegistrationForgetSchema = z.object({
-  type: z.literal("project.registration.forget"),
-  requestId: identifierSchema,
-  projectId: projectIdSchema,
-  authorizationClass: z.literal("host_local_project_registration"),
-  idempotencyKey: z.string().max(256),
-  expectedRevision: z.number().int().nonnegative(),
-}).strip();
-const projectRegistrationForgetResultSchema = z.object({
-  type: z.literal("project.registration.forget.result"),
-  requestId: identifierSchema,
-  code: z.literal("project_registration_forgotten"),
-  authorizationClass: z.literal("host_local_project_registration"),
-  idempotencyKeyHash: digestSchema,
-  expectedRevision: z.number().int().nonnegative(),
-  revision: z.number().int().positive(),
-  idempotentReplay: z.boolean(),
-  auditId: auditIdSchema,
-  project: projectRegistrationSchema,
 }).strip();
 const projectRegisterResultSchema = z.object({
   type: z.literal("project.register.result"),
@@ -371,7 +349,6 @@ const projectOperationFailureSchema = z.object({
   operation: z.enum([
     "project.inspect",
     "project.register",
-    "project.registration.forget",
     "harness.conformance.register",
     "harness.sandcastle.register",
     "project.harness.pin",
@@ -741,8 +718,6 @@ export const controlMessageSchema = z.discriminatedUnion("type", [
   projectInspectResultSchema,
   projectRegisterSchema,
   projectRegisterResultSchema,
-  projectRegistrationForgetSchema,
-  projectRegistrationForgetResultSchema,
   harnessConformanceInspectSchema,
   harnessConformanceInspectResultSchema,
   harnessConformanceRegisterSchema,

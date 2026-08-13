@@ -123,40 +123,6 @@ test("Harness launch is one capability-negotiated revision-free Host operation",
   );
 });
 
-test("Project registration resolution is explicit, revisioned, and capability-negotiated", async () => {
-  assert.ok(hostCapabilities.includes("sandking.project-registration-resolution.v1"));
-  const stream = new PassThrough();
-  const registerAsNew = {
-    type: "project.register",
-    requestId: "register-moved-project-as-new",
-    path: "/projects/moved-project",
-    configuration: {
-      issueWorkflow: { provider: "github", kind: "issues" },
-      checks: [{ checkId: "test", command: "npm test" }],
-    },
-    resolutionAction: "register_as_new",
-    authorizationClass: "host_local_project_registration",
-    idempotencyKey: "register-moved-project-as-new",
-    expectedRevision: 2,
-  };
-  const forget = {
-    type: "project.registration.forget",
-    requestId: "forget-project-registration",
-    projectId: `project-${"2".repeat(24)}`,
-    authorizationClass: "host_local_project_registration",
-    idempotencyKey: "forget-project-registration",
-    expectedRevision: 2,
-  };
-  writeFrame(stream, registerAsNew);
-  writeFrame(stream, forget);
-  assert.deepEqual(await readFrame(stream), registerAsNew);
-  assert.deepEqual(await readFrame(stream), forget);
-  assert.throws(
-    () => writeFrame(stream, { ...registerAsNew, resolutionAction: "infer_moved_project" }),
-    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
-  );
-});
-
 test("Harness cancellation is a capability-negotiated revision-free Host operation", async () => {
   assert.ok(hostCapabilities.includes("sandking.harness-run.cancel.v1"));
   const stream = new PassThrough();
