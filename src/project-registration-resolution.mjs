@@ -108,7 +108,9 @@ export const applyProjectRegistrationResolution = async (options, request) => {
   if (existing) {
     if (existing.requestFingerprint !== requestFingerprint) {
       return reject("idempotency_key_conflict", {
-        actualRevision: Number(existing.response.revision ?? 0),
+        actualRevision: Number(
+          existing.response.revision ?? existing.response.actualRevision ?? 0,
+        ),
         retryable: false,
       });
     }
@@ -122,11 +124,12 @@ export const applyProjectRegistrationResolution = async (options, request) => {
       directoryScanPerformed: false,
       projectFileWrite: false,
     });
-    return {
+    const response = {
       ...structuredClone(existing.response),
       requestId: request.requestId,
-      idempotentReplay: true,
     };
+    if ("idempotentReplay" in existing.response) response.idempotentReplay = true;
+    return response;
   }
 
   if (
@@ -195,6 +198,64 @@ export const applyProjectRegistrationResolution = async (options, request) => {
       location.kind !== "registered"
       || location.project?.projectId !== candidate.projectId
     ) {
+      if (location.kind === "failure" && location.code === "project_path_conflict") {
+        const updatedAt = new Date().toISOString();
+        candidate.revision += 1;
+        candidate.updatedAt = updatedAt;
+        location = await options.resolveProjectLocation(
+          candidateState,
+          request.path,
+          options.dataDir,
+        );
+        if (
+          location.kind !== "failure"
+          || location.code !== "project_path_conflict"
+          || !location.registrations.some((/** @type {any} */ registration) =>
+            registration.projectId === candidate.projectId)
+        ) {
+          throw new Error("project_registration_state_invalid");
+        }
+        const auditId = await options.recordAudit(operation, "accepted", {
+          code: location.code,
+          action: request.action,
+          authorizationClass,
+          idempotencyKeyHash,
+          expectedRevision: request.expectedRevision,
+          actualRevision: request.expectedRevision,
+          resultingRevision: candidate.revision,
+          projectId: candidate.projectId,
+          affectedProjectIds: [candidate.projectId],
+          resultingStatuses: [{
+            projectId: candidate.projectId,
+            status: candidate.status,
+          }],
+          candidateProjectIds: location.registrations.map(
+            (/** @type {any} */ registration) => registration.projectId,
+          ),
+          conflictResolutionRequired: true,
+          directoryScanPerformed: false,
+          projectFileWrite: false,
+        });
+        const response = options.operationFailure({
+          requestId: request.requestId,
+          operation,
+          code: location.code,
+          authorizationClass,
+          idempotencyKeyHash,
+          expectedRevision: request.expectedRevision,
+          actualRevision: location.actualRevision,
+          auditId,
+          registrations: location.registrations,
+        });
+        candidateState.registrationOutcomes.push({
+          idempotencyKeyHash,
+          requestFingerprint,
+          response,
+        });
+        candidateState.registrationOutcomes = candidateState.registrationOutcomes.slice(-256);
+        await options.writeProjectState(options.dataDir, candidateState);
+        return response;
+      }
       if (location.kind === "failure") {
         return reject(location.code, {
           actualRevision: location.actualRevision,

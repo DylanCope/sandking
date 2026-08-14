@@ -345,7 +345,7 @@ test("a tombstone restored onto its registered replacement retains actionable co
       expectedRevision: forgotten.revision,
     });
 
-    const restoreConflict = await requestHostWithin(child, {
+    const restoreRequest = {
       type: "project.registration.resolve",
       requestId: "restore-original-onto-replacement",
       action: "restore",
@@ -354,7 +354,8 @@ test("a tombstone restored onto its registered replacement retains actionable co
       authorizationClass: "host_local_project_registration",
       idempotencyKey: "restore-original-onto-replacement",
       expectedRevision: forgotten.revision,
-    });
+    };
+    const restoreConflict = await requestHostWithin(child, restoreRequest);
     assert.equal(restoreConflict.type, "project.operation.failure");
     assert.equal(restoreConflict.code, "project_path_conflict");
     assert.deepEqual(restoreConflict.resolution.actions, [
@@ -367,15 +368,38 @@ test("a tombstone restored onto its registered replacement retains actionable co
         { projectId: replacement.project.projectId, status: "active" },
       ],
     );
-    assert.equal((await requestHostWithin(child, {
+    assert.deepEqual(await requestHostWithin(child, {
+      type: "ping",
+      requestId: "ping-responsive-restore-conflict-host",
+    }), {
+      type: "pong",
+      requestId: "ping-responsive-restore-conflict-host",
+    });
+    const retainedConflict = await requestHostWithin(child, {
       type: "project.inspect",
-      requestId: "inspect-responsive-restore-conflict-host",
+      requestId: "inspect-retained-restore-conflict",
       path: replacementPath,
-    })).project.projectId, replacement.project.projectId);
+    });
+    assert.equal(retainedConflict.code, "project_path_conflict");
+    assert.deepEqual(retainedConflict.registrations, restoreConflict.registrations);
 
     await stopHost(child);
     child = startHost(dataDir);
     await negotiate(child);
+    const restartedConflict = await requestHost(child, {
+      type: "project.inspect",
+      requestId: "inspect-restarted-restore-conflict",
+      path: replacementPath,
+    });
+    assert.equal(restartedConflict.code, "project_path_conflict");
+    assert.deepEqual(restartedConflict.registrations, restoreConflict.registrations);
+    assert.deepEqual(await requestHostWithin(child, {
+      ...restoreRequest,
+      requestId: "replay-restarted-restore-original-onto-replacement",
+    }), {
+      ...restoreConflict,
+      requestId: "replay-restarted-restore-original-onto-replacement",
+    });
 
     const keepReplacement = await requestHost(child, {
       type: "project.registration.resolve",
@@ -407,6 +431,10 @@ test("a tombstone restored onto its registered replacement retains actionable co
       expectedRevision: retainedOriginal.actualRevision,
     });
     assert.equal(secondRestoreConflict.code, "project_path_conflict");
+    const restoredOriginalCandidate = secondRestoreConflict.registrations.find(
+      ({ projectId }) => projectId === original.project.projectId,
+    );
+    assert.ok(restoredOriginalCandidate);
     const selectOriginal = await requestHost(child, {
       type: "project.registration.resolve",
       requestId: "select-restore-conflict-original",
@@ -415,7 +443,7 @@ test("a tombstone restored onto its registered replacement retains actionable co
       path: replacementPath,
       authorizationClass: "host_local_project_registration",
       idempotencyKey: "select-restore-conflict-original",
-      expectedRevision: retainedOriginal.actualRevision,
+      expectedRevision: restoredOriginalCandidate.revision,
     });
     assert.equal(selectOriginal.code, "project_registration_conflict_resolved");
     assert.equal(selectOriginal.project.projectId, original.project.projectId);
@@ -424,6 +452,14 @@ test("a tombstone restored onto its registered replacement retains actionable co
       requestId: "inspect-selected-restore-conflict-original",
       path: replacementPath,
     })).project.projectId, original.project.projectId);
+    const conflictCreationAudit = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map(JSON.parse)
+      .find((entry) => entry.auditId === restoreConflict.auditId);
+    assert.equal(conflictCreationAudit.outcome, "accepted");
+    assert.equal(conflictCreationAudit.details.action, "restore");
+    assert.equal(conflictCreationAudit.details.conflictResolutionRequired, true);
   } finally {
     await stopHost(child);
     await rm(root, { recursive: true, force: true });
