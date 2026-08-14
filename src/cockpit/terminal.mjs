@@ -6,7 +6,10 @@ export const createTerminalSurface = ({
   state,
   socket,
   requireReload,
+  updateWorkbenchChrome,
 }) => {
+  const terminalStreams = new Map();
+
   const encodeOpaqueFrame = (streamId, sequence, data) => {
     const id = new TextEncoder().encode(streamId);
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -96,15 +99,88 @@ export const createTerminalSurface = ({
       disposable.dispose();
     }
     terminal.emulator.dispose();
-    if (state.terminalStreams.get(terminal.streamId) === terminal) {
-      state.terminalStreams.delete(terminal.streamId);
+    if (terminalStreams.get(terminal.streamId) === terminal) {
+      terminalStreams.delete(terminal.streamId);
     }
   };
 
   const disposeAllTerminalSurfaces = () => {
-    for (const terminal of [...state.terminalStreams.values()]) {
+    for (const terminal of [...terminalStreams.values()]) {
       disposeTerminalSurface(terminal);
     }
+  };
+
+  const applyOpaqueFrame = (opaque) => {
+    const terminal = terminalStreams.get(opaque.streamId);
+    if (!terminal) {
+      return false;
+    }
+    if (opaque.sequence !== terminal.outputSequence) {
+      requireReload("runtime_terminal_output_sequence_mismatch");
+      return true;
+    }
+    terminal.outputSequence += 1;
+    if (opaque.data.byteLength > 0) {
+      terminal.emulator.write(opaque.data);
+    }
+    terminal.output.dataset.outputSequence = String(opaque.sequence);
+    if (opaque.eof) {
+      terminal.panel.dataset.sessionState = "exited";
+      terminal.emulator.options.disableStdin = true;
+      terminal.attachmentStatus.textContent = "Exited · read-only";
+      updateWorkbenchChrome({
+        terminalAttachment: { sessionId: terminal.sessionId, mode: "exited" },
+      });
+    }
+    return true;
+  };
+
+  const applyTerminalAttached = (message) => {
+    const terminal = terminalStreams.get(message.streamId);
+    if (
+      !state.runtimeNegotiated
+      || !terminal
+      || terminal.attachmentId !== message.attachmentId
+      || (terminal.requestedMode === "read-write"
+        && (message.mode !== "read-write" || message.exclusive !== true))
+      || (terminal.requestedMode === "read-write-if-available"
+        && !["read-write", "read-only"].includes(message.mode))
+    ) {
+      return false;
+    }
+    terminal.panel.dataset.terminalAttachment = message.mode;
+    terminal.inputSequence = message.inputSequence;
+    terminal.resizeSequence = message.resizeSequence;
+    terminal.outputSequence = message.outputCursor;
+    terminal.emulator.options.disableStdin = message.mode !== "read-write";
+    terminal.attachmentStatus.textContent = message.mode === "read-write"
+      ? `Connected · read-write${message.resynchronized ? " · retained tail" : ""}`
+      : `Connected · read-only${message.resynchronized ? " · retained tail" : ""}`;
+    terminal.panel.dataset.terminalOutputResynchronized = String(message.resynchronized);
+    updateWorkbenchChrome({
+      terminalAttachment: { sessionId: message.sessionId, mode: message.mode },
+    });
+    scheduleTerminalFit(terminal);
+    return true;
+  };
+
+  const applyTerminalResized = (message) => {
+    const terminal = terminalStreams.get(message.streamId);
+    if (
+      !state.runtimeNegotiated
+      || !terminal
+      || terminal.sessionId !== message.sessionId
+      || terminal.attachmentId !== message.attachmentId
+      || terminal.lastRequestedDimensions?.sequence !== message.sequence
+      || terminal.lastRequestedDimensions.columns !== message.columns
+      || terminal.lastRequestedDimensions.rows !== message.rows
+    ) {
+      return false;
+    }
+    terminal.panel.dataset.terminalColumns = String(message.columns);
+    terminal.panel.dataset.terminalRows = String(message.rows);
+    terminal.panel.dataset.terminalResizeSequence = String(message.sequence);
+    return true;
   };
 
   const sendTerminalData = (terminal, data) => {
@@ -154,7 +230,7 @@ export const createTerminalSurface = ({
     requestedMode,
     description,
   }) => {
-    for (const terminal of [...state.terminalStreams.values()]) {
+    for (const terminal of [...terminalStreams.values()]) {
       if (terminal.panel === panel || terminal.streamId === focused.terminal.streamId) {
         disposeTerminalSurface(terminal);
       }
@@ -286,7 +362,7 @@ export const createTerminalSurface = ({
       mobileKeys.append(control);
     }
     footer.before(mobileKeys);
-    state.terminalStreams.set(focused.terminal.streamId, terminalState);
+    terminalStreams.set(focused.terminal.streamId, terminalState);
     queueMicrotask(() => {
       const openTerminal = async () => {
         if (terminalState.disposed) {
@@ -410,9 +486,11 @@ export const createTerminalSurface = ({
   };
 
   return {
+    applyOpaqueFrame,
+    applyTerminalAttached,
+    applyTerminalResized,
     attachTerminalSurface,
     decodeOpaqueFrame,
     disposeAllTerminalSurfaces,
-    scheduleTerminalFit,
   };
 };

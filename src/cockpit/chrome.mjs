@@ -5,6 +5,8 @@ export const createCockpitChrome = ({
   renderHarnessRun,
   renderProjectPreparation,
 }) => {
+  let connectionStatus = null;
+
   const workbenchLink = (label, destination, active = false, attributes = {}) => element("a", {
     ...attributes,
     class: `workbench-nav__link${active ? " is-active" : ""}`,
@@ -119,6 +121,24 @@ export const createCockpitChrome = ({
     synchronizeWorkbenchChrome();
   };
 
+  const applyHostConnectionState = (message) => {
+    if (!connectionStatus) {
+      return;
+    }
+    connectionStatus.classList.remove(
+      "workbench-status--connected",
+      "workbench-status--disconnected",
+    );
+    connectionStatus.classList.add(`workbench-status--${message.status}`);
+    connectionStatus.dataset.hostStatus = message.status;
+    connectionStatus.dataset.failureCode = message.failure.code;
+    connectionStatus.dataset.connectionAuditId = message.failure.auditId;
+    connectionStatus.setAttribute("role", "alert");
+    connectionStatus.textContent =
+      `Host ${message.hostId} is disconnected. Project and Harness views are stale; `
+      + "Controller sessions remain available.";
+  };
+
   const renderWorkbench = (message) => {
     const viewModel = message.viewModel;
     const focused = viewModel.focusedControllerSession;
@@ -177,7 +197,7 @@ export const createCockpitChrome = ({
       "aria-expanded": "false",
       "aria-label": "Open product navigation",
     }, "Menu");
-    const connectionStatus = element(
+    connectionStatus = element(
       "p",
       {
         id: "connection-status",
@@ -287,6 +307,7 @@ export const createCockpitChrome = ({
   };
 
   return {
+    applyHostConnectionState,
     renderWorkbench,
     updateWorkbenchChrome,
   };

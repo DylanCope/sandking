@@ -3,11 +3,10 @@ import {
   renderHarnessLaunchParameterFields,
 } from "/cockpit-launch-parameters.mjs";
 import { createProjectRegistrationResolutionControls } from "/cockpit-project-registration.mjs";
-import { projectIdPattern } from "/common/identifiers.mjs";
 import { element } from "./dom.mjs";
 import {
   harnessLaunchRetryHash,
-  retainPendingHarnessLaunch,
+  sendPendingHarnessLaunch,
 } from "./socket.mjs";
 
 export const createProjectPreparation = ({
@@ -16,6 +15,11 @@ export const createProjectPreparation = ({
   attachTerminalSurface,
   updateWorkbenchChrome,
 }) => {
+  let projectPreparationSection;
+  let harnessLaunchFeedback;
+  let launchButton;
+  let updateProjectActionAvailability = () => {};
+
   const launchConfirmationSuppressed = () => {
     try {
       return localStorage.getItem(state.storageKeys.launchConfirmation) === "true";
@@ -39,28 +43,6 @@ export const createProjectPreparation = ({
 
   const mutationKey = () => globalThis.crypto?.randomUUID?.()
     ?? `mutation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-
-  const readPendingHarnessLaunch = () => {
-    try {
-      const launch = JSON.parse(sessionStorage.getItem(state.storageKeys.pendingHarnessLaunch) ?? "null");
-      if (
-        !projectIdPattern.test(launch?.projectId ?? "")
-        || !/^sha256:[a-f0-9]{64}$/.test(launch?.idempotencyKeyHash ?? "")
-        || !launch.parameters
-        || typeof launch.parameters !== "object"
-        || Array.isArray(launch.parameters)
-        || (launch.reconnectHarnessRunId !== undefined
-          && !/^harness-run-[a-f0-9]{24}$/.test(launch.reconnectHarnessRunId))
-      ) {
-        sessionStorage.removeItem(state.storageKeys.pendingHarnessLaunch);
-        return null;
-      }
-      return launch;
-    } catch {
-      sessionStorage.removeItem(state.storageKeys.pendingHarnessLaunch);
-      return null;
-    }
-  };
 
   const renderPreparedProject = (current) => {
     if (!current) {
@@ -136,6 +118,7 @@ export const createProjectPreparation = ({
       "data-directory-scanning": String(preparation.selection.directoryScanning),
       "data-host-freshness": state.hostFreshness,
     });
+    projectPreparationSection = section;
     section.append(
       element("h2", {}, "Open and prepare a local Project"),
       element("p", {},
@@ -218,7 +201,7 @@ export const createProjectPreparation = ({
       launchParameterFields.replaceWith(replacement);
       launchParameterFields = replacement;
     };
-    const launchButton = element("button", {
+    launchButton = element("button", {
       id: "launch-harness",
       type: "button",
       "data-action": "launch-harness",
@@ -226,7 +209,7 @@ export const createProjectPreparation = ({
       disabled: state.hostConnectionStatus !== "connected"
         || !preparation.current?.canPrepareLaunchRequest,
     }, "Launch");
-    state.harnessLaunchFeedback = element("p", { id: "harness-launch-feedback", role: "status" });
+    harnessLaunchFeedback = element("p", { id: "harness-launch-feedback", role: "status" });
     const confirmation = element("dialog", {
       id: "harness-launch-confirmation",
       "aria-labelledby": "harness-launch-confirmation-title",
@@ -274,7 +257,7 @@ export const createProjectPreparation = ({
         || state.hostConnectionStatus !== "connected"
         || state.pendingHarnessLaunchRequestId !== null
       ) {
-        state.harnessLaunchFeedback.textContent =
+        harnessLaunchFeedback.textContent =
           "Harness was not launched: the selected Project is not launch-ready.";
         updateProjectActionAvailability();
         return false;
@@ -284,32 +267,18 @@ export const createProjectPreparation = ({
         launchParameterDeclaration,
       );
       if (!parsedParameters.ok) {
-        state.harnessLaunchFeedback.textContent =
+        harnessLaunchFeedback.textContent =
           `Harness was not launched: ${parsedParameters.error}.`;
         return false;
       }
-      state.pendingHarnessLaunchRequestId = `harness-launch-${state.harnessRequestSequence}`;
-      state.harnessRequestSequence += 1;
       launchButton.disabled = true;
-      state.harnessLaunchFeedback.textContent = "Launching the Harness run…";
+      harnessLaunchFeedback.textContent = "Launching the Harness run…";
       const pendingLaunch = {
         projectId: currentProject.projectId,
         parameters: parsedParameters.parameters,
         idempotencyKeyHash: harnessLaunchRetryHash(),
       };
-      retainPendingHarnessLaunch(state, pendingLaunch);
-      socket.send(JSON.stringify({
-        channel: "control",
-        message: {
-          type: "browser.harness-run.launch",
-          requestId: state.pendingHarnessLaunchRequestId,
-          projectId: pendingLaunch.projectId,
-          ...(Object.keys(pendingLaunch.parameters).length === 0
-            ? {}
-            : { parameters: pendingLaunch.parameters }),
-          idempotencyKeyHash: pendingLaunch.idempotencyKeyHash,
-        },
-      }));
+      sendPendingHarnessLaunch(state, socket, pendingLaunch);
       return true;
     };
     launchButton.addEventListener("click", () => {
@@ -356,7 +325,7 @@ export const createProjectPreparation = ({
       "data-session-state": "closed",
       hidden: true,
     });
-    const updateProjectActionAvailability = () => {
+    updateProjectActionAvailability = () => {
       const projectReady = currentProject?.canPrepareLaunchRequest === true;
       const launchReady = projectReady && selectedProjectLaunchReady();
       launchButton.disabled = state.hostConnectionStatus !== "connected"
@@ -564,7 +533,7 @@ export const createProjectPreparation = ({
       element("h3", {}, "Launch Harness"),
       launchParameterFields,
       launchButton,
-      state.harnessLaunchFeedback,
+      harnessLaunchFeedback,
       confirmation,
       openController,
       openClaudeController,
@@ -577,9 +546,50 @@ export const createProjectPreparation = ({
     return section;
   };
 
+  const applyHostConnectionState = (message) => {
+    if (!projectPreparationSection) return;
+    projectPreparationSection.dataset.hostFreshness = message.freshness;
+    for (const control of projectPreparationSection.querySelectorAll("[data-host-mutation]")) {
+      control.disabled = true;
+    }
+  };
+
+  const applyHarnessLaunchResult = (message) => {
+    if (
+      !harnessLaunchFeedback
+      || !launchButton
+      || message.requestId !== state.pendingHarnessLaunchRequestId
+    ) return false;
+    state.pendingHarnessLaunchRequestId = null;
+    sessionStorage.removeItem(state.storageKeys.pendingHarnessLaunch);
+    updateProjectActionAvailability();
+    harnessLaunchFeedback.textContent = message.outcome.type === "harness.run.launch.result"
+      ? `Harness run ${message.outcome.run.harnessRunId} launched.`
+      : `Harness was not launched: ${message.outcome.code}.`;
+    return true;
+  };
+
+  const reconnectHarnessLaunch = (pendingLaunch) => {
+    if (
+      state.hostConnectionStatus !== "connected"
+      || state.pendingHarnessLaunchRequestId !== null
+      || !harnessLaunchFeedback
+    ) return false;
+    sendPendingHarnessLaunch(state, socket, pendingLaunch, "reconnect");
+    harnessLaunchFeedback.textContent =
+      "Reconnecting to the retained Harness launch outcome…";
+    return true;
+  };
+
+  const setHarnessLaunchFeedback = (message) => {
+    if (harnessLaunchFeedback) harnessLaunchFeedback.textContent = message;
+  };
+
   return {
-    readPendingHarnessLaunch,
+    applyHarnessLaunchResult,
+    applyHostConnectionState,
+    reconnectHarnessLaunch,
     renderProjectPreparation,
-    selectedProjectLaunchReady,
+    setHarnessLaunchFeedback,
   };
 };

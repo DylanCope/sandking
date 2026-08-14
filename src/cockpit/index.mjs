@@ -41,14 +41,10 @@ const reload = document.getElementById("reload-cockpit");
 const socket = createCockpitSocketConnection();
 
 const state = {
-  terminalStreams: new Map(),
-  diagnosticStreams: new Map(),
   runtimeNegotiated: false,
-  harnessRunSection: null,
   harnessObservationTimer: undefined,
   harnessRequestSequence: 0,
   currentHarnessRunObservation: null,
-  harnessLaunchFeedback: null,
   pendingHarnessLaunchRequestId: null,
   pendingHarnessCancellationRequestId: null,
   pendingHarnessRecoveryRequestId: null,
@@ -81,6 +77,8 @@ const harnessRunObservation = createHarnessRunObservation({
   state,
   socket,
   updateWorkbenchChrome: (patch) => chrome.updateWorkbenchChrome(patch),
+  reconnectHarnessLaunch: (pendingLaunch) =>
+    projectPreparation.reconnectHarnessLaunch(pendingLaunch),
 });
 const chrome = createCockpitChrome({
   state,
@@ -91,6 +89,7 @@ const terminalSurface = createTerminalSurface({
   state,
   socket,
   requireReload: (code) => cockpitSocket.requireReload(code),
+  updateWorkbenchChrome: (patch) => chrome.updateWorkbenchChrome(patch),
 });
 const cockpitSocket = createCockpitSocket({
   state,

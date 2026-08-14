@@ -1,87 +1,23 @@
 import { element } from "./dom.mjs";
 import {
   harnessLaunchRetryHash,
-  retainPendingHarnessLaunch,
+  readPendingHarnessRunSelection,
+  retainedHarnessRunCursor,
 } from "./socket.mjs";
 
 export const createHarnessRunObservation = ({
   state,
   socket,
   updateWorkbenchChrome,
+  reconnectHarnessLaunch,
 }) => {
-  const retainedHarnessRunCursor = () => {
-    try {
-      const cursor = JSON.parse(sessionStorage.getItem(state.storageKeys.harnessRunCursor) ?? "null");
-      return /^harness-run-[a-f0-9]{24}$/.test(cursor?.harnessRunId ?? "")
-        && Number.isSafeInteger(cursor?.sequence)
-        && cursor.sequence >= 0
-        ? cursor
-        : null;
-    } catch {
-      return null;
-    }
-  };
-
-  const readPendingHarnessRunSelection = () => {
-    try {
-      const harnessRunId = sessionStorage.getItem(state.storageKeys.pendingHarnessRunSelection);
-      if (!/^harness-run-[a-f0-9]{24}$/.test(harnessRunId ?? "")) {
-        sessionStorage.removeItem(state.storageKeys.pendingHarnessRunSelection);
-        return null;
-      }
-      return harnessRunId;
-    } catch {
-      sessionStorage.removeItem(state.storageKeys.pendingHarnessRunSelection);
-      return null;
-    }
-  };
-
-  const retainPendingHarnessRunSelection = (harnessRunId) => {
-    sessionStorage.setItem(state.storageKeys.pendingHarnessRunSelection, harnessRunId);
-    sessionStorage.setItem(state.storageKeys.harnessRunCursor, JSON.stringify({
-      harnessRunId,
-      sequence: 0,
-    }));
-  };
-
-  const readPendingHarnessCancellation = () => {
-    try {
-      const cancellation = JSON.parse(
-        sessionStorage.getItem(state.storageKeys.pendingHarnessCancellation) ?? "null",
-      );
-      if (
-        !/^harness-run-[a-f0-9]{24}$/.test(cancellation?.harnessRunId ?? "")
-        || !/^sha256:[a-f0-9]{64}$/.test(cancellation?.idempotencyKeyHash ?? "")
-      ) {
-        sessionStorage.removeItem(state.storageKeys.pendingHarnessCancellation);
-        return null;
-      }
-      return cancellation;
-    } catch {
-      sessionStorage.removeItem(state.storageKeys.pendingHarnessCancellation);
-      return null;
-    }
-  };
-
-  const readPendingHarnessRecovery = () => {
-    try {
-      const recovery = JSON.parse(
-        sessionStorage.getItem(state.storageKeys.pendingHarnessRecovery) ?? "null",
-      );
-      if (
-        !/^harness-run-[a-f0-9]{24}$/.test(recovery?.harnessRunId ?? "")
-        || !["recheck", "terminate_confirmed_tree", "finalize"].includes(recovery?.action)
-        || !/^sha256:[a-f0-9]{64}$/.test(recovery?.idempotencyKeyHash ?? "")
-      ) {
-        sessionStorage.removeItem(state.storageKeys.pendingHarnessRecovery);
-        return null;
-      }
-      return recovery;
-    } catch {
-      sessionStorage.removeItem(state.storageKeys.pendingHarnessRecovery);
-      return null;
-    }
-  };
+  let harnessRunSection = null;
+  let cancellationFeedback = null;
+  let cancelButton = null;
+  let recoveryFeedback = null;
+  let recoveryButtons = [];
+  const diagnosticOutputs = new Map();
+  const diagnosticStreams = new Map();
 
   const requestHarnessRunObservation = (selectedHarnessRunId = null) => {
     if (
@@ -91,8 +27,8 @@ export const createHarnessRunObservation = ({
     ) {
       return;
     }
-    const cursor = retainedHarnessRunCursor();
-    const pendingSelection = readPendingHarnessRunSelection();
+    const cursor = retainedHarnessRunCursor(state);
+    const pendingSelection = readPendingHarnessRunSelection(state);
     const harnessRunId = selectedHarnessRunId
       ?? pendingSelection
       ?? cursor?.harnessRunId
@@ -170,7 +106,7 @@ export const createHarnessRunObservation = ({
     );
     state.pendingHarnessRecoveryRequestId = `harness-recover-${state.harnessRequestSequence}`;
     state.harnessRequestSequence += 1;
-    for (const recoveryButton of document.querySelectorAll("[data-harness-recovery-action]")) {
+    for (const recoveryButton of recoveryButtons) {
       recoveryButton.disabled = true;
     }
     button.disabled = true;
@@ -190,6 +126,12 @@ export const createHarnessRunObservation = ({
   };
 
   const renderHarnessRun = (observation) => {
+    cancellationFeedback = null;
+    cancelButton = null;
+    recoveryFeedback = null;
+    recoveryButtons = [];
+    diagnosticOutputs.clear();
+    diagnosticStreams.clear();
     const section = element("section", {
       id: "harness-run-observation",
       "data-observation-mode": observation.mode,
@@ -198,6 +140,7 @@ export const createHarnessRunObservation = ({
       "data-next-sequence": observation.nextSequence,
       "data-resynchronization-reason": observation.resynchronization?.reason ?? "",
     });
+    harnessRunSection = section;
     section.append(
       element("h2", {}, "Harness run observation"),
       element("p", { "data-observation-independent": "true" },
@@ -226,7 +169,7 @@ export const createHarnessRunObservation = ({
       element("p", {}, `Project: ${run.projectId}`),
       element("p", {}, `Harness: ${run.harnessId} @ ${run.harnessPinnedRevision}`),
     );
-    const cancellationFeedback = element("p", {
+    cancellationFeedback = element("p", {
       id: "harness-run-cancellation-feedback",
       role: "status",
     }, run.cancellation
@@ -237,7 +180,7 @@ export const createHarnessRunObservation = ({
           : "Cancellation accepted. The Host could not prove termination; recovery is required."
       : "");
     if (["starting", "running"].includes(run.status)) {
-      const cancelButton = element("button", {
+      cancelButton = element("button", {
         id: "cancel-harness-run",
         type: "button",
         disabled: state.hostConnectionStatus !== "connected"
@@ -294,38 +237,13 @@ export const createHarnessRunObservation = ({
           disabled: state.hostConnectionStatus !== "connected",
         }, "Reconnect original launch");
         reconnectButton.addEventListener("click", () => {
-          if (
-            state.hostConnectionStatus !== "connected"
-            || state.pendingHarnessLaunchRequestId !== null
-            || !state.harnessLaunchFeedback
-          ) {
-            return;
-          }
           const pendingLaunch = {
             projectId: run.projectId,
             parameters: snapshot.parameters ?? {},
             idempotencyKeyHash: run.launchIdempotencyKeyHash,
             reconnectHarnessRunId: run.harnessRunId,
           };
-          retainPendingHarnessLaunch(state, pendingLaunch);
-          state.pendingHarnessLaunchRequestId = `harness-launch-reconnect-${state.harnessRequestSequence}`;
-          state.harnessRequestSequence += 1;
-          reconnectButton.disabled = true;
-          state.harnessLaunchFeedback.textContent =
-            "Reconnecting to the retained Harness launch outcome…";
-          socket.send(JSON.stringify({
-            channel: "control",
-            message: {
-              type: "browser.harness-run.launch",
-              requestId: state.pendingHarnessLaunchRequestId,
-              projectId: pendingLaunch.projectId,
-              ...(Object.keys(pendingLaunch.parameters).length === 0
-                ? {}
-                : { parameters: pendingLaunch.parameters }),
-              idempotencyKeyHash: pendingLaunch.idempotencyKeyHash,
-              reconnectHarnessRunId: pendingLaunch.reconnectHarnessRunId,
-            },
-          }));
+          reconnectButton.disabled = reconnectHarnessLaunch(pendingLaunch);
         });
         interruptionPanel.append(reconnectButton);
       }
@@ -355,7 +273,7 @@ export const createHarnessRunObservation = ({
         : processObservation.relatedProcessState === "terminated_confirmed"
           ? "The Host proved that the retained complete process tree is empty."
           : "The Host cannot currently prove whether a related Harness process tree remains.";
-      const recoveryFeedback = element("p", {
+      recoveryFeedback = element("p", {
         id: "harness-run-recovery-feedback",
         role: "status",
       });
@@ -393,6 +311,7 @@ export const createHarnessRunObservation = ({
         button.addEventListener("click", () =>
           requestHarnessRunRecovery(run, action, button, recoveryFeedback));
         recoveryActions.append(button);
+        recoveryButtons.push(button);
       }
       recoveryPanel.append(recoveryActions, recoveryFeedback);
       section.append(recoveryPanel);
@@ -484,16 +403,18 @@ export const createHarnessRunObservation = ({
       "Diagnostic logs are explicitly ranged and are never inserted into a Controller conversation."));
     for (const producer of ["stdout", "stderr"]) {
       const stream = observation.logStreams.find((candidate) => candidate.producer === producer);
+      const output = element("pre", {
+        "data-log-producer": producer,
+        "data-log-stream-id": stream?.streamId ?? "",
+        "data-range-start": stream?.availableStart ?? 0,
+        "data-range-end": stream?.availableEnd ?? 0,
+        "data-explicit-retrieval": String(stream?.explicitRetrievalRequired ?? true),
+        "data-conversation-inserted": String(stream?.insertedIntoControllerConversation ?? false),
+      });
+      diagnosticOutputs.set(producer, output);
       logs.append(
         element("h4", {}, `${producer} diagnostics`),
-        element("pre", {
-          "data-log-producer": producer,
-          "data-log-stream-id": stream?.streamId ?? "",
-          "data-range-start": stream?.availableStart ?? 0,
-          "data-range-end": stream?.availableEnd ?? 0,
-          "data-explicit-retrieval": String(stream?.explicitRetrievalRequired ?? true),
-          "data-conversation-inserted": String(stream?.insertedIntoControllerConversation ?? false),
-        }),
+        output,
       );
     }
     section.append(logs);
@@ -524,7 +445,7 @@ export const createHarnessRunObservation = ({
   };
 
   const applyHarnessRunObservation = (observation) => {
-    const pendingSelection = readPendingHarnessRunSelection();
+    const pendingSelection = readPendingHarnessRunSelection(state);
     if (pendingSelection && observation.run?.harnessRunId !== pendingSelection) {
       requestHarnessRunObservation(pendingSelection);
       return;
@@ -554,10 +475,9 @@ export const createHarnessRunObservation = ({
     } else {
       sessionStorage.removeItem(state.storageKeys.harnessRunCursor);
     }
+    const previousSection = harnessRunSection;
     const replacement = renderHarnessRun(visibleObservation);
-    state.harnessRunSection?.replaceWith(replacement);
-    state.harnessRunSection = replacement;
-    state.diagnosticStreams.clear();
+    previousSection?.replaceWith(replacement);
     if (visibleObservation.run) {
       for (const stream of visibleObservation.logStreams) {
         if (stream.availableEnd === 0) {
@@ -587,12 +507,84 @@ export const createHarnessRunObservation = ({
     }
   };
 
+  const applyHostConnectionState = (message) => {
+    if (harnessRunSection) {
+      harnessRunSection.dataset.hostFreshness = message.freshness;
+    }
+    if (cancelButton) {
+      cancelButton.disabled = true;
+    }
+    for (const button of recoveryButtons) {
+      button.disabled = true;
+    }
+    clearTimeout(state.harnessObservationTimer);
+  };
+
+  const setCancellationFeedback = (message) => {
+    if (cancellationFeedback) {
+      cancellationFeedback.textContent = message;
+    }
+  };
+
+  const setRecoveryFeedback = (message) => {
+    if (recoveryFeedback) {
+      recoveryFeedback.textContent = message;
+    }
+  };
+
+  const enableCancellation = () => {
+    if (cancelButton) {
+      cancelButton.disabled = state.hostConnectionStatus !== "connected";
+    }
+  };
+
+  const enableRecovery = () => {
+    for (const button of recoveryButtons) {
+      button.disabled = state.hostConnectionStatus !== "connected";
+    }
+  };
+
+  const beginDiagnosticStream = (message) => {
+    const output = diagnosticOutputs.get(message.producer);
+    if (!state.runtimeNegotiated
+      || !harnessRunSection
+      || !output
+      || output.dataset.logStreamId !== message.streamId) {
+      return false;
+    }
+    output.textContent = "";
+    output.dataset.rangeStart = String(message.range.start);
+    output.dataset.rangeEnd = String(message.range.end);
+    diagnosticStreams.set(message.streamId, { output, decoder: new TextDecoder() });
+    return true;
+  };
+
+  const applyDiagnosticFrame = (opaque) => {
+    const diagnostic = diagnosticStreams.get(opaque.streamId);
+    if (!diagnostic) {
+      return false;
+    }
+    diagnostic.output.textContent += diagnostic.decoder.decode(opaque.data, {
+      stream: !opaque.eof,
+    });
+    diagnostic.output.dataset.outputSequence = String(opaque.sequence);
+    diagnostic.output.dataset.rangeEof = String(opaque.eof);
+    return true;
+  };
+
+  const stopObservation = () => clearTimeout(state.harnessObservationTimer);
+
   return {
+    applyDiagnosticFrame,
     applyHarnessRunObservation,
-    readPendingHarnessCancellation,
-    readPendingHarnessRecovery,
+    applyHostConnectionState,
+    beginDiagnosticStream,
+    enableCancellation,
+    enableRecovery,
     renderHarnessRun,
     requestHarnessRunObservation,
-    retainPendingHarnessRunSelection,
+    setCancellationFeedback,
+    setRecoveryFeedback,
+    stopObservation,
   };
 };

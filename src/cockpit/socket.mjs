@@ -1,5 +1,6 @@
 import {
   hostIdPattern,
+  projectIdPattern,
   runtimeIdPattern,
 } from "/common/identifiers.mjs";
 
@@ -15,6 +16,120 @@ export const retainPendingHarnessLaunch = (state, launch) => {
     state.storageKeys.pendingHarnessLaunch,
     JSON.stringify(launch),
   );
+};
+
+export const readPendingHarnessLaunch = (state) => {
+  try {
+    const launch = JSON.parse(sessionStorage.getItem(state.storageKeys.pendingHarnessLaunch) ?? "null");
+    if (
+      !projectIdPattern.test(launch?.projectId ?? "")
+      || !/^sha256:[a-f0-9]{64}$/.test(launch?.idempotencyKeyHash ?? "")
+      || !launch.parameters
+      || typeof launch.parameters !== "object"
+      || Array.isArray(launch.parameters)
+      || (launch.reconnectHarnessRunId !== undefined
+        && !/^harness-run-[a-f0-9]{24}$/.test(launch.reconnectHarnessRunId))
+    ) {
+      sessionStorage.removeItem(state.storageKeys.pendingHarnessLaunch);
+      return null;
+    }
+    return launch;
+  } catch {
+    sessionStorage.removeItem(state.storageKeys.pendingHarnessLaunch);
+    return null;
+  }
+};
+
+export const retainedHarnessRunCursor = (state) => {
+  try {
+    const cursor = JSON.parse(sessionStorage.getItem(state.storageKeys.harnessRunCursor) ?? "null");
+    return /^harness-run-[a-f0-9]{24}$/.test(cursor?.harnessRunId ?? "")
+      && Number.isSafeInteger(cursor?.sequence)
+      && cursor.sequence >= 0
+      ? cursor
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+export const readPendingHarnessRunSelection = (state) => {
+  try {
+    const harnessRunId = sessionStorage.getItem(state.storageKeys.pendingHarnessRunSelection);
+    if (!/^harness-run-[a-f0-9]{24}$/.test(harnessRunId ?? "")) {
+      sessionStorage.removeItem(state.storageKeys.pendingHarnessRunSelection);
+      return null;
+    }
+    return harnessRunId;
+  } catch {
+    sessionStorage.removeItem(state.storageKeys.pendingHarnessRunSelection);
+    return null;
+  }
+};
+
+export const retainPendingHarnessRunSelection = (state, harnessRunId) => {
+  sessionStorage.setItem(state.storageKeys.pendingHarnessRunSelection, harnessRunId);
+  sessionStorage.setItem(state.storageKeys.harnessRunCursor, JSON.stringify({
+    harnessRunId,
+    sequence: 0,
+  }));
+};
+
+export const readPendingHarnessCancellation = (state) => {
+  try {
+    const cancellation = JSON.parse(
+      sessionStorage.getItem(state.storageKeys.pendingHarnessCancellation) ?? "null",
+    );
+    if (!/^harness-run-[a-f0-9]{24}$/.test(cancellation?.harnessRunId ?? "")
+      || !/^sha256:[a-f0-9]{64}$/.test(cancellation?.idempotencyKeyHash ?? "")) {
+      sessionStorage.removeItem(state.storageKeys.pendingHarnessCancellation);
+      return null;
+    }
+    return cancellation;
+  } catch {
+    sessionStorage.removeItem(state.storageKeys.pendingHarnessCancellation);
+    return null;
+  }
+};
+
+export const readPendingHarnessRecovery = (state) => {
+  try {
+    const recovery = JSON.parse(
+      sessionStorage.getItem(state.storageKeys.pendingHarnessRecovery) ?? "null",
+    );
+    if (!/^harness-run-[a-f0-9]{24}$/.test(recovery?.harnessRunId ?? "")
+      || !["recheck", "terminate_confirmed_tree", "finalize"].includes(recovery?.action)
+      || !/^sha256:[a-f0-9]{64}$/.test(recovery?.idempotencyKeyHash ?? "")) {
+      sessionStorage.removeItem(state.storageKeys.pendingHarnessRecovery);
+      return null;
+    }
+    return recovery;
+  } catch {
+    sessionStorage.removeItem(state.storageKeys.pendingHarnessRecovery);
+    return null;
+  }
+};
+
+export const sendPendingHarnessLaunch = (state, socket, pendingLaunch, requestLabel = null) => {
+  retainPendingHarnessLaunch(state, pendingLaunch);
+  state.pendingHarnessLaunchRequestId =
+    `harness-launch${requestLabel ? `-${requestLabel}` : ""}-${state.harnessRequestSequence}`;
+  state.harnessRequestSequence += 1;
+  socket.send(JSON.stringify({
+    channel: "control",
+    message: {
+      type: "browser.harness-run.launch",
+      requestId: state.pendingHarnessLaunchRequestId,
+      projectId: pendingLaunch.projectId,
+      ...(Object.keys(pendingLaunch.parameters).length === 0
+        ? {}
+        : { parameters: pendingLaunch.parameters }),
+      idempotencyKeyHash: pendingLaunch.idempotencyKeyHash,
+      ...(pendingLaunch.reconnectHarnessRunId
+        ? { reconnectHarnessRunId: pendingLaunch.reconnectHarnessRunId }
+        : {}),
+    },
+  }));
 };
 
 export const createCockpitSocketConnection = () => {
@@ -36,24 +151,32 @@ export const createCockpitSocket = ({
   chrome,
 }) => {
   const {
+    applyOpaqueFrame,
+    applyTerminalAttached,
+    applyTerminalResized,
     decodeOpaqueFrame,
     disposeAllTerminalSurfaces,
-    scheduleTerminalFit,
   } = terminalSurface;
   const {
-    readPendingHarnessLaunch,
-    selectedProjectLaunchReady,
+    applyHarnessLaunchResult,
+    applyHostConnectionState: applyProjectHostConnectionState,
+    setHarnessLaunchFeedback,
   } = projectPreparation;
   const {
+    applyDiagnosticFrame,
     applyHarnessRunObservation,
-    readPendingHarnessCancellation,
-    readPendingHarnessRecovery,
+    applyHostConnectionState: applyHarnessHostConnectionState,
+    beginDiagnosticStream,
+    enableCancellation,
+    enableRecovery,
     requestHarnessRunObservation,
-    retainPendingHarnessRunSelection,
+    setCancellationFeedback,
+    setRecoveryFeedback,
+    stopObservation,
   } = harnessRunObservation;
   const {
+    applyHostConnectionState: applyChromeHostConnectionState,
     renderWorkbench,
-    updateWorkbenchChrome,
   } = chrome;
 
   const requireReload = (code) => {
@@ -82,34 +205,8 @@ export const createCockpitSocket = ({
       // Opaque terminal streams are binary and never parsed as structured control.
       document.documentElement.dataset.opaqueStreamReceived = "true";
       const opaque = decodeOpaqueFrame(event.data);
-      const terminal = opaque ? state.terminalStreams.get(opaque.streamId) : null;
-      if (opaque && terminal) {
-        if (opaque.sequence !== terminal.outputSequence) {
-          requireReload("runtime_terminal_output_sequence_mismatch");
-          return;
-        }
-        terminal.outputSequence += 1;
-        if (opaque.data.byteLength > 0) {
-          terminal.emulator.write(opaque.data);
-        }
-        terminal.output.dataset.outputSequence = String(opaque.sequence);
-        if (opaque.eof) {
-          terminal.panel.dataset.sessionState = "exited";
-          terminal.emulator.options.disableStdin = true;
-          terminal.attachmentStatus.textContent = "Exited · read-only";
-          updateWorkbenchChrome({
-            terminalAttachment: { sessionId: terminal.sessionId, mode: "exited" },
-          });
-        }
-      } else if (opaque) {
-        const diagnostic = state.diagnosticStreams.get(opaque.streamId);
-        if (diagnostic) {
-          diagnostic.output.textContent += diagnostic.decoder.decode(opaque.data, {
-            stream: !opaque.eof,
-          });
-          diagnostic.output.dataset.outputSequence = String(opaque.sequence);
-          diagnostic.output.dataset.rangeEof = String(opaque.eof);
-        }
+      if (opaque) {
+        applyOpaqueFrame(opaque) || applyDiagnosticFrame(opaque);
       }
       return;
     }
@@ -140,89 +237,23 @@ export const createCockpitSocket = ({
       state.hostConnectionStatus = message.status;
       state.hostFreshness = message.freshness;
       document.documentElement.dataset.hostConnectionStatus = message.status;
-      const connectionStatus = document.getElementById("connection-status");
-      if (connectionStatus) {
-        connectionStatus.classList.remove(
-          "workbench-status--connected",
-          "workbench-status--disconnected",
-        );
-        connectionStatus.classList.add(`workbench-status--${message.status}`);
-        connectionStatus.dataset.hostStatus = message.status;
-        connectionStatus.dataset.failureCode = message.failure.code;
-        connectionStatus.dataset.connectionAuditId = message.failure.auditId;
-        connectionStatus.setAttribute("role", "alert");
-        connectionStatus.textContent =
-          `Host ${message.hostId} is disconnected. Project and Harness views are stale; `
-          + "Controller sessions remain available.";
-      }
-      const projectPreparation = document.getElementById("project-preparation");
-      if (projectPreparation) {
-        projectPreparation.dataset.hostFreshness = message.freshness;
-        for (const control of projectPreparation.querySelectorAll("[data-host-mutation]")) {
-          control.disabled = true;
-        }
-      }
-      if (state.harnessRunSection) {
-        state.harnessRunSection.dataset.hostFreshness = message.freshness;
-        const cancelButton = state.harnessRunSection.querySelector("#cancel-harness-run");
-        if (cancelButton) cancelButton.disabled = true;
-        for (const recoveryButton of state.harnessRunSection.querySelectorAll(
-          "[data-harness-recovery-action]",
-        )) {
-          recoveryButton.disabled = true;
-        }
-      }
-      clearTimeout(state.harnessObservationTimer);
+      applyChromeHostConnectionState(message);
+      applyProjectHostConnectionState(message);
+      applyHarnessHostConnectionState(message);
       return;
     }
 
     if (message?.type === "runtime.terminal-attached") {
-      const terminal = state.terminalStreams.get(message.streamId);
-      if (
-        !state.runtimeNegotiated
-        || !terminal
-        || terminal.attachmentId !== message.attachmentId
-        || (terminal.requestedMode === "read-write"
-          && (message.mode !== "read-write" || message.exclusive !== true))
-        || (terminal.requestedMode === "read-write-if-available"
-          && !["read-write", "read-only"].includes(message.mode))
-      ) {
+      if (!applyTerminalAttached(message)) {
         requireReload("runtime_terminal_attachment_mismatch");
-        return;
       }
-      terminal.panel.dataset.terminalAttachment = message.mode;
-      terminal.inputSequence = message.inputSequence;
-      terminal.resizeSequence = message.resizeSequence;
-      terminal.outputSequence = message.outputCursor;
-      terminal.emulator.options.disableStdin = message.mode !== "read-write";
-      terminal.attachmentStatus.textContent = message.mode === "read-write"
-        ? `Connected · read-write${message.resynchronized ? " · retained tail" : ""}`
-        : `Connected · read-only${message.resynchronized ? " · retained tail" : ""}`;
-      terminal.panel.dataset.terminalOutputResynchronized = String(message.resynchronized);
-      updateWorkbenchChrome({
-        terminalAttachment: { sessionId: message.sessionId, mode: message.mode },
-      });
-      scheduleTerminalFit(terminal);
       return;
     }
 
     if (message?.type === "runtime.terminal-resized") {
-      const terminal = state.terminalStreams.get(message.streamId);
-      if (
-        !state.runtimeNegotiated
-        || !terminal
-        || terminal.sessionId !== message.sessionId
-        || terminal.attachmentId !== message.attachmentId
-        || terminal.lastRequestedDimensions?.sequence !== message.sequence
-        || terminal.lastRequestedDimensions.columns !== message.columns
-        || terminal.lastRequestedDimensions.rows !== message.rows
-      ) {
+      if (!applyTerminalResized(message)) {
         requireReload("runtime_terminal_resize_mismatch");
-        return;
       }
-      terminal.panel.dataset.terminalColumns = String(message.columns);
-      terminal.panel.dataset.terminalRows = String(message.rows);
-      terminal.panel.dataset.terminalResizeSequence = String(message.sequence);
       return;
     }
 
@@ -238,7 +269,6 @@ export const createCockpitSocket = ({
     if (message?.type === "runtime.harness-run.launch-result") {
       if (
         !state.runtimeNegotiated
-        || !state.harnessLaunchFeedback
         || message.requestId !== state.pendingHarnessLaunchRequestId
       ) {
         requireReload("runtime_harness_launch_result_mismatch");
@@ -248,29 +278,20 @@ export const createCockpitSocket = ({
         // Transfer the durable mutation outcome to equally durable observation
         // selection before clearing the launch retry record. A reload in this
         // interval must resume the acknowledged run, never the prior cursor.
-        retainPendingHarnessRunSelection(message.outcome.run.harnessRunId);
+        retainPendingHarnessRunSelection(state, message.outcome.run.harnessRunId);
       }
-      state.pendingHarnessLaunchRequestId = null;
-      sessionStorage.removeItem(state.storageKeys.pendingHarnessLaunch);
-      const launchButton = document.getElementById("launch-harness");
-      if (launchButton) {
-        launchButton.disabled = state.hostConnectionStatus !== "connected"
-          || !selectedProjectLaunchReady();
+      if (!applyHarnessLaunchResult(message)) {
+        requireReload("runtime_harness_launch_result_mismatch");
+        return;
       }
       if (message.outcome.type === "harness.run.launch.result") {
-        state.harnessLaunchFeedback.textContent =
-          `Harness run ${message.outcome.run.harnessRunId} launched.`;
         requestHarnessRunObservation(message.outcome.run.harnessRunId);
-      } else {
-        state.harnessLaunchFeedback.textContent =
-          `Harness was not launched: ${message.outcome.code}.`;
       }
       return;
     }
 
     if (message?.type === "runtime.harness-run.cancel-result") {
-      const pendingCancellation = readPendingHarnessCancellation();
-      const feedback = document.getElementById("harness-run-cancellation-feedback");
+      const pendingCancellation = readPendingHarnessCancellation(state);
       if (
         !state.runtimeNegotiated
         || !pendingCancellation
@@ -283,21 +304,19 @@ export const createCockpitSocket = ({
       state.pendingHarnessCancellationRequestId = null;
       sessionStorage.removeItem(state.storageKeys.pendingHarnessCancellation);
       if (message.outcome.type === "harness.run.cancel.result") {
-        if (feedback) feedback.textContent =
-          "Cancellation accepted; termination remains asynchronously observable.";
+        setCancellationFeedback(
+          "Cancellation accepted; termination remains asynchronously observable.",
+        );
         requestHarnessRunObservation();
       } else {
-        if (feedback) feedback.textContent =
-          `Cancellation was not accepted: ${message.outcome.code}.`;
-        const cancelButton = document.getElementById("cancel-harness-run");
-        if (cancelButton) cancelButton.disabled = state.hostConnectionStatus !== "connected";
+        setCancellationFeedback(`Cancellation was not accepted: ${message.outcome.code}.`);
+        enableCancellation();
       }
       return;
     }
 
     if (message?.type === "runtime.harness-run.recover-result") {
-      const pendingRecovery = readPendingHarnessRecovery();
-      const feedback = document.getElementById("harness-run-recovery-feedback");
+      const pendingRecovery = readPendingHarnessRecovery(state);
       if (
         !state.runtimeNegotiated
         || !pendingRecovery
@@ -311,41 +330,21 @@ export const createCockpitSocket = ({
       state.pendingHarnessRecoveryRequestId = null;
       sessionStorage.removeItem(state.storageKeys.pendingHarnessRecovery);
       if (message.outcome.type === "harness.run.recover.result") {
-        if (feedback) feedback.textContent = message.outcome.action === "finalize"
+        setRecoveryFeedback(message.outcome.action === "finalize"
           ? "The interrupted run was finalized from confirmed termination evidence."
-          : "Recovery evidence was updated; refreshing the retained run.";
+          : "Recovery evidence was updated; refreshing the retained run.");
         requestHarnessRunObservation(pendingRecovery.harnessRunId);
       } else {
-        if (feedback) feedback.textContent =
-          `Recovery was not changed: ${message.outcome.code}.`;
-        for (const recoveryButton of document.querySelectorAll(
-          "[data-harness-recovery-action]",
-        )) {
-          recoveryButton.disabled = state.hostConnectionStatus !== "connected";
-        }
+        setRecoveryFeedback(`Recovery was not changed: ${message.outcome.code}.`);
+        enableRecovery();
       }
       return;
     }
 
     if (message?.type === "runtime.harness-run.logs.result") {
-      if (!state.runtimeNegotiated || !state.harnessRunSection) {
-        requireReload("runtime_harness_logs_before_negotiation");
-        return;
-      }
-      const output = state.harnessRunSection.querySelector(
-        `[data-log-producer="${message.producer}"]`,
-      );
-      if (!output || output.dataset.logStreamId !== message.streamId) {
+      if (!beginDiagnosticStream(message)) {
         requireReload("runtime_harness_log_stream_mismatch");
-        return;
       }
-      output.textContent = "";
-      output.dataset.rangeStart = String(message.range.start);
-      output.dataset.rangeEnd = String(message.range.end);
-      state.diagnosticStreams.set(message.streamId, {
-        output,
-        decoder: new TextDecoder(),
-      });
       return;
     }
 
@@ -463,8 +462,7 @@ export const createCockpitSocket = ({
     state.currentHarnessRunObservation = message.viewModel.harnessRunObservation;
     app.textContent = "";
     app.append(renderWorkbench(message));
-    state.harnessRunSection = document.getElementById("harness-run-observation");
-    const pendingLaunch = readPendingHarnessLaunch();
+    const pendingLaunch = readPendingHarnessLaunch(state);
     if (
       pendingLaunch
       && state.hostConnectionStatus === "connected"
@@ -473,28 +471,10 @@ export const createCockpitSocket = ({
         || pendingLaunch.projectId === message.viewModel.harnessRunObservation.run?.projectId
       )
     ) {
-      state.pendingHarnessLaunchRequestId = `harness-launch-retry-${state.harnessRequestSequence}`;
-      state.harnessRequestSequence += 1;
-      if (state.harnessLaunchFeedback) {
-        state.harnessLaunchFeedback.textContent = "Reconnecting to the retained Harness launch outcome…";
-      }
-      socket.send(JSON.stringify({
-        channel: "control",
-        message: {
-          type: "browser.harness-run.launch",
-          requestId: state.pendingHarnessLaunchRequestId,
-          projectId: pendingLaunch.projectId,
-          ...(Object.keys(pendingLaunch.parameters).length === 0
-            ? {}
-            : { parameters: pendingLaunch.parameters }),
-          idempotencyKeyHash: pendingLaunch.idempotencyKeyHash,
-          ...(pendingLaunch.reconnectHarnessRunId
-            ? { reconnectHarnessRunId: pendingLaunch.reconnectHarnessRunId }
-            : {}),
-        },
-      }));
+      sendPendingHarnessLaunch(state, socket, pendingLaunch, "retry");
+      setHarnessLaunchFeedback("Reconnecting to the retained Harness launch outcome…");
     }
-    const pendingCancellation = readPendingHarnessCancellation();
+    const pendingCancellation = readPendingHarnessCancellation(state);
     if (
       pendingCancellation
       && state.hostConnectionStatus === "connected"
@@ -504,9 +484,7 @@ export const createCockpitSocket = ({
       state.pendingHarnessCancellationRequestId =
         `harness-cancel-retry-${state.harnessRequestSequence}`;
       state.harnessRequestSequence += 1;
-      const feedback = document.getElementById("harness-run-cancellation-feedback");
-      if (feedback) feedback.textContent =
-        "Reconnecting to the retained cancellation outcome…";
+      setCancellationFeedback("Reconnecting to the retained cancellation outcome…");
       socket.send(JSON.stringify({
         channel: "control",
         message: {
@@ -516,7 +494,7 @@ export const createCockpitSocket = ({
         },
       }));
     }
-    const pendingRecovery = readPendingHarnessRecovery();
+    const pendingRecovery = readPendingHarnessRecovery(state);
     if (
       pendingRecovery
       && state.hostConnectionStatus === "connected"
@@ -526,9 +504,7 @@ export const createCockpitSocket = ({
       state.pendingHarnessRecoveryRequestId =
         `harness-recover-retry-${state.harnessRequestSequence}`;
       state.harnessRequestSequence += 1;
-      const feedback = document.getElementById("harness-run-recovery-feedback");
-      if (feedback) feedback.textContent =
-        "Reconnecting to the retained recovery outcome…";
+      setRecoveryFeedback("Reconnecting to the retained recovery outcome…");
       socket.send(JSON.stringify({
         channel: "control",
         message: {
@@ -542,7 +518,7 @@ export const createCockpitSocket = ({
   });
 
   socket.addEventListener("close", (event) => {
-    clearTimeout(state.harnessObservationTimer);
+    stopObservation();
     disposeAllTerminalSurfaces();
     if (!document.documentElement.dataset.protocolError && !event.wasClean) {
       app.textContent = "Controller runtime connection is stale. Retry by reloading the Cockpit.";
