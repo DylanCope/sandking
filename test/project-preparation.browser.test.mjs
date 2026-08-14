@@ -96,9 +96,21 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
         .selectOption("conformance-harness-adapter-v1");
 
       await page.locator("#project-path").fill("relative/project");
-      await page.locator("#open-project").click();
+      const [invalidResponse] = await Promise.all([
+        page.waitForResponse((candidate) => candidate.request().method() === "POST"
+          && candidate.url().endsWith("/projects/open")),
+        page.locator("#open-project").click(),
+      ]);
+      assert.equal(invalidResponse.status(), 400);
+      const invalid = await invalidResponse.json();
+      assert.equal(invalid.code, "project_path_invalid");
+      assert.deepEqual(invalid.resolution.actions, ["select_existing_host_directory"]);
       await page.waitForFunction(() => document.querySelector("#project-feedback")
         ?.textContent?.includes("project_path_invalid"));
+      assert.equal(
+        await page.locator("#project-feedback").textContent(),
+        "Project was not changed: project_path_invalid. select_existing_host_directory",
+      );
       assert.equal(await page.locator("#project-not-selected").count(), 1);
       await assert.rejects(readFile(join(dataDir, "project-registrations.json"), "utf8"));
 
@@ -205,18 +217,66 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
       assert.equal(stale.body.prohibitedSideEffects.projectFileWrite, false);
 
       await rename(projectPath, movedProjectPath);
-      const missing = await exerciseProjectOpen({
-        csrf,
-        idempotencyKey: "project-browser-missing-path",
-        expectedRevision: 2,
-        body: acceptedBody,
-      });
-      assert.equal(missing.status, 409);
-      assert.equal(missing.body.code, "project_path_missing");
-      assert.deepEqual(missing.body.resolution.actions, [
+      const [missingResponse] = await Promise.all([
+        page.waitForResponse((candidate) => candidate.request().method() === "POST"
+          && candidate.url().endsWith("/projects/open")),
+        page.locator("#open-project").click(),
+      ]);
+      assert.equal(missingResponse.status(), 409);
+      const missing = await missingResponse.json();
+      assert.equal(missing.code, "project_path_missing");
+      assert.deepEqual(missing.resolution.actions, [
         "update_registration",
         "forget_registration",
       ]);
+      assert.equal(
+        await page.locator("#project-feedback").textContent(),
+        "Project was not changed: project_path_missing. "
+          + "update_registration, forget_registration",
+      );
+
+      await page.locator("#project-path").fill(movedProjectPath);
+      const [movedResponse] = await Promise.all([
+        page.waitForResponse((candidate) => candidate.request().method() === "POST"
+          && candidate.url().endsWith("/projects/open")),
+        page.locator("#open-project").click(),
+      ]);
+      assert.equal(movedResponse.status(), 409);
+      const moved = await movedResponse.json();
+      assert.equal(moved.code, "project_path_moved");
+      assert.deepEqual(moved.resolution.actions, [
+        "update_registration",
+        "forget_registration",
+        "register_as_new",
+      ]);
+      assert.equal(
+        await page.locator("#project-feedback").textContent(),
+        "Project was not changed: project_path_moved. "
+          + "update_registration, forget_registration, register_as_new",
+      );
+
+      await mkdir(projectPath);
+      await page.locator("#project-path").fill(projectPath);
+      const [replacedResponse] = await Promise.all([
+        page.waitForResponse((candidate) => candidate.request().method() === "POST"
+          && candidate.url().endsWith("/projects/open")),
+        page.locator("#open-project").click(),
+      ]);
+      assert.equal(replacedResponse.status(), 409);
+      const replaced = await replacedResponse.json();
+      assert.equal(replaced.code, "project_path_replaced");
+      assert.deepEqual(replaced.resolution.actions, [
+        "replace_registration",
+        "register_as_new",
+        "select_another_path",
+      ]);
+      assert.equal(
+        await page.locator("#project-feedback").textContent(),
+        "Project was not changed: project_path_replaced. "
+          + "replace_registration, register_as_new, select_another_path",
+      );
+
+      await rm(projectPath, { recursive: true });
       await rename(movedProjectPath, projectPath);
 
       const projectState = JSON.parse(
@@ -312,8 +372,8 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
             actualRevision: stale.body.actualRevision,
           },
           missingPath: {
-            code: missing.body.code,
-            guidance: missing.body.resolution.actions,
+            code: missing.code,
+            guidance: missing.resolution.actions,
           },
         },
         projectFootprint: {

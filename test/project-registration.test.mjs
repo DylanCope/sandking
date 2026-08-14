@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -30,6 +31,18 @@ const conformanceAdapterSourcePath = join(
   "conformance-harness-adapter",
   "conformance.mjs",
 );
+
+/** @param {"blob" | "tree" | "commit"} type @param {Buffer} content */
+const gitObjectId = (type, content) => createHash("sha1")
+  .update(`${type} ${content.length}\0`)
+  .update(content)
+  .digest();
+
+/** @param {string} mode @param {string} name @param {Buffer} objectId */
+const gitTreeEntry = (mode, name, objectId) => Buffer.concat([
+  Buffer.from(`${mode} ${name}\0`),
+  objectId,
+]);
 
 const projectConfiguration = {
   issueWorkflow: { provider: "github", kind: "issues" },
@@ -492,6 +505,11 @@ test("Project registration conflicts retain selectable identities and resolve af
       path: movedPath,
     });
     assert.equal(moved.code, "project_path_moved");
+    assert.deepEqual(moved.resolution.actions, [
+      "update_registration",
+      "forget_registration",
+      "register_as_new",
+    ]);
     assert.deepEqual(moved.registrations.map(({ projectId }) => projectId), [
       original.project.projectId,
     ]);
@@ -679,6 +697,11 @@ test("Project registration resolution never selects a retained identity for repl
       path: projectPath,
     });
     assert.equal(replaced.code, "project_path_replaced");
+    assert.deepEqual(replaced.resolution.actions, [
+      "replace_registration",
+      "register_as_new",
+      "select_another_path",
+    ]);
 
     const replacement = await requestHost(child, {
       type: "project.register",
@@ -776,6 +799,17 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
 
   try {
     await negotiate(child);
+    writeFrame(child.stdin, {
+      type: "project.inspect",
+      requestId: "inspect-invalid-relative-project",
+      path: "relative/project",
+    });
+    const invalidInspection = await readFrame(child.stdout);
+    assert.equal(invalidInspection.code, "project_path_invalid");
+    assert.deepEqual(invalidInspection.resolution.actions, [
+      "select_existing_host_directory",
+    ]);
+
     writeFrame(child.stdin, {
       type: "project.inspect",
       requestId: "inspect-selected-project",
@@ -893,15 +927,20 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
     assert.equal(harnessState.harnesses[0].harnessId, harnessRegistration.harness.harnessId);
     assert.notEqual(harnessState.harnesses[0].workspacePath, projectPath);
     assert.match(relative(dataDir, harnessState.harnesses[0].workspacePath), /^\.\./);
+    const expectedCompatibilityManifest = {
+      schemaVersion: 1,
+      name: "Sand-King Conformance Harness",
+      compatibility: {
+        adapterId: "conformance-harness-adapter-v1",
+        adapterProtocol: "1.0.0",
+        entryPoint: "adapters/conformance.mjs",
+      },
+    };
     const compatibilityManifest = JSON.parse(await readFile(
       join(harnessState.harnesses[0].workspacePath, "harness.json"),
       "utf8",
     ));
-    assert.deepEqual(compatibilityManifest.compatibility, {
-      adapterId: "conformance-harness-adapter-v1",
-      adapterProtocol: "1.0.0",
-      entryPoint: "adapters/conformance.mjs",
-    });
+    assert.deepEqual(compatibilityManifest, expectedCompatibilityManifest);
     assert.deepEqual(
       (await readdir(harnessState.harnesses[0].workspacePath)).sort(),
       [".git", "adapters", "harness.json"],
@@ -929,6 +968,34 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
       ])).stdout.trim(),
       harnessRegistration.harness.immutableRevision,
     );
+
+    const adapterBlobId = gitObjectId(
+      "blob",
+      await readFile(conformanceAdapterSourcePath),
+    );
+    const manifestBlobId = gitObjectId(
+      "blob",
+      Buffer.from(`${JSON.stringify(expectedCompatibilityManifest, null, 2)}\n`),
+    );
+    const adaptersTreeId = gitObjectId("tree", gitTreeEntry(
+      "100755",
+      "conformance.mjs",
+      adapterBlobId,
+    ));
+    const rootTreeId = gitObjectId("tree", Buffer.concat([
+      gitTreeEntry("40000", "adapters", adaptersTreeId),
+      gitTreeEntry("100644", "harness.json", manifestBlobId),
+    ]));
+    const commitTimestamp = Date.parse("2026-01-01T00:00:00Z") / 1_000;
+    const expectedRevision = gitObjectId("commit", Buffer.from([
+      `tree ${rootTreeId.toString("hex")}`,
+      `author Sand-King Conformance <conformance@sandking.invalid> ${commitTimestamp} +0000`,
+      `committer Sand-King Conformance <conformance@sandking.invalid> ${commitTimestamp} +0000`,
+      "",
+      "Initialize conformance Harness",
+      "",
+    ].join("\n"))).toString("hex");
+    assert.equal(harnessRegistration.harness.immutableRevision, expectedRevision);
     assert.deepEqual(await readdir(projectPath), projectFilesBefore);
     assert.equal((await readdir(projectPath)).includes(".sandcastle"), false);
 
