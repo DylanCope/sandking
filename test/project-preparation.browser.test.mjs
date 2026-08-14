@@ -460,6 +460,26 @@ test("installed Cockpit resolves tombstones and conflicts after Controller and H
       await page.locator(".restore-project-registration").getAttribute("data-project-id"),
       originalProjectId,
     );
+    await page.locator(".restore-project-registration").click();
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("was restored"));
+    await openProject(page, movedTombstonedProjectPath);
+    await page.waitForSelector(
+      `#project-readiness[data-project-id='${originalProjectId}']`
+        + "[data-harness-launch-ready='true']",
+    );
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.locator("#forget-project-registration").click();
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("was forgotten"));
+    await openProject(page, movedTombstonedProjectPath);
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("project_path_tombstoned"));
+    assert.equal(
+      await page.locator(".restore-project-registration").getAttribute("data-project-id"),
+      originalProjectId,
+    );
     await page.locator("#register-project-as-new").click();
     await page.waitForFunction((retainedProjectId) => {
       const readiness = document.querySelector("#project-readiness");
@@ -565,7 +585,7 @@ test("installed Cockpit resolves tombstones and conflicts after Controller and H
       audits.filter((entry) => entry.action === "project.registration.resolve"
           && entry.outcome === "accepted")
         .map((entry) => entry.details.action),
-      ["forget", "resolve_conflict", "forget"],
+      ["forget", "restore", "forget", "resolve_conflict", "forget"],
     );
     assert.ok(audits.filter((entry) => entry.action === "project.registration.resolve")
       .every((entry) => entry.details.directoryScanPerformed === false
