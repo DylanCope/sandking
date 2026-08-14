@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { canonicalJson } from "./common/canonical-json.mjs";
-import { digest } from "./common/digest.mjs";
-import { identifierSchemas } from "./common/identifiers.mjs";
+import { canonicalJson } from "../common/canonical-json.mjs";
+import { digest } from "../common/digest.mjs";
+import { identifierSchemas } from "../common/identifiers.mjs";
 
 const { projectIdSchema } = identifierSchemas(z);
 const authorizationClass = "host_local_project_registration";
