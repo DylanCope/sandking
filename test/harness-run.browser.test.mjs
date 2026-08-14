@@ -108,6 +108,132 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
         empty.remove();
         return result;
       }), { kind: "none", count: "0", inputs: 0 });
+      const moduleBoundaries = await page.evaluate(async () => {
+        const [{ createHarnessRunObservation }, { createCockpitSocket }] = await Promise.all([
+          import("/cockpit/harness-run.mjs"),
+          import("/cockpit/socket.mjs"),
+        ]);
+        const reconnects = [];
+        const harnessRun = createHarnessRunObservation({
+          state: {
+            hostConnectionStatus: "connected",
+            hostFreshness: "current",
+          },
+          socket: { readyState: WebSocket.OPEN, send() {} },
+          updateWorkbenchChrome() {},
+          reconnectHarnessLaunch: (pendingLaunch) => reconnects.push(pendingLaunch),
+        });
+        const harnessRunId = `harness-run-${"1".repeat(24)}`;
+        const projectId = `project-${"2".repeat(24)}`;
+        const launchIdempotencyKeyHash = `sha256:${"3".repeat(64)}`;
+        const renderedRun = harnessRun.renderHarnessRun({
+          type: "harness.run.observe.result",
+          mode: "snapshot",
+          nextSequence: 0,
+          resynchronization: null,
+          events: [],
+          logStreams: [],
+          terminalEnvelopeValidation: null,
+          outcome: {
+            code: "host_daemon_interrupted",
+            status: "failed",
+            interruption: {
+              previousStatus: "running",
+              reconciliationAuditId: `audit-${"4".repeat(24)}`,
+            },
+          },
+          run: {
+            harnessRunId,
+            projectId,
+            harnessId: `harness-${"5".repeat(24)}`,
+            harnessPinnedRevision: "6".repeat(40),
+            controllerSessionId: null,
+            status: "failed",
+            source: "cockpit",
+            launchAuditId: `audit-${"7".repeat(24)}`,
+            launchIdempotencyKeyHash,
+            executionSnapshot: {
+              schemaVersion: 1,
+              capture: "launch",
+              createdAt: "2026-08-14T00:00:00.000Z",
+              hostId: `host-${"8".repeat(24)}`,
+              projectRegistration: { projectId, revision: 1, displayName: "Boundary Project" },
+              harness: {
+                harnessId: `harness-${"5".repeat(24)}`,
+                name: "Boundary Harness",
+                pinnedRevision: "6".repeat(40),
+                revision: 1,
+              },
+              adapter: {
+                adapterId: "boundary-adapter-v1",
+                protocol: "1.0.0",
+                entryPoint: "adapters/boundary.mjs",
+              },
+              parameters: {},
+              launchAuditId: `audit-${"7".repeat(24)}`,
+            },
+          },
+        });
+        renderedRun.querySelector("#reconnect-harness-launch").click();
+
+        const hostStateDispatches = [];
+        class BoundarySocket extends EventTarget {
+          send() {}
+        }
+        const boundarySocket = new BoundarySocket();
+        const hostConnectionStatus = document.documentElement.dataset.hostConnectionStatus;
+        const publicSeam = (overrides = {}) => new Proxy(overrides, {
+          get: (target, property) => Reflect.get(target, property) ?? (() => {}),
+        });
+        createCockpitSocket({
+          state: {
+            runtimeNegotiated: true,
+            hostConnectionStatus: "connected",
+            hostFreshness: "current",
+          },
+          socket: boundarySocket,
+          browserProtocol: { capabilities: { required: [], optional: [] } },
+          app: document.createElement("main"),
+          reload: document.createElement("button"),
+          terminalSurface: publicSeam(),
+          projectPreparation: publicSeam({
+            applyHostConnectionState: () => hostStateDispatches.push("project-preparation"),
+          }),
+          harnessRunObservation: publicSeam({
+            applyHostConnectionState: () => hostStateDispatches.push("harness-run"),
+          }),
+          chrome: publicSeam({
+            applyHostConnectionState: () => hostStateDispatches.push("chrome"),
+          }),
+        });
+        boundarySocket.dispatchEvent(new MessageEvent("message", {
+          data: JSON.stringify({
+            channel: "control",
+            message: {
+              type: "runtime.connection-state",
+              boundary: "host",
+              status: "disconnected",
+              freshness: "stale",
+              hostId: `host-${"8".repeat(24)}`,
+              failure: {
+                code: "host_disconnected",
+                auditId: `audit-${"9".repeat(24)}`,
+              },
+            },
+          }),
+        }));
+        document.documentElement.dataset.hostConnectionStatus = hostConnectionStatus;
+        return { reconnects, hostStateDispatches };
+      });
+      assert.deepEqual(moduleBoundaries, {
+        reconnects: [{
+          projectId: `project-${"2".repeat(24)}`,
+          parameters: {},
+          idempotencyKeyHash: `sha256:${"3".repeat(64)}`,
+          reconnectHarnessRunId: `harness-run-${"1".repeat(24)}`,
+        }],
+        hostStateDispatches: ["chrome", "project-preparation", "harness-run"],
+      });
       await page.locator("#harness-launch-parameter-issueNumber").fill("152");
       await page.locator("#harness-launch-parameter-targetBranch")
         .fill("sandcastle/issue-152");

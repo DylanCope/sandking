@@ -169,6 +169,16 @@ const waitForProcessesToExit = async (pids) => {
   throw new Error("supervised_process_exit_timeout");
 };
 
+const killHostAndWaitForDisconnectedCockpit = async (page, hostPid) => {
+  const disconnected = page.waitForSelector(
+    "#connection-status[data-host-status='disconnected']"
+      + "[data-failure-code='host_disconnected']",
+    { timeout: 90_000 },
+  );
+  process.kill(hostPid, "SIGKILL");
+  await disconnected;
+};
+
 test("packaged Cockpit reconciles an active Harness run after real Host death", {
   skip: process.platform !== "linux"
     ? "the deterministic real-process identity assertions use Linux process inventory"
@@ -258,6 +268,11 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
       assert.equal(activeRun.controllerSessionId, controllerSessionId);
       assert.equal(firstSentFrames.some((frame) =>
         frame.includes('"type":"browser.harness-run.launch"')), false);
+      await page.waitForSelector(
+        `#harness-run-observation[data-run-id='${activeRun.harnessRunId}']`
+          + "[data-run-status='running']",
+        { timeout: 90_000 },
+      );
       const runtimeState = await readJson(join(dataDir, "runtime-state.json"));
       const hostPid = await findLocalHostPid(runtimeState.pid);
       const initialProcessTree = await inspectHostProcessTree(hostPid);
@@ -269,11 +284,7 @@ test("packaged Cockpit reconciles an active Harness run after real Host death", 
         adapters: initialProcessTree.adapters.map(({ pid, parentPid }) => ({ pid, parentPid })),
       }));
 
-      process.kill(hostPid, "SIGKILL");
-      await page.waitForSelector(
-        "#connection-status[data-host-status='disconnected'][data-failure-code='host_disconnected']",
-        { timeout: 90_000 },
-      );
+      await killHostAndWaitForDisconnectedCockpit(page, hostPid);
       const durableAtInterruption = await readJson(join(dataDir, "harness-runs.json"));
       const retainedActive = durableAtInterruption.runs[0];
       assert.equal(retainedActive.harnessRunId, activeRun.harnessRunId);
@@ -512,6 +523,11 @@ test("packaged Cockpit resolves uncertain Host-loss supervision through bounded 
       await page.locator("#launch-harness").click();
       await page.locator("#harness-launch-confirmation-yes").click();
       const { run: activeRun } = await waitForActiveRun(dataDir);
+      await page.waitForSelector(
+        `#harness-run-observation[data-run-id='${activeRun.harnessRunId}']`
+          + "[data-run-status='running']",
+        { timeout: 90_000 },
+      );
       const beforeRecoveryEvents = structuredClone(activeRun.events);
       const runtimeState = await readJson(join(dataDir, "runtime-state.json"));
       const hostPid = await findLocalHostPid(runtimeState.pid);
@@ -519,12 +535,7 @@ test("packaged Cockpit resolves uncertain Host-loss supervision through bounded 
       const supervisedPids = initialTree.descendants.map(({ pid }) => pid);
       assert.ok(supervisedPids.length >= 3, JSON.stringify(initialTree));
 
-      process.kill(hostPid, "SIGKILL");
-      await page.waitForSelector(
-        "#connection-status[data-host-status='disconnected']"
-          + "[data-failure-code='host_disconnected']",
-        { timeout: 90_000 },
-      );
+      await killHostAndWaitForDisconnectedCockpit(page, hostPid);
       await waitForProcessesToExit(supervisedPids);
       const { path: evidencePath } = await waitForHostLossEvidence(
         dataDir,
@@ -791,12 +802,7 @@ test("packaged Cockpit continues accepted cancellation after real Host death", {
       assert.equal(acceptedRun.events.filter((event) =>
         event.type === "harness_run_cancellation_accepted").length, 1);
 
-      process.kill(hostPid, "SIGKILL");
-      await page.waitForSelector(
-        "#connection-status[data-host-status='disconnected']"
-          + "[data-failure-code='host_disconnected']",
-        { timeout: 90_000 },
-      );
+      await killHostAndWaitForDisconnectedCockpit(page, hostPid);
       await execFileAsync(installed.command, ["stop", "--data-dir", dataDir, "--json"], {
         cwd: executionDirectory,
         env: productEnvironment,
