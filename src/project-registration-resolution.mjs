@@ -66,11 +66,13 @@ export const applyProjectRegistrationResolution = async (options, request) => {
    */
   const reject = async (code, detail = {}) => {
     const actualRevision = detail.actualRevision ?? 0;
-    const registrations = detail.registrations?.map((registration) => {
-      const retained = options.state.projects.find((/** @type {any} */ candidate) =>
-        candidate.projectId === registration.projectId);
-      return retained ? projectResolutionRegistration(retained) : registration;
-    });
+    const registrations = code === "project_path_conflict"
+      ? detail.registrations
+      : detail.registrations?.map((registration) => {
+        const retained = options.state.projects.find((/** @type {any} */ candidate) =>
+          candidate.projectId === registration.projectId);
+        return retained ? projectResolutionRegistration(retained) : registration;
+      });
     const auditId = await options.recordAudit(operation, "rejected", {
       code,
       action: typeof request.action === "string" ? request.action : null,
@@ -210,18 +212,41 @@ export const applyProjectRegistrationResolution = async (options, request) => {
     affectedProjects = [project];
     code = "project_registration_restored";
   } else {
-    if (project.status !== "active") {
-      return reject("project_path_tombstoned", {
-        actualRevision: project.revision,
-        registrations: [projectResolutionRegistration(project)],
-        retryable: false,
-      });
-    }
-    const location = await options.resolveProjectLocation(
-      options.state,
+    let candidateState = structuredClone(options.state);
+    let location = await options.resolveProjectLocation(
+      candidateState,
       request.path,
       options.dataDir,
     );
+    if (location.kind !== "failure" || location.code !== "project_path_conflict") {
+      const tombstonedProjectIds = project.status === "tombstoned"
+        ? [project.projectId]
+        : options.state.projects
+          .filter((/** @type {any} */ candidate) => candidate.status === "tombstoned")
+          .map((/** @type {any} */ candidate) => candidate.projectId);
+      for (const tombstonedProjectId of tombstonedProjectIds) {
+        const restoredState = structuredClone(options.state);
+        const restored = restoredState.projects.find((/** @type {any} */ candidate) =>
+          candidate.projectId === tombstonedProjectId);
+        if (!restored) continue;
+        restored.status = "active";
+        const restoredLocation = await options.resolveProjectLocation(
+          restoredState,
+          request.path,
+          options.dataDir,
+        );
+        if (
+          restoredLocation.kind === "failure"
+          && restoredLocation.code === "project_path_conflict"
+          && restoredLocation.registrations.some((/** @type {any} */ registration) =>
+            registration.projectId === project.projectId)
+        ) {
+          candidateState = restoredState;
+          location = restoredLocation;
+          break;
+        }
+      }
+    }
     if (location.kind !== "failure" || location.code !== "project_path_conflict") {
       return reject("mutation_contract_invalid", {
         actualRevision: location.actualRevision,
@@ -239,7 +264,6 @@ export const applyProjectRegistrationResolution = async (options, request) => {
     }
     affectedProjects = options.state.projects.filter((/** @type {any} */ candidate) =>
       conflictingIds.has(candidate.projectId));
-    const candidateState = structuredClone(options.state);
     for (const candidate of candidateState.projects) {
       if (conflictingIds.has(candidate.projectId) && candidate.projectId !== project.projectId) {
         candidate.status = "tombstoned";
@@ -253,6 +277,7 @@ export const applyProjectRegistrationResolution = async (options, request) => {
         registrations: location.registrations,
       });
     }
+    selected.status = "active";
     selected.canonicalPath = location.selectedCanonicalPath;
     const resolved = await options.resolveProjectLocation(
       candidateState,

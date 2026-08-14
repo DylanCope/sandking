@@ -96,6 +96,25 @@ const requestHost = async (child, request) => {
   return readFrame(child.stdout);
 };
 
+/**
+ * @param {import("node:child_process").ChildProcessWithoutNullStreams} child
+ * @param {Record<string, unknown>} request
+ * @param {number} [timeoutMs]
+ */
+const requestHostWithin = async (child, request, timeoutMs = 10_000) => {
+  let timeout;
+  try {
+    return await Promise.race([
+      requestHost(child, request),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("host_response_timeout")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
 test("Project registration preserves a tombstone through wrong-path restore and Host restart", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-project-registration-lifecycle-"));
   const dataDir = join(root, "host-state");
@@ -279,6 +298,132 @@ test("Project registration preserves a tombstone through wrong-path restore and 
     assert.ok(audits.some((entry) => entry.outcome === "rejected"
       && entry.details.code === "project_path_tombstoned"
       && entry.details.candidateProjectIds[0] === registered.project.projectId));
+  } finally {
+    await stopHost(child);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a tombstone restored onto its registered replacement retains actionable conflict recovery", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-project-registration-restore-conflict-"));
+  const dataDir = join(root, "host-state");
+  const originalPath = join(root, "original-project");
+  const replacementPath = join(root, "replacement-project");
+  await mkdir(originalPath);
+  let child = startHost(dataDir);
+
+  try {
+    await negotiate(child);
+    const original = await requestHost(child, {
+      type: "project.register",
+      requestId: "register-restore-conflict-original",
+      path: originalPath,
+      configuration: projectConfiguration,
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "register-restore-conflict-original",
+      expectedRevision: 0,
+    });
+    const forgotten = await requestHost(child, {
+      type: "project.registration.resolve",
+      requestId: "forget-restore-conflict-original",
+      action: "forget",
+      projectId: original.project.projectId,
+      path: originalPath,
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "forget-restore-conflict-original",
+      expectedRevision: original.revision,
+    });
+    await rename(originalPath, replacementPath);
+    const replacement = await requestHost(child, {
+      type: "project.register",
+      requestId: "register-restore-conflict-replacement",
+      path: replacementPath,
+      configuration: projectConfiguration,
+      resolutionAction: "register_as_new",
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "register-restore-conflict-replacement",
+      expectedRevision: forgotten.revision,
+    });
+
+    const restoreConflict = await requestHostWithin(child, {
+      type: "project.registration.resolve",
+      requestId: "restore-original-onto-replacement",
+      action: "restore",
+      projectId: original.project.projectId,
+      path: replacementPath,
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "restore-original-onto-replacement",
+      expectedRevision: forgotten.revision,
+    });
+    assert.equal(restoreConflict.type, "project.operation.failure");
+    assert.equal(restoreConflict.code, "project_path_conflict");
+    assert.deepEqual(restoreConflict.resolution.actions, [
+      "resolve_conflicting_registrations",
+    ]);
+    assert.deepEqual(
+      restoreConflict.registrations.map(({ projectId, status }) => ({ projectId, status })),
+      [
+        { projectId: original.project.projectId, status: "active" },
+        { projectId: replacement.project.projectId, status: "active" },
+      ],
+    );
+    assert.equal((await requestHostWithin(child, {
+      type: "project.inspect",
+      requestId: "inspect-responsive-restore-conflict-host",
+      path: replacementPath,
+    })).project.projectId, replacement.project.projectId);
+
+    await stopHost(child);
+    child = startHost(dataDir);
+    await negotiate(child);
+
+    const keepReplacement = await requestHost(child, {
+      type: "project.registration.resolve",
+      requestId: "select-restore-conflict-replacement",
+      action: "resolve_conflict",
+      projectId: replacement.project.projectId,
+      path: replacementPath,
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "select-restore-conflict-replacement",
+      expectedRevision: replacement.revision,
+    });
+    assert.equal(keepReplacement.code, "project_registration_conflict_resolved");
+    assert.equal(keepReplacement.project.projectId, replacement.project.projectId);
+
+    const retainedOriginal = await requestHost(child, {
+      type: "project.inspect",
+      requestId: "inspect-retained-restore-conflict-original",
+      path: originalPath,
+    });
+    assert.equal(retainedOriginal.code, "project_path_tombstoned");
+    const secondRestoreConflict = await requestHost(child, {
+      type: "project.registration.resolve",
+      requestId: "restore-original-onto-retained-replacement",
+      action: "restore",
+      projectId: original.project.projectId,
+      path: replacementPath,
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "restore-original-onto-retained-replacement",
+      expectedRevision: retainedOriginal.actualRevision,
+    });
+    assert.equal(secondRestoreConflict.code, "project_path_conflict");
+    const selectOriginal = await requestHost(child, {
+      type: "project.registration.resolve",
+      requestId: "select-restore-conflict-original",
+      action: "resolve_conflict",
+      projectId: original.project.projectId,
+      path: replacementPath,
+      authorizationClass: "host_local_project_registration",
+      idempotencyKey: "select-restore-conflict-original",
+      expectedRevision: retainedOriginal.actualRevision,
+    });
+    assert.equal(selectOriginal.code, "project_registration_conflict_resolved");
+    assert.equal(selectOriginal.project.projectId, original.project.projectId);
+    assert.equal((await requestHost(child, {
+      type: "project.inspect",
+      requestId: "inspect-selected-restore-conflict-original",
+      path: replacementPath,
+    })).project.projectId, original.project.projectId);
   } finally {
     await stopHost(child);
     await rm(root, { recursive: true, force: true });
