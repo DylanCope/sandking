@@ -505,6 +505,11 @@ test("Project registration conflicts retain selectable identities and resolve af
       path: movedPath,
     });
     assert.equal(moved.code, "project_path_moved");
+    assert.deepEqual(moved.resolution.actions, [
+      "update_registration",
+      "forget_registration",
+      "register_as_new",
+    ]);
     assert.deepEqual(moved.registrations.map(({ projectId }) => projectId), [
       original.project.projectId,
     ]);
@@ -692,6 +697,11 @@ test("Project registration resolution never selects a retained identity for repl
       path: projectPath,
     });
     assert.equal(replaced.code, "project_path_replaced");
+    assert.deepEqual(replaced.resolution.actions, [
+      "replace_registration",
+      "register_as_new",
+      "select_another_path",
+    ]);
 
     const replacement = await requestHost(child, {
       type: "project.register",
@@ -789,6 +799,17 @@ test("the framed Host opens, registers, and prepares only an explicitly selected
 
   try {
     await negotiate(child);
+    writeFrame(child.stdin, {
+      type: "project.inspect",
+      requestId: "inspect-invalid-relative-project",
+      path: "relative/project",
+    });
+    const invalidInspection = await readFrame(child.stdout);
+    assert.equal(invalidInspection.code, "project_path_invalid");
+    assert.deepEqual(invalidInspection.resolution.actions, [
+      "select_existing_host_directory",
+    ]);
+
     writeFrame(child.stdin, {
       type: "project.inspect",
       requestId: "inspect-selected-project",
