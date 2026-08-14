@@ -616,9 +616,14 @@ test("installed Cockpit resolves tombstones and conflicts after Controller and H
     assert.equal(await page.locator("#launch-harness").isEnabled(), true);
     assert.equal(await page.locator("#open-project-controller").isEnabled(), true);
     await page.locator("#project-path").fill(restoreConflictReplacementPath);
-    await page.locator(".restore-project-registration").click();
+    const [restoreConflictResponse] = await Promise.all([
+      page.waitForResponse((response) => response.request().method() === "POST"
+        && response.url().endsWith("/projects/registration/resolve")),
+      page.locator(".restore-project-registration").click(),
+    ]);
+    assert.equal(restoreConflictResponse.status(), 409);
     await page.waitForFunction(() => document.querySelector("#project-feedback")
-      ?.textContent?.includes("requires conflict resolution"));
+      ?.textContent?.includes("was restored and now requires conflict resolution"));
     assert.equal(await page.locator("#project-not-selected").count(), 1);
     assert.equal(await page.locator("#project-readiness[data-harness-launch-ready='true']")
       .count(), 0);

@@ -86,11 +86,18 @@ export const createProjectRegistrationResolutionControls = (options) => {
     if (!response.ok) {
       const conflictRequiresResolution = outcome.code === "project_path_conflict";
       if (conflictRequiresResolution) options.clearCurrentProject();
-      options.setFeedback(conflictRequiresResolution
-        ? `Project registration requires conflict resolution: ${outcome.code}. ${
-            outcome.resolution?.actions?.join(", ") ?? "Select a retained registration."}`
-        : `Project registration was not changed: ${outcome.code}. ${
-            outcome.resolution?.actions?.join(", ") ?? "Refresh and retry."}`);
+      let feedback;
+      if (action === "restore" && conflictRequiresResolution) {
+        feedback = `Project registration ${registration.projectId} was restored and now requires conflict resolution: ${outcome.code}. ${
+          outcome.resolution?.actions?.join(", ") ?? "Select a retained registration."}`;
+      } else if (conflictRequiresResolution) {
+        feedback = `Project registration requires conflict resolution: ${outcome.code}. ${
+          outcome.resolution?.actions?.join(", ") ?? "Select a retained registration."}`;
+      } else {
+        feedback = `Project registration was not changed: ${outcome.code}. ${
+          outcome.resolution?.actions?.join(", ") ?? "Refresh and retry."}`;
+      }
+      options.setFeedback(feedback);
       render(outcome);
       options.updateAvailability();
       return;
