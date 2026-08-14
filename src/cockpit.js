@@ -929,6 +929,11 @@ const renderProjectPreparation = (
     currentNode = replacement;
     updateWorkbenchChrome({ currentProject: null });
   };
+  /** @param {any} outcome */
+  const projectFailureInvalidatesCurrentProject = (outcome) =>
+    outcome.code === "project_path_conflict"
+    || outcome.registrations?.some((/** @type {any} */ registration) =>
+      registration.projectId === currentProject?.projectId) === true;
   const openSelectedProject = async (resolutionAction, resolutionExpectedRevision) => {
     const requestExpectedRevision = resolutionAction === "register_as_new"
       && Number.isSafeInteger(resolutionExpectedRevision)
@@ -961,7 +966,7 @@ const renderProjectPreparation = (
     const outcome = await response.json();
     if (!response.ok) {
       registrationResolutionControls.render(outcome);
-      if (outcome.code === "project_path_conflict") {
+      if (projectFailureInvalidatesCurrentProject(outcome)) {
         clearCurrentProject();
       }
       if (outcome.project) {
@@ -982,8 +987,11 @@ const renderProjectPreparation = (
       feedback.textContent = outcome.project
         ? `Project ${outcome.project.projectId} was accepted, but preparation stopped: ${
             outcome.code}. Its retained readiness is shown above.`
-        : `Project was not changed: ${outcome.code}. ${
-            outcome.resolution?.actions?.join(", ") ?? "Review the typed guidance."}`;
+        : outcome.code === "project_path_conflict"
+          ? `Project registration requires conflict resolution: ${outcome.code}. ${
+              outcome.resolution?.actions?.join(", ") ?? "Select a retained registration."}`
+          : `Project was not changed: ${outcome.code}. ${
+              outcome.resolution?.actions?.join(", ") ?? "Review the typed guidance."}`;
       updateProjectActionAvailability();
       openButton.disabled = hostConnectionStatus !== "connected";
       return;

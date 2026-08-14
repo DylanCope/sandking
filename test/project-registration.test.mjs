@@ -569,6 +569,7 @@ test("Project registration conflicts retain selectable identities and resolve af
     });
 
     await stopHost(child);
+    await rm(movedPath, { recursive: true });
     child = startHost(dataDir);
     await negotiate(child);
     const restartedConflict = await inspectConflict("inspect-restarted-conflict");
@@ -620,8 +621,15 @@ test("Project registration conflicts retain selectable identities and resolve af
     assert.equal(staleResolution.code, "mutation_revision_conflict");
     assert.equal(staleResolution.actualRevision, resolved.revision);
     const selected = await inspectConflict("inspect-selected-conflict-candidate");
-    assert.equal(selected.type, "project.inspect.result");
-    assert.equal(selected.project.projectId, original.project.projectId);
+    assert.equal(selected.type, "project.operation.failure");
+    assert.equal(selected.code, "project_path_missing");
+    assert.deepEqual(selected.resolution.actions, [
+      "update_registration",
+      "forget_registration",
+    ]);
+    assert.deepEqual(selected.registrations.map(({ projectId }) => projectId), [
+      original.project.projectId,
+    ]);
     const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
       .trim()
       .split("\n")

@@ -256,13 +256,6 @@ export const applyProjectRegistrationResolution = async (options, request) => {
         await options.writeProjectState(options.dataDir, candidateState);
         return response;
       }
-      if (location.kind === "failure") {
-        return reject(location.code, {
-          actualRevision: location.actualRevision,
-          registrations: location.registrations
-            ?? [projectResolutionRegistration(project)],
-        });
-      }
       return reject("project_path_tombstoned", {
         actualRevision: project.revision,
         registrations: [projectResolutionRegistration(project)],
@@ -345,7 +338,14 @@ export const applyProjectRegistrationResolution = async (options, request) => {
       request.path,
       options.dataDir,
     );
-    if (resolved.kind !== "registered" || resolved.project?.projectId !== project.projectId) {
+    const selectedRegistrationMissing = resolved.kind === "failure"
+      && resolved.code === "project_path_missing"
+      && resolved.registrations?.length === 1
+      && resolved.registrations[0].projectId === project.projectId;
+    if (
+      !selectedRegistrationMissing
+      && (resolved.kind !== "registered" || resolved.project?.projectId !== project.projectId)
+    ) {
       return reject("project_path_conflict", {
         actualRevision: location.actualRevision,
         registrations: location.registrations,

@@ -396,11 +396,14 @@ test("installed Cockpit resolves tombstones and conflicts after Controller and H
   const projectPath = join(root, "selected-project");
   const movedTombstonedProjectPath = join(root, "moved-tombstoned-project");
   const movedProjectPath = join(root, "moved-project");
+  const restoreConflictOriginalPath = join(root, "restore-conflict-original");
+  const restoreConflictReplacementPath = join(root, "restore-conflict-replacement");
   await Promise.all([
     mkdir(dataDir, { recursive: true }),
     mkdir(executionDirectory, { recursive: true }),
     mkdir(userHome, { recursive: true }),
     mkdir(projectPath, { recursive: true }),
+    mkdir(restoreConflictOriginalPath, { recursive: true }),
   ]);
   const installed = await installCurrentPackage(root);
   const productEnvironment = { ...process.env, HOME: userHome };
@@ -494,6 +497,9 @@ test("installed Cockpit resolves tombstones and conflicts after Controller and H
     await openProject(page, movedProjectPath);
     await page.waitForFunction(() => document.querySelector("#project-feedback")
       ?.textContent?.includes("project_path_moved"));
+    assert.equal(await page.locator("#project-not-selected").count(), 1);
+    assert.equal(await page.locator("#launch-harness").isDisabled(), true);
+    assert.equal(await page.locator("#open-project-controller").isDisabled(), true);
     await page.locator("#register-project-as-new").click();
     await page.waitForFunction(() => document.querySelector("#project-feedback")
       ?.textContent?.includes("project_path_conflict"));
@@ -512,6 +518,7 @@ test("installed Cockpit resolves tombstones and conflicts after Controller and H
     await context.close();
     await browser.close();
     browser = undefined;
+    await rm(movedProjectPath, { recursive: true });
 
     const restarted = await launchRuntime("project-resolution-runtime-restart");
     ({ context, page } = await openCockpit(restarted.bootstrapUrl));
@@ -534,24 +541,6 @@ test("installed Cockpit resolves tombstones and conflicts after Controller and H
     ).click();
     await page.waitForFunction(() => document.querySelector("#project-feedback")
       ?.textContent?.includes("was kept"));
-    await openProject(page, movedProjectPath);
-    await page.waitForSelector(
-      `#project-readiness[data-project-id='${replacementProjectId}']`
-        + "[data-harness-launch-ready='true']",
-    );
-
-    await execFileAsync(installed.command, [
-      "stop", "--data-dir", dataDir, "--json",
-    ], { cwd: executionDirectory, env: productEnvironment });
-    await context.close();
-    await browser.close();
-    browser = undefined;
-    await rm(movedProjectPath, { recursive: true });
-
-    const missingRestart = await launchRuntime("project-resolution-missing-runtime-restart");
-    ({ context, page } = await openCockpit(missingRestart.bootstrapUrl));
-    assert.notEqual(missingRestart.runtime.runtimeId, restarted.runtime.runtimeId);
-    assert.equal(missingRestart.host.hostId, launch.host.hostId);
     await openProject(page, movedProjectPath);
     await page.waitForFunction(() => document.querySelector("#project-feedback")
       ?.textContent?.includes("project_path_missing"));
@@ -576,6 +565,75 @@ test("installed Cockpit resolves tombstones and conflicts after Controller and H
     await openProject(page, movedProjectPath);
     await page.waitForFunction(() => document.querySelector("#project-feedback")
       ?.textContent?.includes("project_path_tombstoned"));
+    const [rejectedRestoreResponse] = await Promise.all([
+      page.waitForResponse((response) => response.request().method() === "POST"
+        && response.url().endsWith("/projects/registration/resolve")),
+      page.locator(
+        `.restore-project-registration[data-project-id='${replacementProjectId}']`,
+      ).click(),
+    ]);
+    assert.equal(rejectedRestoreResponse.status(), 409);
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes(
+        "Project registration was not changed: project_path_tombstoned",
+      ));
+    assert.equal(await page.locator("#project-registration-resolution")
+      .getAttribute("data-registration-failure-code"), "project_path_tombstoned");
+    assert.equal(await page.locator(
+      `.restore-project-registration[data-project-id='${replacementProjectId}']`,
+    ).isEnabled(), true);
+    assert.equal(await page.locator("#register-project-as-new").isVisible(), true);
+    assert.equal(await page.locator("#register-project-as-new").isEnabled(), true);
+
+    await openProject(page, restoreConflictOriginalPath);
+    await page.waitForSelector(
+      "#project-readiness[data-harness-launch-ready='true']",
+    );
+    const restoreConflictOriginalId = await page.locator("#project-readiness")
+      .getAttribute("data-project-id");
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.locator("#forget-project-registration").click();
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("was forgotten"));
+    await rename(restoreConflictOriginalPath, restoreConflictReplacementPath);
+    await openProject(page, restoreConflictReplacementPath);
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("project_path_tombstoned"));
+    await page.locator("#register-project-as-new").click();
+    await page.waitForFunction((originalId) => {
+      const readiness = document.querySelector("#project-readiness");
+      return readiness?.getAttribute("data-harness-launch-ready") === "true"
+        && readiness.getAttribute("data-project-id") !== originalId;
+    }, restoreConflictOriginalId);
+    const restoreConflictReplacementId = await page.locator("#project-readiness")
+      .getAttribute("data-project-id");
+    await openProject(page, restoreConflictOriginalPath);
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("project_path_tombstoned"));
+    assert.equal(await page.locator("#project-readiness").getAttribute(
+      "data-project-id",
+    ), restoreConflictReplacementId);
+    assert.equal(await page.locator("#launch-harness").isEnabled(), true);
+    assert.equal(await page.locator("#open-project-controller").isEnabled(), true);
+    await page.locator("#project-path").fill(restoreConflictReplacementPath);
+    await page.locator(".restore-project-registration").click();
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("requires conflict resolution"));
+    assert.equal(await page.locator("#project-not-selected").count(), 1);
+    assert.equal(await page.locator("#project-readiness[data-harness-launch-ready='true']")
+      .count(), 0);
+    assert.equal(await page.locator("#launch-harness").isDisabled(), true);
+    assert.equal(await page.locator("#open-project-controller").isDisabled(), true);
+    assert.deepEqual(
+      (await page.locator(".resolve-project-registration-conflict")
+        .evaluateAll((buttons) => buttons.map((button) => button.dataset.projectId))).sort(),
+      [restoreConflictOriginalId, restoreConflictReplacementId].sort(),
+    );
+    await page.locator(
+      `.resolve-project-registration-conflict[data-project-id='${restoreConflictReplacementId}']`,
+    ).click();
+    await page.waitForFunction(() => document.querySelector("#project-feedback")
+      ?.textContent?.includes("was kept"));
 
     const audits = (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
       .trim()
@@ -585,7 +643,16 @@ test("installed Cockpit resolves tombstones and conflicts after Controller and H
       audits.filter((entry) => entry.action === "project.registration.resolve"
           && entry.outcome === "accepted")
         .map((entry) => entry.details.action),
-      ["forget", "restore", "forget", "resolve_conflict", "forget"],
+      [
+        "forget",
+        "restore",
+        "forget",
+        "resolve_conflict",
+        "forget",
+        "forget",
+        "restore",
+        "resolve_conflict",
+      ],
     );
     assert.ok(audits.filter((entry) => entry.action === "project.registration.resolve")
       .every((entry) => entry.details.directoryScanPerformed === false

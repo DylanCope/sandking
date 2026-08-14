@@ -84,8 +84,13 @@ export const createProjectRegistrationResolutionControls = (options) => {
     });
     const outcome = await response.json();
     if (!response.ok) {
-      options.setFeedback(`Project registration was not changed: ${outcome.code}. ${
-        outcome.resolution?.actions?.join(", ") ?? "Refresh and retry."}`);
+      const conflictRequiresResolution = outcome.code === "project_path_conflict";
+      if (conflictRequiresResolution) options.clearCurrentProject();
+      options.setFeedback(conflictRequiresResolution
+        ? `Project registration requires conflict resolution: ${outcome.code}. ${
+            outcome.resolution?.actions?.join(", ") ?? "Select a retained registration."}`
+        : `Project registration was not changed: ${outcome.code}. ${
+            outcome.resolution?.actions?.join(", ") ?? "Refresh and retry."}`);
       render(outcome);
       options.updateAvailability();
       return;

@@ -1387,6 +1387,17 @@ const projectFailureStatus = Object.freeze({
   mutation_revision_conflict: 409,
 });
 
+const clearCurrentProjectPreparation = () => {
+  currentProjectPreparation = projectPreparationProjection();
+  currentProjectPath = null;
+};
+
+/** @param {any} failure */
+const projectFailureInvalidatesCurrentPreparation = (failure) =>
+  failure?.code === "project_path_conflict"
+  || failure?.registrations?.some((/** @type {any} */ registration) =>
+    registration.projectId === currentProjectPreparation.current?.projectId) === true;
+
 /**
  * @param {string} code
  * @param {number} expectedRevision
@@ -1475,6 +1486,9 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       prohibitedSideEffects,
     );
     if (retained) {
+      if (projectFailureInvalidatesCurrentPreparation(retained.body)) {
+        clearCurrentProjectPreparation();
+      }
       return retained;
     }
   }
@@ -1527,6 +1541,9 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
     ].includes(inspection.code)
     && request.resolutionAction === "register_as_new";
   if (inspection.type === "project.operation.failure" && !registeringSelectedPathAsNew) {
+    if (projectFailureInvalidatesCurrentPreparation(inspection)) {
+      clearCurrentProjectPreparation();
+    }
     return retainProjectPreparation({
       status: projectFailureStatus[inspection.code] ?? 409,
       body: inspection,
@@ -1680,6 +1697,9 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       : request.expectedRevision,
   });
   if (projectRegistration.type === "project.operation.failure") {
+    if (projectFailureInvalidatesCurrentPreparation(projectRegistration)) {
+      clearCurrentProjectPreparation();
+    }
     return retainProjectPreparation({
       status: projectFailureStatus[projectRegistration.code] ?? 409,
       body: projectRegistration,
@@ -1695,8 +1715,7 @@ const prepareExplicitProject = (request) => withProjectPreparationLock(async () 
       path: typeof request.path === "string" ? request.path : "",
     });
     if (resolutionInspection.type === "project.operation.failure") {
-      currentProjectPreparation = projectPreparationProjection();
-      currentProjectPath = null;
+      clearCurrentProjectPreparation();
       return retainProjectPreparation({
         status: projectFailureStatus[resolutionInspection.code] ?? 409,
         body: resolutionInspection,
@@ -1897,6 +1916,9 @@ const resolveExplicitProjectRegistration = (request) =>
       expectedRevision: request.expectedRevision,
     });
     if (outcome.type === "project.operation.failure") {
+      if (projectFailureInvalidatesCurrentPreparation(outcome)) {
+        clearCurrentProjectPreparation();
+      }
       return {
         status: projectFailureStatus[outcome.code] ?? 409,
         body: outcome,
@@ -1905,8 +1927,7 @@ const resolveExplicitProjectRegistration = (request) =>
     if (outcome.type !== "project.registration.resolve.result") {
       throw new Error("host_protocol_error");
     }
-    currentProjectPreparation = projectPreparationProjection();
-    currentProjectPath = null;
+    clearCurrentProjectPreparation();
     return { status: 200, body: outcome };
   });
 

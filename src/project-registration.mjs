@@ -601,7 +601,14 @@ const resolveProjectLocation = async (state, selectedPath, dataDir) => {
     }
   } catch {
     const stored = state.projects.filter((project) => project.canonicalPath === normalizedPath);
-    const active = stored.filter((project) => project.status === "active");
+    const activeAtPath = stored.filter((project) => project.status === "active");
+    const retainedIdentityDigests = new Set(activeAtPath.map(
+      (project) => project.filesystemIdentityDigest,
+    ));
+    const active = activeAtPath.length > 0
+      ? state.projects.filter((project) => project.status === "active"
+        && retainedIdentityDigests.has(project.filesystemIdentityDigest))
+      : activeAtPath;
     const tombstoned = stored.filter((project) => project.status === "tombstoned");
     if (active.length > 1) {
       return {
@@ -609,6 +616,7 @@ const resolveProjectLocation = async (state, selectedPath, dataDir) => {
         code: "project_path_conflict",
         actualRevision: Math.max(...active.map((project) => project.revision)),
         registrations: active.map(projectResolutionRegistration),
+        selectedCanonicalPath: normalizedPath,
       };
     }
     if (active[0]) {
