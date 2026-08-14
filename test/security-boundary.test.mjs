@@ -149,9 +149,15 @@ test("bootstrap URLs exchange once into a session and same-origin WebSockets req
     });
     assert.equal(cockpitScript.status, 200);
     assert.match(cockpitScript.headers.get("content-type"), /text\/javascript/);
-    assert.match(await cockpitScript.text(), /new WebSocket/);
+    assert.match(await cockpitScript.text(), /createCockpitSocketConnection/);
 
     for (const [path, contentType, expectedSource] of [
+      ["/cockpit/dom.mjs", "text/javascript", "export const element"],
+      ["/cockpit/socket.mjs", "text/javascript", "createCockpitSocket"],
+      ["/cockpit/terminal.mjs", "text/javascript", "createTerminalSurface"],
+      ["/cockpit/project-preparation.mjs", "text/javascript", "createProjectPreparation"],
+      ["/cockpit/harness-run.mjs", "text/javascript", "createHarnessRunObservation"],
+      ["/cockpit/chrome.mjs", "text/javascript", "createCockpitChrome"],
       ["/terminal/xterm.mjs", "text/javascript", "class"],
       ["/terminal/addon-fit.mjs", "text/javascript", "FitAddon"],
       ["/terminal/xterm.css", "text/css", ".xterm"],

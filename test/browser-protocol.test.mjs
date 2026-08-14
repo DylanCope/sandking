@@ -25,7 +25,10 @@ const cliPath = join(process.cwd(), "src", "cli.mjs");
 const runtimePids = new Map();
 
 test("the served Cockpit advertises the current browser schema digest", async () => {
-  const cockpitSource = await readFile(join(process.cwd(), "src", "cockpit.js"), "utf8");
+  const cockpitSource = await readFile(
+    join(process.cwd(), "src", "cockpit", "index.mjs"),
+    "utf8",
+  );
   assert.ok(cockpitSource.includes(`schemaDigest: "${BROWSER_SCHEMA_DIGEST}"`));
 });
 

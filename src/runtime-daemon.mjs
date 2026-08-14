@@ -102,7 +102,18 @@ const parseArgs = (argv) => {
 
 const args = parseArgs(process.argv.slice(2));
 const localHostPath = fileURLToPath(new URL("./local-host.mjs", import.meta.url));
-const cockpitScriptPath = fileURLToPath(new URL("./cockpit.js", import.meta.url));
+const cockpitScriptPath = fileURLToPath(new URL("./cockpit/index.mjs", import.meta.url));
+const cockpitModuleSources = Object.freeze([
+  "dom.mjs",
+  "socket.mjs",
+  "terminal.mjs",
+  "project-preparation.mjs",
+  "harness-run.mjs",
+  "chrome.mjs",
+].map((name) => ({
+  requestPath: `/cockpit/${name}`,
+  sourcePath: fileURLToPath(new URL(`./cockpit/${name}`, import.meta.url)),
+})));
 const cockpitLaunchParametersPath = fileURLToPath(
   new URL("./cockpit-launch-parameters.mjs", import.meta.url),
 );
@@ -2941,6 +2952,7 @@ const main = async () => {
   await ensurePrivateDirectory(tokenDirectory);
   const [
     cockpitScript,
+    cockpitModules,
     cockpitLaunchParametersScript,
     cockpitProjectRegistrationScript,
     identifierScript,
@@ -2953,6 +2965,10 @@ const main = async () => {
   ] =
     await Promise.all([
       readFile(cockpitScriptPath, "utf8"),
+      Promise.all(cockpitModuleSources.map(async ({ requestPath, sourcePath }) => [
+        requestPath,
+        await readFile(sourcePath, "utf8"),
+      ])),
       readFile(cockpitLaunchParametersPath, "utf8"),
       readFile(cockpitProjectRegistrationPath, "utf8"),
       readFile(identifierScriptPath, "utf8"),
@@ -3293,7 +3309,8 @@ const main = async () => {
           return;
         }
 
-        const localAsset = request.method === "GET" ? new Map([
+        /** @type {Map<string, {contentType: string, body: string | Uint8Array}> | undefined} */
+        const localAssets = request.method === "GET" ? new Map([
           ["/cockpit-launch-parameters.mjs", {
             contentType: "text/javascript; charset=utf-8",
             body: cockpitLaunchParametersScript,
@@ -3324,7 +3341,14 @@ const main = async () => {
             contentType: "font/woff2",
             body: firaCodeSemibold,
           }],
-        ]).get(request.url ?? "") : undefined;
+        ]) : undefined;
+        for (const [path, body] of cockpitModules) {
+          localAssets?.set(path, {
+            contentType: "text/javascript; charset=utf-8",
+            body,
+          });
+        }
+        const localAsset = localAssets?.get(request.url ?? "");
         if (localAsset) {
           response.writeHead(200, {
             ...securityHeaders,
