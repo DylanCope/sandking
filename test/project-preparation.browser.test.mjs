@@ -96,9 +96,21 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
         .selectOption("conformance-harness-adapter-v1");
 
       await page.locator("#project-path").fill("relative/project");
-      await page.locator("#open-project").click();
+      const [invalidResponse] = await Promise.all([
+        page.waitForResponse((candidate) => candidate.request().method() === "POST"
+          && candidate.url().endsWith("/projects/open")),
+        page.locator("#open-project").click(),
+      ]);
+      assert.equal(invalidResponse.status(), 400);
+      const invalid = await invalidResponse.json();
+      assert.equal(invalid.code, "project_path_invalid");
+      assert.deepEqual(invalid.resolution.actions, ["select_existing_host_directory"]);
       await page.waitForFunction(() => document.querySelector("#project-feedback")
         ?.textContent?.includes("project_path_invalid"));
+      assert.match(
+        await page.locator("#project-feedback").textContent(),
+        /select_existing_host_directory/,
+      );
       assert.equal(await page.locator("#project-not-selected").count(), 1);
       await assert.rejects(readFile(join(dataDir, "project-registrations.json"), "utf8"));
 
@@ -217,6 +229,47 @@ test("local-walking-skeleton/completes-approved-run opens and prepares an explic
         "update_registration",
         "forget_registration",
       ]);
+
+      await page.locator("#project-path").fill(movedProjectPath);
+      const [movedResponse] = await Promise.all([
+        page.waitForResponse((candidate) => candidate.request().method() === "POST"
+          && candidate.url().endsWith("/projects/open")),
+        page.locator("#open-project").click(),
+      ]);
+      assert.equal(movedResponse.status(), 409);
+      const moved = await movedResponse.json();
+      assert.equal(moved.code, "project_path_moved");
+      assert.deepEqual(moved.resolution.actions, [
+        "update_registration",
+        "forget_registration",
+        "register_as_new",
+      ]);
+      assert.match(
+        await page.locator("#project-feedback").textContent(),
+        /update_registration, forget_registration, register_as_new/,
+      );
+
+      await mkdir(projectPath);
+      await page.locator("#project-path").fill(projectPath);
+      const [replacedResponse] = await Promise.all([
+        page.waitForResponse((candidate) => candidate.request().method() === "POST"
+          && candidate.url().endsWith("/projects/open")),
+        page.locator("#open-project").click(),
+      ]);
+      assert.equal(replacedResponse.status(), 409);
+      const replaced = await replacedResponse.json();
+      assert.equal(replaced.code, "project_path_replaced");
+      assert.deepEqual(replaced.resolution.actions, [
+        "replace_registration",
+        "register_as_new",
+        "select_another_path",
+      ]);
+      assert.match(
+        await page.locator("#project-feedback").textContent(),
+        /replace_registration, register_as_new, select_another_path/,
+      );
+
+      await rm(projectPath, { recursive: true });
       await rename(movedProjectPath, projectPath);
 
       const projectState = JSON.parse(
