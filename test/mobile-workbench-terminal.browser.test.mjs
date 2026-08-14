@@ -341,9 +341,12 @@ test("the production Workbench terminal is usable at a touch phone viewport", as
     const accessibleRows = page.locator(
       "#project-controller-terminal-output .xterm-accessibility-tree > [role='listitem']",
     );
-    await page.waitForFunction(() => document.querySelector(
-      "#project-controller-terminal-output .xterm-accessibility-tree",
-    )?.textContent?.includes("FINAL STATUS: READY"));
+    await page.waitForFunction(() => {
+      const rendered = document.querySelector(
+        "#project-controller-terminal-output .xterm-accessibility-tree",
+      )?.textContent;
+      return rendered?.includes("FINAL STATUS: READY") && rendered.includes("controller>");
+    });
     const phoneFinalScreen = await accessibleRows.evaluateAll((rows) =>
       rows.map((row) => row.textContent.replaceAll("\u00a0", "").trimEnd()));
     assert.deepEqual(phoneFinalScreen.slice(0, 5), [
@@ -384,6 +387,14 @@ test("the production Workbench terminal is usable at a touch phone viewport", as
       await page.keyboard.insertText(`scrollback-${line}`);
       await mobileControls.locator('[data-terminal-key="enter"]').tap();
     }
+    // A bottom-of-scrollback state can be observed while earlier PTY input is
+    // still producing output. Wait for an in-band response queued after every
+    // scrollback command so later writes cannot undo the touch gesture.
+    await page.keyboard.insertText("dimensions");
+    await mobileControls.locator('[data-terminal-key="enter"]').tap();
+    await page.waitForFunction(() => document.querySelector(
+      "#project-controller-terminal-output .xterm-accessibility-tree",
+    )?.textContent?.includes("PTY DIMENSIONS:"));
     await page.waitForFunction(() => {
       const output = document.querySelector("#project-controller-terminal-output");
       return Number(output?.dataset.terminalScrollbackLines) > 0
@@ -448,8 +459,15 @@ test("the production Workbench terminal is usable at a touch phone viewport", as
 
     const terminalScrollBeforeDrawer = afterTerminalSwipe.terminalScrollLine;
     const inputCountBeforeDrawer = await opaqueInputCount(page);
-    await page.locator("#workbench-context-toggle").tap();
+    // Touch activation of both drawer toggles is asserted above. Open this one
+    // independently so the following CDP sequence tests only the drawer swipe.
+    await page.locator("#workbench-context-toggle").click();
     const contextDrawer = page.locator("#workbench-context");
+    await page.waitForFunction(() => {
+      const drawer = document.querySelector("#workbench-context");
+      return drawer
+        && Math.abs(new DOMMatrix(getComputedStyle(drawer).transform).m41) < 0.5;
+    });
     const contextBounds = await contextDrawer.boundingBox();
     await swipe(client, {
       x: contextBounds.x + contextBounds.width / 2,
