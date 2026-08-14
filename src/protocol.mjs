@@ -43,6 +43,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.control.slice-1",
   "sandking.bulk-stream.v1",
   "sandking.project-registration.v1",
+  "sandking.project-registration-resolution.v1",
   "sandking.conformance-harness-registration.v1",
   "sandking.production-harness-registration.v1",
   "sandking.harness-run.launch.v2",
@@ -52,7 +53,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.recovery.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-current-harness-run-state")
+  .update("sandking-host-control-schema-v1-with-truthful-project-registration-failures")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -219,6 +220,7 @@ const projectRegisterSchema = z.object({
   requestId: identifierSchema,
   path: projectPathSchema,
   configuration: z.unknown(),
+  resolutionAction: z.literal("register_as_new").optional(),
   authorizationClass: z.literal("host_local_project_registration"),
   idempotencyKey: z.string().max(256),
   expectedRevision: z.number().int().nonnegative(),
@@ -227,6 +229,45 @@ const projectRegisterResultSchema = z.object({
   type: z.literal("project.register.result"),
   requestId: identifierSchema,
   code: z.enum(["project_registered", "project_registration_reused"]),
+  authorizationClass: z.literal("host_local_project_registration"),
+  idempotencyKeyHash: digestSchema,
+  expectedRevision: z.number().int().nonnegative(),
+  revision: z.number().int().positive(),
+  idempotentReplay: z.boolean(),
+  auditId: auditIdSchema,
+  project: projectRegistrationSchema,
+}).strip();
+const projectResolutionRegistrationSchema = z.object({
+  projectId: projectIdSchema,
+  revision: z.number().int().positive(),
+  displayName: z.string().min(1).max(255),
+  canonicalPath: projectPathSchema,
+  status: z.enum(["active", "tombstoned"]),
+}).strip();
+const projectRegistrationResolutionActionSchema = z.enum([
+  "forget",
+  "restore",
+  "resolve_conflict",
+]);
+const projectRegistrationResolveSchema = z.object({
+  type: z.literal("project.registration.resolve"),
+  requestId: identifierSchema,
+  action: projectRegistrationResolutionActionSchema,
+  projectId: projectIdSchema,
+  path: projectPathSchema.optional(),
+  authorizationClass: z.literal("host_local_project_registration"),
+  idempotencyKey: z.string().max(256),
+  expectedRevision: z.number().int().nonnegative(),
+}).strip();
+const projectRegistrationResolveResultSchema = z.object({
+  type: z.literal("project.registration.resolve.result"),
+  requestId: identifierSchema,
+  code: z.enum([
+    "project_registration_forgotten",
+    "project_registration_restored",
+    "project_registration_conflict_resolved",
+  ]),
+  action: projectRegistrationResolutionActionSchema,
   authorizationClass: z.literal("host_local_project_registration"),
   idempotencyKeyHash: digestSchema,
   expectedRevision: z.number().int().nonnegative(),
@@ -349,6 +390,7 @@ const projectOperationFailureSchema = z.object({
   operation: z.enum([
     "project.inspect",
     "project.register",
+    "project.registration.resolve",
     "harness.conformance.register",
     "harness.sandcastle.register",
     "project.harness.pin",
@@ -397,6 +439,7 @@ const projectOperationFailureSchema = z.object({
     summary: identifierSchema,
     actions: z.array(identifierSchema).min(1).max(4),
   }).strip(),
+  registrations: z.array(projectResolutionRegistrationSchema).min(1).max(256).optional(),
   prohibitedSideEffects: z.object({
     directoryScan: z.literal(false),
     projectFileWrite: z.literal(false),
@@ -404,7 +447,32 @@ const projectOperationFailureSchema = z.object({
     harnessPinWrite: z.literal(false),
     approvalRequest: z.literal(false),
   }).strip(),
-}).strip();
+}).strip().superRefine((failure, context) => {
+  if (
+    failure.code === "project_path_conflict"
+    && (
+      !failure.registrations
+      || failure.registrations.length < 2
+      || failure.registrations.some((registration) => registration.status !== "active")
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Project path conflicts require at least two active registrations",
+      path: ["registrations"],
+    });
+  }
+  if (
+    failure.code === "project_path_tombstoned"
+    && !failure.registrations?.some((registration) => registration.status === "tombstoned")
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Tombstoned Project paths require a tombstoned registration",
+      path: ["registrations"],
+    });
+  }
+});
 
 const harnessRunAuthorizationClassSchema = z.literal("harness_run_launch");
 const harnessRunLaunchSourceSchema = z.enum(["controller-cli", "cockpit"]);
@@ -718,6 +786,8 @@ export const controlMessageSchema = z.discriminatedUnion("type", [
   projectInspectResultSchema,
   projectRegisterSchema,
   projectRegisterResultSchema,
+  projectRegistrationResolveSchema,
+  projectRegistrationResolveResultSchema,
   harnessConformanceInspectSchema,
   harnessConformanceInspectResultSchema,
   harnessConformanceRegisterSchema,

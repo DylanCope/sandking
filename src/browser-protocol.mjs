@@ -39,6 +39,7 @@ export const browserCapabilities = Object.freeze([
   "cockpit.controller-terminal.v1",
   "cockpit.controller-terminal-resize.v1",
   "cockpit.project-preparation.v1",
+  "cockpit.project-registration-resolution.v1",
   "cockpit.harness-run-launch.v2",
   "cockpit.harness-run-observation.v2",
   "cockpit.harness-run-reconciliation.v1",
@@ -51,6 +52,7 @@ export const runtimeRequiredBrowserCapabilities = Object.freeze([
   "cockpit.controller-terminal.v1",
   "cockpit.controller-terminal-resize.v1",
   "cockpit.project-preparation.v1",
+  "cockpit.project-registration-resolution.v1",
   "cockpit.harness-run-launch.v2",
   "cockpit.harness-run-observation.v2",
   "cockpit.harness-run-reconciliation.v1",
@@ -61,7 +63,7 @@ export const runtimeOptionalBrowserCapabilities = Object.freeze([
   "cockpit.opaque-stream.v1",
 ]);
 export const BROWSER_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-browser-runtime-schema-v1-with-current-harness-run-state")
+  .update("sandking-browser-runtime-schema-v1-with-project-registration-resolution")
   .digest("hex")}`;
 
 const identifierSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);

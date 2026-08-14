@@ -30,6 +30,10 @@ test("the served Cockpit advertises the current browser schema digest", async ()
 });
 
 test("the browser contract advertises only built Cockpit areas", () => {
+  assert.ok(browserCapabilities.includes("cockpit.project-registration-resolution.v1"));
+  assert.ok(runtimeRequiredBrowserCapabilities.includes(
+    "cockpit.project-registration-resolution.v1",
+  ));
   assert.equal(
     [...browserCapabilities, ...runtimeRequiredBrowserCapabilities]
       .some((capability) => capability.includes("planning")),

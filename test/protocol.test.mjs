@@ -72,6 +72,92 @@ test("Host identity acceptance is an explicit revisioned and idempotent mutation
   );
 });
 
+test("Project registration resolution is one capability-negotiated Host operation", async () => {
+  assert.ok(hostCapabilities.includes("sandking.project-registration-resolution.v1"));
+  const stream = new PassThrough();
+  const projectId = `project-${"1".repeat(24)}`;
+  const conflictingProjectId = `project-${"3".repeat(24)}`;
+  const registration = {
+    type: "project.register",
+    requestId: "register-selected-path-as-new",
+    path: "/selected/project",
+    configuration: {},
+    resolutionAction: "register_as_new",
+    authorizationClass: "host_local_project_registration",
+    idempotencyKey: "register-selected-path-as-new",
+    expectedRevision: 3,
+  };
+  const resolution = {
+    type: "project.registration.resolve",
+    requestId: "resolve-project-registration",
+    action: "resolve_conflict",
+    projectId,
+    path: "/selected/project",
+    authorizationClass: "host_local_project_registration",
+    idempotencyKey: "resolve-project-registration",
+    expectedRevision: 3,
+  };
+  const failure = {
+    type: "project.operation.failure",
+    requestId: "inspect-project-conflict",
+    operation: "project.inspect",
+    code: "project_path_conflict",
+    retryable: true,
+    authorizationClass: null,
+    idempotencyKeyHash: null,
+    expectedRevision: null,
+    actualRevision: 3,
+    auditId: `audit-${"2".repeat(24)}`,
+    resolution: {
+      summary: "project_path_conflict",
+      actions: ["resolve_conflicting_registrations"],
+    },
+    registrations: [
+      {
+        projectId,
+        revision: 3,
+        displayName: "project",
+        canonicalPath: "/selected/project",
+        status: "active",
+      },
+      {
+        projectId: conflictingProjectId,
+        revision: 1,
+        displayName: "conflicting-project",
+        canonicalPath: "/selected/project",
+        status: "active",
+      },
+    ],
+    prohibitedSideEffects: {
+      directoryScan: false,
+      projectFileWrite: false,
+      harnessWorkspaceWrite: false,
+      harnessPinWrite: false,
+      approvalRequest: false,
+    },
+  };
+  writeFrame(stream, registration);
+  writeFrame(stream, resolution);
+  writeFrame(stream, failure);
+  assert.deepEqual(await readFrame(stream), registration);
+  assert.deepEqual(await readFrame(stream), resolution);
+  assert.deepEqual(await readFrame(stream), failure);
+  assert.throws(
+    () => writeFrame(stream, { ...resolution, action: "inherit_existing" }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+  assert.throws(
+    () => writeFrame(stream, {
+      ...failure,
+      registrations: [{
+        ...failure.registrations[0],
+        status: "tombstoned",
+      }],
+    }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+});
+
 test("Harness launch is one capability-negotiated revision-free Host operation", async () => {
   assert.ok(hostCapabilities.includes("sandking.harness-run.launch.v2"));
   assert.ok(!hostCapabilities.includes("sandking.launch-request.v1"));

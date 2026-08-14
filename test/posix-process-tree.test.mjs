@@ -133,6 +133,7 @@ test("a Linux Host death closes its complete supervised process tree", {
     assert.equal(evidence?.status, "termination_confirmed");
     assert.equal(evidence?.launchSettled, true);
     assert.equal(evidence?.treeEmpty, true);
+    await waitForProcessesToExit([wrapperPid, adapterPid, escapedDescendantPid]);
     assert.equal(processCanRun(wrapperPid), false);
     assert.equal(processCanRun(adapterPid), false);
     assert.equal(processCanRun(escapedDescendantPid), false);
