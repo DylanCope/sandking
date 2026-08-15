@@ -10,5 +10,5 @@
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": ["src/*.mjs", "src/daemon/**/*.mjs"]
+  "include": ["src/*.mjs", "src/daemon/**/*.mjs", "src/harness-runs/**/*.mjs"]
 }
