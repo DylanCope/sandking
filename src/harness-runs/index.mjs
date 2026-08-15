@@ -12,7 +12,7 @@ import {
   hostIdSchema,
   requireHarnessRunOutcomeAdapterIdentityAgreement,
 } from "./schemas.mjs";
-import { scheduleCancellationEscalation } from "./adapter-supervision.mjs";
+import { scheduleCancellationEscalation } from "./cancellation-escalation.mjs";
 import { createHarnessRunReconciliation } from "./reconciliation.mjs";
 import { createRunSupervisor } from "./run-supervision.mjs";
 import { createLaunchOperation } from "./operations/launch.mjs";
