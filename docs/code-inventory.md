@@ -10,14 +10,27 @@ by an acceptance test" claims. See `docs/architecture.md` for structure and
 `docs/current-state.md` for the functional-gap narrative — this doc is the
 quantitative backing for both.
 
-## Headline numbers
+**Update (2026-08-15, post-#207):** the two buckets below that were fully
+resolvable by deletion have been deleted — see "Dead code" and
+"Speculative/future" below for what changed and the commits that did it. The
+percentage split above has **not** been recomputed against current line
+counts (that requires redoing the full invocation-path trace this doc is
+built from, not just a line count) — treat the shares as directional and
+pre-#207 until a fresh pass is done. What's known to have changed: the Dead
+code and Speculative/future buckets are now ~0; the "Reachable and correctly
+implemented" and "Test scaffolding in `src/`" buckets were not targeted by
+#207 and are presumed roughly stable in content, though every line number
+cited below for the four decomposed files has moved (see
+`docs/architecture.md`).
+
+## Headline numbers (pre-#207, superseded in two of four rows — see update note above)
 
 | Bucket | Lines (approx) | Share |
 |---|---|---|
 | Reachable and correctly implemented | ~27,200 | ~87% |
-| Dead code (unreachable from anything, including tests) | ~2,029 | ~6.5% |
+| Dead code (unreachable from anything, including tests) | ~~~2,029~~ **0 — deleted, see below** | ~~6.5%~~ |
 | Test scaffolding living in `src/` instead of `test/` | ~1,072 | ~3.5% |
-| Speculative/future (built for a capability that doesn't work end-to-end) | ~1,109 | ~3.5% |
+| Speculative/future (built for a capability that doesn't work end-to-end) | ~~~1,109~~ **0 — deleted, see below** | ~~3.5%~~ |
 
 **This table measures the wrong thing, and is kept only to be explicit about
 that.** "Reachable and correctly implemented" is not the same as "delivers
@@ -59,20 +72,29 @@ of X configured" gate) — it does not recur. It's isolated to this one adapter,
 but it's a total blocker for the single most consequential capability in the
 product.
 
-## Dead code (unchanged from `docs/architecture.md`)
+## Dead code — resolved, deleted by #209 (PRD #207)
 
-`sandcastle-v1.mjs` (531) / `v2.mjs` (650) / `v3.mjs` (653) / `real-worker.mjs`
-(195) — 2029 lines total, unreachable from any runtime path including tests,
-retained solely so `test/issue-174-package-boundary.test.mjs` can assert they
-never ship.
+**Update (post-#207):** `sandcastle-v1.mjs` (531) / `v2.mjs` (650) / `v3.mjs`
+(653) / `real-worker.mjs` (195) — 2,029 lines total — along with their
+`.npmignore` entries and `test/issue-174-package-boundary.test.mjs`, were
+deleted outright (commit `7f587dc`, "delete dead Sandcastle revisions (PRD
+#207)"). The package-boundary guarantee that test used to provide by
+asserting these files never ship is now preserved in the existing
+installed-package test instead. `src/production-sandcastle-adapter/` now
+contains only `sandcastle-v4.mjs`, `real-worker-v2.mjs`, and
+`controlled-worker-fixture.mjs`.
 
-## Speculative/future
+## Speculative/future — resolved, removed by #207
 
-`planning-spine.mjs` (817) + the Planning section of `cockpit.js`
-(`renderPlanning`, ~292 lines) — 1,109 lines total. Schema-enforced
-fixture-only (`^github:fixture:issue:[0-9]+$`); no live-GitHub code path
-exists to "turn on." The only large speculative block found anywhere in
-`src/` — nothing else in the audited scope fell into this bucket.
+**Update (post-#207):** `planning-spine.mjs` (817) and the Planning section
+of what was `cockpit.js` (`renderPlanning`, ~292 lines) — 1,109 lines total —
+no longer exist. Rather than being connected to live GitHub data, the whole
+fixture-only Planning journey was deleted (commit `bce19ce`, "remove fixture
+Planning journey (PRD #207)"). There is no `planning-spine` or
+`renderPlanning` reference left anywhere in `src/`, and the Cockpit's product
+navigation no longer has a Planning destination — see the nav table below,
+also updated. This was previously the only large speculative block found
+anywhere in `src/`; that bucket is now empty.
 
 ## Cockpit UI: does each control achieve anything useful?
 
@@ -83,6 +105,10 @@ against fabricated fixture issues has a working handler and achieves nothing.
 Re-scored below on the correct bar: *does clicking this produce a useful
 outcome for a person using Sand-King today?*
 
+**Update (post-#207):** the Planning row and the 8-destination nav table
+below are stale — Planning was deleted entirely (see "Speculative/future"
+above) and the nav was cut down alongside it. Both are corrected below.
+
 | Control | Wired to a handler? | Achieves something useful? |
 |---|---|---|
 | Open and prepare Project | Yes | **Yes** — real registration |
@@ -90,73 +116,77 @@ outcome for a person using Sand-King today?*
 | Launch (conformance Harness) | Yes | **Marginal** — produces a real run of a deterministic test oracle; proves plumbing, delivers no work |
 | Open focused Controller for Launch | Yes | **Marginal** — real PTY, but conformance-backed |
 | Launch (production Harness) | Yes | **No** — always fails, `harness_worker_provider_unavailable` |
-| Planning: "Open focused session" ×5, "Mark Not used" ×5 | Yes | **No** — operates on fabricated fixture issues; nothing reaches real GitHub |
 | Cancel / reconnect / recovery actions | Yes | **Unreachable** — require a live run, which production can't produce |
-| All 8 nav destinations (see below) | N/A — anchors | **No** |
+| Nav destinations (see below) | N/A — anchors | **N/A** — no longer simulates unbuilt product areas, see below |
 | "Provider CLI escape hatch" | No | **No** — sets a static status string, nothing else |
 
-### The navigation is IA for a product that doesn't exist yet
+~~Planning: "Open focused session" ×5, "Mark Not used" ×5~~ — row removed;
+Planning no longer exists in the product.
 
-Every nav item is an `<a href="#anchor">` scroll link (`workbenchLink`,
-`cockpit.js:1753`). There are no separate pages or views — the entire Cockpit
-is one page, and the sidebar simulates a multi-destination product on top of
-it:
+### The navigation — resolved
+
+**Update (post-#207):** the 8-destination, 5-unique-anchor navigation this
+section used to describe is gone. `workbenchLink` now lives in
+`src/cockpit/chrome.mjs`, and the product navigation
+(`src/cockpit/chrome.mjs:178-187`) has exactly three destinations:
 
 | Nav item | Anchor | What's actually at that anchor |
 |---|---|---|
-| Home | `#workbench-main` | top of the page |
 | Projects | `#project-preparation` | the registration form (real) |
-| **Harnesses** | `#harness-run-observation` | **identical target to "Runs"** |
-| **Hosts** | `#connection-status` | a single `<p>` status line, already visible in the header |
-| Controller | `#project-focused-controller-session` | |
-| Planning | `#planning-spine` | fixture-only journey |
-| **Runs** | `#harness-run-observation` | **duplicate of "Harnesses"**; permanently reads "No Harness run has launched" |
-| Project | `#project-readiness` | a sub-part of the section already on screen |
-| "No focused work context" | `#project-focused-controller-session` | **duplicate of "Controller"** |
+| Controller | `#project-focused-controller-session` | focused Controller session view |
+| Runs | `#harness-run-observation` | Harness run observation |
 
-Eight destinations, five unique anchors, two exact duplicate pairs, one
-pointing at a one-line status string. "Harnesses" and "Hosts" as top-level
-product destinations imply managing fleets of harnesses and hosts — neither
-concept has a management surface anywhere in the product.
+The old "Home", "Harnesses" (duplicate of "Runs"), "Hosts" (pointed at a
+one-line status string), "Planning", "Project", and "No focused work context"
+(duplicate of "Controller") destinations are all gone — this is exactly the
+"multi-destination navigation" simplification the "Recorded direction"
+section below called for, and it has been acted on.
 
 **Corrected conclusion**: of the Cockpit's interactive surface, two controls
 deliver real value (register a Project, open installed Claude Code), two are
-marginal (conformance-backed), and everything else — the entire navigation,
-the whole Planning rail, production Launch, and the escape hatch — achieves
-nothing useful today. The earlier "not a UI full of stubs" conclusion was
-wrong on the substance, not just the framing.
+marginal (conformance-backed), and production Launch and the escape hatch
+still achieve nothing useful today. The navigation and Planning items that
+used to pad this list out with non-functional surface are gone rather than
+fixed — a smaller, more honest UI than the one this audit originally scored.
 
 ## Repo-wide scale: the product is a minority of the code
 
+**Update (2026-08-15, post-#207):** `acceptance/` no longer exists —
+retired outright (commit `ddb3367`, "retire per-ticket acceptance ceremony
+(PRD #207)"), not just trimmed. `src/` and `test/` totals below are
+current re-counts (`wc -l`); the per-ticket-artifact sub-breakdown (issue-
+numbered files, retained evidence, manifests) has not been recomputed and is
+struck through, since most of what it measured (`acceptance/`) is gone.
+
 | Tree | Lines | Files | Note |
 |---|---|---|---|
-| `src/` (the product) | 29,593 | ~45 | 36% of the repo |
-| `test/` | 34,505 | 102 | **larger than the product itself** |
-| `acceptance/` | 15,321 | 30 | of which 13,328 lines are retained evidence JSON (16 files) |
-| `.sandcastle/` (build tooling) | 3,770 | — | separate; builds Sand-King, isn't part of it |
-| **Total** | **~83,200** | | |
+| `src/` (the product) | 28,471 | 75 | current count, 2026-08-15 |
+| `test/` | 27,062 | 64 | current count, 2026-08-15 — both file count and lines dropped substantially post-#207 |
+| `acceptance/` | ~~15,321~~ **gone — retired by #207** | ~~30~~ | ~~of which 13,328 lines are retained evidence JSON (16 files)~~ |
+| `.sandcastle/` (build tooling) | ~3,499 | — | separate; builds Sand-King, isn't part of it |
+| **Total** | **~59,000** (was ~83,200) | | not recomputed for `docs/` and other repo-root files |
 
-Test + acceptance is **1.68×** the size of the product it verifies. More
-pointedly, ~20,700 lines are *per-ticket* artifacts rather than durable tests
-of product behaviour: 42 issue-numbered files in `test/` (5,398 lines),
-13,328 lines of retained evidence JSON, and 1,993 lines of acceptance
-manifests. These exist to prove specific tickets were delivered to their
-acceptance criteria, and they accumulate permanently — every future ticket
-adds more. That is the structural cost of the `.sandcastle` methodology's
-"retained sanitized evidence" requirement, and it is worth deciding
-deliberately whether that cost keeps being paid at this rate.
+~~Test + acceptance is **1.68×** the size of the product it verifies. More
+pointedly, ~20,700 lines are *per-ticket* artifacts... That is the structural
+cost of the `.sandcastle` methodology's "retained sanitized evidence"
+requirement, and it is worth deciding deliberately whether that cost keeps
+being paid at this rate.~~ — resolved: the retained-evidence requirement that
+drove this cost has itself been retired, per the commit above.
 
 ## Recorded direction: strip back what doesn't connect to a real feature
 
-Noted 2026-08-11 as the product owner's stated intent, not yet acted on: code
-that doesn't connect to an existing, working feature should be removed rather
-than carried. On current evidence that points at least at the Planning rail
-and spine (~1,109 lines), the multi-destination navigation (which simulates
-product areas — Harnesses, Hosts — that have no management surface), the
-cosmetic escape hatch, and the dead adapter versions (~2,029 lines). The
-argument for removal is not just line count: carrying these makes the product
-look substantially more finished than it is, which is precisely how the
-production-Harness gap went unnoticed until someone clicked Launch.
+Noted 2026-08-11 as the product owner's stated intent. **Update (post-#207):
+largely acted on.** Of the items originally listed here — the Planning rail
+and spine (~1,109 lines), the multi-destination navigation (Harnesses/Hosts
+destinations with no management surface), the dead adapter versions (~2,029
+lines) — all three have been removed (see "Speculative/future", "Dead code",
+and the navigation update above). **Not yet acted on**: the cosmetic
+"Provider CLI escape hatch" still sets a static status string and does
+nothing else. The argument for removal is not just line count: carrying
+unconnected code makes the product look more finished than it is, which is
+precisely how the production-Harness gap went unnoticed until someone
+clicked Launch — that gap itself (see `docs/current-state.md` gap #2) is
+still open and was not in scope for #207.
 
 ## What this means for next steps
 

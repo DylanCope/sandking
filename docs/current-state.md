@@ -2,9 +2,10 @@
 
 An honest snapshot of what Sand-King can actually do, what's scaffolded but
 not real, and the structural loose ends worth a deliberate decision. Written
-2026-08-11, right after slice 3 (issue #169) merged. This is a snapshot, not a
-living doc — re-verify anything load-bearing against the code before acting on
-it, especially after further slices land.
+2026-08-11, right after slice 3 (issue #169) merged; gap #1 and structural
+loose end #1 updated 2026-08-15 after parent issue #207 closed. This is a
+snapshot, not a living doc — re-verify anything load-bearing against the code
+before acting on it, especially after further slices land.
 
 See `docs/architecture.md` for how the pieces fit together, and `CONTEXT.md`
 for term definitions.
@@ -38,11 +39,15 @@ for term definitions.
 
 ## Known functional gaps
 
-### 1. Planning is 100% fixture, not live GitHub
-`planning-spine.mjs` is schema-enforced to only ever hold fixture data
-(`^github:fixture:issue:[0-9]+$`). This isn't a flag to flip — it's a
-from-scratch implementation to connect it to a real GitHub issue graph. This
-was already known going into slice 4 planning.
+### 1. Planning — resolved by removal, not by connecting to GitHub
+**Update (post-#207):** this gap no longer exists in the form described here.
+`planning-spine.mjs` and the fixture-only Planning journey it powered were
+removed outright (commit `bce19ce`, "remove fixture Planning journey (PRD
+#207)"), rather than connected to a real GitHub issue graph. There is no
+Planning destination in the Cockpit nav and no `planning-spine` reference
+left anywhere in `src/`. If real GitHub-backed planning is wanted, it is now
+a from-scratch feature addition against a clean slate, not a matter of
+"turning on" dormant fixture code.
 
 ### 2. The production Harness cannot currently be launched by a person at all
 Confirmed by reproducing Dylan's exact error (`harness_worker_provider_unavailable`)
@@ -113,20 +118,22 @@ None of these are bugs. They're places where either scale, retained-but-dead
 code, or missing automation has accumulated without a conscious call being
 made — flagging them so the next call is a deliberate one.
 
-1. **`harness-runs.mjs` is one ~2000-line undecomposed factory function**
-   (`createHarnessRunManager`, lines 1632–3620) — run creation, cancellation,
-   recovery actions, and escalation scheduling all as one closure. The single
-   largest concentration of logic in the repo. A decomposition pass here
-   would be the highest-leverage readability investment in `src/`.
+1. **Resolved (#207).** `harness-runs.mjs`'s single ~2000-line
+   `createHarnessRunManager` closure — previously the single largest
+   concentration of logic in the repo — has been decomposed into
+   `src/harness-runs/` (`store.mjs`, `adapter-supervision.mjs`,
+   `run-supervision.mjs`, `cancellation-escalation.mjs`, `fingerprints.mjs`,
+   `reconciliation.mjs`, `schemas.mjs`, and `operations/{launch,cancel,recover,queries}.mjs`
+   — 3,320 ln across 10 modules). `src/harness-runs.mjs` is now a one-line
+   re-export. The equivalent monoliths in `project-registration.mjs`,
+   `runtime-daemon.mjs`, and `cockpit.js` were decomposed the same way in the
+   same effort — see `docs/architecture.md` and `docs/target-structure.md`.
 
-2. **Dead adapter versions retained for a test's convenience.**
-   `sandcastle-v1/v2/v3.mjs` + `real-worker.mjs` (2029 lines total) are
-   unreachable from any runtime path, kept only so
-   `test/issue-174-package-boundary.test.mjs` can assert-by-path that they
-   never ship. The adapter's own `.npmignore` comment concedes Git history
-   already covers this — the source-tree retention is a judgment call, not a
-   necessity. Worth deciding: delete and let the boundary test check against
-   git history instead, or keep as-is.
+2. **Resolved (#209, under PRD #207).** The dead adapter versions
+   (`sandcastle-v1/v2/v3.mjs` + `real-worker.mjs`, 2,029 lines total) and
+   `test/issue-174-package-boundary.test.mjs`, which existed only to assert
+   they never ship, were deleted (commit `7f587dc`). The package-boundary
+   guarantee now lives in the existing installed-package test instead.
 
 3. **General CI is now split by feedback speed.** Pull requests and pushes to
    `main` run typecheck, unit, and browser jobs independently on the repository's
@@ -162,10 +169,12 @@ made — flagging them so the next call is a deliberate one.
 
 7. **Two different things both informally called "the conformance adapter"**
    — a standalone process (`conformance-provider-adapter.mjs`, Controller
-   sessions) and an inline template-string-generated one
-   (`project-registration.mjs:662-936`, Harness runs). Same protocol family,
-   different code, same name in casual conversation — a real source of the
-   confusion in this project's own recent conversations.
+   sessions) and, as of #207, a real checked-in file
+   (`src/conformance-harness-adapter/conformance.mjs`, Harness runs — no
+   longer an inline template string in `project-registration.mjs`, see
+   `docs/target-structure.md`). Same protocol family, different code, same
+   name in casual conversation — still a real source of possible confusion,
+   even though the code is no longer inline-generated.
 
 8. **`main.mts` and the full `.sandcastle` toolkit are dead weight at
    runtime** — bundled, integrity-verified, never executed. Covered above
@@ -185,7 +194,9 @@ made — flagging them so the next call is a deliberate one.
    git repository at its own root, a requirement registration alone doesn't
    surface. At actual launch, that projection is copied a third time into a
    Host-private per-run execution snapshot
-   (`harness-runs.mjs:2844`, `~/.sandking/.../harness-runs/<id>/execution/`),
+   (`materializeProductionHarnessExecutionSnapshot`, defined in
+   `production-harness-preparation.mjs:330` and invoked from
+   `harness-runs/operations/launch.mjs`, `~/.sandking/.../harness-runs/<id>/execution/`),
    which is what the real Worker script actually reads. Three copies of the
    same pinned bytes, one of them leaking into the Project directory
    permanently, is worth a deliberate design pass — either the project-local

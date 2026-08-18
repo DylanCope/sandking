@@ -5,6 +5,24 @@ Written 2026-08-11, informed by the audits in `docs/code-inventory.md` and
 `docs/test-strategy.md`, and by what the remaining roadmap slices actually
 require.
 
+**Status update (2026-08-15, parent issue #207 closed):** the two
+3,000+-line decompositions below (`harness-runs.mjs`, `runtime-daemon.mjs`)
+are **done**, plus two more this doc didn't originally scope as "the two big
+files" — `project-registration.mjs` and `cockpit.js` — were decomposed the
+same way. The Planning deletion, dead-adapter deletion, and acceptance-
+ceremony retirement recommended elsewhere in this doc's source audits are
+also done (see `docs/code-inventory.md`). The `common/` extraction (step 1 of
+the suggested sequencing) is done, including the `canonicalJson` fix. **Not
+done**: the top-level process-oriented reorganization in "The structure"
+below — there is no `src/protocol/`, `src/cli/`, `src/host/`,
+`src/supervision/`, or `src/adapters/`; the decomposed modules landed as
+flat `src/project-registration/`, `src/harness-runs/`, `src/daemon/`, and
+`src/cockpit/` directories instead, without the deeper regroup-by-process
+move. The conformance-Harness template string was extracted into a real
+checked-in file (`src/conformance-harness-adapter/conformance.mjs`) but was
+**not** relocated to `test/fixtures/`, and the Cockpit still offers it as a
+selectable Harness — see the per-section notes below for detail.
+
 The organising principle is deliberately conservative: **follow the grain the
 code already has, and only accommodate roadmap needs that are specified.**
 Three of the seven remaining slices (9, 10, 11) are stale and unspecified —
@@ -75,37 +93,56 @@ src/
     └── planning.mjs          #   ← SLICE 8: one call site, deletes cleanly
 ```
 
-## Decomposing the two 3,000+ line files
+## Decomposing the two 3,000+ line files — done
 
 Both are large for the same reason: **each spans several layers at once.**
 
-### `harness-runs.mjs` (3,620 → ~9 modules)
+### `harness-runs.mjs` (3,620 → done, 3,320 ln across 10 modules)
 
-Lines 1–1,631 are module-level and can be split today with near-zero risk;
-1,632–3,620 is one closure (`createHarnessRunManager`) that must be broken
-first.
+**Done.** The plan below was the pre-implementation estimate; actual module
+boundaries differ slightly (two extra modules — `run-supervision.mjs` and
+`cancellation-escalation.mjs` — were split out that this plan bundled into
+`adapter-supervision.mjs`). `src/harness-runs.mjs` is now a one-line
+re-export of `src/harness-runs/index.mjs`.
 
-| New module | Source lines | ~Size |
+| Module (as planned) | Module (as built) | Actual size |
 |---|---|---|
-| `harness-runs/schemas.mjs` | 66–480 | 415 |
-| `harness-runs/fingerprints.mjs` | 619–730 | 110 |
-| `harness-runs/store.mjs` | paths, persist, audit backfill | 315 |
-| `harness-runs/adapter-supervision.mjs` | 1,076–1,631 | 555 |
-| `harness-runs/reconciliation.mjs` | 1,998–2,185 | 190 |
-| `harness-runs/operations/{launch,cancel,recover,queries}.mjs` | 2,699–3,601 | 900 |
-| `harness-runs/index.mjs` | thin wiring | small |
+| `harness-runs/schemas.mjs` | same | 523 |
+| `harness-runs/fingerprints.mjs` | same | 43 |
+| `harness-runs/store.mjs` | same | 295 |
+| `harness-runs/adapter-supervision.mjs` | split into `adapter-supervision.mjs` + `run-supervision.mjs` + `cancellation-escalation.mjs` | 523 + 396 + 70 |
+| `harness-runs/reconciliation.mjs` | same | 253 |
+| `harness-runs/operations/{launch,cancel,recover,queries}.mjs` | same | 391 + 219 + 313 + 180 |
+| `harness-runs/index.mjs` | same | 114 |
 
 The ~405-line phantom v2–v7 migration surface was removed by #211 rather than
 being extracted into the decomposed layout; there is no deployed prior state
 to migrate (see `docs/test-strategy.md`).
 
-### `runtime-daemon.mjs` (3,336 → ~8 modules)
+### `runtime-daemon.mjs` (3,336 → done, 3,647 ln across 9 modules)
 
-Split by concern, per the tree above. The HTTP layer is currently a flat
-`if (method && url === …)` chain (lines 2,900–3,140); extracting a route
-table is a mechanical, low-risk first move. The browser-session registry uses
-**seven parallel `Map`s** keyed by session — collapsing those into one session
-record type should happen as part of the extraction.
+**Done.** `src/runtime-daemon.mjs` is now an 84-line arg-parsing entry point
+that calls into `src/daemon/index.mjs`. Actual modules: `websocket-router.mjs`,
+`controller-session-routes.mjs`, `host-mutations.mjs`, `project-preparation.mjs`,
+`bootstrap.mjs`, `security.mjs`, `http/` (route table + assets, matching the
+plan's "extracting a route table" step), `host-transport/local.mjs` (the
+planned `host-transport/` seam, with only the `local.mjs` implementation —
+`ssh.mjs` doesn't exist yet, correctly, since slice 6 still isn't specified),
+and `browser-sessions/`. Whether the seven-parallel-`Map`s session registry
+was collapsed into one record type as part of the extraction was not
+re-verified here — check `daemon/browser-sessions/index.mjs` directly if that
+matters for planning follow-up work.
+
+### Also done, beyond this doc's original two-file scope
+
+`project-registration.mjs` (1,906 ln) and `cockpit.js` (2,617 ln) — the other
+two files `docs/code-inventory.md` and `docs/current-state.md` flagged as
+oversized — were decomposed in the same effort: `src/project-registration/`
+(2,614 ln across 6 modules, including a new `resolution.mjs` for #239's
+tombstone/conflict-resolution work, not part of this doc's original scope)
+and `src/cockpit/` (2,642 ln across 7 modules). Neither landed under
+`src/host/project-registry/` or a nested `src/host/` at all — see the status
+note at the top of this document.
 
 ### Two other extractions worth calling out
 
@@ -121,6 +158,17 @@ record type should happen as part of the extraction.
   available.
 
 ## Conformance belongs in `test/`, not `src/`
+
+**Status: partially done.** The Harness-run conformance adapter was
+extracted from an inline template string in `project-registration.mjs` into
+a real, checked-in file — `src/conformance-harness-adapter/conformance.mjs`
+(234 ln), referenced by path from `src/project-registration/state.mjs:24` —
+matching the "becomes a real checked-in file" part of the target below. It
+was **not** moved to `test/fixtures/`; it still ships under `src/`, and the
+Cockpit Harness dropdown still offers it (`permittedTestDouble` is still a
+live schema field). The "no user-facing dry run mode" and eviction-timed-
+with-the-production-gate-fix sequencing described below have not happened —
+the production gate (`docs/current-state.md` gap #2) is still open.
 
 Decided 2026-08-11. There are two separate "conformance" implementations, and
 **the product's own view model flags both as fakes**:
@@ -195,7 +243,10 @@ Suggested order:
    **fixes a latent bug**: `canonicalJson` at `runtime-daemon.mjs:358` omits
    the `undefined` case the other four implementations have, so the same
    logical request can hash to different idempotency fingerprints either side
-   of the Daemon↔Host boundary.
+   of the Daemon↔Host boundary. **Done** (issue #208, ahead of #207):
+   `src/common/canonical-json.mjs` is now the single implementation, handling
+   the `undefined` case, and is imported by all 7 call sites across the
+   codebase — no divergent local copies remain.
 2. **Deletions before decomposition** — strip Planning, the dead adapters, and
    the remaining test ceremony. Never refactor code you are about to delete.
 3. **`harness-runs/` and `runtime-daemon/`** splits behind index re-exports.
