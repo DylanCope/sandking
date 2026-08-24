@@ -14,9 +14,15 @@ import { projectIdSchema } from "./schemas.mjs";
 
 const preparationIdSchema = z.string()
   .regex(/^provider-preparation-[a-f0-9]{24}$/);
+const manifestIdentitySchema = z.object({
+  birthtimeNanoseconds: z.string().regex(/^\d+$/),
+  device: z.string().regex(/^\d+$/),
+  inode: z.string().regex(/^\d+$/),
+}).strict();
 const retainedPreparationSchema = z.object({
   preparationId: preparationIdSchema,
   projectId: projectIdSchema,
+  manifestIdentity: manifestIdentitySchema.optional(),
 }).strict();
 const preparationStateSchema = z.object({
   schemaVersion: z.literal(1),
@@ -80,6 +86,33 @@ export const createProductionProviderPreparationStore = (options) => {
     await writePrivateJson(path, { ...state, preparations: retained });
   });
 
+  /**
+   * @param {string} preparationId
+   * @param {{birthtimeNanoseconds: string, device: string, inode: string}} manifestIdentity
+   */
+  const retainManifestIdentity = (preparationId, manifestIdentity) =>
+    withMutationLock(async () => {
+      preparationIdSchema.parse(preparationId);
+      const parsedIdentity = manifestIdentitySchema.parse(manifestIdentity);
+      const state = await readState();
+      const retained = state.preparations.find((candidate) =>
+        candidate.preparationId === preparationId);
+      if (!retained) throw new Error("production_provider_preparation_missing");
+      if (retained.manifestIdentity) {
+        if (
+          retained.manifestIdentity.birthtimeNanoseconds
+            !== parsedIdentity.birthtimeNanoseconds
+          || retained.manifestIdentity.device !== parsedIdentity.device
+          || retained.manifestIdentity.inode !== parsedIdentity.inode
+        ) {
+          throw new Error("production_provider_preparation_conflict");
+        }
+        return;
+      }
+      retained.manifestIdentity = parsedIdentity;
+      await writePrivateJson(path, state);
+    });
+
   const reconcile = () => withMutationLock(async () => {
     const state = await readState();
     const retained = [];
@@ -92,6 +125,7 @@ export const createProductionProviderPreparationStore = (options) => {
           ownershipMarker: productionProviderGitExcludeMarker(
             preparation.preparationId,
           ),
+          manifestIdentity: preparation.manifestIdentity,
         });
       } catch {
         retained.push(preparation);
@@ -105,5 +139,5 @@ export const createProductionProviderPreparationStore = (options) => {
     await writePrivateJson(path, { ...state, preparations: retained });
   });
 
-  return { reconcile, release, retain };
+  return { reconcile, release, retain, retainManifestIdentity };
 };

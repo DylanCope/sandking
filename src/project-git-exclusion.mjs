@@ -6,7 +6,6 @@ import {
   mkdir,
   mkdtemp,
   open,
-  readFile,
   rename,
   rm,
   rmdir,
@@ -25,20 +24,73 @@ export class ProjectPreparationFileError extends Error {
   }
 }
 
-/** @param {string} path */
-export const readProjectPreparationFile = async (path) => {
+/** @param {import("node:fs").BigIntStats} details */
+const projectPreparationFileIdentity = (details) => ({
+  birthtimeNanoseconds: details.birthtimeNs.toString(),
+  device: details.dev.toString(),
+  inode: details.ino.toString(),
+});
+
+/**
+ * @param {{birthtimeNanoseconds: string, device: string, inode: string} | undefined} left
+ * @param {{birthtimeNanoseconds: string, device: string, inode: string} | undefined} right
+ */
+export const projectPreparationFileIdentityMatches = (left, right) =>
+  Boolean(
+    left
+    && right
+    && left.birthtimeNanoseconds === right.birthtimeNanoseconds
+    && left.device === right.device
+    && left.inode === right.inode,
+  );
+
+/** @param {string} path @param {{maximumLinks?: number}} [options] */
+export const readProjectPreparationFile = async (path, options = {}) => {
+  /** @type {import("node:fs/promises").FileHandle | undefined} */
+  let handle;
   try {
-    const details = await lstat(path);
-    if (!details.isFile() || details.isSymbolicLink() || details.nlink !== 1) {
+    const pathDetails = await lstat(path, { bigint: true });
+    if (!pathDetails.isFile() || pathDetails.isSymbolicLink()) {
       throw new ProjectPreparationFileError("harness_projection_collision");
     }
-    return { exists: true, source: await readFile(path, "utf8") };
+    handle = await open(path, "r");
+    const details = await handle.stat({ bigint: true });
+    const maximumLinks = BigInt(options.maximumLinks ?? 1);
+    if (
+      !details.isFile()
+      || details.nlink < 1n
+      || details.nlink > maximumLinks
+      || !projectPreparationFileIdentityMatches(
+        projectPreparationFileIdentity(pathDetails),
+        projectPreparationFileIdentity(details),
+      )
+    ) {
+      throw new ProjectPreparationFileError("harness_projection_collision");
+    }
+    const source = await handle.readFile("utf8");
+    const currentPathDetails = await lstat(path, { bigint: true });
+    if (
+      currentPathDetails.isSymbolicLink()
+      || !projectPreparationFileIdentityMatches(
+        projectPreparationFileIdentity(currentPathDetails),
+        projectPreparationFileIdentity(details),
+      )
+    ) {
+      throw new ProjectPreparationFileError("harness_projection_collision");
+    }
+    return {
+      exists: true,
+      identity: projectPreparationFileIdentity(details),
+      source,
+    };
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return { exists: false, source: "" };
+      return { exists: false, identity: undefined, source: "" };
     }
     if (error instanceof ProjectPreparationFileError) throw error;
     throw new ProjectPreparationFileError("harness_projection_failed");
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 };
 
@@ -49,6 +101,12 @@ const projectPreparationTemporaryPath = (path, temporaryId) => {
   }
   return `${path}.sandking-${temporaryId}.tmp`;
 };
+
+/** @param {string} path @param {string} temporaryId */
+export const readProjectPreparationTemporaryFile = (path, temporaryId) =>
+  readProjectPreparationFile(projectPreparationTemporaryPath(path, temporaryId), {
+    maximumLinks: 2,
+  });
 
 /** @param {string} path */
 const assertSafeFileParent = async (path) => {
@@ -85,7 +143,7 @@ const hasFileErrorCode = (error, code) =>
  * claim is a distinct Project mutation and is never overwritten or deleted.
  *
  * @param {string} path
- * @param {{directory?: string}} [options]
+ * @param {{directory?: string, maximumLinks?: number}} [options]
  */
 export const captureProjectPreparationFile = async (path, options = {}) => {
   await assertSafeFileParent(path);
@@ -105,6 +163,7 @@ export const captureProjectPreparationFile = async (path, options = {}) => {
     if (hasFileErrorCode(error, "ENOENT")) {
       return {
         exists: false,
+        identity: undefined,
         source: "",
         remove: async () => undefined,
         restore: async () => undefined,
@@ -142,7 +201,9 @@ export const captureProjectPreparationFile = async (path, options = {}) => {
     await closeCaptureDirectory();
   };
   try {
-    current = await readProjectPreparationFile(capturedPath);
+    current = await readProjectPreparationFile(capturedPath, {
+      maximumLinks: options.maximumLinks,
+    });
   } catch (error) {
     await restoreCapturedPath().catch(() => undefined);
     if (error instanceof ProjectPreparationFileError) throw error;
@@ -192,6 +253,7 @@ const writeProjectPreparationTemporaryFile = async (path, source, temporaryId) =
 const replaceProjectPreparationFile = async (path, source, options = {}) => {
   const temporaryId = options.temporaryId
     ?? `${process.pid}-${randomBytes(6).toString("hex")}`;
+  /** @type {string | undefined} */
   let temporaryPath;
   try {
     temporaryPath = await writeProjectPreparationTemporaryFile(
@@ -212,6 +274,7 @@ const replaceProjectPreparationFile = async (path, source, options = {}) => {
 export const createProjectPreparationFile = async (path, source, options = {}) => {
   const temporaryId = options.temporaryId
     ?? `${process.pid}-${randomBytes(6).toString("hex")}`;
+  /** @type {string | undefined} */
   let temporaryPath;
   try {
     temporaryPath = await writeProjectPreparationTemporaryFile(
@@ -219,9 +282,34 @@ export const createProjectPreparationFile = async (path, source, options = {}) =
       source,
       temporaryId,
     );
+    const temporary = await readProjectPreparationFile(temporaryPath);
+    if (!temporary.exists || !temporary.identity) {
+      throw new ProjectPreparationFileError("harness_projection_failed");
+    }
     await link(temporaryPath, path);
-    await rm(temporaryPath);
-    temporaryPath = undefined;
+    const ownershipPath = temporaryPath;
+    let active = true;
+    return {
+      identity: temporary.identity,
+      finalize: async () => {
+        if (!active) return;
+        const captured = await captureProjectPreparationFile(ownershipPath, {
+          maximumLinks: 2,
+        });
+        if (
+          !captured.exists
+          || !projectPreparationFileIdentityMatches(
+            captured.identity,
+            temporary.identity,
+          )
+        ) {
+          await captured.restore();
+          throw new ProjectPreparationFileError("harness_projection_collision");
+        }
+        await captured.remove();
+        active = false;
+      },
+    };
   } catch (error) {
     if (temporaryPath) await rm(temporaryPath, { force: true }).catch(() => undefined);
     if (error instanceof ProjectPreparationFileError) throw error;
@@ -232,13 +320,30 @@ export const createProjectPreparationFile = async (path, source, options = {}) =
   }
 };
 
-/** @param {string} path @param {string} temporaryId */
-export const removeProjectPreparationTemporaryFile = async (path, temporaryId) => {
+/**
+ * @param {string} path
+ * @param {string} temporaryId
+ * @param {{birthtimeNanoseconds: string, device: string, inode: string} | undefined} [expectedIdentity]
+ */
+export const removeProjectPreparationTemporaryFile = async (
+  path,
+  temporaryId,
+  expectedIdentity,
+) => {
   await assertSafeFileParent(path);
   const temporaryPath = projectPreparationTemporaryPath(path, temporaryId);
-  const temporary = await readProjectPreparationFile(temporaryPath);
-  if (!temporary.exists) return { removed: false };
-  await rm(temporaryPath);
+  const captured = await captureProjectPreparationFile(temporaryPath, {
+    maximumLinks: 2,
+  });
+  if (!captured.exists) return { removed: false };
+  if (expectedIdentity && !projectPreparationFileIdentityMatches(
+    captured.identity,
+    expectedIdentity,
+  )) {
+    await captured.restore();
+    return { removed: false };
+  }
+  await captured.remove();
   return { removed: true };
 };
 

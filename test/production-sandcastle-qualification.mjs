@@ -462,7 +462,7 @@ test("production cancellation and reconnection converge on the same canonical ru
   }
 });
 
-test("terminal supervision retries a selector release interrupted after readiness", async () => {
+test("terminal cleanup retry preserves a Project replacement after readiness", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-release-retry-"));
   const manifestPath = join(root, "project", "sandcastle.real-provider.json");
   const excludePath = join(root, "project", ".git", "info", "exclude");
@@ -500,7 +500,7 @@ test("terminal supervision retries a selector release interrupted after readines
     assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
     assert.equal(terminal.outcome.result.code, "real_provider_execution_failed");
     await repairManifest;
-    await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
+    assert.equal(await readFile(manifestPath, "utf8"), REAL_PROVIDER_MANIFEST_SOURCE);
     assert.equal(await readFile(excludePath, "utf8"), excludeBefore);
   } finally {
     await repairManifest.catch(() => undefined);

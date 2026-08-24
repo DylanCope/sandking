@@ -72,9 +72,11 @@ is durably journaled before the Project mutation. Host startup therefore cleans
 the selector even when process loss happened before run acceptance and there is
 no retained run. The temporary exclude block has a unique ownership marker, so cleanup
 preserves concurrent edits to `.git/info/exclude`. Selector cleanup atomically captures
-the exact candidate before checking its contents and Git ownership; a concurrent
-replacement is restored or left at the public path rather than deleted. Tracked or
-different manifest files are never deleted and continue to fail as Project collisions.
+the exact candidate before checking its contents, Git ownership, and the filesystem
+identity durably journaled at no-clobber publication. A concurrent replacement is
+restored or left at the public path rather than deleted, even when it contains the same
+valid selector JSON. Tracked, unjournaled, or identity-mismatched manifest files are
+never deleted and continue to fail as Project collisions.
 
 The explicit `sandcastle.worker-fixture.json` branch remains available only at
 the adapter protocol's deterministic qualification boundary; a production

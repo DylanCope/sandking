@@ -132,7 +132,7 @@ sequenceDiagram
         H->>H: build fixed image from verified projection<br/>and verify it with the adapter's image probe
     end
     opt production provider ready
-        H->>H: durably retain temporary preparation ownership
+        H->>H: durably retain preparation and selector identity
         H->>H: publish transient selector without replacement<br/>and locally exclude sandcastle.real-provider.json
     end
     H->>A: spawn adapter, invokePinnedHarnessAdapter<br/>(frame protocol over fd 3)
@@ -198,17 +198,20 @@ at the Project root with a no-clobber filesystem operation. A file created after
 inspection wins the collision and is never replaced. A rejected launch rolls back a
 new manifest and exclude rule. After the adapter has inspected the selector and
 published readiness, the Host atomically moves the cleanup candidate away from the
-public path before checking its exact contents and Git ownership. A replacement
-created before or after that claim is restored or left in place; cleanup never unlinks
-a later Project file. Terminal supervision is a fallback cleanup boundary, and a later
-launch removes an exact untracked Host-authored selector before live readiness probes.
-Before changing the Project, the Host also journals the Project registration and a
-unique Git-exclusion ownership marker in Host-private state. Startup reconciles that
-journal even if process loss preceded run acceptance, when no retained run exists.
-Cleanup removes only the marked Host-owned exclude block from the current file,
-preserving lines added by a person or another tool while launch was active.
-A tracked or different manifest remains Project-owned and is rejected as a collision
-rather than deleted. The transient selector is untracked, and preparation again requires
+public path before checking its exact contents, Git ownership, and durably recorded
+filesystem identity. A replacement created before or after that claim is restored or
+left in place, including a same-byte valid selector published on a different inode;
+cleanup never infers ownership from contents alone. Terminal supervision is a fallback
+cleanup boundary. Before changing the Project, the Host journals the Project
+registration and a unique Git-exclusion ownership marker in Host-private state. The
+no-clobber publication retains a short-lived filesystem link until the selector's
+device/inode/birth-time identity is added to that journal, closing the process-loss gap
+between creation and durable ownership. Startup reconciles the journal even if process
+loss preceded run acceptance, when no retained run exists. Cleanup removes only the
+marked Host-owned exclude block from the current file, preserving lines added by a
+person or another tool while launch was active. A tracked, unjournaled, or
+identity-mismatched manifest remains Project-owned and is rejected as a collision rather
+than deleted. The transient selector is untracked, and preparation again requires
 unchanged `git status` and `git ls-files` inventories.
 
 ## Data/state boundaries

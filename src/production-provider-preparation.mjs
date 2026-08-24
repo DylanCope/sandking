@@ -6,7 +6,9 @@ import {
   captureProjectPreparationFile,
   createProjectPreparationFile,
   ProjectPreparationFileError,
+  projectPreparationFileIdentityMatches,
   readProjectPreparationFile,
+  readProjectPreparationTemporaryFile,
   removeProjectGitExcludeRules,
   removeProjectPreparationTemporaryFile,
   resolveProjectGitExcludePath,
@@ -48,28 +50,35 @@ const git = (projectPath, args) => execFileAsync("git", ["-C", projectPath, ...a
 });
 
 /**
- * Remove only the exact untracked selector written by Host preparation. A
- * different or tracked file remains Project-owned and is handled as a launch
- * collision rather than being deleted.
+ * Remove only the exact untracked file generation written by Host preparation.
+ * A different, replaced, unowned, or tracked file remains Project-owned and is
+ * handled as a launch collision rather than being deleted.
  *
- * @param {{projectPath: string}} options
+ * @param {{
+ *   projectPath: string,
+ *   expectedIdentity?: {birthtimeNanoseconds: string, device: string, inode: string},
+ * }} options
  */
 export const removeStaleProductionProviderManifest = async (options) => {
   const projectRoot = resolve(options.projectPath);
   const manifestPath = join(projectRoot, REAL_PROVIDER_MANIFEST_NAME);
+  if (!options.expectedIdentity) return { removed: false };
   /** @type {Awaited<ReturnType<typeof captureProjectPreparationFile>> | null} */
   let captured = null;
   try {
-    const manifest = await readProjectPreparationFile(manifestPath);
-    if (!manifest.exists || manifest.source !== REAL_PROVIDER_MANIFEST_SOURCE) {
-      return { removed: false };
-    }
     const excludePath = await resolveProjectGitExcludePath(projectRoot);
     captured = await captureProjectPreparationFile(manifestPath, {
       directory: dirname(excludePath),
+      maximumLinks: 2,
     });
     if (!captured.exists) return { removed: false };
-    if (captured.source !== REAL_PROVIDER_MANIFEST_SOURCE) {
+    if (
+      captured.source !== REAL_PROVIDER_MANIFEST_SOURCE
+      || !projectPreparationFileIdentityMatches(
+        captured.identity,
+        options.expectedIdentity,
+      )
+    ) {
       await captured.restore();
       captured = null;
       return { removed: false };
@@ -100,20 +109,53 @@ export const removeStaleProductionProviderManifest = async (options) => {
 
 /**
  * Reconcile one durably owned provider preparation. The manifest removal is
- * content- and Git-ownership-aware, while the marker identifies only the
- * temporary exclusion block written by this preparation.
+ * content-, file-generation-, and Git-ownership-aware, while the marker
+ * identifies only the temporary exclusion block written by this preparation.
  *
- * @param {{projectPath: string, preparationId: string, ownershipMarker: string}} options
+ * @param {{
+ *   projectPath: string,
+ *   preparationId: string,
+ *   ownershipMarker: string,
+ *   manifestIdentity?: {birthtimeNanoseconds: string, device: string, inode: string},
+ * }} options
  */
 export const cleanupProductionProviderPreparation = async (options) => {
   const manifestPath = join(
     resolve(options.projectPath),
     REAL_PROVIDER_MANIFEST_NAME,
   );
+  let manifestIdentity = options.manifestIdentity;
   try {
+    const temporary = await readProjectPreparationTemporaryFile(
+      manifestPath,
+      options.preparationId,
+    );
+    if (!manifestIdentity && temporary.exists) {
+      if (temporary.source !== REAL_PROVIDER_MANIFEST_SOURCE) {
+        throw new ProjectPreparationFileError("harness_projection_collision");
+      }
+      const manifest = await readProjectPreparationFile(manifestPath, {
+        maximumLinks: 2,
+      });
+      if (
+        manifest.exists
+        && !projectPreparationFileIdentityMatches(
+          manifest.identity,
+          temporary.identity,
+        )
+      ) {
+        throw new ProjectPreparationFileError("harness_projection_collision");
+      }
+      manifestIdentity = temporary.identity;
+    }
+    await removeStaleProductionProviderManifest({
+      projectPath: options.projectPath,
+      expectedIdentity: manifestIdentity,
+    });
     await removeProjectPreparationTemporaryFile(
       manifestPath,
       options.preparationId,
+      manifestIdentity,
     );
   } catch (error) {
     if (error instanceof ProjectPreparationFileError) {
@@ -121,7 +163,6 @@ export const cleanupProductionProviderPreparation = async (options) => {
     }
     throw new ProductionProviderPreparationError("harness_projection_failed");
   }
-  await removeStaleProductionProviderManifest({ projectPath: options.projectPath });
   try {
     await removeProjectGitExcludeRules({
       projectPath: options.projectPath,
@@ -142,7 +183,15 @@ export const cleanupProductionProviderPreparation = async (options) => {
  * readiness has been established. Kept separate so filesystem invariants can
  * be tested without replacing the live provider/process checks.
  *
- * @param {{projectPath: string, preparationId?: string, ownershipMarker?: string}} options
+ * @param {{
+ *   projectPath: string,
+ *   preparationId?: string,
+ *   ownershipMarker?: string,
+ *   expectedManifestIdentity?: {birthtimeNanoseconds: string, device: string, inode: string},
+ *   retainManifestIdentity?: (
+ *     identity: {birthtimeNanoseconds: string, device: string, inode: string},
+ *   ) => Promise<void>,
+ * }} options
  */
 export const prepareProductionProviderManifest = async (options) => {
   const projectRoot = resolve(options.projectPath);
@@ -182,21 +231,36 @@ export const prepareProductionProviderManifest = async (options) => {
     .filter(Boolean)
     .map((entry) => entry.slice(entry.indexOf("\t") + 1));
   const manifestTracked = trackedPaths.includes(REAL_PROVIDER_MANIFEST_NAME);
-  if (originalManifest.exists && originalManifest.source !== REAL_PROVIDER_MANIFEST_SOURCE) {
-    throw new ProductionProviderPreparationError("harness_projection_collision");
-  }
-  if (manifestTracked) {
+  if (
+    manifestTracked
+    || (originalManifest.exists && (
+      originalManifest.source !== REAL_PROVIDER_MANIFEST_SOURCE
+      || !projectPreparationFileIdentityMatches(
+        originalManifest.identity,
+        options.expectedManifestIdentity,
+      )
+    ))
+    || (!originalManifest.exists && options.expectedManifestIdentity)
+  ) {
     throw new ProductionProviderPreparationError("harness_projection_collision");
   }
 
   /** @type {Awaited<ReturnType<typeof appendProjectGitExcludeRules>> | null} */
   let gitExclusion = null;
   let manifestWritten = false;
+  let manifestIdentity = originalManifest.identity;
+  /** @type {Awaited<ReturnType<typeof createProjectPreparationFile>> | null} */
+  let manifestPublication = null;
   const rollback = async () => {
     if (manifestWritten) {
-      await removeStaleProductionProviderManifest({ projectPath: projectRoot });
+      await removeStaleProductionProviderManifest({
+        projectPath: projectRoot,
+        expectedIdentity: manifestIdentity,
+      });
       manifestWritten = false;
     }
+    await manifestPublication?.finalize();
+    manifestPublication = null;
     await gitExclusion?.rollback();
   };
   try {
@@ -207,10 +271,21 @@ export const prepareProductionProviderManifest = async (options) => {
       temporaryId: options.preparationId,
     });
     if (!originalManifest.exists) {
-      await createProjectPreparationFile(manifestPath, REAL_PROVIDER_MANIFEST_SOURCE, {
-        temporaryId: options.preparationId,
-      });
+      manifestPublication = await createProjectPreparationFile(
+        manifestPath,
+        REAL_PROVIDER_MANIFEST_SOURCE,
+        {
+          temporaryId: options.preparationId,
+        },
+      );
       manifestWritten = true;
+      if (!manifestPublication.identity) {
+        throw new ProjectPreparationFileError("harness_projection_failed");
+      }
+      manifestIdentity = manifestPublication.identity;
+      await options.retainManifestIdentity?.(manifestPublication.identity);
+      await manifestPublication.finalize();
+      manifestPublication = null;
     }
     await git(projectRoot, ["check-ignore", "--no-index", "--quiet", manifestPath]);
     const [workingTreeStateAfter, trackedInventoryAfter] = await Promise.all([
@@ -233,7 +308,12 @@ export const prepareProductionProviderManifest = async (options) => {
     throw new ProductionProviderPreparationError("harness_projection_failed");
   }
 
-  return { providerKind: "openai-codex", manifestWritten, rollback };
+  return {
+    providerKind: "openai-codex",
+    manifestIdentity,
+    manifestWritten,
+    rollback,
+  };
 };
 
 /**
@@ -245,16 +325,16 @@ export const prepareProductionProviderManifest = async (options) => {
  *   projectPath: string,
  *   projectionPath: string,
  *   productionPreparation: unknown,
- *   preserveExistingManifest?: boolean,
+ *   expectedManifestIdentity?: {birthtimeNanoseconds: string, device: string, inode: string},
  *   preparationId?: string,
  *   ownershipMarker?: string,
  *   beforeProjectMutation?: () => Promise<void>,
+ *   retainManifestIdentity?: (
+ *     identity: {birthtimeNanoseconds: string, device: string, inode: string},
+ *   ) => Promise<void>,
  * }} options
  */
 export const prepareProductionProviderLaunch = async (options) => {
-  if (!options.preserveExistingManifest) {
-    await removeStaleProductionProviderManifest({ projectPath: options.projectPath });
-  }
   const runtime = await ensureProductionProviderRuntime({
     projectionPath: options.projectionPath,
     productionPreparation: options.productionPreparation,
@@ -265,7 +345,9 @@ export const prepareProductionProviderLaunch = async (options) => {
   await options.beforeProjectMutation?.();
   return prepareProductionProviderManifest({
     projectPath: options.projectPath,
+    expectedManifestIdentity: options.expectedManifestIdentity,
     preparationId: options.preparationId,
     ownershipMarker: options.ownershipMarker,
+    retainManifestIdentity: options.retainManifestIdentity,
   });
 };

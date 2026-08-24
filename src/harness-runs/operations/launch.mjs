@@ -42,7 +42,7 @@ export const createLaunchOperation = (runtime) => {
    * selector after the first attempt.
    *
    * @param {string} projectPath
-   * @param {{count: number, preparationId: string, ownershipMarker: string, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null}} lease
+   * @param {{count: number, preparationId: string, ownershipMarker: string, manifestIdentity: {birthtimeNanoseconds: string, device: string, inode: string}, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null}} lease
    */
   const cleanupProductionProviderLease = async (projectPath, lease) => {
     if (lease.count > 0) return;
@@ -81,7 +81,7 @@ export const createLaunchOperation = (runtime) => {
     try {
       prepared = await prepareProductionProviderLaunch({
         ...preparation,
-        preserveExistingManifest: Boolean(retained),
+        expectedManifestIdentity: retained?.manifestIdentity,
         preparationId,
         ownershipMarker,
         beforeProjectMutation: retained
@@ -92,6 +92,14 @@ export const createLaunchOperation = (runtime) => {
                 projectId: preparation.projectId,
               });
               ownershipRetained = true;
+            },
+        retainManifestIdentity: retained
+          ? undefined
+          : async (manifestIdentity) => {
+              await runtime.retainProductionProviderManifestIdentity(
+                preparationId,
+                manifestIdentity,
+              );
             },
       });
     } catch (error) {
@@ -112,6 +120,7 @@ export const createLaunchOperation = (runtime) => {
       count: 1,
       preparationId,
       ownershipMarker,
+      manifestIdentity: prepared.manifestIdentity,
       rollback: async () => {
         await prepared.rollback();
         await runtime.releaseProductionProviderPreparation(preparationId);

@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -14,6 +15,7 @@ import { createServer } from "node:net";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { createHarnessRunManager } from "../src/harness-runs.mjs";
+import { REAL_PROVIDER_MANIFEST_SOURCE } from "../src/production-provider-preparation.mjs";
 import { installCurrentPackage } from "./installed-package.mjs";
 import {
   createProductionFixture,
@@ -390,7 +392,7 @@ test("restart reconciliation removes the selector retained across durable accept
   }
 });
 
-test("terminal production completion and later unavailable readiness leave no selector", async () => {
+test("terminal cleanup removes only its selector and later readiness preserves a lookalike", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-lifecycle-"));
   let restorePath = () => undefined;
   let fixture;
@@ -407,11 +409,7 @@ test("terminal production completion and later unavailable readiness leave no se
     assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
     await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
 
-    await writeFile(manifestPath, `${JSON.stringify({
-      schemaVersion: 1,
-      provider: { kind: "openai-codex", ready: true },
-      scenario: "project-commit",
-    }, null, 2)}\n`);
+    await writeFile(manifestPath, REAL_PROVIDER_MANIFEST_SOURCE);
     restorePath();
     restorePath = () => undefined;
     const rejected = await fixture.manager.launch(launchRequest(
@@ -423,7 +421,7 @@ test("terminal production completion and later unavailable readiness leave no se
     ));
     assert.equal(rejected.type, "harness.run.launch.failure");
     assert.equal(rejected.code, "harness_worker_provider_unavailable");
-    await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
+    assert.equal(await readFile(manifestPath, "utf8"), REAL_PROVIDER_MANIFEST_SOURCE);
   } finally {
     await fixture?.manager.waitForIdle().catch(() => undefined);
     restorePath();
@@ -616,7 +614,9 @@ test("installed sandking launch preserves concurrent Project selector contents",
         const endpoint = join(scenarioRoot, "controller.sock");
         const retryDirectory = join(scenarioRoot, "controller-private");
         const userHome = join(scenarioRoot, "user-home");
-        const concurrentSource = `user-owned concurrent ${mode} content\n`;
+        const concurrentSource = mode === "cleanup"
+          ? REAL_PROVIDER_MANIFEST_SOURCE
+          : `user-owned concurrent ${mode} content\n`;
         let host;
         let pause;
         try {
@@ -690,7 +690,9 @@ test("installed sandking launch preserves concurrent Project selector contents",
               JSON.stringify(launched),
             );
             await waitForPathState(pause.blockedPath, true);
-            await writeFile(manifestPath, concurrentSource);
+            const replacementPath = join(scenarioRoot, "concurrent-selector");
+            await writeFile(replacementPath, concurrentSource);
+            await rename(replacementPath, manifestPath);
             await writeFile(pause.releasePath, "release\n");
             await waitForPathState(
               join(
