@@ -1,14 +1,15 @@
 import { execFile } from "node:child_process";
-import { rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
   appendProjectGitExcludeRules,
+  captureProjectPreparationFile,
+  createProjectPreparationFile,
   ProjectPreparationFileError,
   readProjectPreparationFile,
   removeProjectGitExcludeRules,
   removeProjectPreparationTemporaryFile,
-  replaceProjectPreparationFile,
+  resolveProjectGitExcludePath,
 } from "./project-git-exclusion.mjs";
 import { ensureProductionProviderRuntime } from "./production-provider-runtime.mjs";
 
@@ -56,9 +57,21 @@ const git = (projectPath, args) => execFileAsync("git", ["-C", projectPath, ...a
 export const removeStaleProductionProviderManifest = async (options) => {
   const projectRoot = resolve(options.projectPath);
   const manifestPath = join(projectRoot, REAL_PROVIDER_MANIFEST_NAME);
+  /** @type {Awaited<ReturnType<typeof captureProjectPreparationFile>> | null} */
+  let captured = null;
   try {
     const manifest = await readProjectPreparationFile(manifestPath);
     if (!manifest.exists || manifest.source !== REAL_PROVIDER_MANIFEST_SOURCE) {
+      return { removed: false };
+    }
+    const excludePath = await resolveProjectGitExcludePath(projectRoot);
+    captured = await captureProjectPreparationFile(manifestPath, {
+      directory: dirname(excludePath),
+    });
+    if (!captured.exists) return { removed: false };
+    if (captured.source !== REAL_PROVIDER_MANIFEST_SOURCE) {
+      await captured.restore();
+      captured = null;
       return { removed: false };
     }
     const { stdout: trackedInventory } = await git(
@@ -69,11 +82,15 @@ export const removeStaleProductionProviderManifest = async (options) => {
       .filter(Boolean)
       .map((entry) => entry.slice(entry.indexOf("\t") + 1));
     if (trackedPaths.includes(REAL_PROVIDER_MANIFEST_NAME)) {
+      await captured.restore();
+      captured = null;
       return { removed: false };
     }
-    await rm(manifestPath);
+    await captured.remove();
+    captured = null;
     return { removed: true };
   } catch (error) {
+    await captured?.restore().catch(() => undefined);
     if (error instanceof ProjectPreparationFileError) {
       throw new ProductionProviderPreparationError(error.code);
     }
@@ -190,7 +207,7 @@ export const prepareProductionProviderManifest = async (options) => {
       temporaryId: options.preparationId,
     });
     if (!originalManifest.exists) {
-      await replaceProjectPreparationFile(manifestPath, REAL_PROVIDER_MANIFEST_SOURCE, {
+      await createProjectPreparationFile(manifestPath, REAL_PROVIDER_MANIFEST_SOURCE, {
         temporaryId: options.preparationId,
       });
       manifestWritten = true;

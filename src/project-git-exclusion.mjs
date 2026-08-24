@@ -1,14 +1,17 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
+  link,
   lstat,
   mkdir,
+  mkdtemp,
   open,
   readFile,
   rename,
   rm,
+  rmdir,
 } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -47,32 +50,6 @@ const projectPreparationTemporaryPath = (path, temporaryId) => {
   return `${path}.sandking-${temporaryId}.tmp`;
 };
 
-/** @param {string} path @param {string} source @param {{temporaryId?: string}} [options] */
-export const replaceProjectPreparationFile = async (path, source, options = {}) => {
-  const temporaryId = options.temporaryId
-    ?? `${process.pid}-${randomBytes(6).toString("hex")}`;
-  const temporaryPath = projectPreparationTemporaryPath(path, temporaryId);
-  let temporaryCreated = false;
-  try {
-    const handle = await open(temporaryPath, "wx", 0o600);
-    temporaryCreated = true;
-    try {
-      await handle.writeFile(source, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(temporaryPath, path);
-    temporaryCreated = false;
-  } catch (error) {
-    if (temporaryCreated) {
-      await rm(temporaryPath, { force: true }).catch(() => undefined);
-    }
-    if (error instanceof ProjectPreparationFileError) throw error;
-    throw new ProjectPreparationFileError("harness_projection_failed");
-  }
-};
-
 /** @param {string} path */
 const assertSafeFileParent = async (path) => {
   const parent = dirname(path);
@@ -98,6 +75,163 @@ const assertSafeFileParent = async (path) => {
   }
 };
 
+/** @param {unknown} error @param {string} code */
+const hasFileErrorCode = (error, code) =>
+  Boolean(error && typeof error === "object" && "code" in error && error.code === code);
+
+/**
+ * Atomically move the current path into a private capture directory before
+ * inspecting or removing it. A file created at the public path after this
+ * claim is a distinct Project mutation and is never overwritten or deleted.
+ *
+ * @param {string} path
+ * @param {{directory?: string}} [options]
+ */
+export const captureProjectPreparationFile = async (path, options = {}) => {
+  await assertSafeFileParent(path);
+  let captureDirectory;
+  try {
+    captureDirectory = await mkdtemp(options.directory
+      ? join(options.directory, ".sandking-capture-")
+      : `${path}.sandking-capture-`);
+  } catch {
+    throw new ProjectPreparationFileError("harness_projection_failed");
+  }
+  const capturedPath = join(captureDirectory, "captured");
+  try {
+    await rename(path, capturedPath);
+  } catch (error) {
+    await rmdir(captureDirectory).catch(() => undefined);
+    if (hasFileErrorCode(error, "ENOENT")) {
+      return {
+        exists: false,
+        source: "",
+        remove: async () => undefined,
+        restore: async () => undefined,
+      };
+    }
+    throw new ProjectPreparationFileError("harness_projection_failed");
+  }
+
+  let current;
+  const closeCaptureDirectory = () => rmdir(captureDirectory)
+    .catch((error) => {
+      throw new ProjectPreparationFileError("harness_projection_failed");
+    });
+  const restoreCapturedPath = async () => {
+    try {
+      await link(capturedPath, path);
+      await rm(capturedPath);
+    } catch (error) {
+      if (hasFileErrorCode(error, "EEXIST")) {
+        throw new ProjectPreparationFileError("harness_projection_collision");
+      }
+      const destinationExists = await lstat(path).then(
+        () => true,
+        (candidate) => hasFileErrorCode(candidate, "ENOENT") ? false : Promise.reject(candidate),
+      );
+      if (destinationExists) {
+        throw new ProjectPreparationFileError("harness_projection_collision");
+      }
+      try {
+        await rename(capturedPath, path);
+      } catch {
+        throw new ProjectPreparationFileError("harness_projection_collision");
+      }
+    }
+    await closeCaptureDirectory();
+  };
+  try {
+    current = await readProjectPreparationFile(capturedPath);
+  } catch (error) {
+    await restoreCapturedPath().catch(() => undefined);
+    if (error instanceof ProjectPreparationFileError) throw error;
+    throw new ProjectPreparationFileError("harness_projection_failed");
+  }
+  let active = true;
+  return {
+    ...current,
+    remove: async () => {
+      if (!active) return;
+      await rm(capturedPath);
+      active = false;
+      await closeCaptureDirectory();
+    },
+    restore: async () => {
+      if (!active) return;
+      await restoreCapturedPath();
+      active = false;
+    },
+  };
+};
+
+/** @param {string} path @param {string} source @param {string} temporaryId */
+const writeProjectPreparationTemporaryFile = async (path, source, temporaryId) => {
+  const temporaryPath = projectPreparationTemporaryPath(path, temporaryId);
+  let created = false;
+  try {
+    const handle = await open(temporaryPath, "wx", 0o600);
+    created = true;
+    try {
+      await handle.writeFile(source, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    return temporaryPath;
+  } catch (error) {
+    if (created) await rm(temporaryPath, { force: true }).catch(() => undefined);
+    if (hasFileErrorCode(error, "EEXIST")) {
+      throw new ProjectPreparationFileError("harness_projection_collision");
+    }
+    throw new ProjectPreparationFileError("harness_projection_failed");
+  }
+};
+
+/** @param {string} path @param {string} source @param {{temporaryId?: string}} [options] */
+const replaceProjectPreparationFile = async (path, source, options = {}) => {
+  const temporaryId = options.temporaryId
+    ?? `${process.pid}-${randomBytes(6).toString("hex")}`;
+  let temporaryPath;
+  try {
+    temporaryPath = await writeProjectPreparationTemporaryFile(
+      path,
+      source,
+      temporaryId,
+    );
+    await rename(temporaryPath, path);
+    temporaryPath = undefined;
+  } catch (error) {
+    if (temporaryPath) await rm(temporaryPath, { force: true }).catch(() => undefined);
+    if (error instanceof ProjectPreparationFileError) throw error;
+    throw new ProjectPreparationFileError("harness_projection_failed");
+  }
+};
+
+/** @param {string} path @param {string} source @param {{temporaryId?: string}} [options] */
+export const createProjectPreparationFile = async (path, source, options = {}) => {
+  const temporaryId = options.temporaryId
+    ?? `${process.pid}-${randomBytes(6).toString("hex")}`;
+  let temporaryPath;
+  try {
+    temporaryPath = await writeProjectPreparationTemporaryFile(
+      path,
+      source,
+      temporaryId,
+    );
+    await link(temporaryPath, path);
+    await rm(temporaryPath);
+    temporaryPath = undefined;
+  } catch (error) {
+    if (temporaryPath) await rm(temporaryPath, { force: true }).catch(() => undefined);
+    if (error instanceof ProjectPreparationFileError) throw error;
+    if (hasFileErrorCode(error, "EEXIST")) {
+      throw new ProjectPreparationFileError("harness_projection_collision");
+    }
+    throw new ProjectPreparationFileError("harness_projection_failed");
+  }
+};
+
 /** @param {string} path @param {string} temporaryId */
 export const removeProjectPreparationTemporaryFile = async (path, temporaryId) => {
   await assertSafeFileParent(path);
@@ -109,7 +243,7 @@ export const removeProjectPreparationTemporaryFile = async (path, temporaryId) =
 };
 
 /** @param {string} projectRoot */
-const resolveProjectGitExcludePath = async (projectRoot) => {
+export const resolveProjectGitExcludePath = async (projectRoot) => {
   try {
     const { stdout: repositoryRoot } = await execFileAsync("git", [
       "-C", projectRoot, "rev-parse", "--show-toplevel",
@@ -209,15 +343,6 @@ export const removeProjectGitExcludeRules = async (options) => {
     ownershipMarker: options.ownershipMarker,
     temporaryId: options.temporaryId,
   });
-};
-
-/** @param {string} path @param {{exists: boolean, source: string}} original */
-export const restoreProjectPreparationFile = async (path, original) => {
-  if (original.exists) {
-    await replaceProjectPreparationFile(path, original.source);
-  } else {
-    await rm(path, { force: true });
-  }
 };
 
 /**

@@ -133,7 +133,7 @@ sequenceDiagram
     end
     opt production provider ready
         H->>H: durably retain temporary preparation ownership
-        H->>H: atomically write and locally exclude transient<br/>sandcastle.real-provider.json
+        H->>H: publish transient selector without replacement<br/>and locally exclude sandcastle.real-provider.json
     end
     H->>A: spawn adapter, invokePinnedHarnessAdapter<br/>(frame protocol over fd 3)
     A-->>H: readiness envelope
@@ -193,19 +193,23 @@ for this as a loose-end item.
 During production preparation, the Host checks Codex/npm and the Docker engine.
 If the fixed image is absent, it builds that image from this verified projection
 and accepts it only after the adapter's image probe succeeds. Immediately before
-adapter preflight, the same atomic exclusion mechanism writes
-`sandcastle.real-provider.json` at the Project root. A rejected launch rolls back a new
-manifest and exclude rule. After the adapter has inspected the selector and published
-readiness, the Host removes the manifest and any exclude rule it added; terminal
-supervision is a fallback cleanup boundary. A later launch removes an exact untracked
-Host-authored selector before live readiness probes. Before changing the Project, the
-Host also journals the Project registration and a unique Git-exclusion ownership marker
-in Host-private state. Startup reconciles that journal even if process loss preceded run
-acceptance, when no retained run exists. Cleanup removes only the marked Host-owned
-exclude block from the current file, preserving lines added by a person or another tool
-while launch was active. A tracked or different manifest remains Project-owned and is
-rejected as a collision rather than deleted. The transient selector is untracked, and
-preparation again requires unchanged `git status` and `git ls-files` inventories.
+adapter preflight, the exclusion mechanism publishes `sandcastle.real-provider.json`
+at the Project root with a no-clobber filesystem operation. A file created after
+inspection wins the collision and is never replaced. A rejected launch rolls back a
+new manifest and exclude rule. After the adapter has inspected the selector and
+published readiness, the Host atomically moves the cleanup candidate away from the
+public path before checking its exact contents and Git ownership. A replacement
+created before or after that claim is restored or left in place; cleanup never unlinks
+a later Project file. Terminal supervision is a fallback cleanup boundary, and a later
+launch removes an exact untracked Host-authored selector before live readiness probes.
+Before changing the Project, the Host also journals the Project registration and a
+unique Git-exclusion ownership marker in Host-private state. Startup reconciles that
+journal even if process loss preceded run acceptance, when no retained run exists.
+Cleanup removes only the marked Host-owned exclude block from the current file,
+preserving lines added by a person or another tool while launch was active.
+A tracked or different manifest remains Project-owned and is rejected as a collision
+rather than deleted. The transient selector is untracked, and preparation again requires
+unchanged `git status` and `git ls-files` inventories.
 
 ## Data/state boundaries
 

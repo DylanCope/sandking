@@ -57,10 +57,11 @@ now runs the production adapter's exact Codex/npm and Docker-engine readiness
 probes before adapter preflight. If the fixed sandbox image is absent, shipped
 Host preparation builds it from the verified production Harness projection
 and then re-runs the adapter's exact image probe. When readiness passes, it
-atomically writes the exact
-`sandcastle.real-provider.json` selector expected by `inspectRuntime()` and
-adds a local `.git/info/exclude` rule. The operation verifies `git status` and
-`git ls-files` are unchanged. When any probe fails, launch returns the typed
+publishes the exact `sandcastle.real-provider.json` selector expected by
+`inspectRuntime()` with a no-clobber filesystem operation and adds a local
+`.git/info/exclude` rule. The operation verifies `git status` and `git ls-files`
+are unchanged. A selector created concurrently wins with a typed Project
+collision instead of being replaced. When any probe fails, launch returns the typed
 `harness_worker_provider_unavailable` failure before a run or adapter process
 exists and without writing the manifest. The selector exists only until the
 adapter publishes readiness after inspecting it; the Host then removes the
@@ -69,9 +70,11 @@ supervision provide rollback boundaries, a later launch removes an exact
 untracked stale selector before probing, and Host-private preparation ownership
 is durably journaled before the Project mutation. Host startup therefore cleans
 the selector even when process loss happened before run acceptance and there is
-no retained run. The temporary exclude block has a unique ownership marker, so
-cleanup preserves concurrent edits to `.git/info/exclude`. Tracked or different
-manifest files are never deleted and continue to fail as Project collisions.
+no retained run. The temporary exclude block has a unique ownership marker, so cleanup
+preserves concurrent edits to `.git/info/exclude`. Selector cleanup atomically captures
+the exact candidate before checking its contents and Git ownership; a concurrent
+replacement is restored or left at the public path rather than deleted. Tracked or
+different manifest files are never deleted and continue to fail as Project collisions.
 
 The explicit `sandcastle.worker-fixture.json` branch remains available only at
 the adapter protocol's deterministic qualification boundary; a production
