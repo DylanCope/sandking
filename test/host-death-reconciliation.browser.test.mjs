@@ -19,6 +19,7 @@ import {
   installCurrentPackage,
   pauseInstalledHostAtHarnessRunFault,
 } from "./installed-package.mjs";
+import { installReadyProbeCommands } from "./production-sandcastle-host-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
 const readJson = (path) => readFile(path, "utf8").then(JSON.parse);
@@ -178,6 +179,133 @@ const killHostAndWaitForDisconnectedCockpit = async (page, hostPid) => {
   process.kill(hostPid, "SIGKILL");
   await disconnected;
 };
+
+test("packaged Cockpit removes pre-commit production preparation after real Host death", {
+  skip: process.platform !== "linux"
+    ? "the deterministic real-process interruption uses Linux process signals"
+    : false,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-provider-precommit-host-death-"));
+  const dataDir = join(root, "host-state");
+  const executionDirectory = join(root, "outside-checkout");
+  const userHome = join(root, "user-home");
+  const projectPath = join(root, "selected-project");
+  let browser;
+  let restorePath = () => undefined;
+  await Promise.all([
+    mkdir(dataDir, { recursive: true }),
+    mkdir(executionDirectory, { recursive: true }),
+    mkdir(userHome, { recursive: true }),
+    execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]),
+  ]);
+  await writeFile(join(projectPath, "README.md"), "ordinary Project content\n");
+  await execFileAsync("git", ["-C", projectPath, "add", "README.md"]);
+  await execFileAsync("git", [
+    "-C", projectPath,
+    "-c", "user.name=Sand-King Acceptance",
+    "-c", "user.email=sandking-acceptance@example.invalid",
+    "-c", "commit.gpgSign=false",
+    "commit", "--quiet", "-m", "Project fixture",
+  ]);
+  const installed = await installCurrentPackage(root);
+  restorePath = await installReadyProbeCommands(root);
+  const installedHostPath = join(installed.packageDirectory, "src", "local-host.mjs");
+  const installedHostSource = await readFile(installedHostPath, "utf8");
+  await writeFile(installedHostPath, installedHostSource.replace(
+    "#!/usr/bin/env node\n",
+    `#!/usr/bin/env node\nprocess.env.PATH = ${JSON.stringify(process.env.PATH)};\n`,
+  ));
+  await pauseInstalledHostAtHarnessRunFault(installed, "harness_run_launch.before_commit");
+  const productEnvironment = {
+    ...process.env,
+    HOME: userHome,
+    SANDKING_CONTROLLER_SECRET: "provider-precommit-host-death-secret",
+  };
+  const manifestPath = join(projectPath, "sandcastle.real-provider.json");
+  const excludePath = join(projectPath, ".git", "info", "exclude");
+
+  try {
+    const firstLaunch = JSON.parse((await execFileAsync(installed.command, [
+      "launch", "--data-dir", dataDir, "--startup-timeout-ms", "60000",
+      "--idempotency-key", "provider-precommit-runtime-first",
+      "--expected-revision", "0", "--json", "--no-open",
+    ], { cwd: executionDirectory, env: productEnvironment })).stdout);
+    browser = await launchBrowser({ niceAdjustment: 10 });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(firstLaunch.bootstrapUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#project-preparation[data-explicit-path-only='true']", {
+      timeout: 90_000,
+    });
+    await page.locator("#project-path").fill(projectPath);
+    await page.locator("#open-project").click();
+    await page.waitForSelector(
+      "#project-readiness[data-harness-launch-ready='true']"
+        + "[data-harness-adapter-id='sandcastle-harness-adapter-v1']",
+      { timeout: 90_000 },
+    );
+    const excludeBeforeLaunch = await readFile(excludePath, "utf8");
+    const statusBeforeLaunch = (await execFileAsync("git", [
+      "-C", projectPath, "status", "--porcelain=v1", "--untracked-files=all",
+    ])).stdout;
+
+    await page.locator("#launch-harness").click();
+    await page.locator("#harness-launch-confirmation-yes").click();
+    const manifestDeadline = Date.now() + 20_000;
+    while (Date.now() < manifestDeadline) {
+      if (await readFile(manifestPath, "utf8").then(() => true, () => false)) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.deepEqual(JSON.parse(await readFile(manifestPath, "utf8")), {
+      schemaVersion: 1,
+      provider: { kind: "openai-codex", ready: true },
+      scenario: "project-commit",
+    });
+    const runtimeState = await readJson(join(dataDir, "runtime-state.json"));
+    const hostPid = await findLocalHostPid(runtimeState.pid);
+    const excludeDuringLaunch = await readFile(excludePath, "utf8");
+    assert.match(excludeDuringLaunch, /^\/sandcastle\.real-provider\.json$/m);
+    await writeFile(
+      excludePath,
+      `${excludeDuringLaunch}/user-added-during-launch\n`,
+    );
+    assert.equal((await readJson(join(dataDir, "harness-runs.json")).catch(() => ({ runs: [] })))
+      .runs.length, 0);
+
+    await killHostAndWaitForDisconnectedCockpit(page, hostPid);
+    await execFileAsync(installed.command, ["stop", "--data-dir", dataDir, "--json"], {
+      cwd: executionDirectory,
+      env: productEnvironment,
+    });
+    const secondLaunch = JSON.parse((await execFileAsync(installed.command, [
+      "launch", "--data-dir", dataDir, "--startup-timeout-ms", "60000",
+      "--idempotency-key", "provider-precommit-runtime-second",
+      "--json", "--no-open",
+    ], { cwd: executionDirectory, env: productEnvironment })).stdout);
+    assert.notEqual(secondLaunch.runtime.runtimeId, firstLaunch.runtime.runtimeId);
+    assert.equal(secondLaunch.host.hostId, firstLaunch.host.hostId);
+
+    await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
+    assert.equal(
+      await readFile(excludePath, "utf8"),
+      `${excludeBeforeLaunch}/user-added-during-launch\n`,
+    );
+    assert.equal((await execFileAsync("git", [
+      "-C", projectPath, "status", "--porcelain=v1", "--untracked-files=all",
+    ])).stdout, statusBeforeLaunch);
+    assert.equal((await readJson(join(dataDir, "harness-runs.json")).catch(() => ({ runs: [] })))
+      .runs.length, 0);
+    await context.close();
+  } finally {
+    await browser?.close().catch(() => undefined);
+    await execFileAsync(installed.command, ["stop", "--data-dir", dataDir, "--json"], {
+      cwd: executionDirectory,
+      env: productEnvironment,
+    }).catch(() => undefined);
+    restorePath();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("packaged Cockpit reconciles an active Harness run after real Host death", {
   skip: process.platform !== "linux"

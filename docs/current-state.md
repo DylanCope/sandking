@@ -66,9 +66,12 @@ exists and without writing the manifest. The selector exists only until the
 adapter publishes readiness after inspecting it; the Host then removes the
 selector and any exclude rule it added. Pre-acceptance failures and terminal
 supervision provide rollback boundaries, a later launch removes an exact
-untracked stale selector before probing, and Host startup reconciliation cleans
-retained production Projects. Tracked or different files are never deleted and
-continue to fail as Project collisions.
+untracked stale selector before probing, and Host-private preparation ownership
+is durably journaled before the Project mutation. Host startup therefore cleans
+the selector even when process loss happened before run acceptance and there is
+no retained run. The temporary exclude block has a unique ownership marker, so
+cleanup preserves concurrent edits to `.git/info/exclude`. Tracked or different
+manifest files are never deleted and continue to fail as Project collisions.
 
 The explicit `sandcastle.worker-fixture.json` branch remains available only at
 the adapter protocol's deterministic qualification boundary; a production

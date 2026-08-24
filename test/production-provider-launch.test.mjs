@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import {
+  appendFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -191,6 +192,28 @@ test("production provider preparation atomically writes one git-invisible real m
     await prepared.rollback();
     await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
     assert.equal(await readFile(excludePath, "utf8"), excludeBefore);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("production provider cleanup preserves Git exclusions added during launch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-concurrent-exclude-"));
+  try {
+    const projectPath = await initializeProject(root);
+    const manifestPath = join(projectPath, REAL_PROVIDER_MANIFEST_NAME);
+    const excludePath = join(projectPath, ".git", "info", "exclude");
+    const excludeBefore = await readFile(excludePath, "utf8");
+    const prepared = await prepareProductionProviderManifest({ projectPath });
+
+    await appendFile(excludePath, "/user-added-during-launch\n");
+    await prepared.rollback();
+
+    await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
+    assert.equal(
+      await readFile(excludePath, "utf8"),
+      `${excludeBefore}/user-added-during-launch\n`,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

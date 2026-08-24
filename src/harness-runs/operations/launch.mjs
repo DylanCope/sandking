@@ -7,7 +7,11 @@ import {
   validateHarnessLaunch,
 } from "../../harness-launch.mjs";
 import { materializeProductionHarnessExecutionSnapshot } from "../../production-harness-preparation.mjs";
-import { prepareProductionProviderLaunch } from "../../production-provider-preparation.mjs";
+import {
+  cleanupProductionProviderPreparation,
+  prepareProductionProviderLaunch,
+  productionProviderGitExcludeMarker,
+} from "../../production-provider-preparation.mjs";
 import {
   ensurePrivateDirectory,
   PRIVATE_FILE_MODE,
@@ -25,6 +29,7 @@ import {
   storedRunSchema,
 } from "../schemas.mjs";
 import { logPath, retainedLaunchOutcome } from "../store.mjs";
+import { createProductionProviderPreparationId } from "../provider-preparation-store.mjs";
 
 /** @param {any} runtime */
 export const createLaunchOperation = (runtime) => {
@@ -37,7 +42,7 @@ export const createLaunchOperation = (runtime) => {
    * selector after the first attempt.
    *
    * @param {string} projectPath
-   * @param {{count: number, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null}} lease
+   * @param {{count: number, preparationId: string, ownershipMarker: string, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null}} lease
    */
   const cleanupProductionProviderLease = async (projectPath, lease) => {
     if (lease.count > 0) return;
@@ -57,7 +62,7 @@ export const createLaunchOperation = (runtime) => {
     await lease.cleanupOperation;
   };
 
-  /** @param {{projectPath: string, projectionPath: string, productionPreparation: unknown}} preparation */
+  /** @param {{projectId: string, projectPath: string, projectionPath: string, productionPreparation: unknown}} preparation */
   const acquireProductionProvider = async (preparation) => {
     let retained = runtime.activeProductionProviderPreparations.get(
       preparation.projectPath,
@@ -67,22 +72,50 @@ export const createLaunchOperation = (runtime) => {
       retained = undefined;
     }
     if (retained) retained.count += 1;
+    const preparationId = retained?.preparationId
+      ?? createProductionProviderPreparationId();
+    const ownershipMarker = retained?.ownershipMarker
+      ?? productionProviderGitExcludeMarker(preparationId);
+    let ownershipRetained = false;
     let prepared;
     try {
       prepared = await prepareProductionProviderLaunch({
         ...preparation,
         preserveExistingManifest: Boolean(retained),
+        preparationId,
+        ownershipMarker,
+        beforeProjectMutation: retained
+          ? undefined
+          : async () => {
+              await runtime.retainProductionProviderPreparation({
+                preparationId,
+                projectId: preparation.projectId,
+              });
+              ownershipRetained = true;
+            },
       });
     } catch (error) {
       if (retained) {
         retained.count -= 1;
         await cleanupProductionProviderLease(preparation.projectPath, retained);
+      } else if (ownershipRetained) {
+        await cleanupProductionProviderPreparation({
+          projectPath: preparation.projectPath,
+          preparationId,
+          ownershipMarker,
+        });
+        await runtime.releaseProductionProviderPreparation(preparationId);
       }
       throw error;
     }
     const lease = retained ?? {
       count: 1,
-      rollback: prepared.rollback,
+      preparationId,
+      ownershipMarker,
+      rollback: async () => {
+        await prepared.rollback();
+        await runtime.releaseProductionProviderPreparation(preparationId);
+      },
       cleanupOperation: null,
     };
     if (!retained) {
@@ -179,6 +212,7 @@ export const createLaunchOperation = (runtime) => {
           && context.project.harness.preparation
         ) {
           providerPreparation = await acquireProductionProvider({
+            projectId: context.project.projectId,
             projectPath: context.project.canonicalPath,
             projectionPath: context.productionHarnessProjectionPath,
             productionPreparation: context.project.harness.preparation,

@@ -474,7 +474,7 @@ test("terminal supervision retries a selector release interrupted after readines
     restorePath = await installReadyProbeCommands(root);
     fixture = await createProductionFixture(root, null, {
       faultInjector: async (point) => {
-        if (point !== "harness_run_lifecycle.adapter_ready.after_state_commit") return;
+        if (point !== "harness_run_lifecycle.adapter_ready.before_commit") return;
         await rm(manifestPath);
         await mkdir(manifestPath);
         repairManifest = new Promise((resolve, reject) => {

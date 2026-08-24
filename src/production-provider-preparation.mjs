@@ -6,19 +6,25 @@ import {
   appendProjectGitExcludeRules,
   ProjectPreparationFileError,
   readProjectPreparationFile,
+  removeProjectGitExcludeRules,
+  removeProjectPreparationTemporaryFile,
   replaceProjectPreparationFile,
-  restoreProjectPreparationFile,
 } from "./project-git-exclusion.mjs";
 import { ensureProductionProviderRuntime } from "./production-provider-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 const controlledManifestName = "sandcastle.worker-fixture.json";
 export const REAL_PROVIDER_MANIFEST_NAME = "sandcastle.real-provider.json";
+export const REAL_PROVIDER_GIT_EXCLUDE_RULE = `/${REAL_PROVIDER_MANIFEST_NAME}`;
 export const REAL_PROVIDER_MANIFEST_SOURCE = `${JSON.stringify({
   schemaVersion: 1,
   provider: { kind: "openai-codex", ready: true },
   scenario: "project-commit",
 }, null, 2)}\n`;
+
+/** @param {string} preparationId */
+export const productionProviderGitExcludeMarker = (preparationId) =>
+  `# Sand-King temporary production provider ${preparationId}`;
 
 export class ProductionProviderPreparationError extends Error {
   /** @param {"harness_worker_provider_unavailable" | "harness_projection_collision" | "harness_projection_failed"} code */
@@ -76,11 +82,50 @@ export const removeStaleProductionProviderManifest = async (options) => {
 };
 
 /**
+ * Reconcile one durably owned provider preparation. The manifest removal is
+ * content- and Git-ownership-aware, while the marker identifies only the
+ * temporary exclusion block written by this preparation.
+ *
+ * @param {{projectPath: string, preparationId: string, ownershipMarker: string}} options
+ */
+export const cleanupProductionProviderPreparation = async (options) => {
+  const manifestPath = join(
+    resolve(options.projectPath),
+    REAL_PROVIDER_MANIFEST_NAME,
+  );
+  try {
+    await removeProjectPreparationTemporaryFile(
+      manifestPath,
+      options.preparationId,
+    );
+  } catch (error) {
+    if (error instanceof ProjectPreparationFileError) {
+      throw new ProductionProviderPreparationError(error.code);
+    }
+    throw new ProductionProviderPreparationError("harness_projection_failed");
+  }
+  await removeStaleProductionProviderManifest({ projectPath: options.projectPath });
+  try {
+    await removeProjectGitExcludeRules({
+      projectPath: options.projectPath,
+      rules: [REAL_PROVIDER_GIT_EXCLUDE_RULE],
+      ownershipMarker: options.ownershipMarker,
+      temporaryId: options.preparationId,
+    });
+  } catch (error) {
+    if (error instanceof ProjectPreparationFileError) {
+      throw new ProductionProviderPreparationError(error.code);
+    }
+    throw new ProductionProviderPreparationError("harness_projection_failed");
+  }
+};
+
+/**
  * Atomically prepare the Project-owned selector after real-provider runtime
  * readiness has been established. Kept separate so filesystem invariants can
  * be tested without replacing the live provider/process checks.
  *
- * @param {{projectPath: string}} options
+ * @param {{projectPath: string, preparationId?: string, ownershipMarker?: string}} options
  */
 export const prepareProductionProviderManifest = async (options) => {
   const projectRoot = resolve(options.projectPath);
@@ -132,7 +177,7 @@ export const prepareProductionProviderManifest = async (options) => {
   let manifestWritten = false;
   const rollback = async () => {
     if (manifestWritten) {
-      await restoreProjectPreparationFile(manifestPath, originalManifest);
+      await removeStaleProductionProviderManifest({ projectPath: projectRoot });
       manifestWritten = false;
     }
     await gitExclusion?.rollback();
@@ -140,10 +185,14 @@ export const prepareProductionProviderManifest = async (options) => {
   try {
     gitExclusion = await appendProjectGitExcludeRules({
       projectPath: projectRoot,
-      rules: [`/${REAL_PROVIDER_MANIFEST_NAME}`],
+      rules: [REAL_PROVIDER_GIT_EXCLUDE_RULE],
+      ownershipMarker: options.ownershipMarker,
+      temporaryId: options.preparationId,
     });
     if (!originalManifest.exists) {
-      await replaceProjectPreparationFile(manifestPath, REAL_PROVIDER_MANIFEST_SOURCE);
+      await replaceProjectPreparationFile(manifestPath, REAL_PROVIDER_MANIFEST_SOURCE, {
+        temporaryId: options.preparationId,
+      });
       manifestWritten = true;
     }
     await git(projectRoot, ["check-ignore", "--no-index", "--quiet", manifestPath]);
@@ -180,6 +229,9 @@ export const prepareProductionProviderManifest = async (options) => {
  *   projectionPath: string,
  *   productionPreparation: unknown,
  *   preserveExistingManifest?: boolean,
+ *   preparationId?: string,
+ *   ownershipMarker?: string,
+ *   beforeProjectMutation?: () => Promise<void>,
  * }} options
  */
 export const prepareProductionProviderLaunch = async (options) => {
@@ -193,5 +245,10 @@ export const prepareProductionProviderLaunch = async (options) => {
   if (!runtime.ready) {
     throw new ProductionProviderPreparationError("harness_worker_provider_unavailable");
   }
-  return prepareProductionProviderManifest({ projectPath: options.projectPath });
+  await options.beforeProjectMutation?.();
+  return prepareProductionProviderManifest({
+    projectPath: options.projectPath,
+    preparationId: options.preparationId,
+    ownershipMarker: options.ownershipMarker,
+  });
 };

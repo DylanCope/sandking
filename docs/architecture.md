@@ -132,6 +132,7 @@ sequenceDiagram
         H->>H: build fixed image from verified projection<br/>and verify it with the adapter's image probe
     end
     opt production provider ready
+        H->>H: durably retain temporary preparation ownership
         H->>H: atomically write and locally exclude transient<br/>sandcastle.real-provider.json
     end
     H->>A: spawn adapter, invokePinnedHarnessAdapter<br/>(frame protocol over fd 3)
@@ -197,19 +198,22 @@ adapter preflight, the same atomic exclusion mechanism writes
 manifest and exclude rule. After the adapter has inspected the selector and published
 readiness, the Host removes the manifest and any exclude rule it added; terminal
 supervision is a fallback cleanup boundary. A later launch removes an exact untracked
-Host-authored selector before live readiness probes, and Host startup reconciliation
-does the same for retained production Projects. A tracked or different file remains
-Project-owned and is rejected as a collision rather than deleted. The transient
-selector is untracked, and preparation again requires unchanged `git status` and
-`git ls-files` inventories.
+Host-authored selector before live readiness probes. Before changing the Project, the
+Host also journals the Project registration and a unique Git-exclusion ownership marker
+in Host-private state. Startup reconciles that journal even if process loss preceded run
+acceptance, when no retained run exists. Cleanup removes only the marked Host-owned
+exclude block from the current file, preserving lines added by a person or another tool
+while launch was active. A tracked or different manifest remains Project-owned and is
+rejected as a collision rather than deleted. The transient selector is untracked, and
+preparation again requires unchanged `git status` and `git ls-files` inventories.
 
 ## Data/state boundaries
 
 - **Host-private state** (`~/.sandking` by default): runtime lifecycle
   revision, launch/stop lock, Controller↔Host identity binding, bootstrap
   claims, audit records, Project registry, Harness workspaces (each its own
-  git repo), Harness run state/logs, and (production Harness only) a
-  per-run execution snapshot.
+  git repo), Harness run state/logs, temporary production-provider preparation
+  ownership, and (production Harness only) a per-run execution snapshot.
 - **Project directory**: untouched by the **conformance** Harness path and by
   registration in general. The **production** Harness path writes a
   persistent, git-invisible `.sandking/harnesses/<harnessId>/` projection into
