@@ -47,24 +47,22 @@ waiting on one broken link, and a substantial fraction was built for
 features that don't exist.** Use the per-area sections below rather than the
 percentages above.
 
-## The single biggest finding: the entire production-adapter payload is test-only
+## Production-adapter reachability — resolved by #256
 
-`sandcastle-v4.mjs`'s readiness gate (`inspectRuntime`, line 263) requires a
-`sandcastle.worker-fixture.json` or `sandcastle.real-provider.json` manifest
-in the Project root. **The only code anywhere that writes either file is
-`test/*.test.mjs` fixture setup.** This was first found on the real-provider
-path; auditing further found `controlled-worker-fixture.mjs:9` has the
-identical unconditional dependency on `sandcastle.worker-fixture.json`, with
-no fallback. So both branches behind the gate — real provider and its own
-fixture/test-double — are unreachable from the shipped product, not just one
-of them.
+`sandcastle-v4.mjs`'s readiness gate still requires exactly one provider
+selector in the Project root. #256 made its real branch reachable: shipped Host
+preparation checks Codex/npm and Docker, builds the fixed sandbox image from the
+verified projection when necessary, then atomically writes and locally excludes
+`sandcastle.real-provider.json` before adapter preflight. The production launch
+operation never selects `sandcastle.worker-fixture.json`; that path is exercised
+directly only by deterministic adapter-protocol qualification.
 
 | File | Lines | Status |
 |---|---|---|
-| `sandcastle-v4.mjs` lines 1–~260 (protocol framing, arg parsing, the gate itself) | ~260 | **Real** — genuinely executed on every launch attempt, correctly produces `harness_worker_provider_unavailable` |
-| `sandcastle-v4.mjs` lines ~260–708 (dispatch logic past the gate) | ~448 | **Test-only** |
-| `real-worker-v2.mjs` | 301 | **Test-only** — only reachable past the gate |
-| `controlled-worker-fixture.mjs` | 63 | **Test-only** — same gate, no fallback (corrects `docs/architecture.md`, which previously listed this as "Live") |
+| `sandcastle-v4.mjs` lines 1–~260 (protocol framing, argument parsing, shared readiness predicates) | ~260 | **Live** |
+| `sandcastle-v4.mjs` lines ~260–708 (provider selection and dispatch) | ~448 | **Live for the Host-created real selector; controlled branch is qualification-only** |
+| `real-worker-v2.mjs` | 301 | **Live fixed-canary path** |
+| `controlled-worker-fixture.mjs` | 63 | **Qualification-test path, never a production fallback** |
 
 This pattern was actively hunted for elsewhere across the full `src/` tree
 (every manifest-like filename, every `process.env` read, every "exactly one
@@ -190,11 +188,7 @@ still open and was not in scope for #207.
 
 ## What this means for next steps
 
-Closing the `sandcastle.worker-fixture.json`/`sandcastle.real-provider.json`
-gap — having `prepareProductionHarness` (or an equivalent product code path)
-decide and write this manifest itself instead of leaving it to test setup —
-is the single highest-leverage fix available: it's small (the gate itself is
-one function), and it's what everything else in the "real & working" bucket
-has been waiting on. It's also the natural point to fold in the earlier-found
-gap (wiring `main.mts` instead of the fixed canary prompt), since both
-require touching the same code path. See `docs/current-state.md` gap #2.
+The selector/image reachability gap is closed by #256. The next capability gap
+is intentionally separate: `real-worker-v2.mjs` still performs the fixed canary
+commit instead of dispatching the bundled GitHub-issue workflow in `main.mts`.
+See `docs/current-state.md` gap #2.

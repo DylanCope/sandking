@@ -53,8 +53,11 @@ a from-scratch feature addition against a clean slate, not a matter of
 
 **Update (#256):** the manifest reachability half of this gap is closed.
 The shared Host launch operation used by both the Cockpit and `sandking launch`
-now runs the production adapter's exact Codex/npm and Docker/image readiness
-probes before adapter preflight. When they pass, it atomically writes the exact
+now runs the production adapter's exact Codex/npm and Docker-engine readiness
+probes before adapter preflight. If the fixed sandbox image is absent, shipped
+Host preparation builds it from the verified production Harness projection
+and then re-runs the adapter's exact image probe. When readiness passes, it
+atomically writes the exact
 `sandcastle.real-provider.json` selector expected by `inspectRuntime()` and
 adds a local `.git/info/exclude` rule. The operation verifies `git status` and
 `git ls-files` are unchanged. When any probe fails, launch returns the typed
@@ -62,12 +65,13 @@ adds a local `.git/info/exclude` rule. The operation verifies `git status` and
 exists and without writing the manifest. A later launch-preparation failure
 rolls the manifest and newly added exclude rule back.
 
-The explicit `sandcastle.worker-fixture.json` branch remains available to the
-existing deterministic qualification tests, but production never silently
-falls back to it. The real Cockpit acceptance now starts from a Project with no
-provider manifest and requires the Host-created, git-invisible real selector
-before accepting the delegated commit. The conformance Harness does not enter
-this preparation path and never writes the selector.
+The explicit `sandcastle.worker-fixture.json` branch remains available only at
+the adapter protocol's deterministic qualification boundary; a production
+registration never selects it. The gated real acceptance now starts without a
+provider manifest or sandbox image and requires product preparation to create
+both before accepting delegated commits through the Cockpit and installed
+`sandking launch`. The conformance Harness does not enter this preparation path
+and never writes the selector.
 
 What remains is the task the real adapter performs: a **fixed canary prompt**
 (`.sandcastle/real-delegation-prompt.md`: write one file, commit it, stop),

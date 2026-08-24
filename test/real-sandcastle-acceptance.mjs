@@ -129,9 +129,20 @@ export const validateRealSandcastleResult = (result) => {
     || result.installedSandKing?.installed !== true
     || result.installedSandKing?.launchedOutsideCheckout !== true
     || !digestPattern.test(result.installedSandKing?.tarballIntegrity ?? "")
-    || result.publicSeam?.surface !== "cockpit"
+    || JSON.stringify(result.publicSeam?.surfaces)
+      !== JSON.stringify(["cockpit", "sandking launch"])
     || result.publicSeam?.defaultProductionHarness !== true
-    || result.publicSeam?.launchActionCount !== 1
+    || result.publicSeam?.launchActionCount !== 2
+    || !idPattern.test(result.publicSeam?.cockpit?.harnessRunId ?? "")
+    || result.publicSeam?.cli?.surface !== "sandking launch"
+    || result.publicSeam?.cli?.source !== "controller-cli"
+    || !idPattern.test(result.publicSeam?.cli?.harnessRunId ?? "")
+    || !commitPattern.test(result.publicSeam?.cli?.beforeCommit ?? "")
+    || !commitPattern.test(result.publicSeam?.cli?.afterCommit ?? "")
+    || result.publicSeam?.cli?.beforeCommit === result.publicSeam?.cli?.afterCommit
+    || result.publicSeam?.cli?.artifactIntegrity
+      !== `sha256:${realSandcastleScenario.expectedArtifact.contentUtf8Sha256}`
+    || result.publicSeam?.cli?.exactlyOneTerminalEnvelope !== true
     || result.provider?.kind !== "openai-codex"
     || result.provider?.version !== realSandcastleScenario.provider.cliVersion
     || result.provider?.realExecution !== true

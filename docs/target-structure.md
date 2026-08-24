@@ -201,27 +201,29 @@ fix**, not as a standalone earlier cleanup. A separate demo/test build variant
 was considered and rejected — far too much machinery to bridge a
 self-inflicted gap.
 
-## The production gate is bigger than "write a manifest"
+## The production gate is bigger than "write a manifest" — resolved by #256
 
-Recorded 2026-08-11 after scoping. `docs/current-state.md` gap #2 identifies
+Recorded 2026-08-11 after scoping. `docs/current-state.md` gap #2 identified
 the missing `sandcastle.real-provider.json` manifest. Scoping found that is
 **one of at least three** test-only dependencies. To make production Launch
 work, product code must take over responsibilities that currently live only in
 `test/run-issue-174-real-sandcastle.mjs`:
 
 1. **Write the provider manifest** — known.
-2. **Build/ensure the Docker image.** `realSandboxAvailable()`
-   (`sandcastle-v4.mjs:242`) checks that `sandcastle:sandking-real-worker`
-   exists, but nothing in `src/` ever builds it. Only the acceptance runner
-   does, and it removes/restores the tag afterwards.
+2. **Build/ensure the Docker image.** Resolved by #256: shipped Host preparation
+   checks the Docker engine, builds a missing
+   `sandcastle:sandking-real-worker` image from the verified production Harness
+   projection, and accepts it only after the adapter's exact image probe passes.
+   The gated acceptance runner now removes the tag first and requires product
+   code to recreate it; it no longer contains an image builder.
 3. **Satisfy an exact version pin.** `sandcastle-v4.mjs:16` pins
    `codexVersion = "0.146.0"` and readiness requires
    `version === "codex-cli 0.146.0"` by string equality — any other installed
    Codex fails. This needs a tolerance policy or it breaks on the next release.
 
-Plus authenticated `codex` and an exact skill-inventory match. The honest
-framing is "move the real-provider bootstrap out of the acceptance runner into
-the product", which is a ticket or two, not a quick fix.
+Plus authenticated `codex` and an exact skill-inventory match. #256 moved this
+real-provider bootstrap into the product. The remaining fixed-version policy
+and fixed-canary dispatch limitations are documented in `docs/current-state.md`.
 
 ## Sequencing, and why the refactor is safer than it looks
 

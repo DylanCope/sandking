@@ -5,7 +5,6 @@ import {
   mkdir,
   mkdtemp,
   readFile,
-  readdir,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -41,7 +40,7 @@ const writeExecutable = async (path, source) => {
   await chmod(path, 0o700);
 };
 
-const installRealProviderProbeCommands = async (root) => {
+const installReadyProbeCommands = async (root) => {
   const binPath = join(root, "bin");
   const originalPath = process.env.PATH;
   await mkdir(binPath, { recursive: true });
@@ -53,8 +52,7 @@ exit 91
 `),
     writeExecutable(join(binPath, "npm"), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
-if [ "$1" = "ci" ]; then printf '%s\\n' 'bounded dependency failure' >&2; exit 92; fi
-exit 93
+exit 92
 `),
     writeExecutable(join(binPath, "docker"), `#!/bin/sh
 if [ "$1" = "version" ] && [ "$2" = "--format" ]; then printf '%s\\n' '27.5.1'; exit 0; fi
@@ -62,7 +60,7 @@ if [ "$1" = "image" ] && [ "$2" = "inspect" ] && [ "$3" = "sandcastle:sandking-r
   printf '%s\\n' 'sha256:${"d".repeat(64)}'
   exit 0
 fi
-exit 94
+exit 93
 `),
   ]);
   process.env.PATH = `${binPath}:${originalPath ?? ""}`;
@@ -71,61 +69,43 @@ exit 94
   };
 };
 
-const alteredWorkerSource = [
-  'import { writeFile } from "node:fs/promises";',
-  'import { join } from "node:path";',
-  'await writeFile(join(process.cwd(), "tampered-runtime.txt"), "tampered runtime executed\\n");',
-  'process.stdout.write(`${JSON.stringify({',
-  '  type: "sandcastle.worker.result",',
-  '  status: "succeeded",',
-  '  result: {',
-  '    schemaVersion: 1,',
-  '    kind: "sandcastle.delegation",',
-  '    code: "tampered_runtime_executed",',
-  '  },',
-  '})}\\n`);',
-  "",
-].join("\n");
-
-const createProductionFixture = async (root, fixture, managerOptions = {}) => {
+const createProductionFixture = async (root, controlledFixture = null, managerOptions = {}) => {
   const dataDir = join(root, "host-state");
   const projectPath = join(root, "project");
   await mkdir(projectPath, { recursive: true });
   await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
-  await writeFile(join(projectPath, "README.md"), "controlled production Project\n");
-  if (fixture !== null) await writeControlledFixture(projectPath, fixture);
-  await commitProject(projectPath, "Initialize controlled production Project");
+  await writeFile(join(projectPath, "README.md"), "production Project\n");
+  if (controlledFixture) await writeControlledFixture(projectPath, controlledFixture);
+  await commitProject(projectPath, "Initialize production Project");
 
   const audits = [];
-  const { onAudit, ...runManagerOptions } = managerOptions;
   const recordAudit = async (action, outcome, details, requestedAuditId) => {
     const auditId = requestedAuditId
       ?? `audit-${String(audits.length + 1).padStart(24, "0")}`;
     audits.push({ auditId, action, outcome, details });
-    await onAudit?.(action, outcome, details);
     return auditId;
   };
   const registry = await createProjectRegistry({ dataDir, recordAudit });
   const harness = await registry.registerSandcastleHarness({
-    requestId: "register-controlled-production-harness",
+    requestId: "register-production-harness",
     name: "Sand-King Sandcastle Harness",
     authorizationClass: "host_local_harness_registration",
-    idempotencyKey: "register-controlled-production-harness",
+    idempotencyKey: "register-production-harness",
     expectedRevision: 0,
   });
   const project = await registry.registerProject({
-    requestId: "register-controlled-production-project",
+    requestId: "register-production-project",
     path: projectPath,
     configuration: {
       issueWorkflow: { provider: "github", kind: "issues" },
       checks: [{ checkId: "test", command: "npm test" }],
     },
     authorizationClass: "host_local_project_registration",
-    idempotencyKey: "register-controlled-production-project",
+    idempotencyKey: "register-production-project",
     expectedRevision: 0,
   });
   const pinned = await registry.pinHarness({
-    requestId: "pin-controlled-production-harness",
+    requestId: "pin-production-harness",
     projectId: project.project.projectId,
     harnessId: harness.harness.harnessId,
     boundedConfiguration: {
@@ -133,7 +113,7 @@ const createProductionFixture = async (root, fixture, managerOptions = {}) => {
       launchProfile: "delegated-work",
     },
     authorizationClass: "host_local_project_configuration",
-    idempotencyKey: "pin-controlled-production-harness",
+    idempotencyKey: "pin-production-harness",
     expectedRevision: 1,
   });
   const manager = await createHarnessRunManager({
@@ -141,13 +121,23 @@ const createProductionFixture = async (root, fixture, managerOptions = {}) => {
     hostId: `host-${"1".repeat(24)}`,
     recordAudit,
     loadLaunchContext: registry.loadLaunchContext,
-    ...runManagerOptions,
+    ...managerOptions,
   });
-  return { audits, dataDir, harness, manager, pinned, project, projectPath, registry };
+  return {
+    audits,
+    dataDir,
+    harness,
+    manager,
+    pinned,
+    project,
+    projectPath,
+    recordAudit,
+    registry,
+  };
 };
 
 const launchRequest = (projectId, overrides = {}) => ({
-  requestId: "launch-controlled-production-work",
+  requestId: "launch-production-work",
   projectId,
   parameters: {},
   controllerId: `runtime-${"2".repeat(24)}`,
@@ -158,197 +148,15 @@ const launchRequest = (projectId, overrides = {}) => ({
   ...overrides,
 });
 
-const observeTerminal = async (manager, harnessRunId) => {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    const observation = await manager.observe({
-      requestId: "observe-controlled-production-work",
-      harnessRunId,
-      afterSequence: 0,
-    });
-    if (["succeeded", "failed", "cancelled"].includes(observation.run.status)) {
-      await manager.waitForIdle();
-      return observation;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("controlled_production_terminal_timeout");
-};
-
-const observeRunning = async (manager, harnessRunId) => {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    const observation = await manager.observe({
-      requestId: "observe-running-controlled-production-work",
-      harnessRunId,
-      afterSequence: 0,
-    });
-    if (
-      observation.run.status === "running"
-      && observation.events.some(({ type }) => type === "harness_progress_published")
-    ) return observation;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("controlled_production_running_timeout");
-};
-
-test("the ordinary launch seam delegates once through the pinned production adapter", async () => {
-  const root = await mkdtemp(join(tmpdir(), "sandking-production-adapter-"));
-  try {
-    const fixture = await createProductionFixture(root, {
-      schemaVersion: 1,
-      provider: { kind: "controlled-worker-fixture", ready: true },
-      scenario: "succeeded",
-      artifact: {
-        path: "controlled-delegation.txt",
-        content: "controlled delegated work\n",
-      },
-    });
-    const request = launchRequest(fixture.project.project.projectId);
-    const launched = await fixture.manager.launch(request);
-    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
-    assert.equal(launched.run.adapterId, "sandcastle-harness-adapter-v1");
-    assert.equal(
-      launched.run.harnessPinnedRevision,
-      fixture.harness.harness.immutableRevision,
-    );
-    assert.deepEqual(launched.run.executionSnapshot.productionHarness, {
-      skillSetLockDigest:
-        fixture.pinned.project.harness.preparation.skillSetLockDigest,
-      resolvedSkills: fixture.pinned.project.harness.preparation.resolvedSkills,
-      executionRuntimeInputs:
-        fixture.pinned.project.harness.preparation.executionRuntimeInputs,
-      projectionDigest: fixture.pinned.project.harness.preparation.projection.digest,
-    });
-    const snapshotText = JSON.stringify(launched.run.executionSnapshot);
-    assert.doesNotMatch(snapshotText, new RegExp(root.replaceAll("/", "\\/")));
-    assert.doesNotMatch(snapshotText, /secret|credentialValue|machinePath/i);
-
-    const observed = await observeTerminal(fixture.manager, launched.run.harnessRunId);
-    assert.equal(observed.run.status, "succeeded", JSON.stringify(observed));
-    assert.equal(observed.outcome.code, "harness_run_succeeded");
-    assert.deepEqual(observed.outcome.result, {
-      schemaVersion: 1,
-      kind: "sandcastle.delegation",
-      code: "work_completed",
-      selection: {},
-      artifact: "controlled-delegation.txt",
-    });
-    assert.equal(observed.terminalEnvelopeValidation.exactlyOne, true);
-    assert.equal(observed.terminalEnvelopeValidation.validTerminalEnvelopeCount, 1);
-    const progress = observed.events.find((event) => event.progressRecord)?.progressRecord;
-    assert.equal(progress?.type, "sandcastle.worker");
-    assert.deepEqual(
-      Object.keys(progress?.payload ?? {}).filter((key) =>
-        /plan|ticket|topology|branch|successRules/i.test(key)),
-      [],
-    );
-    assert.equal(
-      await readFile(join(fixture.projectPath, "controlled-delegation.txt"), "utf8"),
-      "controlled delegated work\n",
-    );
-
-    const replay = await fixture.manager.launch({
-      ...request,
-      requestId: "replay-controlled-production-work",
-    });
-    assert.equal(replay.type, "harness.run.launch.result");
-    assert.equal(replay.idempotentReplay, true);
-    assert.equal(replay.run.harnessRunId, launched.run.harnessRunId);
-    const conflict = await fixture.manager.launch({
-      ...request,
-      requestId: "conflict-controlled-production-work",
-      parameters: { issueNumber: 173 },
-    });
-    assert.equal(conflict.type, "harness.run.launch.failure");
-    assert.equal(conflict.code, "idempotency_key_conflict");
-    assert.equal(fixture.audits.filter(({ action }) =>
-      action === "harness.adapter.start").length, 1);
-    assert.equal(
-      await readFile(join(fixture.projectPath, "controlled-delegation.txt"), "utf8"),
-      "controlled delegated work\n",
-    );
-    const retained = JSON.parse(await readFile(
-      join(fixture.dataDir, "harness-runs.json"),
-      "utf8",
-    ));
-    assert.equal(retained.runs.length, 1);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("CLI and Cockpit production launches reach the real branch through one Host-prepared manifest", async () => {
-  const root = await mkdtemp(join(tmpdir(), "sandking-production-real-provider-launch-"));
-  let restorePath = () => undefined;
-  let fixture;
-  try {
-    restorePath = await installRealProviderProbeCommands(root);
-    fixture = await createProductionFixture(root, null, {
-      probeRealProviderReadiness: () => true,
-      faultInjector: (point) => {
-        if (point === "harness_run_lifecycle.adapter_ready.before_commit") {
-          throw new Error("stop_after_real_adapter_readiness");
-        }
-      },
-    });
-    const manifestPath = join(fixture.projectPath, "sandcastle.real-provider.json");
-    const statusBefore = (await execFileAsync("git", [
-      "-C", fixture.projectPath, "status", "--porcelain=v1", "--untracked-files=all",
-    ])).stdout;
-    const trackedBefore = (await execFileAsync("git", [
-      "-C", fixture.projectPath, "ls-files", "--stage", "-z",
-    ])).stdout;
-    const requests = [
-      launchRequest(fixture.project.project.projectId, {
-        requestId: "launch-real-provider-from-cli",
-        idempotencyKeyHash: `sha256:${"a".repeat(64)}`,
-      }),
-      launchRequest(fixture.project.project.projectId, {
-        requestId: "launch-real-provider-from-cockpit",
-        source: "cockpit",
-        controllerSessionId: null,
-        idempotencyKeyHash: `sha256:${"b".repeat(64)}`,
-      }),
-    ];
-
-    for (const request of requests) {
-      const launched = await fixture.manager.launch(request);
-      assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
-      assert.equal(launched.run.source, request.source);
-      await fixture.manager.waitForIdle();
-    }
-
-    assert.deepEqual(JSON.parse(await readFile(manifestPath, "utf8")), {
-      schemaVersion: 1,
-      provider: { kind: "openai-codex", ready: true },
-      scenario: "project-commit",
-    });
-    await execFileAsync("git", [
-      "-C", fixture.projectPath, "check-ignore", "--no-index", "--quiet", manifestPath,
-    ]);
-    assert.equal((await execFileAsync("git", [
-      "-C", fixture.projectPath, "status", "--porcelain=v1", "--untracked-files=all",
-    ])).stdout, statusBefore);
-    assert.equal((await execFileAsync("git", [
-      "-C", fixture.projectPath, "ls-files", "--stage", "-z",
-    ])).stdout, trackedBefore);
-    assert.ok(fixture.audits.filter(({ action }) =>
-      action === "harness.adapter.start").length >= 1);
-  } finally {
-    await fixture?.manager.waitForIdle().catch(() => undefined);
-    restorePath();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test("unavailable real providers reject the Host launch before a run, manifest, or adapter", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-host-provider-unavailable-"));
+  const providerHome = join(root, "provider-home");
+  const originalHome = process.env.HOME;
   let fixture;
   try {
-    fixture = await createProductionFixture(root, null, {
-      probeRealProviderReadiness: () => false,
-    });
+    await mkdir(providerHome, { recursive: true });
+    process.env.HOME = providerHome;
+    fixture = await createProductionFixture(root);
     const manifestPath = join(fixture.projectPath, "sandcastle.real-provider.json");
     const excludePath = join(fixture.projectPath, ".git", "info", "exclude");
     const excludeBefore = await readFile(excludePath, "utf8");
@@ -361,10 +169,6 @@ test("unavailable real providers reject the Host launch before a run, manifest, 
 
     const rejected = await fixture.manager.launch(launchRequest(
       fixture.project.project.projectId,
-      {
-        requestId: "launch-with-unavailable-real-provider",
-        idempotencyKeyHash: `sha256:${"c".repeat(64)}`,
-      },
     ));
     assert.equal(rejected.type, "harness.run.launch.failure");
     assert.equal(rejected.code, "harness_worker_provider_unavailable");
@@ -390,40 +194,49 @@ test("unavailable real providers reject the Host launch before a run, manifest, 
     assert.deepEqual(retained.runs, []);
   } finally {
     await fixture?.manager.waitForIdle().catch(() => undefined);
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
     await rm(root, { recursive: true, force: true });
   }
 });
 
 test("a post-probe adapter rejection rolls back the manifest and its new exclude rule", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-rollback-"));
+  let restorePath = () => undefined;
   let fixture;
-  let workerEnvironmentPath;
-  let originalWorkerEnvironment;
   try {
-    fixture = await createProductionFixture(root, null, {
-      probeRealProviderReadiness: async () => {
-        workerEnvironmentPath = join(
-          fixture.projectPath,
-          ...fixture.pinned.project.harness.preparation.projection.path.split("/"),
-          "worker-environment.json",
-        );
-        originalWorkerEnvironment = await readFile(workerEnvironmentPath, "utf8");
-        const changed = JSON.parse(originalWorkerEnvironment);
-        changed.executionRuntimeInputs[0].version = "0.145.0";
-        await writeFile(workerEnvironmentPath, `${JSON.stringify(changed, null, 2)}\n`);
-        return true;
-      },
+    restorePath = await installReadyProbeCommands(root);
+    fixture = await createProductionFixture(root);
+    const launchContext = await fixture.registry.loadLaunchContext(
+      fixture.project.project.projectId,
+    );
+    fixture.manager = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId: `host-${"1".repeat(24)}`,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: async () => structuredClone(launchContext),
     });
+    const projectionPath = join(
+      fixture.projectPath,
+      ...fixture.pinned.project.harness.preparation.projection.path.split("/"),
+    );
+    const workerEnvironmentPath = join(projectionPath, "worker-environment.json");
+    await writeExecutable(join(root, "bin", "docker"), `#!/bin/sh
+if [ "$1" = "version" ] && [ "$2" = "--format" ]; then printf '%s\\n' '27.5.1'; exit 0; fi
+if [ "$1" = "image" ] && [ "$2" = "inspect" ] && [ "$3" = "sandcastle:sandking-real-worker" ]; then
+  sed -i 's/0.146.0/0.145.0/' '${workerEnvironmentPath}'
+  printf '%s\\n' 'sha256:${"d".repeat(64)}'
+  exit 0
+fi
+exit 93
+`);
     const manifestPath = join(fixture.projectPath, "sandcastle.real-provider.json");
     const excludePath = join(fixture.projectPath, ".git", "info", "exclude");
     const excludeBefore = await readFile(excludePath, "utf8");
 
     const rejected = await fixture.manager.launch(launchRequest(
       fixture.project.project.projectId,
-      {
-        requestId: "launch-with-post-probe-rejection",
-        idempotencyKeyHash: `sha256:${"d".repeat(64)}`,
-      },
+      { idempotencyKeyHash: `sha256:${"d".repeat(64)}` },
     ));
     assert.equal(rejected.type, "harness.run.launch.failure");
     assert.equal(rejected.code, "harness_worker_provider_unavailable");
@@ -436,10 +249,8 @@ test("a post-probe adapter rejection rolls back the manifest and its new exclude
     ));
     assert.deepEqual(retained.runs, []);
   } finally {
-    if (workerEnvironmentPath && originalWorkerEnvironment) {
-      await writeFile(workerEnvironmentPath, originalWorkerEnvironment).catch(() => undefined);
-    }
     await fixture?.manager.waitForIdle().catch(() => undefined);
+    restorePath();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -449,9 +260,8 @@ test("a durably accepted production launch retains its manifest for Host reconci
   let restorePath = () => undefined;
   let fixture;
   try {
-    restorePath = await installRealProviderProbeCommands(root);
+    restorePath = await installReadyProbeCommands(root);
     fixture = await createProductionFixture(root, null, {
-      probeRealProviderReadiness: () => true,
       faultInjector: (point) => {
         if (point === "harness_run_launch.after_state_commit") {
           throw new Error("simulate_host_loss_after_durable_acceptance");
@@ -462,12 +272,10 @@ test("a durably accepted production launch retains its manifest for Host reconci
 
     await assert.rejects(
       fixture.manager.launch(launchRequest(fixture.project.project.projectId, {
-        requestId: "launch-before-host-reconciliation",
         idempotencyKeyHash: `sha256:${"e".repeat(64)}`,
       })),
       /simulate_host_loss_after_durable_acceptance/,
     );
-
     assert.deepEqual(JSON.parse(await readFile(manifestPath, "utf8")), {
       schemaVersion: 1,
       provider: { kind: "openai-codex", ready: true },
@@ -486,155 +294,22 @@ test("a durably accepted production launch retains its manifest for Host reconci
   }
 });
 
-test("an accepted production launch executes its immutable pinned runtime snapshot", async () => {
-  const root = await mkdtemp(join(tmpdir(), "sandking-production-immutable-runtime-"));
-  let fixture;
-  try {
-    fixture = await createProductionFixture(root, {
-      schemaVersion: 1,
-      provider: { kind: "controlled-worker-fixture", ready: true },
-      scenario: "succeeded",
-      artifact: {
-        path: "pinned-runtime.txt",
-        content: "exact pinned runtime executed\n",
-      },
-    }, {
-      faultInjector: async (point) => {
-        if (point !== "harness_run_launch.after_commit") return;
-        const projectionPath = join(
-          fixture.projectPath,
-          ...fixture.pinned.project.harness.preparation.projection.path.split("/"),
-        );
-        await writeFile(
-          join(projectionPath, ".sandcastle", "controlled-worker-fixture.mjs"),
-          alteredWorkerSource,
-        );
-      },
-    });
-
-    const launched = await fixture.manager.launch(launchRequest(
-      fixture.project.project.projectId,
-    ));
-    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
-    assert.equal(
-      launched.run.executionSnapshot.productionHarness.projectionDigest,
-      fixture.pinned.project.harness.preparation.projection.digest,
-    );
-
-    const terminal = await observeTerminal(fixture.manager, launched.run.harnessRunId);
-    assert.equal(terminal.run.status, "succeeded", JSON.stringify(terminal));
-    assert.equal(terminal.outcome.result.code, "work_completed");
-    assert.equal(
-      await readFile(join(fixture.projectPath, "pinned-runtime.txt"), "utf8"),
-      "exact pinned runtime executed\n",
-    );
-    await assert.rejects(
-      readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
-      { code: "ENOENT" },
-    );
-  } finally {
-    await fixture?.manager.waitForIdle().catch(() => undefined);
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("an altered retained production runtime never starts or reports success", async () => {
-  const root = await mkdtemp(join(tmpdir(), "sandking-production-altered-runtime-"));
-  let fixture;
-  try {
-    fixture = await createProductionFixture(root, {
-      schemaVersion: 1,
-      provider: { kind: "controlled-worker-fixture", ready: true },
-      scenario: "succeeded",
-    }, {
-      faultInjector: async (point) => {
-        if (point !== "harness_run_launch.after_commit") return;
-        const [harnessRunId] = await readdir(join(fixture.dataDir, "harness-runs"));
-        const executionWorkerPath = join(
-          fixture.dataDir,
-          "harness-runs",
-          harnessRunId,
-          "execution",
-          ".sandcastle",
-          "controlled-worker-fixture.mjs",
-        );
-        await chmod(executionWorkerPath, 0o600);
-        await writeFile(executionWorkerPath, alteredWorkerSource);
-      },
-    });
-
-    const launched = await fixture.manager.launch(launchRequest(
-      fixture.project.project.projectId,
-    ));
-    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
-    const terminal = await observeTerminal(fixture.manager, launched.run.harnessRunId);
-    assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
-    assert.equal(terminal.outcome.code, "harness_adapter_start_failed");
-    assert.equal(fixture.audits.some(({ action }) => action === "harness.adapter.start"), false);
-    await assert.rejects(
-      readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
-      { code: "ENOENT" },
-    );
-  } finally {
-    await fixture?.manager.waitForIdle().catch(() => undefined);
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("the accepted Worker bytes remain bound after the adapter process starts", async () => {
-  const root = await mkdtemp(join(tmpdir(), "sandking-production-worker-handoff-"));
-  let fixture;
-  try {
-    fixture = await createProductionFixture(root, {
-      schemaVersion: 1,
-      provider: { kind: "controlled-worker-fixture", ready: true },
-      scenario: "succeeded",
-    }, {
-      onAudit: async (action, _outcome, details) => {
-        if (action !== "harness.adapter.start") return;
-        const executionWorkerPath = join(
-          fixture.dataDir,
-          "harness-runs",
-          details.harnessRunId,
-          "execution",
-          ".sandcastle",
-          "controlled-worker-fixture.mjs",
-        );
-        await chmod(executionWorkerPath, 0o600);
-        await writeFile(executionWorkerPath, alteredWorkerSource);
-      },
-    });
-
-    const launched = await fixture.manager.launch(launchRequest(
-      fixture.project.project.projectId,
-    ));
-    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
-    const terminal = await observeTerminal(fixture.manager, launched.run.harnessRunId);
-    assert.equal(terminal.run.status, "succeeded", JSON.stringify(terminal));
-    assert.equal(terminal.outcome.result.code, "work_completed");
-    await assert.rejects(
-      readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
-      { code: "ENOENT" },
-    );
-  } finally {
-    await fixture?.manager.waitForIdle().catch(() => undefined);
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("the installed ordinary CLI discovers production parameters and launches the same adapter", async () => {
+test("installed sandking launch reaches real readiness and cannot select a controlled Worker", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-installed-cli-"));
   const endpoint = join(root, "controller.sock");
+  const providerHome = join(root, "provider-home");
+  const originalHome = process.env.HOME;
   let server;
   let fixture;
   try {
+    await mkdir(providerHome, { recursive: true });
+    process.env.HOME = providerHome;
     fixture = await createProductionFixture(root, {
       schemaVersion: 1,
       provider: { kind: "controlled-worker-fixture", ready: true },
       scenario: "succeeded",
     });
     const projectId = fixture.project.project.projectId;
-    assert.equal(fixture.harness.harness.launchParameters.kind, "fields");
     const controllerSessionId = `controller-session-${"5".repeat(24)}`;
     const requests = [];
     server = createServer((socket) => {
@@ -646,37 +321,44 @@ test("the installed ordinary CLI discovers production parameters and launches th
         try {
           const request = JSON.parse(input.slice(0, input.indexOf("\n")));
           requests.push(request);
-          let outcome;
           if (request.operation === "describe") {
-            outcome = {
-              type: "controller.cli.description",
+            socket.end(`${JSON.stringify({
+              type: "sandking.cli.result",
               protocol: "1.0.0",
-              command: "sandking launch",
-              focusedProjectId: projectId,
-              projectArgumentOptional: true,
-              pluginRequired: false,
-              launchParameters: fixture.harness.harness.launchParameters,
-            };
-          } else if (request.operation === "harness-run.launch") {
-            outcome = await fixture.manager.launch({
               requestId: request.requestId,
-              projectId,
-              parameters: request.parameters ?? {},
-              controllerId: `runtime-${"6".repeat(24)}`,
-              controllerSessionId: request.controllerSessionId,
-              source: "controller-cli",
-              authorizationClass: "harness_run_launch",
-              idempotencyKeyHash: request.idempotencyKeyHash,
-            });
-          } else {
+              ok: true,
+              outcome: {
+                type: "controller.cli.description",
+                protocol: "1.0.0",
+                command: "sandking launch",
+                focusedProjectId: projectId,
+                projectArgumentOptional: true,
+                pluginRequired: false,
+                launchParameters: fixture.harness.harness.launchParameters,
+              },
+            })}\n`);
+            return;
+          }
+          if (request.operation !== "harness-run.launch") {
             throw new Error("unexpected_controller_cli_operation");
           }
+          const outcome = await fixture.manager.launch({
+            requestId: request.requestId,
+            projectId,
+            parameters: request.parameters ?? {},
+            controllerId: `runtime-${"6".repeat(24)}`,
+            controllerSessionId: request.controllerSessionId,
+            source: "controller-cli",
+            authorizationClass: "harness_run_launch",
+            idempotencyKeyHash: request.idempotencyKeyHash,
+          });
+          assert.equal(outcome.type, "harness.run.launch.failure");
           socket.end(`${JSON.stringify({
             type: "sandking.cli.result",
             protocol: "1.0.0",
             requestId: request.requestId,
-            ok: true,
-            outcome,
+            ok: false,
+            failure: { code: outcome.code },
           })}\n`);
         } catch (error) {
           socket.destroy(error instanceof Error ? error : undefined);
@@ -694,10 +376,11 @@ test("the installed ordinary CLI discovers production parameters and launches th
       mkdir(retryDirectory, { recursive: true }),
       mkdir(userHome, { recursive: true }),
     ]);
-    const { stdout } = await execFileAsync(installed.command, [
+
+    await assert.rejects(execFileAsync(installed.command, [
       "launch", projectId,
-      "--issue", "173",
-      "--target-branch", "sandcastle/issue-173",
+      "--issue", "256",
+      "--target-branch", "sandcastle/issue-256",
       "--json",
     ], {
       cwd: root,
@@ -709,284 +392,29 @@ test("the installed ordinary CLI discovers production parameters and launches th
         SANDKING_CONTROLLER_RETRY_DIRECTORY: retryDirectory,
         SANDKING_WORK_CONTEXT_ID: projectId,
       },
+    }), (error) => {
+      assert.match(error.stderr, /harness_worker_provider_unavailable/);
+      return true;
     });
-    const launched = JSON.parse(stdout);
-    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
-    assert.deepEqual(launched.run.parameters, {
-      issueNumber: 173,
-      targetBranch: "sandcastle/issue-173",
-    });
-    const observed = await observeTerminal(fixture.manager, launched.run.harnessRunId);
-    assert.equal(observed.run.status, "succeeded", JSON.stringify(observed));
-    assert.equal(observed.run.adapterId, "sandcastle-harness-adapter-v1");
-    assert.equal(observed.outcome.code, "harness_run_succeeded");
-    assert.deepEqual(observed.outcome.result.selection, {
-      issueNumber: 173,
-      targetBranch: "sandcastle/issue-173",
-    });
-    assert.equal(observed.terminalEnvelopeValidation.exactlyOne, true);
     assert.deepEqual(requests.map(({ operation }) => operation), [
       "describe",
       "harness-run.launch",
     ]);
-    assert.equal(requests[0].projectId, projectId);
-    assert.equal(requests[1].controllerSessionId, controllerSessionId);
-    assert.equal("plugin" in requests[1], false);
-    assert.equal("expectedRevision" in requests[1], false);
-  } finally {
-    await fixture?.manager.waitForIdle().catch(() => undefined);
-    await new Promise((resolve) => server?.close(resolve) ?? resolve());
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("controlled Worker outcomes, not exit or diagnostic text, determine one terminal result", async () => {
-  const root = await mkdtemp(join(tmpdir(), "sandking-production-outcomes-"));
-  try {
-    const fixture = await createProductionFixture(root, {
-      schemaVersion: 1,
-      provider: { kind: "controlled-worker-fixture", ready: true },
-      scenario: "succeeded-nonzero",
-    });
-    const scenarios = [
-      {
-        scenario: "succeeded-nonzero",
-        status: "succeeded",
-        outcomeCode: "harness_run_succeeded",
-        resultCode: "work_completed",
-        diagnosticCode: null,
-      },
-      {
-        scenario: "failed",
-        status: "failed",
-        outcomeCode: "harness_run_failed",
-        resultCode: "work_failed",
-        diagnosticCode: null,
-      },
-      {
-        scenario: "malformed-output",
-        status: "failed",
-        outcomeCode: "harness_run_failed",
-        resultCode: "worker_output_invalid",
-        diagnosticCode: "sandcastle_worker_output_invalid",
-      },
-      {
-        scenario: "nonzero-exit",
-        status: "failed",
-        outcomeCode: "harness_run_failed",
-        resultCode: "worker_result_missing",
-        diagnosticCode: "sandcastle_worker_result_missing",
-      },
-      {
-        scenario: "zero-exit",
-        status: "failed",
-        outcomeCode: "harness_run_failed",
-        resultCode: "worker_result_missing",
-        diagnosticCode: "sandcastle_worker_result_missing",
-      },
-      {
-        scenario: "duplicate-result",
-        status: "failed",
-        outcomeCode: "harness_run_failed",
-        resultCode: "worker_result_ambiguous",
-        diagnosticCode: "sandcastle_worker_result_ambiguous",
-      },
-      {
-        scenario: "diagnostic-only",
-        status: "failed",
-        outcomeCode: "harness_run_failed",
-        resultCode: "worker_result_missing",
-        diagnosticCode: "sandcastle_worker_result_missing",
-      },
-    ];
-
-    for (const [index, expected] of scenarios.entries()) {
-      await writeControlledFixture(fixture.projectPath, {
-        schemaVersion: 1,
-        provider: { kind: "controlled-worker-fixture", ready: true },
-        scenario: expected.scenario,
-      });
-      const request = launchRequest(fixture.project.project.projectId, {
-        requestId: `launch-${expected.scenario}`,
-        controllerSessionId: null,
-        source: "cockpit",
-        idempotencyKeyHash: `sha256:${index.toString(16).repeat(64)}`,
-      });
-      const launched = await fixture.manager.launch(request);
-      assert.equal(launched.type, "harness.run.launch.result", expected.scenario);
-      const observed = await observeTerminal(
-        fixture.manager,
-        launched.run.harnessRunId,
-      );
-      assert.equal(observed.run.status, expected.status, expected.scenario);
-      assert.equal(observed.outcome.status, expected.status, expected.scenario);
-      assert.equal(observed.outcome.code, expected.outcomeCode, expected.scenario);
-      assert.equal(observed.outcome.result.code, expected.resultCode, expected.scenario);
-      assert.equal(
-        observed.terminalEnvelopeValidation.validTerminalEnvelopeCount,
-        1,
-        expected.scenario,
-      );
-      assert.equal(observed.terminalEnvelopeValidation.exactlyOne, true, expected.scenario);
-      const diagnostic = await fixture.manager.readLogs({
-        requestId: `diagnostics-${expected.scenario}`,
-        harnessRunId: launched.run.harnessRunId,
-        producer: "stderr",
-        offset: 0,
-        limit: 16_384,
-      });
-      const diagnosticText = diagnostic.data.toString("utf8");
-      if (expected.diagnosticCode) {
-        assert.match(diagnosticText, new RegExp(expected.diagnosticCode), expected.scenario);
-      }
-      if (expected.scenario === "malformed-output") {
-        assert.doesNotMatch(diagnosticText, /malformed controlled Worker output/);
-      }
-      if (expected.scenario === "diagnostic-only") {
-        assert.match(diagnosticText, /SUCCESS/);
-      }
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("provider and execution readiness fail before work and recover through launch", async () => {
-  const root = await mkdtemp(join(tmpdir(), "sandking-production-readiness-"));
-  let fixture;
-  try {
-    fixture = await createProductionFixture(root, {
-      schemaVersion: 1,
-      runtime: { ready: true },
-      provider: { kind: "controlled-worker-fixture", ready: false },
-      scenario: "succeeded",
-    });
-    const projectId = fixture.project.project.projectId;
-    const unavailableProvider = await fixture.manager.launch(launchRequest(projectId, {
-      requestId: "launch-without-worker-provider",
-      idempotencyKeyHash: `sha256:${"a".repeat(64)}`,
-    }));
-    assert.equal(unavailableProvider.type, "harness.run.launch.failure");
-    assert.equal(unavailableProvider.code, "harness_worker_provider_unavailable");
-    assert.equal(unavailableProvider.retryable, true);
-    assert.deepEqual(unavailableProvider.prohibitedSideEffects, {
-      harnessRunCreated: false,
-      adapterStarted: false,
-      projectWrite: false,
-    });
-
-    await writeControlledFixture(fixture.projectPath, {
-      schemaVersion: 1,
-      runtime: { ready: false },
-      provider: { kind: "controlled-worker-fixture", ready: true },
-      scenario: "succeeded",
-    });
-    const unavailableRuntime = await fixture.manager.launch(launchRequest(projectId, {
-      requestId: "launch-without-execution-runtime",
-      idempotencyKeyHash: `sha256:${"b".repeat(64)}`,
-    }));
-    assert.equal(unavailableRuntime.type, "harness.run.launch.failure");
-    assert.equal(unavailableRuntime.code, "harness_execution_runtime_unavailable");
-    assert.equal(unavailableRuntime.retryable, true);
-    assert.deepEqual(unavailableRuntime.prohibitedSideEffects, {
-      harnessRunCreated: false,
-      adapterStarted: false,
-      projectWrite: false,
-    });
-
-    await writeControlledFixture(fixture.projectPath, {
-      schemaVersion: 1,
-      runtime: { ready: true },
-      provider: { kind: "controlled-worker-fixture", ready: true },
-      scenario: "succeeded",
-    });
-    const recovered = await fixture.manager.launch(launchRequest(projectId, {
-      requestId: "retry-corrected-production-launch",
-      idempotencyKeyHash: `sha256:${"c".repeat(64)}`,
-    }));
-    assert.equal(recovered.type, "harness.run.launch.result", JSON.stringify(recovered));
-    const terminal = await observeTerminal(fixture.manager, recovered.run.harnessRunId);
-    assert.equal(terminal.run.status, "succeeded");
-    assert.equal(fixture.audits.filter(({ action }) =>
-      action === "harness.adapter.start").length, 1);
+    await assert.rejects(
+      readFile(join(fixture.projectPath, "sandcastle.real-provider.json"), "utf8"),
+      { code: "ENOENT" },
+    );
+    assert.equal(fixture.audits.some(({ action }) => action === "harness.adapter.start"), false);
     const retained = JSON.parse(await readFile(
       join(fixture.dataDir, "harness-runs.json"),
       "utf8",
     ));
-    assert.equal(retained.runs.length, 1);
+    assert.deepEqual(retained.runs, []);
   } finally {
-    await fixture?.manager.waitForIdle();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("production cancellation and reconnection converge on the same canonical run", async () => {
-  const root = await mkdtemp(join(tmpdir(), "sandking-production-cancellation-"));
-  let fixture;
-  try {
-    fixture = await createProductionFixture(root, {
-      schemaVersion: 1,
-      provider: { kind: "controlled-worker-fixture", ready: true },
-      scenario: "cancellable",
-    }, {
-      cancellationGraceMs: 10_000,
-    });
-    const launched = await fixture.manager.launch(launchRequest(
-      fixture.project.project.projectId,
-      {
-        requestId: "launch-cancellable-production-work",
-        controllerSessionId: null,
-        source: "cockpit",
-        idempotencyKeyHash: `sha256:${"d".repeat(64)}`,
-      },
-    ));
-    assert.equal(launched.type, "harness.run.launch.result");
-    const running = await observeRunning(fixture.manager, launched.run.harnessRunId);
-    assert.equal(running.events.some(({ type }) =>
-      type === "harness_progress_published"), true);
-
-    const cancellation = await fixture.manager.cancel({
-      requestId: "cancel-production-work",
-      harnessRunId: launched.run.harnessRunId,
-      controllerId: `runtime-${"2".repeat(24)}`,
-      controllerSessionId: null,
-      source: "cockpit",
-      authorizationClass: "harness_run_cancellation",
-      idempotencyKeyHash: `sha256:${"e".repeat(64)}`,
-    });
-    assert.equal(cancellation.type, "harness.run.cancel.result");
-    const terminal = await observeTerminal(fixture.manager, launched.run.harnessRunId);
-    assert.equal(terminal.run.status, "cancelled", JSON.stringify(terminal));
-    assert.equal(terminal.outcome.code, "harness_run_cancelled");
-    assert.equal(terminal.outcome.incompleteResult, false);
-    assert.equal(terminal.terminalEnvelopeValidation.validTerminalEnvelopeCount, 1);
-    assert.equal(terminal.terminalEnvelopeValidation.exactlyOne, true);
-    assert.ok(terminal.run.cancellation.terminationConfirmedAt);
-    assert.equal(terminal.events.filter(({ type }) =>
-      type === "harness_run_cancellation_accepted").length, 1);
-    assert.equal(terminal.events.filter(({ type }) =>
-      type === "harness_run_cancelled").length, 1);
-
-    const reconnectedManager = await createHarnessRunManager({
-      dataDir: fixture.dataDir,
-      hostId: `host-${"1".repeat(24)}`,
-      recordAudit: async (_action, _outcome, _details, requestedAuditId) =>
-        requestedAuditId ?? `audit-${"f".repeat(24)}`,
-      loadLaunchContext: fixture.registry.loadLaunchContext,
-    });
-    const reconnected = await reconnectedManager.observe({
-      requestId: "reconnect-cancelled-production-work",
-      harnessRunId: launched.run.harnessRunId,
-      afterSequence: 0,
-    });
-    assert.deepEqual(reconnected.run, terminal.run);
-    assert.deepEqual(reconnected.events, terminal.events);
-    assert.deepEqual(reconnected.outcome, terminal.outcome);
-    assert.deepEqual(reconnected.logStreams, terminal.logStreams);
-    assert.equal(fixture.audits.filter(({ action }) =>
-      action === "harness.adapter.start").length, 1);
-  } finally {
-    await fixture?.manager.waitForIdle();
+    await fixture?.manager.waitForIdle().catch(() => undefined);
+    await new Promise((resolve) => server?.close(resolve) ?? resolve());
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
     await rm(root, { recursive: true, force: true });
   }
 });

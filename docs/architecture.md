@@ -125,10 +125,13 @@ sequenceDiagram
     D->>H: framed request
     H->>H: prepareProductionHarness — re-verify pinned<br/>commit bytes match seed (separate from registration check)
     Note over H: production Harness only:<br/>projects pinned files into<br/>&lt;project&gt;/.sandking/harnesses/&lt;id&gt;/<br/>(git-invisible via .git/info/exclude,<br/>see below)
-    H->>H: production only: run shared Codex/npm +<br/>Docker/image readiness probes
+    H->>H: production only: run shared Codex/npm +<br/>Docker-engine readiness probes
     alt production provider unavailable
         H-->>C: typed readiness failure<br/>(no run, manifest, or adapter)
-    else production provider ready
+    else sandbox image missing
+        H->>H: build fixed image from verified projection<br/>and verify it with the adapter's image probe
+    end
+    opt production provider ready
         H->>H: atomically write and locally exclude<br/>sandcastle.real-provider.json
     end
     H->>A: spawn adapter, invokePinnedHarnessAdapter<br/>(frame protocol over fd 3)
@@ -185,9 +188,11 @@ essentially the same pinned bytes: the registered Harness workspace
 (`~/.sandking/.../harness-runs/<id>/execution/`). See `docs/current-state.md`
 for this as a loose-end item.
 
-Immediately before production adapter preflight, the same atomic exclusion
-mechanism writes `sandcastle.real-provider.json` at the Project root after the
-live Codex/npm and Docker/image probes pass. A rejected launch rolls back a new
+During production preparation, the Host checks Codex/npm and the Docker engine.
+If the fixed image is absent, it builds that image from this verified projection
+and accepts it only after the adapter's image probe succeeds. Immediately before
+adapter preflight, the same atomic exclusion mechanism writes
+`sandcastle.real-provider.json` at the Project root. A rejected launch rolls back a new
 manifest and exclude rule; a successful preparation leaves the exact selector
 available to both adapter preflight and the supervised run. The selector is
 untracked, and the operation again requires unchanged `git status` and
@@ -272,11 +277,11 @@ ever executes it.** It rides along, fully capable, permanently dormant.
 
 **Reachability update (#256):** `inspectRuntime()` still fails closed unless
 exactly one supported provider selector exists; its schema and protocol did
-not change. The shared Host launch operation now imports that adapter's exact
-readiness probe, runs it before adapter preflight, and atomically prepares the
-real selector only for the production Harness. Both the Cockpit and
-`sandking launch` reach this operation. Unavailable Codex, authentication,
-npm, Docker, or sandbox image state returns
+not change. Shared Host preparation now imports the adapter's exact readiness
+predicates, builds a missing fixed sandbox image from verified projected bytes,
+and atomically prepares the real selector only for the production Harness.
+Both the Cockpit and `sandking launch` reach this operation. Unavailable Codex,
+authentication, npm, Docker, or a failed/unverifiable sandbox-image build returns
 `harness_worker_provider_unavailable` with no run, manifest, or adapter. The
 remaining limitation is dispatch: the live real path still performs only the
 fixed canary commit and does not execute the bundled GitHub-issue workflow.

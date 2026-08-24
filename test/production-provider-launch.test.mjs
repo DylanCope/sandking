@@ -261,17 +261,10 @@ test("a controlled fixture cannot bypass production real-provider preparation", 
   }
 });
 
-test("conformance launches never probe or write the production provider manifest", async () => {
-  let probeCount = 0;
+test("conformance launches remain successful without a production provider or manifest", async () => {
   const fixture = await createHarnessRunFixture(
     "sandking-conformance-provider-isolation-",
     hostId,
-    {
-      probeRealProviderReadiness: () => {
-        probeCount += 1;
-        return true;
-      },
-    },
   );
   try {
     const launched = await fixture.manager.launch({
@@ -285,7 +278,6 @@ test("conformance launches never probe or write the production provider manifest
       idempotencyKey: "launch-conformance-with-production-probe",
     });
     assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
-    assert.equal(probeCount, 0);
     await assert.rejects(
       readFile(join(fixture.projectPath, REAL_PROVIDER_MANIFEST_NAME), "utf8"),
       { code: "ENOENT" },

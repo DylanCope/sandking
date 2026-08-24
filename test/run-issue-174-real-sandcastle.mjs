@@ -9,6 +9,8 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
   createRealSandcastleQualification,
@@ -21,7 +23,6 @@ import { waitForIssue174ProductionHarness } from "./issue-174-harness-state.mjs"
 import { snapshotIssue174Projection } from "./issue-174-projection-snapshot.mjs";
 import {
   inspectIssue174SandboxImage,
-  prepareIssue174SandboxImage,
   restoreIssue174SandboxImage,
 } from "./issue-174-sandbox-image.mjs";
 
@@ -129,6 +130,202 @@ const initializeProject = async (projectPath) => {
 const readAudits = async (dataDir) => (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
   .trim().split("\n").filter(Boolean).map(JSON.parse);
 
+const runInstalledCliDelegation = async ({ installed, root, sandboxImageId }) => {
+  const cliRoot = join(root, "cli-delegation");
+  const cliDataDir = join(cliRoot, "state");
+  const cliProjectPath = join(cliRoot, "project");
+  const endpoint = join(cliRoot, "controller.sock");
+  const retryDirectory = join(cliRoot, "controller-private");
+  const userHome = join(cliRoot, "user-home");
+  await Promise.all([
+    mkdir(cliRoot, { recursive: true, mode: 0o700 }),
+    mkdir(retryDirectory, { recursive: true, mode: 0o700 }),
+    mkdir(userHome, { recursive: true, mode: 0o700 }),
+  ]);
+  const projectBefore = await initializeProject(cliProjectPath);
+  const [{ createProjectRegistry }, { createHarnessRunManager }] = await Promise.all([
+    import(pathToFileURL(join(
+      installed.packageDirectory,
+      "src",
+      "project-registration.mjs",
+    )).href),
+    import(pathToFileURL(join(
+      installed.packageDirectory,
+      "src",
+      "harness-runs.mjs",
+    )).href),
+  ]);
+  const audits = [];
+  const recordAudit = async (action, outcome, details, requestedAuditId) => {
+    const auditId = requestedAuditId
+      ?? `audit-${String(audits.length + 1).padStart(24, "0")}`;
+    audits.push({ auditId, action, outcome, details });
+    return auditId;
+  };
+  const registry = await createProjectRegistry({ dataDir: cliDataDir, recordAudit });
+  const harness = await registry.registerSandcastleHarness({
+    requestId: "register-real-cli-harness",
+    name: "Sand-King Sandcastle Harness",
+    authorizationClass: "host_local_harness_registration",
+    idempotencyKey: "register-real-cli-harness",
+    expectedRevision: 0,
+  });
+  const project = await registry.registerProject({
+    requestId: "register-real-cli-project",
+    path: cliProjectPath,
+    configuration: {
+      issueWorkflow: { provider: "github", kind: "issues" },
+      checks: [{ checkId: "test", command: "npm test" }],
+    },
+    authorizationClass: "host_local_project_registration",
+    idempotencyKey: "register-real-cli-project",
+    expectedRevision: 0,
+  });
+  await registry.pinHarness({
+    requestId: "pin-real-cli-harness",
+    projectId: project.project.projectId,
+    harnessId: harness.harness.harnessId,
+    boundedConfiguration: {
+      adapterProtocol: "1.0.0",
+      launchProfile: "delegated-work",
+    },
+    authorizationClass: "host_local_project_configuration",
+    idempotencyKey: "pin-real-cli-harness",
+    expectedRevision: 1,
+  });
+  const manager = await createHarnessRunManager({
+    dataDir: cliDataDir,
+    hostId: `host-${"7".repeat(24)}`,
+    recordAudit,
+    loadLaunchContext: registry.loadLaunchContext,
+  });
+  const controllerSessionId = `controller-session-${"8".repeat(24)}`;
+  const requests = [];
+  const server = createServer((socket) => {
+    socket.setEncoding("utf8");
+    let input = "";
+    socket.on("data", async (chunk) => {
+      input += chunk;
+      if (!input.includes("\n")) return;
+      try {
+        const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+        requests.push(request);
+        if (request.operation === "describe") {
+          socket.end(`${JSON.stringify({
+            type: "sandking.cli.result",
+            protocol: "1.0.0",
+            requestId: request.requestId,
+            ok: true,
+            outcome: {
+              type: "controller.cli.description",
+              protocol: "1.0.0",
+              command: "sandking launch",
+              focusedProjectId: project.project.projectId,
+              projectArgumentOptional: true,
+              pluginRequired: false,
+              launchParameters: harness.harness.launchParameters,
+            },
+          })}\n`);
+          return;
+        }
+        if (request.operation !== "harness-run.launch") {
+          throw new Error("issue_174_cli_operation_invalid");
+        }
+        const outcome = await manager.launch({
+          requestId: request.requestId,
+          projectId: project.project.projectId,
+          parameters: request.parameters ?? {},
+          controllerId: `runtime-${"9".repeat(24)}`,
+          controllerSessionId: request.controllerSessionId,
+          source: "controller-cli",
+          authorizationClass: "harness_run_launch",
+          idempotencyKeyHash: request.idempotencyKeyHash,
+        });
+        socket.end(`${JSON.stringify({
+          type: "sandking.cli.result",
+          protocol: "1.0.0",
+          requestId: request.requestId,
+          ok: outcome.type === "harness.run.launch.result",
+          ...(outcome.type === "harness.run.launch.result"
+            ? { outcome }
+            : { failure: { code: outcome.code } }),
+        })}\n`);
+      } catch (error) {
+        socket.destroy(error instanceof Error ? error : undefined);
+      }
+    });
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(endpoint, resolve);
+    });
+    const { stdout } = await execFileAsync(installed.command, [
+      "launch", project.project.projectId,
+      "--issue", "256",
+      "--target-branch", "sandcastle/issue-256",
+      "--json",
+    ], {
+      cwd: cliRoot,
+      env: {
+        ...process.env,
+        HOME: userHome,
+        SANDKING_CONTROLLER_ENDPOINT: endpoint,
+        SANDKING_CONTROLLER_SESSION_ID: controllerSessionId,
+        SANDKING_CONTROLLER_RETRY_DIRECTORY: retryDirectory,
+        SANDKING_WORK_CONTEXT_ID: project.project.projectId,
+      },
+    });
+    const launched = JSON.parse(stdout);
+    if (
+      launched.type !== "harness.run.launch.result"
+      || launched.run.source !== "controller-cli"
+      || launched.run.controllerSessionId !== controllerSessionId
+    ) {
+      throw new Error("issue_174_cli_launch_invalid");
+    }
+    const run = await waitForTerminalRun(cliDataDir);
+    const afterCommit = await git(cliProjectPath, ["rev-parse", "HEAD"]);
+    const changedFiles = (await git(cliProjectPath, [
+      "diff-tree", "--no-commit-id", "--name-only", "-r", afterCommit,
+    ])).split("\n").filter(Boolean);
+    const artifact = await readFile(
+      join(cliProjectPath, realSandcastleScenario.expectedArtifact.path),
+    );
+    if (
+      run.harnessRunId !== launched.run.harnessRunId
+      || run.status !== "succeeded"
+      || run.outcome?.result?.code !== "real_work_committed"
+      || run.outcome?.result?.sandbox?.imageId !== sandboxImageId
+      || run.terminalEnvelopeValidation?.exactlyOne !== true
+      || await git(cliProjectPath, ["rev-parse", `${afterCommit}^`])
+        !== projectBefore.beforeCommit
+      || JSON.stringify(changedFiles)
+        !== JSON.stringify([realSandcastleScenario.expectedArtifact.path])
+      || sha256(artifact)
+        !== `sha256:${realSandcastleScenario.expectedArtifact.contentUtf8Sha256}`
+      || await git(cliProjectPath, ["status", "--porcelain=v1", "--untracked-files=all"])
+        !== ""
+      || JSON.stringify(requests.map(({ operation }) => operation))
+        !== JSON.stringify(["describe", "harness-run.launch"])
+    ) {
+      throw new Error("issue_174_cli_delegation_invalid");
+    }
+    return {
+      surface: "sandking launch",
+      source: run.source,
+      harnessRunId: run.harnessRunId,
+      beforeCommit: projectBefore.beforeCommit,
+      afterCommit,
+      artifactIntegrity: sha256(artifact),
+      exactlyOneTerminalEnvelope: run.terminalEnvelopeValidation.exactlyOne,
+    };
+  } finally {
+    await manager.waitForIdle().catch(() => undefined);
+    await new Promise((resolve) => server.close(resolve));
+  }
+};
+
 const main = async () => {
   if (process.env.SANDKING_REAL_SANDCASTLE_ACCEPTANCE !== "1") {
     emitQualification(createRealSandcastleQualification("real_provider_gate_disabled"));
@@ -146,6 +343,7 @@ const main = async () => {
   let executionDirectory;
   let installed;
   let browser;
+  let cliProof = null;
   let runtimeStarted = false;
   let launchActionCount = 0;
   let run = null;
@@ -165,6 +363,25 @@ const main = async () => {
     executionDirectory = join(root, "outside-checkout");
     await mkdir(executionDirectory, { mode: 0o700 });
     const projectBefore = await initializeProject(projectPath);
+    sandboxImageName = realSandcastleScenario.provider.sandbox.image;
+    sandboxImageBefore = await inspectIssue174SandboxImage(sandboxImageName);
+    sandboxTemporaryImageName = `${sandboxImageName}-issue-174-${createHash("sha256")
+      .update(`${root}\0${process.pid}`)
+      .digest("hex")
+      .slice(0, 16)}`;
+    if (await inspectIssue174SandboxImage(sandboxTemporaryImageName)) {
+      throw new Error("issue_174_real_sandbox_temporary_tag_exists");
+    }
+    if (sandboxImageBefore) {
+      await execFileAsync("docker", [
+        "tag", sandboxImageName, sandboxTemporaryImageName,
+      ], { env: process.env });
+      sandboxTemporaryImageOwned = true;
+      await execFileAsync("docker", ["image", "rm", sandboxImageName], {
+        env: process.env,
+      });
+      sandboxFixedTagChanged = true;
+    }
 
     const { installCurrentPackage } = await import("./installed-package.mjs");
     const { launchBrowser } = await import("./browser-launch.mjs");
@@ -216,29 +433,21 @@ const main = async () => {
       readState: () => readJson(join(dataDir, "harness-registry.json")),
     });
     workspacePath = initialHarness.workspacePath;
-    sandboxImageName = realSandcastleScenario.provider.sandbox.image;
-    sandboxImageBefore = await inspectIssue174SandboxImage(sandboxImageName);
-    sandboxTemporaryImageName = `${sandboxImageName}-issue-174-${createHash("sha256")
-      .update(`${root}\0${process.pid}`)
-      .digest("hex")
-      .slice(0, 16)}`;
-    if (await inspectIssue174SandboxImage(sandboxTemporaryImageName)) {
-      throw new Error("issue_174_real_sandbox_temporary_tag_exists");
-    }
-    sandboxTemporaryImageOwned = true;
     const sandboxConfigurationPath = join(
       workspacePath,
       ...realSandcastleScenario.provider.sandbox.configurationSource.split("/"),
     );
     sandboxConfigurationIntegrity = sha256(await readFile(sandboxConfigurationPath));
-    sandboxImageId = await prepareIssue174SandboxImage({
-      projectionPath: workspacePath,
-      imageName: sandboxTemporaryImageName,
-      dockerfilePath: sandboxConfigurationPath,
-    });
-    await execFileAsync("docker", ["tag", sandboxTemporaryImageName, sandboxImageName], {
-      env: process.env,
-    });
+    const projectionBefore = await snapshotIssue174Projection(projectionPath);
+
+    launchActionCount += 1;
+    await page.locator("#launch-harness").click();
+    await page.locator("#harness-launch-confirmation-yes").click();
+    run = await waitForTerminalRun(dataDir);
+    sandboxImageId = await inspectIssue174SandboxImage(sandboxImageName);
+    if (!sandboxImageId) {
+      throw new Error("issue_174_product_sandbox_image_missing");
+    }
     sandboxFixedTagChanged = true;
     if (
       await inspectIssue174SandboxImage(sandboxImageName) !== sandboxImageId
@@ -246,13 +455,6 @@ const main = async () => {
     ) {
       throw new Error("issue_174_real_sandbox_image_invalid");
     }
-
-    const projectionBefore = await snapshotIssue174Projection(projectionPath);
-
-    launchActionCount += 1;
-    await page.locator("#launch-harness").click();
-    await page.locator("#harness-launch-confirmation-yes").click();
-    run = await waitForTerminalRun(dataDir);
     await page.waitForSelector(
       `#harness-run-observation[data-run-id='${run.harnessRunId}']`
         + `[data-run-status='${run.status}']`,
@@ -382,6 +584,13 @@ const main = async () => {
       throw new Error("issue_174_audit_proof_invalid");
     }
 
+    launchActionCount += 1;
+    cliProof = await runInstalledCliDelegation({
+      installed,
+      root,
+      sandboxImageId,
+    });
+
     await restoreIssue174SandboxImage({
       fixedImageName: sandboxImageName,
       fixedImageBefore: sandboxImageBefore,
@@ -408,11 +617,15 @@ const main = async () => {
         tarballIntegrity: `sha256:${installed.observation.tarballSha256}`,
       },
       publicSeam: {
-        surface: "cockpit",
+        surfaces: ["cockpit", "sandking launch"],
         defaultProductionHarness: true,
         launchActionCount,
-        transport:
-          "installed sandking -> loopback Cockpit -> authenticated WebSocket -> framed local Host",
+        cockpit: {
+          transport:
+            "installed sandking -> loopback Cockpit -> authenticated WebSocket -> framed local Host",
+          harnessRunId: run.harnessRunId,
+        },
+        cli: cliProof,
       },
       provider: {
         kind: "openai-codex",
@@ -511,7 +724,7 @@ const main = async () => {
       && typeof error === "object"
       && "modelInvocationMayHaveOccurred" in error
       ? error.modelInvocationMayHaveOccurred === true
-      : launchActionCount === 1;
+      : launchActionCount > 0;
     emitQualification({
       schemaVersion: 1,
       issue: 174,
