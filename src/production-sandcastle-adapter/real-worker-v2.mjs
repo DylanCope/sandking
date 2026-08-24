@@ -278,7 +278,9 @@ const publish = (message) => {
 
 const invokedPath = (process.argv[1] ?? "").replaceAll("\\", "/");
 if (invokedPath.endsWith("/.sandcastle/real-worker-v2.mjs")) {
-  const projectPath = process.argv[2];
+  const invocationPaths = process.argv.slice(2);
+  const executionPath = invocationPaths.length > 1 ? invocationPaths[0] : process.cwd();
+  const projectPath = invocationPaths.at(-1);
   const controller = new AbortController();
   process.once("SIGTERM", () => controller.abort(new Error("real_worker_cancelled")));
   publish({
@@ -288,7 +290,7 @@ if (invokedPath.endsWith("/.sandcastle/real-worker-v2.mjs")) {
     status: "running",
   });
   const outcome = await executeRealDelegation({
-    executionPath: process.cwd(),
+    executionPath,
     projectPath,
     signal: controller.signal,
   });

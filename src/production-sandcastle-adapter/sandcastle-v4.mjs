@@ -1,7 +1,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, readSync, rmSync, writeSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync, readSync, rmSync, writeSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
@@ -522,8 +522,9 @@ const runWorker = async (execution, readiness) => {
     workerExit = { code: null, startFailed: dependencyFailure };
     if (!cancelled && !dependencyFailure) {
       const workerPath = join(process.cwd(), ...readiness.workerPath.split("/"));
+      const workerDirectory = dirname(workerPath);
       const workerArguments = readiness.realProvider
-        ? [workerPath, readiness.root]
+        ? [workerPath, process.cwd(), readiness.root]
         : [
             workerPath,
             Buffer.from(JSON.stringify(execution.parameters), "utf8").toString("base64url"),
@@ -534,7 +535,9 @@ const runWorker = async (execution, readiness) => {
         readiness.workerSource,
         ...workerArguments,
       ], {
-        cwd: readiness.realProvider ? process.cwd() : readiness.root,
+        cwd: readiness.realProvider && existsSync(workerDirectory)
+          ? workerDirectory
+          : readiness.root,
         env: readiness.realProvider ? process.env : { LANG: "C.UTF-8" },
         stdio: readiness.realProvider
           ? ["ignore", "pipe", "pipe", "pipe"]
