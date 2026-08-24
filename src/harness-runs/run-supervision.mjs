@@ -152,6 +152,7 @@ export const createRunSupervisor = (runtime) => {
           await injectSupervisionFault(
             "harness_run_lifecycle.adapter_ready.after_state_commit",
           );
+          await context.releaseLaunchPreparation?.();
         },
         onProgress: async (record) => {
           progressRecordCount += 1;

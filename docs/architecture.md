@@ -132,10 +132,11 @@ sequenceDiagram
         H->>H: build fixed image from verified projection<br/>and verify it with the adapter's image probe
     end
     opt production provider ready
-        H->>H: atomically write and locally exclude<br/>sandcastle.real-provider.json
+        H->>H: atomically write and locally exclude transient<br/>sandcastle.real-provider.json
     end
     H->>A: spawn adapter, invokePinnedHarnessAdapter<br/>(frame protocol over fd 3)
     A-->>H: readiness envelope
+    H->>H: remove real-provider selector<br/>and newly added exclude rule
     A->>W: (production only) docker exec, real-worker-v2.mjs
     W->>W: codex exec with pinned-skill prompt
     A-->>H: progress envelopes
@@ -193,9 +194,13 @@ If the fixed image is absent, it builds that image from this verified projection
 and accepts it only after the adapter's image probe succeeds. Immediately before
 adapter preflight, the same atomic exclusion mechanism writes
 `sandcastle.real-provider.json` at the Project root. A rejected launch rolls back a new
-manifest and exclude rule; a successful preparation leaves the exact selector
-available to both adapter preflight and the supervised run. The selector is
-untracked, and the operation again requires unchanged `git status` and
+manifest and exclude rule. After the adapter has inspected the selector and published
+readiness, the Host removes the manifest and any exclude rule it added; terminal
+supervision is a fallback cleanup boundary. A later launch removes an exact untracked
+Host-authored selector before live readiness probes, and Host startup reconciliation
+does the same for retained production Projects. A tracked or different file remains
+Project-owned and is rejected as a collision rather than deleted. The transient
+selector is untracked, and preparation again requires unchanged `git status` and
 `git ls-files` inventories.
 
 ## Data/state boundaries
@@ -208,10 +213,10 @@ untracked, and the operation again requires unchanged `git status` and
 - **Project directory**: untouched by the **conformance** Harness path and by
   registration in general. The **production** Harness path writes a
   persistent, git-invisible `.sandking/harnesses/<harnessId>/` projection into
-  the Project on every launch and, once live readiness passes, the exact
-  git-invisible `sandcastle.real-provider.json` selector — see above. Beyond
-  that, only touched if a Harness run's Worker itself commits to it (that's the
-  whole point of a run).
+  the Project on every launch and, once live readiness passes, briefly writes
+  the exact git-invisible `sandcastle.real-provider.json` selector until the
+  adapter accepts it — see above. Beyond that, only touched if a Harness run's
+  Worker itself commits to it (that's the whole point of a run).
 - **Harness workspace**: a separate, Host-private git repo per registered
   Harness, pinned to an exact commit. For the production Harness, this is a
   verified-integrity projection of the bundled seed (see below) — not a live

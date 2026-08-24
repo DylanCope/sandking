@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -38,6 +39,41 @@ const git = (projectPath, args) => execFileAsync("git", ["-C", projectPath, ...a
   timeout: 5_000,
   maxBuffer: 4 * 1024 * 1024,
 });
+
+/**
+ * Remove only the exact untracked selector written by Host preparation. A
+ * different or tracked file remains Project-owned and is handled as a launch
+ * collision rather than being deleted.
+ *
+ * @param {{projectPath: string}} options
+ */
+export const removeStaleProductionProviderManifest = async (options) => {
+  const projectRoot = resolve(options.projectPath);
+  const manifestPath = join(projectRoot, REAL_PROVIDER_MANIFEST_NAME);
+  try {
+    const manifest = await readProjectPreparationFile(manifestPath);
+    if (!manifest.exists || manifest.source !== REAL_PROVIDER_MANIFEST_SOURCE) {
+      return { removed: false };
+    }
+    const { stdout: trackedInventory } = await git(
+      projectRoot,
+      ["ls-files", "--stage", "-z"],
+    );
+    const trackedPaths = trackedInventory.split("\0")
+      .filter(Boolean)
+      .map((entry) => entry.slice(entry.indexOf("\t") + 1));
+    if (trackedPaths.includes(REAL_PROVIDER_MANIFEST_NAME)) {
+      return { removed: false };
+    }
+    await rm(manifestPath);
+    return { removed: true };
+  } catch (error) {
+    if (error instanceof ProjectPreparationFileError) {
+      throw new ProductionProviderPreparationError(error.code);
+    }
+    throw new ProductionProviderPreparationError("harness_projection_failed");
+  }
+};
 
 /**
  * Atomically prepare the Project-owned selector after real-provider runtime
@@ -88,14 +124,7 @@ export const prepareProductionProviderManifest = async (options) => {
     throw new ProductionProviderPreparationError("harness_projection_collision");
   }
   if (manifestTracked) {
-    if (!originalManifest.exists) {
-      throw new ProductionProviderPreparationError("harness_projection_collision");
-    }
-    return {
-      providerKind: "openai-codex",
-      manifestWritten: false,
-      rollback: async () => undefined,
-    };
+    throw new ProductionProviderPreparationError("harness_projection_collision");
   }
 
   /** @type {Awaited<ReturnType<typeof appendProjectGitExcludeRules>> | null} */
@@ -144,15 +173,19 @@ export const prepareProductionProviderManifest = async (options) => {
 /**
  * Establish the real runtime and prepare its selector at the final
  * Host-controlled boundary before adapter preflight. The returned rollback
- * remains active until the launch reaches its durable acceptance boundary.
+ * remains active until the adapter has inspected the selector.
  *
  * @param {{
  *   projectPath: string,
  *   projectionPath: string,
  *   productionPreparation: unknown,
+ *   preserveExistingManifest?: boolean,
  * }} options
  */
 export const prepareProductionProviderLaunch = async (options) => {
+  if (!options.preserveExistingManifest) {
+    await removeStaleProductionProviderManifest({ projectPath: options.projectPath });
+  }
   const runtime = await ensureProductionProviderRuntime({
     projectionPath: options.projectionPath,
     productionPreparation: options.productionPreparation,

@@ -1,4 +1,6 @@
 import { createHarnessRunStore, HarnessRunStateError } from "./store.mjs";
+import { SANDCASTLE_HARNESS_ADAPTER_ID } from "../harness-adapter-identity.mjs";
+import { removeStaleProductionProviderManifest } from "../production-provider-preparation.mjs";
 import {
   harnessRunCancellationSchema,
   harnessRunEventSchema,
@@ -69,6 +71,8 @@ export const createHarnessRunManager = async (options) => {
     supervisionOperations: new Set(),
     /** @type {Map<string, string>} */
     acceptedCancellations: new Map(),
+    /** @type {Map<string, {count: number, rollback: () => Promise<void>}>} */
+    activeProductionProviderPreparations: new Map(),
   });
 
   Object.assign(runtime, createHarnessRunStore(options));
@@ -77,6 +81,22 @@ export const createHarnessRunManager = async (options) => {
   // Complete terminal-view repair and active-run reconciliation before
   // exposing observation or mutation methods to the framed Host loop.
   await runtime.reconcileInterruptedRuns();
+  const reconciledState = await runtime.readState();
+  const productionProjectIds = new Set(reconciledState.runs
+    .filter((/** @type {any} */ run) =>
+      run.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID)
+    .map((/** @type {any} */ run) => run.projectId));
+  for (const projectId of productionProjectIds) {
+    try {
+      const context = await options.loadLaunchContext(/** @type {string} */ (projectId));
+      await removeStaleProductionProviderManifest({
+        projectPath: context.project.canonicalPath,
+      });
+    } catch {
+      // Missing or invalid retained Projects remain truthful in Host state;
+      // cleanup is retried if that Project becomes launchable again.
+    }
+  }
 
   Object.assign(runtime, createRunSupervisor(runtime));
   Object.assign(runtime, createLaunchOperation(runtime));

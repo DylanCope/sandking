@@ -30,8 +30,39 @@ import { logPath, retainedLaunchOutcome } from "../store.mjs";
 export const createLaunchOperation = (runtime) => {
   const { cancellationGraceMs, now, options, parsedHostId } = runtime;
 
+  /** @param {{projectPath: string, projectionPath: string, productionPreparation: unknown}} preparation */
+  const acquireProductionProvider = async (preparation) => {
+    const retained = runtime.activeProductionProviderPreparations.get(
+      preparation.projectPath,
+    );
+    const prepared = await prepareProductionProviderLaunch({
+      ...preparation,
+      preserveExistingManifest: Boolean(retained),
+    });
+    const lease = retained ?? {
+      count: 0,
+      rollback: prepared.rollback,
+    };
+    lease.count += 1;
+    runtime.activeProductionProviderPreparations.set(preparation.projectPath, lease);
+    let active = true;
+    return {
+      providerKind: prepared.providerKind,
+      manifestWritten: prepared.manifestWritten,
+      rollback: async () => {
+        if (!active) return;
+        active = false;
+        lease.count -= 1;
+        if (lease.count > 0) return;
+        runtime.activeProductionProviderPreparations.delete(preparation.projectPath);
+        await lease.rollback();
+      },
+    };
+  };
+
   /** @param {any} request */
   const launch = (request) => runtime.withMutationLock(async () => {
+    /** @type {Awaited<ReturnType<typeof acquireProductionProvider>> | null} */
     let providerPreparation = null;
     let launchAccepted = false;
     try {
@@ -105,7 +136,7 @@ export const createLaunchOperation = (runtime) => {
           context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
           && context.project.harness.preparation
         ) {
-          providerPreparation = await prepareProductionProviderLaunch({
+          providerPreparation = await acquireProductionProvider({
             projectPath: context.project.canonicalPath,
             projectionPath: context.productionHarnessProjectionPath,
             productionPreparation: context.project.harness.preparation,
@@ -371,7 +402,8 @@ export const createLaunchOperation = (runtime) => {
     await options.faultInjector?.("harness_run_launch.before_commit");
     await runtime.persist(retained);
     // Once the run is durable, Host restart reconciliation owns its eventual
-    // supervision. Keep the provider selector available across that boundary.
+    // supervision. Keep the provider selector only until the adapter confirms
+    // that its run-time inspection has accepted the prepared provider.
     launchAccepted = true;
     // The Host-private snapshot is already sufficient for exact replay here,
     // but the accepted audit may still need idempotent publication after an
@@ -393,6 +425,9 @@ export const createLaunchOperation = (runtime) => {
           run.harnessRunId,
           "host-loss-termination.json",
         ),
+        releaseLaunchPreparation: () => providerPreparation?.rollback(),
+      }).finally(async () => {
+        await providerPreparation?.rollback();
       });
       runtime.supervisionOperations.add(operation);
       void operation.then(

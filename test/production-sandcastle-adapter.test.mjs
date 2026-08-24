@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   chmod,
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -11,142 +12,191 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
-import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { createHarnessRunManager } from "../src/harness-runs.mjs";
-import { createProjectRegistry } from "../src/project-registration.mjs";
 import { installCurrentPackage } from "./installed-package.mjs";
+import {
+  createProductionFixture,
+  createProductionRegistration,
+  execFileAsync,
+  installReadyProbeCommands,
+  observeProductionRunning,
+  observeProductionTerminal,
+  productionLaunchRequest,
+  writeExecutable,
+} from "./production-sandcastle-host-fixture.mjs";
+import "./production-sandcastle-qualification.mjs";
 
-const execFileAsync = promisify(execFile);
+const launchRequest = productionLaunchRequest;
+const observeRunning = observeProductionRunning;
+const observeTerminal = observeProductionTerminal;
 
-const commitProject = async (projectPath, message) => {
-  await execFileAsync("git", ["-C", projectPath, "add", "--all"]);
-  await execFileAsync("git", [
-    "-C", projectPath,
-    "-c", "user.name=Production Adapter Fixture",
-    "-c", "user.email=production-adapter@sandking.invalid",
-    "-c", "commit.gpgSign=false",
-    "commit", "--quiet", "-m", message,
-  ]);
-};
-
-const writeControlledFixture = (projectPath, value) => writeFile(
-  join(projectPath, "sandcastle.worker-fixture.json"),
-  `${JSON.stringify(value, null, 2)}\n`,
-);
-
-const writeExecutable = async (path, source) => {
-  await writeFile(path, source);
-  await chmod(path, 0o700);
-};
-
-const installReadyProbeCommands = async (root) => {
-  const binPath = join(root, "bin");
+const installUnavailableProbeCommands = async (root, condition) => {
+  const binPath = join(root, "readiness-bin");
+  const tracePath = join(root, "readiness-commands.log");
   const originalPath = process.env.PATH;
   await mkdir(binPath, { recursive: true });
-  await Promise.all([
-    writeExecutable(join(binPath, "codex"), `#!/bin/sh
+  await writeFile(tracePath, "");
+  const codexSource = condition === "missing-codex"
+    ? `#!/bin/sh
+printf '%s\\n' "codex $*" >> "${tracePath}"
+exec /sandking/missing-codex "$@"
+`
+    : condition === "wrong-codex-version"
+      ? `#!/bin/sh
+printf '%s\\n' "codex $*" >> "${tracePath}"
+if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 0.145.0'; exit 0; fi
+if [ "$1" = "login" ] && [ "$2" = "status" ]; then printf '%s\\n' 'Logged in using incompatible Codex'; exit 0; fi
+exit 91
+`
+      : condition === "unauthenticated-codex"
+        ? `#!/bin/sh
+printf '%s\\n' "codex $*" >> "${tracePath}"
+if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 0.146.0'; exit 0; fi
+if [ "$1" = "login" ] && [ "$2" = "status" ]; then printf '%s\\n' 'Not logged in' >&2; exit 1; fi
+exit 91
+`
+        : `#!/bin/sh
+printf '%s\\n' "codex $*" >> "${tracePath}"
 if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 0.146.0'; exit 0; fi
 if [ "$1" = "login" ] && [ "$2" = "status" ]; then printf '%s\\n' 'Logged in using fixture'; exit 0; fi
 exit 91
-`),
+`;
+  const commands = [
     writeExecutable(join(binPath, "npm"), `#!/bin/sh
+printf '%s\\n' "npm $*" >> "${tracePath}"
 if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
 exit 92
 `),
     writeExecutable(join(binPath, "docker"), `#!/bin/sh
-if [ "$1" = "version" ] && [ "$2" = "--format" ]; then printf '%s\\n' '27.5.1'; exit 0; fi
-if [ "$1" = "image" ] && [ "$2" = "inspect" ] && [ "$3" = "sandcastle:sandking-real-worker" ]; then
-  printf '%s\\n' 'sha256:${"d".repeat(64)}'
-  exit 0
+printf '%s\\n' "docker $*" >> "${tracePath}"
+if [ "$1" = "version" ] && [ "$2" = "--format" ]; then
+  printf '%s\\n' 'Cannot connect to the Docker daemon' >&2
+  exit 1
 fi
 exit 93
 `),
-  ]);
-  process.env.PATH = `${binPath}:${originalPath ?? ""}`;
-  return () => {
-    process.env.PATH = originalPath;
+  ];
+  commands.push(writeExecutable(join(binPath, "codex"), codexSource));
+  await Promise.all(commands);
+  process.env.PATH = `${binPath}:/usr/bin:/bin`;
+  return {
+    binPath,
+    tracePath,
+    restore: () => {
+      process.env.PATH = originalPath;
+    },
   };
 };
 
-const createProductionFixture = async (root, controlledFixture = null, managerOptions = {}) => {
-  const dataDir = join(root, "host-state");
-  const projectPath = join(root, "project");
-  await mkdir(projectPath, { recursive: true });
-  await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
-  await writeFile(join(projectPath, "README.md"), "production Project\n");
-  if (controlledFixture) await writeControlledFixture(projectPath, controlledFixture);
-  await commitProject(projectPath, "Initialize production Project");
-
-  const audits = [];
-  const recordAudit = async (action, outcome, details, requestedAuditId) => {
-    const auditId = requestedAuditId
-      ?? `audit-${String(audits.length + 1).padStart(24, "0")}`;
-    audits.push({ auditId, action, outcome, details });
-    return auditId;
-  };
-  const registry = await createProjectRegistry({ dataDir, recordAudit });
-  const harness = await registry.registerSandcastleHarness({
-    requestId: "register-production-harness",
-    name: "Sand-King Sandcastle Harness",
-    authorizationClass: "host_local_harness_registration",
-    idempotencyKey: "register-production-harness",
-    expectedRevision: 0,
+const startInstalledReadinessHost = async ({ endpoint, installed, nodePath, registration }) => {
+  const harnessRunsUrl = pathToFileURL(join(
+    installed.packageDirectory,
+    "src",
+    "harness-runs.mjs",
+  )).href;
+  const projectRegistrationUrl = pathToFileURL(join(
+    installed.packageDirectory,
+    "src",
+    "project-registration.mjs",
+  )).href;
+  const source = `
+import { createServer } from "node:net";
+import { createHarnessRunManager } from ${JSON.stringify(harnessRunsUrl)};
+import { createProjectRegistry } from ${JSON.stringify(projectRegistrationUrl)};
+const dataDir = ${JSON.stringify(registration.dataDir)};
+const endpoint = ${JSON.stringify(endpoint)};
+const projectId = ${JSON.stringify(registration.project.project.projectId)};
+let auditSequence = 0;
+const recordAudit = async (_action, _outcome, _details, requestedAuditId) =>
+  requestedAuditId ?? \`audit-\${String(++auditSequence).padStart(24, "0")}\`;
+const registry = await createProjectRegistry({ dataDir, recordAudit });
+const manager = await createHarnessRunManager({
+  dataDir,
+  hostId: \`host-\${"7".repeat(24)}\`,
+  recordAudit,
+  loadLaunchContext: registry.loadLaunchContext,
+});
+const server = createServer((socket) => {
+  socket.setEncoding("utf8");
+  let input = "";
+  socket.on("data", async (chunk) => {
+    input += chunk;
+    if (!input.includes("\\n")) return;
+    try {
+      const request = JSON.parse(input.slice(0, input.indexOf("\\n")));
+      const outcome = await manager.launch({
+        requestId: request.requestId,
+        projectId,
+        parameters: request.parameters ?? {},
+        controllerId: \`runtime-\${"8".repeat(24)}\`,
+        controllerSessionId: request.controllerSessionId,
+        source: "controller-cli",
+        authorizationClass: "harness_run_launch",
+        idempotencyKeyHash: request.idempotencyKeyHash,
+      });
+      socket.end(\`\${JSON.stringify({
+        type: "sandking.cli.result",
+        protocol: "1.0.0",
+        requestId: request.requestId,
+        ok: false,
+        failure: { code: outcome.code },
+      })}\\n\`);
+    } catch (error) {
+      socket.destroy(error instanceof Error ? error : undefined);
+    }
   });
-  const project = await registry.registerProject({
-    requestId: "register-production-project",
-    path: projectPath,
-    configuration: {
-      issueWorkflow: { provider: "github", kind: "issues" },
-      checks: [{ checkId: "test", command: "npm test" }],
-    },
-    authorizationClass: "host_local_project_registration",
-    idempotencyKey: "register-production-project",
-    expectedRevision: 0,
+});
+process.once("SIGTERM", async () => {
+  await manager.waitForIdle();
+  server.close(() => process.exit(0));
+});
+server.listen(endpoint, () => process.stdout.write("ready\\n"));
+`;
+  const child = spawn(nodePath, ["--input-type=module", "--eval", source], {
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  const pinned = await registry.pinHarness({
-    requestId: "pin-production-harness",
-    projectId: project.project.projectId,
-    harnessId: harness.harness.harnessId,
-    boundedConfiguration: {
-      adapterProtocol: "1.0.0",
-      launchProfile: "delegated-work",
-    },
-    authorizationClass: "host_local_project_configuration",
-    idempotencyKey: "pin-production-harness",
-    expectedRevision: 1,
+  let diagnostic = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => {
+    diagnostic += chunk;
   });
-  const manager = await createHarnessRunManager({
-    dataDir,
-    hostId: `host-${"1".repeat(24)}`,
-    recordAudit,
-    loadLaunchContext: registry.loadLaunchContext,
-    ...managerOptions,
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(`installed_readiness_host_timeout: ${diagnostic}`));
+    }, 10_000);
+    let output = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (!output.includes("ready\n")) return;
+      clearTimeout(timeout);
+      resolve();
+    });
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      if (output.includes("ready\n")) return;
+      clearTimeout(timeout);
+      reject(new Error(
+        `installed_readiness_host_exited: ${code ?? signal ?? "unknown"}: ${diagnostic}`,
+      ));
+    });
   });
   return {
-    audits,
-    dataDir,
-    harness,
-    manager,
-    pinned,
-    project,
-    projectPath,
-    recordAudit,
-    registry,
+    diagnostic: () => diagnostic,
+    stop: async () => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const exited = new Promise((resolve) => child.once("close", resolve));
+      child.kill("SIGTERM");
+      await exited;
+    },
   };
 };
-
-const launchRequest = (projectId, overrides = {}) => ({
-  requestId: "launch-production-work",
-  projectId,
-  parameters: {},
-  controllerId: `runtime-${"2".repeat(24)}`,
-  controllerSessionId: `controller-session-${"3".repeat(24)}`,
-  source: "controller-cli",
-  authorizationClass: "harness_run_launch",
-  idempotencyKeyHash: `sha256:${"4".repeat(64)}`,
-  ...overrides,
-});
 
 test("unavailable real providers reject the Host launch before a run, manifest, or adapter", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-host-provider-unavailable-"));
@@ -255,7 +305,7 @@ exit 93
   }
 });
 
-test("a durably accepted production launch retains its manifest for Host reconciliation", async () => {
+test("restart reconciliation removes the selector retained across durable acceptance", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-reconciliation-"));
   let restorePath = () => undefined;
   let fixture;
@@ -287,9 +337,216 @@ test("a durably accepted production launch retains its manifest for Host reconci
     ));
     assert.equal(retained.runs.length, 1);
     assert.equal(retained.runs[0].status, "starting");
+
+    const reconciled = await createHarnessRunManager({
+      dataDir: fixture.dataDir,
+      hostId: `host-${"1".repeat(24)}`,
+      recordAudit: fixture.recordAudit,
+      loadLaunchContext: fixture.registry.loadLaunchContext,
+      inspectInterruptedRunTermination: async () => ({
+        platform: "linux",
+        status: "confirmed",
+      }),
+    });
+    await reconciled.waitForIdle();
+    await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
   } finally {
     await fixture?.manager.waitForIdle().catch(() => undefined);
     restorePath();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("terminal production completion and later unavailable readiness leave no selector", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-lifecycle-"));
+  let restorePath = () => undefined;
+  let fixture;
+  try {
+    restorePath = await installReadyProbeCommands(root);
+    fixture = await createProductionFixture(root);
+    const manifestPath = join(fixture.projectPath, "sandcastle.real-provider.json");
+    const launched = await fixture.manager.launch(launchRequest(
+      fixture.project.project.projectId,
+      { idempotencyKeyHash: `sha256:${"6".repeat(64)}` },
+    ));
+    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
+    const terminal = await observeTerminal(fixture.manager, launched.run.harnessRunId);
+    assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
+    await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
+
+    await writeFile(manifestPath, `${JSON.stringify({
+      schemaVersion: 1,
+      provider: { kind: "openai-codex", ready: true },
+      scenario: "project-commit",
+    }, null, 2)}\n`);
+    restorePath();
+    restorePath = () => undefined;
+    const rejected = await fixture.manager.launch(launchRequest(
+      fixture.project.project.projectId,
+      {
+        requestId: "launch-after-provider-became-unavailable",
+        idempotencyKeyHash: `sha256:${"7".repeat(64)}`,
+      },
+    ));
+    assert.equal(rejected.type, "harness.run.launch.failure");
+    assert.equal(rejected.code, "harness_worker_provider_unavailable");
+    await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
+  } finally {
+    await fixture?.manager.waitForIdle().catch(() => undefined);
+    restorePath();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("adapter readiness releases the real-provider selector before terminal completion", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-ready-cleanup-"));
+  let restorePath = () => undefined;
+  let fixture;
+  let harnessRunId = null;
+  try {
+    restorePath = await installReadyProbeCommands(root);
+    await writeExecutable(join(root, "bin", "npm"), `#!/bin/sh
+if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
+if [ "$1" = "ci" ]; then
+  trap 'exit 0' TERM INT
+  while true; do sleep 1; done
+fi
+exit 92
+`);
+    fixture = await createProductionFixture(root, null, { cancellationGraceMs: 1_000 });
+    const manifestPath = join(fixture.projectPath, "sandcastle.real-provider.json");
+    const launched = await fixture.manager.launch(launchRequest(
+      fixture.project.project.projectId,
+      { idempotencyKeyHash: `sha256:${"8".repeat(64)}` },
+    ));
+    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
+    harnessRunId = launched.run.harnessRunId;
+    const running = await observeRunning(fixture.manager, harnessRunId);
+    assert.equal(running.run.status, "running");
+    await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
+
+    const cancelled = await fixture.manager.cancel({
+      requestId: "cancel-ready-production-work",
+      harnessRunId,
+      controllerId: `runtime-${"2".repeat(24)}`,
+      controllerSessionId: `controller-session-${"3".repeat(24)}`,
+      source: "controller-cli",
+      authorizationClass: "harness_run_cancellation",
+      idempotencyKeyHash: `sha256:${"9".repeat(64)}`,
+    });
+    assert.equal(cancelled.type, "harness.run.cancel.result", JSON.stringify(cancelled));
+    const terminal = await observeTerminal(fixture.manager, harnessRunId);
+    assert.equal(terminal.run.status, "cancelled", JSON.stringify(terminal));
+  } finally {
+    if (fixture && harnessRunId) {
+      await fixture.manager.cancel({
+        requestId: "cleanup-ready-production-work",
+        harnessRunId,
+        controllerId: `runtime-${"2".repeat(24)}`,
+        controllerSessionId: `controller-session-${"3".repeat(24)}`,
+        source: "controller-cli",
+        authorizationClass: "harness_run_cancellation",
+        idempotencyKeyHash: `sha256:${"a".repeat(64)}`,
+      }).catch(() => undefined);
+    }
+    await fixture?.manager.waitForIdle().catch(() => undefined);
+    restorePath();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("installed sandking launch rejects every named live readiness condition", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-public-readiness-"));
+  try {
+    const installed = await installCurrentPackage(root);
+    for (const condition of [
+      "missing-codex",
+      "wrong-codex-version",
+      "unauthenticated-codex",
+      "unavailable-docker",
+    ]) {
+      await t.test(condition, async () => {
+        const scenarioRoot = join(root, condition);
+        const endpoint = join(scenarioRoot, "controller.sock");
+        const userHome = join(scenarioRoot, "user-home");
+        const retryDirectory = join(scenarioRoot, "controller-private");
+        let host;
+        let registration;
+        let restorePath = () => undefined;
+        try {
+          await Promise.all([
+            mkdir(scenarioRoot, { recursive: true }),
+            mkdir(userHome, { recursive: true }),
+            mkdir(retryDirectory, { recursive: true }),
+          ]);
+          registration = await createProductionRegistration(scenarioRoot);
+          const commands = await installUnavailableProbeCommands(scenarioRoot, condition);
+          restorePath = commands.restore;
+          const nodePath = join(commands.binPath, "node");
+          await copyFile(process.execPath, nodePath);
+          await chmod(nodePath, 0o700);
+          const projectId = registration.project.project.projectId;
+          const controllerSessionId = `controller-session-${"5".repeat(24)}`;
+          host = await startInstalledReadinessHost({
+            endpoint,
+            installed,
+            nodePath,
+            registration,
+          });
+
+          await assert.rejects(execFileAsync(installed.command, [
+            "launch", projectId, "--json",
+          ], {
+            cwd: scenarioRoot,
+            env: {
+              ...process.env,
+              HOME: userHome,
+              SANDKING_CONTROLLER_ENDPOINT: endpoint,
+              SANDKING_CONTROLLER_SESSION_ID: controllerSessionId,
+              SANDKING_CONTROLLER_RETRY_DIRECTORY: retryDirectory,
+              SANDKING_WORK_CONTEXT_ID: projectId,
+            },
+          }), (error) => {
+            assert.match(error.stderr, /harness_worker_provider_unavailable/, condition);
+            return true;
+          });
+          const readinessCommands = (await readFile(commands.tracePath, "utf8"))
+            .trim().split("\n");
+          const distinctReadinessCommands = readinessCommands.filter(
+            (command, index) => readinessCommands.indexOf(command) === index,
+          );
+          if (condition === "missing-codex") {
+            assert.deepEqual(distinctReadinessCommands, ["codex --version"]);
+          } else if (condition === "unavailable-docker") {
+            assert.deepEqual(distinctReadinessCommands, [
+              "codex --version",
+              "codex login status",
+              "npm --version",
+              "docker version --format {{.Server.Version}}",
+            ]);
+          } else {
+            assert.deepEqual(distinctReadinessCommands, [
+              "codex --version",
+              "codex login status",
+              "npm --version",
+            ]);
+          }
+          await assert.rejects(
+            readFile(join(registration.projectPath, "sandcastle.real-provider.json"), "utf8"),
+            { code: "ENOENT" },
+          );
+          const retained = JSON.parse(await readFile(
+            join(registration.dataDir, "harness-runs.json"),
+            "utf8",
+          ));
+          assert.deepEqual(retained.runs, []);
+        } finally {
+          await host?.stop().catch(() => undefined);
+          restorePath();
+        }
+      });
+    }
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

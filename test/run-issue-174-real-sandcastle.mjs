@@ -505,10 +505,8 @@ const main = async () => {
       join(projectionPath, "worker-environment.json"),
     ], { env: gitEnvironment() }).then(() => true, () => false);
     const providerManifestPath = join(projectPath, "sandcastle.real-provider.json");
-    const providerManifest = await readFile(providerManifestPath, "utf8");
-    const ignoredProviderManifest = await execFileAsync("git", [
-      "-C", projectPath, "check-ignore", "--no-index", "--quiet", providerManifestPath,
-    ], { env: gitEnvironment() }).then(() => true, () => false);
+    const providerManifestRemoved = await readFile(providerManifestPath, "utf8")
+      .then(() => false, (error) => error?.code === "ENOENT");
     const status = await git(projectPath, ["status", "--porcelain=v1", "--untracked-files=all"]);
     const childCommitCount = Number(await git(projectPath, [
       "rev-list", "--count", `${projectBefore.beforeCommit}..${afterCommit}`,
@@ -521,12 +519,7 @@ const main = async () => {
         === `sha256:${realSandcastleScenario.expectedArtifact.contentUtf8Sha256}`,
       unrelatedTrackedContentPreserved:
         await readFile(join(projectPath, "README.md"), "utf8") === projectBefore.readme,
-      hostPreparedProviderManifest: providerManifest === `${JSON.stringify({
-        schemaVersion: 1,
-        provider: { kind: "openai-codex", ready: true },
-        scenario: "project-commit",
-      }, null, 2)}\n`
-        && ignoredProviderManifest
+      hostProviderManifestRemoved: providerManifestRemoved
         && !trackedFiles.includes("sandcastle.real-provider.json"),
       cleanAfter: status === "",
       ignoredProjection,

@@ -62,8 +62,13 @@ atomically writes the exact
 adds a local `.git/info/exclude` rule. The operation verifies `git status` and
 `git ls-files` are unchanged. When any probe fails, launch returns the typed
 `harness_worker_provider_unavailable` failure before a run or adapter process
-exists and without writing the manifest. A later launch-preparation failure
-rolls the manifest and newly added exclude rule back.
+exists and without writing the manifest. The selector exists only until the
+adapter publishes readiness after inspecting it; the Host then removes the
+selector and any exclude rule it added. Pre-acceptance failures and terminal
+supervision provide rollback boundaries, a later launch removes an exact
+untracked stale selector before probing, and Host startup reconciliation cleans
+retained production Projects. Tracked or different files are never deleted and
+continue to fail as Project collisions.
 
 The explicit `sandcastle.worker-fixture.json` branch remains available only at
 the adapter protocol's deterministic qualification boundary; a production
