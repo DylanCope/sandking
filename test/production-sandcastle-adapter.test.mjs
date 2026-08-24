@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import {
-  chmod,
-  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -26,69 +24,15 @@ import {
   productionLaunchRequest,
   writeExecutable,
 } from "./production-sandcastle-host-fixture.mjs";
+import {
+  installRealReadinessProcesses,
+  REAL_READINESS_TEST_API_KEY,
+} from "./real-readiness-processes.mjs";
 import "./production-sandcastle-qualification.mjs";
 
 const launchRequest = productionLaunchRequest;
 const observeRunning = observeProductionRunning;
 const observeTerminal = observeProductionTerminal;
-
-const installUnavailableProbeCommands = async (root, condition) => {
-  const binPath = join(root, "readiness-bin");
-  const tracePath = join(root, "readiness-commands.log");
-  const originalPath = process.env.PATH;
-  await mkdir(binPath, { recursive: true });
-  await writeFile(tracePath, "");
-  const codexSource = condition === "missing-codex"
-    ? `#!/bin/sh
-printf '%s\\n' "codex $*" >> "${tracePath}"
-exec /sandking/missing-codex "$@"
-`
-    : condition === "wrong-codex-version"
-      ? `#!/bin/sh
-printf '%s\\n' "codex $*" >> "${tracePath}"
-if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 0.145.0'; exit 0; fi
-if [ "$1" = "login" ] && [ "$2" = "status" ]; then printf '%s\\n' 'Logged in using incompatible Codex'; exit 0; fi
-exit 91
-`
-      : condition === "unauthenticated-codex"
-        ? `#!/bin/sh
-printf '%s\\n' "codex $*" >> "${tracePath}"
-if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 0.146.0'; exit 0; fi
-if [ "$1" = "login" ] && [ "$2" = "status" ]; then printf '%s\\n' 'Not logged in' >&2; exit 1; fi
-exit 91
-`
-        : `#!/bin/sh
-printf '%s\\n' "codex $*" >> "${tracePath}"
-if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 0.146.0'; exit 0; fi
-if [ "$1" = "login" ] && [ "$2" = "status" ]; then printf '%s\\n' 'Logged in using fixture'; exit 0; fi
-exit 91
-`;
-  const commands = [
-    writeExecutable(join(binPath, "npm"), `#!/bin/sh
-printf '%s\\n' "npm $*" >> "${tracePath}"
-if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
-exit 92
-`),
-    writeExecutable(join(binPath, "docker"), `#!/bin/sh
-printf '%s\\n' "docker $*" >> "${tracePath}"
-if [ "$1" = "version" ] && [ "$2" = "--format" ]; then
-  printf '%s\\n' 'Cannot connect to the Docker daemon' >&2
-  exit 1
-fi
-exit 93
-`),
-  ];
-  commands.push(writeExecutable(join(binPath, "codex"), codexSource));
-  await Promise.all(commands);
-  process.env.PATH = `${binPath}:/usr/bin:/bin`;
-  return {
-    binPath,
-    tracePath,
-    restore: () => {
-      process.env.PATH = originalPath;
-    },
-  };
-};
 
 const startInstalledReadinessHost = async ({ endpoint, installed, nodePath, registration }) => {
   const harnessRunsUrl = pathToFileURL(join(
@@ -400,16 +344,17 @@ test("terminal production completion and later unavailable readiness leave no se
 
 test("adapter readiness releases the real-provider selector before terminal completion", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-ready-cleanup-"));
+  const releasePath = join(root, "release-dependency-install");
   let restorePath = () => undefined;
   let fixture;
-  let harnessRunId = null;
   try {
     restorePath = await installReadyProbeCommands(root);
     await writeExecutable(join(root, "bin", "npm"), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
 if [ "$1" = "ci" ]; then
   trap 'exit 0' TERM INT
-  while true; do sleep 1; done
+  while [ ! -f '${releasePath}' ]; do sleep 0.05; done
+  exit 0
 fi
 exit 92
 `);
@@ -420,35 +365,19 @@ exit 92
       { idempotencyKeyHash: `sha256:${"8".repeat(64)}` },
     ));
     assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
-    harnessRunId = launched.run.harnessRunId;
-    const running = await observeRunning(fixture.manager, harnessRunId);
+    const running = await observeRunning(fixture.manager, launched.run.harnessRunId);
     assert.equal(running.run.status, "running");
     await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
 
-    const cancelled = await fixture.manager.cancel({
-      requestId: "cancel-ready-production-work",
-      harnessRunId,
-      controllerId: `runtime-${"2".repeat(24)}`,
-      controllerSessionId: `controller-session-${"3".repeat(24)}`,
-      source: "controller-cli",
-      authorizationClass: "harness_run_cancellation",
-      idempotencyKeyHash: `sha256:${"9".repeat(64)}`,
-    });
-    assert.equal(cancelled.type, "harness.run.cancel.result", JSON.stringify(cancelled));
-    const terminal = await observeTerminal(fixture.manager, harnessRunId);
-    assert.equal(terminal.run.status, "cancelled", JSON.stringify(terminal));
+    await writeFile(releasePath, "release dependency installation\n");
+    const terminal = await observeTerminal(
+      fixture.manager,
+      launched.run.harnessRunId,
+    );
+    assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
+    assert.equal(terminal.outcome.code, "harness_run_failed");
   } finally {
-    if (fixture && harnessRunId) {
-      await fixture.manager.cancel({
-        requestId: "cleanup-ready-production-work",
-        harnessRunId,
-        controllerId: `runtime-${"2".repeat(24)}`,
-        controllerSessionId: `controller-session-${"3".repeat(24)}`,
-        source: "controller-cli",
-        authorizationClass: "harness_run_cancellation",
-        idempotencyKeyHash: `sha256:${"a".repeat(64)}`,
-      }).catch(() => undefined);
-    }
+    await writeFile(releasePath, "release dependency installation\n").catch(() => undefined);
     await fixture?.manager.waitForIdle().catch(() => undefined);
     restorePath();
     await rm(root, { recursive: true, force: true });
@@ -465,14 +394,14 @@ test("installed sandking launch rejects every named live readiness condition", a
       "unauthenticated-codex",
       "unavailable-docker",
     ]) {
-      await t.test(condition, async () => {
+      await t.test(condition, async (scenario) => {
         const scenarioRoot = join(root, condition);
         const endpoint = join(scenarioRoot, "controller.sock");
         const userHome = join(scenarioRoot, "user-home");
         const retryDirectory = join(scenarioRoot, "controller-private");
         let host;
         let registration;
-        let restorePath = () => undefined;
+        let restoreProcesses = () => undefined;
         try {
           await Promise.all([
             mkdir(scenarioRoot, { recursive: true }),
@@ -480,17 +409,60 @@ test("installed sandking launch rejects every named live readiness condition", a
             mkdir(retryDirectory, { recursive: true }),
           ]);
           registration = await createProductionRegistration(scenarioRoot);
-          const commands = await installUnavailableProbeCommands(scenarioRoot, condition);
-          restorePath = commands.restore;
-          const nodePath = join(commands.binPath, "node");
-          await copyFile(process.execPath, nodePath);
-          await chmod(nodePath, 0o700);
+          const manifestPath = join(
+            registration.projectPath,
+            "sandcastle.real-provider.json",
+          );
+          const excludePath = join(registration.projectPath, ".git", "info", "exclude");
+          const [excludeBefore, statusBefore, trackedBefore] = await Promise.all([
+            readFile(excludePath, "utf8"),
+            execFileAsync("git", [
+              "-C", registration.projectPath,
+              "status", "--porcelain=v1", "--untracked-files=all",
+            ]).then(({ stdout }) => stdout),
+            execFileAsync("git", [
+              "-C", registration.projectPath, "ls-files", "--stage", "-z",
+            ]).then(({ stdout }) => stdout),
+          ]);
+          const processes = await installRealReadinessProcesses({
+            condition,
+            homeDirectory: userHome,
+            root: scenarioRoot,
+          });
+          restoreProcesses = processes.restore;
+          if (!processes.supported) {
+            if (process.env.CI === "true") {
+              assert.fail(`required real readiness boundary unavailable: ${processes.reason}`);
+            }
+            scenario.skip(processes.reason);
+            return;
+          }
+          if (condition === "missing-codex") {
+            assert.deepEqual(processes.observation, { codex: "ENOENT" });
+          } else if (condition === "wrong-codex-version") {
+            assert.equal(processes.observation.version, "codex-cli 0.145.0");
+            assert.deepEqual(processes.observation.authentication, {
+              authenticated: true,
+              exitCode: 0,
+            });
+          } else if (condition === "unauthenticated-codex") {
+            assert.equal(processes.observation.version, "codex-cli 0.146.0");
+            assert.equal(processes.observation.authentication.authenticated, false);
+            assert.notEqual(processes.observation.authentication.exitCode, 0);
+          } else {
+            assert.equal(processes.observation.version, "codex-cli 0.146.0");
+            assert.deepEqual(processes.observation.authentication, {
+              authenticated: true,
+              exitCode: 0,
+            });
+            assert.equal(processes.observation.docker, "daemon-unavailable");
+          }
           const projectId = registration.project.project.projectId;
           const controllerSessionId = `controller-session-${"5".repeat(24)}`;
           host = await startInstalledReadinessHost({
             endpoint,
             installed,
-            nodePath,
+            nodePath: processes.nodePath,
             registration,
           });
 
@@ -507,34 +479,26 @@ test("installed sandking launch rejects every named live readiness condition", a
               SANDKING_WORK_CONTEXT_ID: projectId,
             },
           }), (error) => {
-            assert.match(error.stderr, /harness_worker_provider_unavailable/, condition);
+            const stderr = `${error.stderr ?? ""}`;
+            assert.match(stderr, /harness_worker_provider_unavailable/, condition);
+            assert.equal(stderr.includes(scenarioRoot), false, condition);
+            assert.equal(stderr.includes(REAL_READINESS_TEST_API_KEY), false, condition);
+            assert.doesNotMatch(
+              stderr,
+              /Logged in|Not logged in|codex-cli|Docker daemon/i,
+              condition,
+            );
             return true;
           });
-          const readinessCommands = (await readFile(commands.tracePath, "utf8"))
-            .trim().split("\n");
-          const distinctReadinessCommands = readinessCommands.filter(
-            (command, index) => readinessCommands.indexOf(command) === index,
-          );
-          if (condition === "missing-codex") {
-            assert.deepEqual(distinctReadinessCommands, ["codex --version"]);
-          } else if (condition === "unavailable-docker") {
-            assert.deepEqual(distinctReadinessCommands, [
-              "codex --version",
-              "codex login status",
-              "npm --version",
-              "docker version --format {{.Server.Version}}",
-            ]);
-          } else {
-            assert.deepEqual(distinctReadinessCommands, [
-              "codex --version",
-              "codex login status",
-              "npm --version",
-            ]);
-          }
-          await assert.rejects(
-            readFile(join(registration.projectPath, "sandcastle.real-provider.json"), "utf8"),
-            { code: "ENOENT" },
-          );
+          await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
+          assert.equal(await readFile(excludePath, "utf8"), excludeBefore);
+          assert.equal((await execFileAsync("git", [
+            "-C", registration.projectPath,
+            "status", "--porcelain=v1", "--untracked-files=all",
+          ])).stdout, statusBefore);
+          assert.equal((await execFileAsync("git", [
+            "-C", registration.projectPath, "ls-files", "--stage", "-z",
+          ])).stdout, trackedBefore);
           const retained = JSON.parse(await readFile(
             join(registration.dataDir, "harness-runs.json"),
             "utf8",
@@ -542,7 +506,7 @@ test("installed sandking launch rejects every named live readiness condition", a
           assert.deepEqual(retained.runs, []);
         } finally {
           await host?.stop().catch(() => undefined);
-          restorePath();
+          restoreProcesses();
         }
       });
     }
