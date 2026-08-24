@@ -71,7 +71,7 @@ export const createHarnessRunManager = async (options) => {
     supervisionOperations: new Set(),
     /** @type {Map<string, string>} */
     acceptedCancellations: new Map(),
-    /** @type {Map<string, {count: number, rollback: () => Promise<void>}>} */
+    /** @type {Map<string, {count: number, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null}>} */
     activeProductionProviderPreparations: new Map(),
   });
 

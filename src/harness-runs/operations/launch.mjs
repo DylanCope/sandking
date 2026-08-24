@@ -30,32 +30,74 @@ import { logPath, retainedLaunchOutcome } from "../store.mjs";
 export const createLaunchOperation = (runtime) => {
   const { cancellationGraceMs, now, options, parsedHostId } = runtime;
 
+  /**
+   * Finish one zero-holder provider lease. Keep failed cleanup retryable: the
+   * readiness boundary and terminal supervision deliberately share this
+   * operation so a transient Project-filesystem failure cannot strand the
+   * selector after the first attempt.
+   *
+   * @param {string} projectPath
+   * @param {{count: number, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null}} lease
+   */
+  const cleanupProductionProviderLease = async (projectPath, lease) => {
+    if (lease.count > 0) return;
+    if (!lease.cleanupOperation) {
+      lease.cleanupOperation = lease.rollback().then(() => {
+        if (
+          lease.count === 0
+          && runtime.activeProductionProviderPreparations.get(projectPath) === lease
+        ) {
+          runtime.activeProductionProviderPreparations.delete(projectPath);
+        }
+      }).catch((error) => {
+        lease.cleanupOperation = null;
+        throw error;
+      });
+    }
+    await lease.cleanupOperation;
+  };
+
   /** @param {{projectPath: string, projectionPath: string, productionPreparation: unknown}} preparation */
   const acquireProductionProvider = async (preparation) => {
-    const retained = runtime.activeProductionProviderPreparations.get(
+    let retained = runtime.activeProductionProviderPreparations.get(
       preparation.projectPath,
     );
-    const prepared = await prepareProductionProviderLaunch({
-      ...preparation,
-      preserveExistingManifest: Boolean(retained),
-    });
+    if (retained?.count === 0) {
+      await cleanupProductionProviderLease(preparation.projectPath, retained);
+      retained = undefined;
+    }
+    if (retained) retained.count += 1;
+    let prepared;
+    try {
+      prepared = await prepareProductionProviderLaunch({
+        ...preparation,
+        preserveExistingManifest: Boolean(retained),
+      });
+    } catch (error) {
+      if (retained) {
+        retained.count -= 1;
+        await cleanupProductionProviderLease(preparation.projectPath, retained);
+      }
+      throw error;
+    }
     const lease = retained ?? {
-      count: 0,
+      count: 1,
       rollback: prepared.rollback,
+      cleanupOperation: null,
     };
-    lease.count += 1;
-    runtime.activeProductionProviderPreparations.set(preparation.projectPath, lease);
-    let active = true;
+    if (!retained) {
+      runtime.activeProductionProviderPreparations.set(preparation.projectPath, lease);
+    }
+    let released = false;
     return {
       providerKind: prepared.providerKind,
       manifestWritten: prepared.manifestWritten,
       rollback: async () => {
-        if (!active) return;
-        active = false;
-        lease.count -= 1;
-        if (lease.count > 0) return;
-        runtime.activeProductionProviderPreparations.delete(preparation.projectPath);
-        await lease.rollback();
+        if (!released) {
+          released = true;
+          lease.count -= 1;
+        }
+        await cleanupProductionProviderLease(preparation.projectPath, lease);
       },
     };
   };
@@ -425,7 +467,9 @@ export const createLaunchOperation = (runtime) => {
           run.harnessRunId,
           "host-loss-termination.json",
         ),
-        releaseLaunchPreparation: () => providerPreparation?.rollback(),
+        releaseLaunchPreparation: async () => {
+          await providerPreparation?.rollback().catch(() => undefined);
+        },
       }).finally(async () => {
         await providerPreparation?.rollback();
       });

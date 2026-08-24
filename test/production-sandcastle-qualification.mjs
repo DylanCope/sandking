@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createServer } from "node:net";
 import test from "node:test";
 import { createHarnessRunManager } from "../src/harness-runs.mjs";
+import { REAL_PROVIDER_MANIFEST_SOURCE } from "../src/production-provider-preparation.mjs";
 import { installCurrentPackage } from "./installed-package.mjs";
 import {
   createProductionFixture,
@@ -393,7 +394,7 @@ test("production cancellation and reconnection converge on the same canonical ru
   let restorePath = () => undefined;
   try {
     restorePath = await installRunnableProviderCommands(root, { blockDependencies: true });
-    fixture = await createProductionFixture(root, null, { cancellationGraceMs: 1_000 });
+    fixture = await createProductionFixture(root, null, { cancellationGraceMs: 10_000 });
     const launched = await fixture.manager.launch(productionLaunchRequest(
       fixture.project.project.projectId,
       {
@@ -455,6 +456,54 @@ test("production cancellation and reconnection converge on the same canonical ru
     assert.equal(fixture.audits.filter(({ action }) =>
       action === "harness.adapter.start").length, 1);
   } finally {
+    await fixture?.manager.waitForIdle().catch(() => undefined);
+    restorePath();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("terminal supervision retries a selector release interrupted after readiness", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-release-retry-"));
+  const manifestPath = join(root, "project", "sandcastle.real-provider.json");
+  const excludePath = join(root, "project", ".git", "info", "exclude");
+  let fixture;
+  let excludeBefore;
+  let repairManifest = Promise.resolve();
+  let restorePath = () => undefined;
+  try {
+    restorePath = await installReadyProbeCommands(root);
+    fixture = await createProductionFixture(root, null, {
+      faultInjector: async (point) => {
+        if (point !== "harness_run_lifecycle.adapter_ready.after_state_commit") return;
+        await rm(manifestPath);
+        await mkdir(manifestPath);
+        repairManifest = new Promise((resolve, reject) => {
+          setTimeout(() => {
+            void (async () => {
+              await rm(manifestPath, { recursive: true });
+              await writeFile(manifestPath, REAL_PROVIDER_MANIFEST_SOURCE);
+            })().then(resolve, reject);
+          }, 5);
+        });
+      },
+    });
+    excludeBefore = await readFile(excludePath, "utf8");
+
+    const launched = await fixture.manager.launch(productionLaunchRequest(
+      fixture.project.project.projectId,
+    ));
+    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
+    const terminal = await observeProductionTerminal(
+      fixture.manager,
+      launched.run.harnessRunId,
+    );
+    assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
+    assert.equal(terminal.outcome.result.code, "real_provider_execution_failed");
+    await repairManifest;
+    await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
+    assert.equal(await readFile(excludePath, "utf8"), excludeBefore);
+  } finally {
+    await repairManifest.catch(() => undefined);
     await fixture?.manager.waitForIdle().catch(() => undefined);
     restorePath();
     await rm(root, { recursive: true, force: true });
