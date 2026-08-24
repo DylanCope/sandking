@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { createDestinationWorkerEnvironment } from "./destination-worker-environment.mjs";
 import {
   appendProjectGitExcludeRules,
   ProjectPreparationFileError,
@@ -9,22 +8,9 @@ import {
   replaceProjectPreparationFile,
   restoreProjectPreparationFile,
 } from "./project-git-exclusion.mjs";
+import { ensureProductionProviderRuntime } from "./production-provider-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
-const realProviderContractUrl = new URL(
-  "./production-sandcastle-adapter/sandcastle-v4.mjs",
-  import.meta.url,
-);
-/**
- * Load the exact executable adapter module without making its deliberately
- * self-contained eval source part of the Host TypeScript compilation graph.
- * @returns {Promise<{
- *   probeRealProviderReadiness: (options?: {environment?: NodeJS.ProcessEnv}) => boolean,
- *   REAL_PROVIDER_CODEX_VERSION: string,
- *   REAL_PROVIDER_SKILL_IDENTITIES: readonly string[],
- * }>}
- */
-const loadRealProviderContract = () => import(realProviderContractUrl.href);
 const controlledManifestName = "sandcastle.worker-fixture.json";
 export const REAL_PROVIDER_MANIFEST_NAME = "sandcastle.real-provider.json";
 export const REAL_PROVIDER_MANIFEST_SOURCE = `${JSON.stringify({
@@ -54,37 +40,13 @@ const git = (projectPath, args) => execFileAsync("git", ["-C", projectPath, ...a
 });
 
 /**
- * @param {unknown} preparation
- * @param {string} codexVersion
- * @param {readonly string[]} skillIdentities
- */
-const pinnedRealProviderInputsReady = (preparation, codexVersion, skillIdentities) => {
-  if (!preparation || typeof preparation !== "object") return false;
-  const value = /** @type {any} */ (preparation);
-  const codexRuntime = Array.isArray(value.executionRuntimeInputs)
-    ? value.executionRuntimeInputs.find(
-        (/** @type {{identity?: unknown}} */ { identity }) => identity === "openai.codex-cli",
-      )
-    : null;
-  return codexRuntime?.version === codexVersion
-    && Array.isArray(value.resolvedSkills)
-    && JSON.stringify(value.resolvedSkills.map(
-      (/** @type {{identity?: unknown}} */ { identity }) => identity,
-    )) === JSON.stringify(skillIdentities);
-};
-
-/**
- * Prepare the Project-owned real-provider selector at the last Host-controlled
- * boundary before adapter preflight. The returned rollback remains active until
- * the launch operation reaches its durable acceptance boundary.
+ * Atomically prepare the Project-owned selector after real-provider runtime
+ * readiness has been established. Kept separate so filesystem invariants can
+ * be tested without replacing the live provider/process checks.
  *
- * @param {{
- *   projectPath: string,
- *   productionPreparation: unknown,
- *   probeRealProviderReadiness?: () => boolean | Promise<boolean>,
- * }} options
+ * @param {{projectPath: string}} options
  */
-export const prepareProductionProviderLaunch = async (options) => {
+export const prepareProductionProviderManifest = async (options) => {
   const projectRoot = resolve(options.projectPath);
   const controlledPath = join(projectRoot, controlledManifestName);
   const manifestPath = join(projectRoot, REAL_PROVIDER_MANIFEST_NAME);
@@ -102,30 +64,8 @@ export const prepareProductionProviderLaunch = async (options) => {
     throw new ProductionProviderPreparationError("harness_projection_failed");
   }
 
-  // A controlled manifest is an explicit conformance fixture selection. Never
-  // mask it by manufacturing a second provider or silently falling back to it.
   if (controlled.exists) {
-    return {
-      providerKind: "controlled-worker-fixture",
-      manifestWritten: false,
-      rollback: async () => undefined,
-    };
-  }
-
-  const realProviderContract = await loadRealProviderContract();
-  const probe = options.probeRealProviderReadiness
-    ?? (() => realProviderContract.probeRealProviderReadiness({
-      environment: createDestinationWorkerEnvironment(),
-    }));
-  if (
-    !pinnedRealProviderInputsReady(
-      options.productionPreparation,
-      realProviderContract.REAL_PROVIDER_CODEX_VERSION,
-      realProviderContract.REAL_PROVIDER_SKILL_IDENTITIES,
-    )
-    || !await probe()
-  ) {
-    throw new ProductionProviderPreparationError("harness_worker_provider_unavailable");
+    throw new ProductionProviderPreparationError("harness_projection_collision");
   }
 
   let workingTreeStateBefore;
@@ -199,4 +139,26 @@ export const prepareProductionProviderLaunch = async (options) => {
   }
 
   return { providerKind: "openai-codex", manifestWritten, rollback };
+};
+
+/**
+ * Establish the real runtime and prepare its selector at the final
+ * Host-controlled boundary before adapter preflight. The returned rollback
+ * remains active until the launch reaches its durable acceptance boundary.
+ *
+ * @param {{
+ *   projectPath: string,
+ *   projectionPath: string,
+ *   productionPreparation: unknown,
+ * }} options
+ */
+export const prepareProductionProviderLaunch = async (options) => {
+  const runtime = await ensureProductionProviderRuntime({
+    projectionPath: options.projectionPath,
+    productionPreparation: options.productionPreparation,
+  });
+  if (!runtime.ready) {
+    throw new ProductionProviderPreparationError("harness_worker_provider_unavailable");
+  }
+  return prepareProductionProviderManifest({ projectPath: options.projectPath });
 };

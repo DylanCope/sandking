@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import {
+  mkdir,
   mkdtemp,
   readFile,
   rm,
@@ -16,10 +17,12 @@ import {
   probeRealProviderReadiness,
 } from "../src/production-sandcastle-adapter/sandcastle-v4.mjs";
 import {
+  prepareProductionProviderManifest,
   prepareProductionProviderLaunch,
   REAL_PROVIDER_MANIFEST_NAME,
   REAL_PROVIDER_MANIFEST_SOURCE,
 } from "../src/production-provider-preparation.mjs";
+import { ensureProductionProviderRuntime } from "../src/production-provider-runtime.mjs";
 import { createHarnessRunFixture } from "./harness-run-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -38,6 +41,52 @@ const productionPreparation = {
     version: REAL_PROVIDER_CODEX_VERSION,
   }],
 };
+
+test("product preparation builds and verifies a missing pinned sandbox image", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-image-"));
+  try {
+    const projectionPath = join(root, "projection");
+    const dockerfilePath = join(projectionPath, ".sandcastle", "Dockerfile");
+    await mkdir(join(projectionPath, ".sandcastle"), { recursive: true });
+    await writeFile(dockerfilePath, "FROM node:22-bookworm\n");
+    const calls = [];
+    let imageReady = false;
+    const result = await ensureProductionProviderRuntime({
+      projectionPath,
+      productionPreparation,
+      environment: { PATH: "/usr/bin:/bin" },
+      executeFile: async (command, args, options) => {
+        calls.push({ command, args, options });
+        imageReady = true;
+        return { stdout: "", stderr: "" };
+      },
+      realProviderContract: {
+        REAL_PROVIDER_CODEX_VERSION,
+        REAL_PROVIDER_SANDBOX_CONFIGURATION: ".sandcastle/Dockerfile",
+        REAL_PROVIDER_SANDBOX_IMAGE,
+        REAL_PROVIDER_SKILL_IDENTITIES: requiredSkills,
+        realProviderAvailable: () => true,
+        realSandboxEngineAvailable: () => true,
+        realSandboxImageAvailable: () => imageReady,
+      },
+    });
+
+    assert.deepEqual(result, { ready: true, imageBuilt: true });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, "docker");
+    assert.deepEqual(calls[0].args, [
+      "build",
+      "--build-arg", `AGENT_UID=${process.getuid?.() ?? 1000}`,
+      "--build-arg", `AGENT_GID=${process.getgid?.() ?? 1000}`,
+      "--tag", REAL_PROVIDER_SANDBOX_IMAGE,
+      "--file", dockerfilePath,
+      projectionPath,
+    ]);
+    assert.equal(calls[0].options.env.PATH, "/usr/bin:/bin");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 const initializeProject = async (root) => {
   const projectPath = join(root, "project");
@@ -122,20 +171,12 @@ test("production provider preparation atomically writes one git-invisible real m
       "-C", projectPath, "ls-files", "--stage", "-z",
     ])).stdout;
     const excludeBefore = await readFile(excludePath, "utf8");
-    let probeCount = 0;
-
-    const prepared = await prepareProductionProviderLaunch({
+    const prepared = await prepareProductionProviderManifest({
       projectPath,
-      productionPreparation,
-      probeRealProviderReadiness: () => {
-        probeCount += 1;
-        return true;
-      },
     });
 
     assert.equal(prepared.providerKind, "openai-codex");
     assert.equal(prepared.manifestWritten, true);
-    assert.equal(probeCount, 1);
     assert.equal(await readFile(manifestPath, "utf8"), REAL_PROVIDER_MANIFEST_SOURCE);
     await execFileAsync("git", [
       "-C", projectPath, "check-ignore", "--no-index", "--quiet", manifestPath,
@@ -172,8 +213,8 @@ test("unavailable production providers fail before any manifest or Git metadata 
     await assert.rejects(
       prepareProductionProviderLaunch({
         projectPath,
-        productionPreparation,
-        probeRealProviderReadiness: () => false,
+        projectionPath: projectPath,
+        productionPreparation: null,
       }),
       { name: "ProductionProviderPreparationError", code: "harness_worker_provider_unavailable" },
     );
@@ -190,7 +231,7 @@ test("unavailable production providers fail before any manifest or Git metadata 
   }
 });
 
-test("an explicit controlled fixture is never masked by a manufactured real provider", async () => {
+test("a controlled fixture cannot bypass production real-provider preparation", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-controlled-provider-selection-"));
   try {
     const projectPath = await initializeProject(root);
@@ -199,19 +240,18 @@ test("an explicit controlled fixture is never masked by a manufactured real prov
       provider: { kind: "controlled-worker-fixture", ready: true },
       scenario: "succeeded",
     })}\n`);
-    let probeCount = 0;
-    const prepared = await prepareProductionProviderLaunch({
+    await assert.rejects(prepareProductionProviderLaunch({
       projectPath,
-      productionPreparation,
-      probeRealProviderReadiness: () => {
-        probeCount += 1;
-        return true;
-      },
+      projectionPath: projectPath,
+      productionPreparation: null,
+    }), {
+      name: "ProductionProviderPreparationError",
+      code: "harness_worker_provider_unavailable",
     });
-
-    assert.equal(prepared.providerKind, "controlled-worker-fixture");
-    assert.equal(prepared.manifestWritten, false);
-    assert.equal(probeCount, 0);
+    await assert.rejects(prepareProductionProviderManifest({ projectPath }), {
+      name: "ProductionProviderPreparationError",
+      code: "harness_projection_collision",
+    });
     await assert.rejects(
       readFile(join(projectPath, REAL_PROVIDER_MANIFEST_NAME), "utf8"),
       { code: "ENOENT" },

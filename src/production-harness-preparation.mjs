@@ -30,6 +30,7 @@ import {
   appendProjectGitExcludeRules,
   ProjectPreparationFileError,
 } from "./project-git-exclusion.mjs";
+import { ensureProductionProviderRuntime } from "./production-provider-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
@@ -940,7 +941,7 @@ export const prepareProductionHarness = async (options) => {
     throw new ProductionHarnessPreparationError("harness_projection_failed");
   }
 
-  return productionHarnessPreparationSchema.parse({
+  const preparation = productionHarnessPreparationSchema.parse({
     status: "ready",
     harness: {
       harnessId: options.harnessId,
@@ -957,4 +958,12 @@ export const prepareProductionHarness = async (options) => {
       trackedContentPreserved: true,
     },
   });
+  // Project preparation owns the potentially slow first-image build so the
+  // later Cockpit/Controller launch operation remains a bounded readiness
+  // check. Failure stays non-destructive and is reported truthfully at launch.
+  await ensureProductionProviderRuntime({
+    projectionPath,
+    productionPreparation: preparation,
+  });
+  return preparation;
 };

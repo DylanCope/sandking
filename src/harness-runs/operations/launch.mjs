@@ -107,8 +107,8 @@ export const createLaunchOperation = (runtime) => {
         ) {
           providerPreparation = await prepareProductionProviderLaunch({
             projectPath: context.project.canonicalPath,
+            projectionPath: context.productionHarnessProjectionPath,
             productionPreparation: context.project.harness.preparation,
-            probeRealProviderReadiness: options.probeRealProviderReadiness,
           });
         }
         prepared = await validateHarnessLaunch(context, parameters.data);

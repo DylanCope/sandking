@@ -16,6 +16,7 @@ const controlledWorkerRuntimePath = ".sandcastle/controlled-worker-fixture.mjs";
 const realWorkerRuntimePath = ".sandcastle/real-worker-v2.mjs";
 export const REAL_PROVIDER_CODEX_VERSION = "0.146.0";
 export const REAL_PROVIDER_SANDBOX_IMAGE = "sandcastle:sandking-real-worker";
+export const REAL_PROVIDER_SANDBOX_CONFIGURATION = ".sandcastle/Dockerfile";
 export const REAL_PROVIDER_SKILL_IDENTITIES = Object.freeze([
   "sandking.issue-implementation",
   "sandking.issue-planning",
@@ -255,7 +256,7 @@ export const realProviderAvailable = (options = {}) => {
 /**
  * @param {{environment?: NodeJS.ProcessEnv, execFileSync?: typeof execFileSync}} [options]
  */
-export const realSandboxAvailable = (options = {}) => {
+export const realSandboxEngineAvailable = (options = {}) => {
   const environment = options.environment ?? process.env;
   const execute = options.execFileSync ?? execFileSync;
   try {
@@ -264,6 +265,19 @@ export const realSandboxAvailable = (options = {}) => {
       env: environment,
       timeout: 5_000,
     }).trim();
+    return /^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(version);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * @param {{environment?: NodeJS.ProcessEnv, execFileSync?: typeof execFileSync}} [options]
+ */
+export const realSandboxImageAvailable = (options = {}) => {
+  const environment = options.environment ?? process.env;
+  const execute = options.execFileSync ?? execFileSync;
+  try {
     const imageId = execute("docker", [
       "image", "inspect", REAL_PROVIDER_SANDBOX_IMAGE, "--format={{.Id}}",
     ], {
@@ -271,12 +285,15 @@ export const realSandboxAvailable = (options = {}) => {
       env: environment,
       timeout: 5_000,
     }).trim();
-    return /^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(version)
-      && /^sha256:[a-f0-9]{64}$/.test(imageId);
+    return /^sha256:[a-f0-9]{64}$/.test(imageId);
   } catch {
     return false;
   }
 };
+
+/** @param {Parameters<typeof realProviderAvailable>[0]} [options] */
+export const realSandboxAvailable = (options = {}) =>
+  realSandboxEngineAvailable(options) && realSandboxImageAvailable(options);
 
 /** @param {Parameters<typeof realProviderAvailable>[0]} [options] */
 export const probeRealProviderReadiness = (options = {}) =>
