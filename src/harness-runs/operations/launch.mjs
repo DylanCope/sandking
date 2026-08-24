@@ -7,6 +7,7 @@ import {
   validateHarnessLaunch,
 } from "../../harness-launch.mjs";
 import { materializeProductionHarnessExecutionSnapshot } from "../../production-harness-preparation.mjs";
+import { prepareProductionProviderLaunch } from "../../production-provider-preparation.mjs";
 import {
   ensurePrivateDirectory,
   PRIVATE_FILE_MODE,
@@ -31,6 +32,9 @@ export const createLaunchOperation = (runtime) => {
 
   /** @param {any} request */
   const launch = (request) => runtime.withMutationLock(async () => {
+    let providerPreparation = null;
+    let launchAccepted = false;
+    try {
     const authorizationClass = "harness_run_launch";
     const idempotencyKeyHash = requestIdempotencyKeyHash(request);
     const requestFingerprint = launchRequestFingerprint(request);
@@ -97,6 +101,16 @@ export const createLaunchOperation = (runtime) => {
     if (!code && parameters.success) {
       try {
         context = await options.loadLaunchContext(request.projectId);
+        if (
+          context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+          && context.project.harness.preparation
+        ) {
+          providerPreparation = await prepareProductionProviderLaunch({
+            projectPath: context.project.canonicalPath,
+            productionPreparation: context.project.harness.preparation,
+            probeRealProviderReadiness: options.probeRealProviderReadiness,
+          });
+        }
         prepared = await validateHarnessLaunch(context, parameters.data);
         if (
           context.project.projectId !== request.projectId
@@ -356,6 +370,9 @@ export const createLaunchOperation = (runtime) => {
     // published before this canonical commit.
     await options.faultInjector?.("harness_run_launch.before_commit");
     await runtime.persist(retained);
+    // Once the run is durable, Host restart reconciliation owns its eventual
+    // supervision. Keep the provider selector available across that boundary.
+    launchAccepted = true;
     // The Host-private snapshot is already sufficient for exact replay here,
     // but the accepted audit may still need idempotent publication after an
     // interruption. Keep this repairable window distinct from the completed
@@ -385,6 +402,11 @@ export const createLaunchOperation = (runtime) => {
       void operation.catch(() => undefined);
     });
     return response;
+    } finally {
+      if (providerPreparation && !launchAccepted) {
+        await providerPreparation.rollback();
+      }
+    }
   });
 
   return { launch };

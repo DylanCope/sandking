@@ -107,24 +107,12 @@ const waitForTerminalRun = async (dataDir) => {
 
 const initializeProject = async (projectPath) => {
   const readme = "Disposable Project for Sand-King issue #174.\n";
-  const providerManifest = `${JSON.stringify({
-    schemaVersion: 1,
-    provider: { kind: "openai-codex", ready: true },
-    scenario: "project-commit",
-  }, null, 2)}\n`;
   await mkdir(projectPath, { recursive: true, mode: 0o700 });
   await execFileAsync("git", [
     "init", "--quiet", "--initial-branch=main", "--object-format=sha1", projectPath,
   ], { env: gitEnvironment() });
-  await Promise.all([
-    writeFile(join(projectPath, "README.md"), readme, { mode: 0o600 }),
-    writeFile(
-      join(projectPath, "sandcastle.real-provider.json"),
-      providerManifest,
-      { mode: 0o600 },
-    ),
-  ]);
-  await execFileAsync("git", ["-C", projectPath, "add", "--all"], {
+  await writeFile(join(projectPath, "README.md"), readme, { mode: 0o600 });
+  await execFileAsync("git", ["-C", projectPath, "add", "README.md"], {
     env: gitEnvironment(),
   });
   await execFileAsync("git", [
@@ -135,7 +123,7 @@ const initializeProject = async (projectPath) => {
     "-c", "core.hooksPath=/dev/null",
     "commit", "--quiet", "-m", "Initialize disposable real-delegation Project",
   ], { env: gitEnvironment() });
-  return { readme, providerManifest, beforeCommit: await git(projectPath, ["rev-parse", "HEAD"]) };
+  return { readme, beforeCommit: await git(projectPath, ["rev-parse", "HEAD"]) };
 };
 
 const readAudits = async (dataDir) => (await readFile(join(dataDir, "audit.jsonl"), "utf8"))
@@ -310,9 +298,14 @@ const main = async () => {
       join(projectPath, realSandcastleScenario.expectedArtifact.path),
     );
     const projectionAfter = await snapshotIssue174Projection(projectionPath);
-    const ignored = await execFileAsync("git", [
+    const ignoredProjection = await execFileAsync("git", [
       "-C", projectPath, "check-ignore", "--no-index", "--quiet",
       join(projectionPath, "worker-environment.json"),
+    ], { env: gitEnvironment() }).then(() => true, () => false);
+    const providerManifestPath = join(projectPath, "sandcastle.real-provider.json");
+    const providerManifest = await readFile(providerManifestPath, "utf8");
+    const ignoredProviderManifest = await execFileAsync("git", [
+      "-C", projectPath, "check-ignore", "--no-index", "--quiet", providerManifestPath,
     ], { env: gitEnvironment() }).then(() => true, () => false);
     const status = await git(projectPath, ["status", "--porcelain=v1", "--untracked-files=all"]);
     const childCommitCount = Number(await git(projectPath, [
@@ -325,11 +318,16 @@ const main = async () => {
       expectedArtifactContent: sha256(artifact)
         === `sha256:${realSandcastleScenario.expectedArtifact.contentUtf8Sha256}`,
       unrelatedTrackedContentPreserved:
-        await readFile(join(projectPath, "README.md"), "utf8") === projectBefore.readme
-        && await readFile(join(projectPath, "sandcastle.real-provider.json"), "utf8")
-          === projectBefore.providerManifest,
+        await readFile(join(projectPath, "README.md"), "utf8") === projectBefore.readme,
+      hostPreparedProviderManifest: providerManifest === `${JSON.stringify({
+        schemaVersion: 1,
+        provider: { kind: "openai-codex", ready: true },
+        scenario: "project-commit",
+      }, null, 2)}\n`
+        && ignoredProviderManifest
+        && !trackedFiles.includes("sandcastle.real-provider.json"),
       cleanAfter: status === "",
-      ignoredProjection: ignored,
+      ignoredProjection,
       projectionUnchanged: JSON.stringify(projectionAfter) === JSON.stringify(projectionBefore),
       noRuntimeTracked: trackedFiles.every((path) =>
         !path.startsWith(".sandking/") && !path.startsWith(".sandcastle/")),

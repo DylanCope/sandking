@@ -125,6 +125,12 @@ sequenceDiagram
     D->>H: framed request
     H->>H: prepareProductionHarness — re-verify pinned<br/>commit bytes match seed (separate from registration check)
     Note over H: production Harness only:<br/>projects pinned files into<br/>&lt;project&gt;/.sandking/harnesses/&lt;id&gt;/<br/>(git-invisible via .git/info/exclude,<br/>see below)
+    H->>H: production only: run shared Codex/npm +<br/>Docker/image readiness probes
+    alt production provider unavailable
+        H-->>C: typed readiness failure<br/>(no run, manifest, or adapter)
+    else production provider ready
+        H->>H: atomically write and locally exclude<br/>sandcastle.real-provider.json
+    end
     H->>A: spawn adapter, invokePinnedHarnessAdapter<br/>(frame protocol over fd 3)
     A-->>H: readiness envelope
     A->>W: (production only) docker exec, real-worker-v2.mjs
@@ -152,7 +158,7 @@ filesystem. Staging the projection inside the Project directory lets it be
 integrity-verified and proven collision-free against your real tracked files,
 on the same filesystem the sandbox will use, without a second bind mount.
 
-It's kept git-invisible on purpose: the code appends rules to
+It's kept git-invisible on purpose: shared Project-preparation code appends rules to
 `.git/info/exclude` (the local, untracked exclude file — not your committed
 `.gitignore`) and explicitly diffs `git status`/`git ls-files` before and
 after to guarantee the projection never perturbs real Project content. This
@@ -179,6 +185,14 @@ essentially the same pinned bytes: the registered Harness workspace
 (`~/.sandking/.../harness-runs/<id>/execution/`). See `docs/current-state.md`
 for this as a loose-end item.
 
+Immediately before production adapter preflight, the same atomic exclusion
+mechanism writes `sandcastle.real-provider.json` at the Project root after the
+live Codex/npm and Docker/image probes pass. A rejected launch rolls back a new
+manifest and exclude rule; a successful preparation leaves the exact selector
+available to both adapter preflight and the supervised run. The selector is
+untracked, and the operation again requires unchanged `git status` and
+`git ls-files` inventories.
+
 ## Data/state boundaries
 
 - **Host-private state** (`~/.sandking` by default): runtime lifecycle
@@ -189,8 +203,10 @@ for this as a loose-end item.
 - **Project directory**: untouched by the **conformance** Harness path and by
   registration in general. The **production** Harness path writes a
   persistent, git-invisible `.sandking/harnesses/<harnessId>/` projection into
-  the Project on every launch — see above. Beyond that, only touched if a
-  Harness run's Worker itself commits to it (that's the whole point of a run).
+  the Project on every launch and, once live readiness passes, the exact
+  git-invisible `sandcastle.real-provider.json` selector — see above. Beyond
+  that, only touched if a Harness run's Worker itself commits to it (that's the
+  whole point of a run).
 - **Harness workspace**: a separate, Host-private git repo per registered
   Harness, pinned to an exact commit. For the production Harness, this is a
   verified-integrity projection of the bundled seed (see below) — not a live
@@ -237,12 +253,12 @@ Only one is live:
 |---|---|---|
 | `sandcastle-v1.mjs` / `v2.mjs` / `v3.mjs` | No | Dead code, deliberately excluded from the shipped package (`.npmignore`), retained only so a boundary test can assert-by-path they never ship |
 | `real-worker.mjs` | Only imported by dead v2/v3 | Dead |
-| `sandcastle-v4.mjs` (lines 1–~260: framing/arg-parsing/gate) | Yes — this is the pinned production adapter | Live |
-| `sandcastle-v4.mjs` (lines ~260–708: dispatch past the gate) | **Correction**: no — gated behind a manifest only tests create, see below | Test-reachable only |
-| `real-worker-v2.mjs` | **Correction**: no, same gate | Test-reachable only |
-| `controlled-worker-fixture.mjs` | **Correction**: no — previously listed here as "Live," but it has the identical unconditional dependency on the same missing manifest (`controlled-worker-fixture.mjs:9`), no fallback | Test-reachable only |
+| `sandcastle-v4.mjs` (framing, argument parsing, and provider gate) | Yes — this is the pinned production adapter, and its readiness probe is shared with Host preparation | Live |
+| `sandcastle-v4.mjs` (dispatch past the gate) | Yes — Host launch preparation writes the exact real-provider selector after live readiness passes | Live |
+| `real-worker-v2.mjs` | Yes, for a ready production launch | Live fixed-canary path |
+| `controlled-worker-fixture.mjs` | Only when an explicit controlled manifest is supplied | Qualification-test path |
 
-**What the adapter would do if it were reachable:** `sandcastle-v4.mjs` →
+**What the reachable adapter does:** `sandcastle-v4.mjs` →
 `real-worker-v2.mjs` runs a real `openai-codex` provider inside Docker with
 the Worker's pinned skill inventory — but the prompt is a **fixed canary
 task** (`.sandcastle/real-delegation-prompt.md`: create one file, commit it,
@@ -254,22 +270,16 @@ plan→implement→review loop — is bundled into the production seed
 (`seed-manifest.json`) and integrity-verified, but **no code path in `src/`
 ever executes it.** It rides along, fully capable, permanently dormant.
 
-**More fundamentally: none of this is reachable through the shipped product
-today — in either mode.** `inspectRuntime()` (`sandcastle-v4.mjs:263`) gates
-everything past it on a `sandcastle.worker-fixture.json` or
-`sandcastle.real-provider.json` manifest existing in the Project root — and
-the only code anywhere that writes either file is `test/*.test.mjs` fixture
-setup. This blocks not just the real-provider branch but also
-`controlled-worker-fixture.mjs`'s own test-double branch (it has the same
-unconditional read, no fallback) — so the entire production-adapter payload,
-real and fixture alike, is unreachable. No `src/` code path (not
-`production-harness-preparation.mjs`, not `harness-runs.mjs`, not the
-Cockpit) ever creates either manifest. A real Cockpit launch of the
-production Harness fails closed with `harness_worker_provider_unavailable`
-on every Project, regardless of Docker/Codex configuration — confirmed by
-reproducing this exact error from a real launch. See `docs/current-state.md`
-gap #2 and `docs/code-inventory.md` for the full quantitative breakdown
-and severity.
+**Reachability update (#256):** `inspectRuntime()` still fails closed unless
+exactly one supported provider selector exists; its schema and protocol did
+not change. The shared Host launch operation now imports that adapter's exact
+readiness probe, runs it before adapter preflight, and atomically prepares the
+real selector only for the production Harness. Both the Cockpit and
+`sandking launch` reach this operation. Unavailable Codex, authentication,
+npm, Docker, or sandbox image state returns
+`harness_worker_provider_unavailable` with no run, manifest, or adapter. The
+remaining limitation is dispatch: the live real path still performs only the
+fixed canary commit and does not execute the bundled GitHub-issue workflow.
 
 ## Cross-platform process supervision
 

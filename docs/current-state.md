@@ -49,44 +49,29 @@ left anywhere in `src/`. If real GitHub-backed planning is wanted, it is now
 a from-scratch feature addition against a clean slate, not a matter of
 "turning on" dormant fixture code.
 
-### 2. The production Harness cannot currently be launched by a person at all
-Confirmed by reproducing Dylan's exact error (`harness_worker_provider_unavailable`)
-on a real registered Project. `sandcastle-v4.mjs`'s readiness check
-(`inspectRuntime`, line 263) requires exactly one of two manifest files —
-`sandcastle.worker-fixture.json` or `sandcastle.real-provider.json` — to exist
-in the Project root before it will run at all. Grepped every write of either
-filename across the repo: **the only writers are `test/*.test.mjs` files**,
-which `mkdtemp` a throwaway directory, hand-write the manifest as fixture
-setup, and drive the adapter directly. No code path in `src/` — not
-`production-harness-preparation.mjs`, not `harness-runs.mjs`, not the Cockpit
-— ever writes either file into a real Project.
+### 2. Production reachability is fixed; real work is still a fixed canary
 
-**This blocks both branches, not just the real one.** A follow-up audit found
-`controlled-worker-fixture.mjs:9` — the deterministic test-double worker,
-previously believed reachable — has the identical unconditional dependency on
-`sandcastle.worker-fixture.json` with no fallback. So the entire
-production-adapter payload (`sandcastle-v4.mjs`'s dispatch logic,
-`real-worker-v2.mjs`, and `controlled-worker-fixture.mjs` — ~1,072 lines) is
-unreachable from the shipped product in both its real and fixture modes. See
-`docs/code-inventory.md` for the full line-by-line breakdown of the codebase
-by this same real/speculative/test-only taxonomy.
+**Update (#256):** the manifest reachability half of this gap is closed.
+The shared Host launch operation used by both the Cockpit and `sandking launch`
+now runs the production adapter's exact Codex/npm and Docker/image readiness
+probes before adapter preflight. When they pass, it atomically writes the exact
+`sandcastle.real-provider.json` selector expected by `inspectRuntime()` and
+adds a local `.git/info/exclude` rule. The operation verifies `git status` and
+`git ls-files` are unchanged. When any probe fails, launch returns the typed
+`harness_worker_provider_unavailable` failure before a run or adapter process
+exists and without writing the manifest. A later launch-preparation failure
+rolls the manifest and newly added exclude rule back.
 
-**Practical consequence**: clicking Launch with the production Harness
-selected, on any Project, with Docker and Codex auth perfectly configured,
-will always fail with `harness_worker_provider_unavailable`. This is not a
-local misconfiguration — it reproduces for anyone. Issue #174's real-provider
-proof is genuine (it really did drive Codex through the real adapter), but it
-achieved this by having its *test script* pre-stage the manifest the shipped
-product never creates — technically satisfying "launches through the ordinary
-Cockpit/CLI surface" (the launch call is ordinary) while depending on a
-precondition no person using the product can produce. Closing this gap is a
-prerequisite to everything below — the canary task described next has never
-actually been reachable through the Cockpit, only through test harnesses.
+The explicit `sandcastle.worker-fixture.json` branch remains available to the
+existing deterministic qualification tests, but production never silently
+falls back to it. The real Cockpit acceptance now starts from a Project with no
+provider manifest and requires the Host-created, git-invisible real selector
+before accepting the delegated commit. The conformance Harness does not enter
+this preparation path and never writes the selector.
 
-Separately, even once that manifest gap is closed, the task the real adapter
-performs is a **fixed canary prompt**
+What remains is the task the real adapter performs: a **fixed canary prompt**
 (`.sandcastle/real-delegation-prompt.md`: write one file, commit it, stop),
-not real work — see below.
+not GitHub-issue-driven work — see below.
 
 The important part: **this isn't a missing capability, it's a disconnected
 one.** The full `.sandcastle` toolkit — `main.mts`, `issue-delivery.mjs`,
@@ -101,7 +86,7 @@ The pinned adapter (`sandcastle-v4.mjs` → `real-worker-v2.mjs`) is a separate,
 bespoke script that runs `codex exec` directly with a hand-built prompt. It
 never shells out to `main.mts`.
 
-**What closing this gap looks like**: point the adapter's execution step at
+**What closing the remaining gap looks like**: point the adapter's execution step at
 `main.mts` (mapping the already-declared `issueNumber`/`targetBranch` launch
 parameters to `--issue`/`--parent`) instead of the fixed canary prompt. The
 Docker sandbox, credential handling, and skill-pinning work from #174 should

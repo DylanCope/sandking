@@ -1,11 +1,9 @@
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import {
   chmod,
   lstat,
   mkdir,
   mkdtemp,
-  open,
   readFile,
   readdir,
   rename,
@@ -28,6 +26,10 @@ import {
   productionHarnessSeedManifestSchema,
   productionHarnessSkillLockSchema,
 } from "./production-harness-seed.mjs";
+import {
+  appendProjectGitExcludeRules,
+  ProjectPreparationFileError,
+} from "./project-git-exclusion.mjs";
 
 const execFileAsync = promisify(execFile);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
@@ -510,80 +512,6 @@ export const verifyProductionHarnessRetainedInputs = async (options) => {
   }
 };
 
-/** @param {string} path */
-const readOptionalFile = async (path) => {
-  try {
-    const details = await lstat(path);
-    if (!details.isFile() || details.isSymbolicLink() || details.nlink !== 1) {
-      throw new ProductionHarnessPreparationError("harness_projection_collision");
-    }
-    return { exists: true, source: await readFile(path, "utf8") };
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return { exists: false, source: "" };
-    }
-    if (error instanceof ProductionHarnessPreparationError) throw error;
-    throw new ProductionHarnessPreparationError("harness_projection_failed");
-  }
-};
-
-/** @param {string} path @param {string} source */
-const replaceFile = async (path, source) => {
-  const temporaryPath = `${path}.sandking-${process.pid}-${randomBytes(6).toString("hex")}.tmp`;
-  let temporaryCreated = false;
-  try {
-    const handle = await open(temporaryPath, "wx", 0o600);
-    temporaryCreated = true;
-    try {
-      await handle.writeFile(source, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(temporaryPath, path);
-    temporaryCreated = false;
-  } catch (error) {
-    if (temporaryCreated) {
-      await rm(temporaryPath, { force: true }).catch(() => undefined);
-    }
-    throw error;
-  }
-};
-
-/** @param {string} path */
-const assertSafeFileParent = async (path) => {
-  const parent = dirname(path);
-  try {
-    const details = await lstat(parent);
-    if (!details.isDirectory() || details.isSymbolicLink()) {
-      throw new ProductionHarnessPreparationError("harness_projection_collision");
-    }
-  } catch (error) {
-    if (error instanceof ProductionHarnessPreparationError) throw error;
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      try {
-        const parentDetails = await lstat(dirname(parent));
-        if (!parentDetails.isDirectory() || parentDetails.isSymbolicLink()) {
-          throw new ProductionHarnessPreparationError("harness_projection_collision");
-        }
-        return;
-      } catch (parentError) {
-        if (parentError instanceof ProductionHarnessPreparationError) throw parentError;
-      }
-    }
-    throw new ProductionHarnessPreparationError("harness_projection_failed");
-  }
-};
-
-/** @param {string} path @param {{exists: boolean, source: string}} original */
-const restoreOptionalFile = async (path, original) => {
-  if (original.exists) {
-    await replaceFile(path, original.source);
-  } else {
-    await rm(path, { force: true });
-  }
-};
-
 /** @param {string} root @param {string} child */
 const isInside = (root, child) => {
   const fromRoot = relative(root, child);
@@ -953,28 +881,23 @@ export const prepareProductionHarness = async (options) => {
     throw new ProductionHarnessPreparationError("harness_projection_collision");
   }
 
-  const gitExcludePathValue = (await git(projectRoot, [
-    "rev-parse", "--git-path", "info/exclude",
-  ])).stdout.trim();
-  const gitExcludePath = resolve(projectRoot, gitExcludePathValue);
-  await assertSafeFileParent(gitExcludePath);
-  const originalExclude = await readOptionalFile(gitExcludePath);
   const projectionIgnoreRule = `/${projectionRelativePath}/`;
   const stagingIgnoreRule = `/.sandking/harnesses/.prepare-${options.harnessId}-*/`;
-  const existingRules = new Set(originalExclude.source.split("\n"));
-  const addedRules = [projectionIgnoreRule, stagingIgnoreRule]
-    .filter((rule) => !existingRules.has(rule));
-  const nextExclude = addedRules.length === 0
-    ? originalExclude.source
-    : `${originalExclude.source}${originalExclude.source.endsWith("\n")
-      || originalExclude.source.length === 0 ? "" : "\n"}${addedRules.join("\n")}\n`;
+  let gitExclusion;
+  try {
+    gitExclusion = await appendProjectGitExcludeRules({
+      projectPath: projectRoot,
+      rules: [projectionIgnoreRule, stagingIgnoreRule],
+    });
+  } catch (error) {
+    if (error instanceof ProjectPreparationFileError) {
+      throw new ProductionHarnessPreparationError(error.code);
+    }
+    throw new ProductionHarnessPreparationError("harness_projection_failed");
+  }
   let stagingPath = null;
   let projectionCreated = false;
   try {
-    await mkdir(dirname(gitExcludePath), { recursive: true, mode: 0o700 });
-    if (nextExclude !== originalExclude.source) {
-      await replaceFile(gitExcludePath, nextExclude);
-    }
     await mkdir(dirname(projectionPath), { recursive: true, mode: 0o700 });
     const existingProjection = await verifyExistingProjection(projectionPath, projectedFiles);
     if (!existingProjection) {
@@ -1012,7 +935,7 @@ export const prepareProductionHarness = async (options) => {
     if (projectionCreated) {
       await rm(projectionPath, { recursive: true, force: true }).catch(() => undefined);
     }
-    await restoreOptionalFile(gitExcludePath, originalExclude).catch(() => undefined);
+    await gitExclusion.rollback().catch(() => undefined);
     if (error instanceof ProductionHarnessPreparationError) throw error;
     throw new ProductionHarnessPreparationError("harness_projection_failed");
   }

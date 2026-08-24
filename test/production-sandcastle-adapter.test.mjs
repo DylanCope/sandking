@@ -36,6 +36,41 @@ const writeControlledFixture = (projectPath, value) => writeFile(
   `${JSON.stringify(value, null, 2)}\n`,
 );
 
+const writeExecutable = async (path, source) => {
+  await writeFile(path, source);
+  await chmod(path, 0o700);
+};
+
+const installRealProviderProbeCommands = async (root) => {
+  const binPath = join(root, "bin");
+  const originalPath = process.env.PATH;
+  await mkdir(binPath, { recursive: true });
+  await Promise.all([
+    writeExecutable(join(binPath, "codex"), `#!/bin/sh
+if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 0.146.0'; exit 0; fi
+if [ "$1" = "login" ] && [ "$2" = "status" ]; then printf '%s\\n' 'Logged in using fixture'; exit 0; fi
+exit 91
+`),
+    writeExecutable(join(binPath, "npm"), `#!/bin/sh
+if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
+if [ "$1" = "ci" ]; then printf '%s\\n' 'bounded dependency failure' >&2; exit 92; fi
+exit 93
+`),
+    writeExecutable(join(binPath, "docker"), `#!/bin/sh
+if [ "$1" = "version" ] && [ "$2" = "--format" ]; then printf '%s\\n' '27.5.1'; exit 0; fi
+if [ "$1" = "image" ] && [ "$2" = "inspect" ] && [ "$3" = "sandcastle:sandking-real-worker" ]; then
+  printf '%s\\n' 'sha256:${"d".repeat(64)}'
+  exit 0
+fi
+exit 94
+`),
+  ]);
+  process.env.PATH = `${binPath}:${originalPath ?? ""}`;
+  return () => {
+    process.env.PATH = originalPath;
+  };
+};
+
 const alteredWorkerSource = [
   'import { writeFile } from "node:fs/promises";',
   'import { join } from "node:path";',
@@ -58,7 +93,7 @@ const createProductionFixture = async (root, fixture, managerOptions = {}) => {
   await mkdir(projectPath, { recursive: true });
   await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
   await writeFile(join(projectPath, "README.md"), "controlled production Project\n");
-  await writeControlledFixture(projectPath, fixture);
+  if (fixture !== null) await writeControlledFixture(projectPath, fixture);
   await commitProject(projectPath, "Initialize controlled production Project");
 
   const audits = [];
@@ -239,6 +274,214 @@ test("the ordinary launch seam delegates once through the pinned production adap
     ));
     assert.equal(retained.runs.length, 1);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI and Cockpit production launches reach the real branch through one Host-prepared manifest", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-real-provider-launch-"));
+  let restorePath = () => undefined;
+  let fixture;
+  try {
+    restorePath = await installRealProviderProbeCommands(root);
+    fixture = await createProductionFixture(root, null, {
+      probeRealProviderReadiness: () => true,
+      faultInjector: (point) => {
+        if (point === "harness_run_lifecycle.adapter_ready.before_commit") {
+          throw new Error("stop_after_real_adapter_readiness");
+        }
+      },
+    });
+    const manifestPath = join(fixture.projectPath, "sandcastle.real-provider.json");
+    const statusBefore = (await execFileAsync("git", [
+      "-C", fixture.projectPath, "status", "--porcelain=v1", "--untracked-files=all",
+    ])).stdout;
+    const trackedBefore = (await execFileAsync("git", [
+      "-C", fixture.projectPath, "ls-files", "--stage", "-z",
+    ])).stdout;
+    const requests = [
+      launchRequest(fixture.project.project.projectId, {
+        requestId: "launch-real-provider-from-cli",
+        idempotencyKeyHash: `sha256:${"a".repeat(64)}`,
+      }),
+      launchRequest(fixture.project.project.projectId, {
+        requestId: "launch-real-provider-from-cockpit",
+        source: "cockpit",
+        controllerSessionId: null,
+        idempotencyKeyHash: `sha256:${"b".repeat(64)}`,
+      }),
+    ];
+
+    for (const request of requests) {
+      const launched = await fixture.manager.launch(request);
+      assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
+      assert.equal(launched.run.source, request.source);
+      await fixture.manager.waitForIdle();
+    }
+
+    assert.deepEqual(JSON.parse(await readFile(manifestPath, "utf8")), {
+      schemaVersion: 1,
+      provider: { kind: "openai-codex", ready: true },
+      scenario: "project-commit",
+    });
+    await execFileAsync("git", [
+      "-C", fixture.projectPath, "check-ignore", "--no-index", "--quiet", manifestPath,
+    ]);
+    assert.equal((await execFileAsync("git", [
+      "-C", fixture.projectPath, "status", "--porcelain=v1", "--untracked-files=all",
+    ])).stdout, statusBefore);
+    assert.equal((await execFileAsync("git", [
+      "-C", fixture.projectPath, "ls-files", "--stage", "-z",
+    ])).stdout, trackedBefore);
+    assert.ok(fixture.audits.filter(({ action }) =>
+      action === "harness.adapter.start").length >= 1);
+  } finally {
+    await fixture?.manager.waitForIdle().catch(() => undefined);
+    restorePath();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unavailable real providers reject the Host launch before a run, manifest, or adapter", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-host-provider-unavailable-"));
+  let fixture;
+  try {
+    fixture = await createProductionFixture(root, null, {
+      probeRealProviderReadiness: () => false,
+    });
+    const manifestPath = join(fixture.projectPath, "sandcastle.real-provider.json");
+    const excludePath = join(fixture.projectPath, ".git", "info", "exclude");
+    const excludeBefore = await readFile(excludePath, "utf8");
+    const statusBefore = (await execFileAsync("git", [
+      "-C", fixture.projectPath, "status", "--porcelain=v1", "--untracked-files=all",
+    ])).stdout;
+    const trackedBefore = (await execFileAsync("git", [
+      "-C", fixture.projectPath, "ls-files", "--stage", "-z",
+    ])).stdout;
+
+    const rejected = await fixture.manager.launch(launchRequest(
+      fixture.project.project.projectId,
+      {
+        requestId: "launch-with-unavailable-real-provider",
+        idempotencyKeyHash: `sha256:${"c".repeat(64)}`,
+      },
+    ));
+    assert.equal(rejected.type, "harness.run.launch.failure");
+    assert.equal(rejected.code, "harness_worker_provider_unavailable");
+    assert.equal(rejected.retryable, true);
+    assert.deepEqual(rejected.prohibitedSideEffects, {
+      harnessRunCreated: false,
+      adapterStarted: false,
+      projectWrite: false,
+    });
+    await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
+    assert.equal(await readFile(excludePath, "utf8"), excludeBefore);
+    assert.equal((await execFileAsync("git", [
+      "-C", fixture.projectPath, "status", "--porcelain=v1", "--untracked-files=all",
+    ])).stdout, statusBefore);
+    assert.equal((await execFileAsync("git", [
+      "-C", fixture.projectPath, "ls-files", "--stage", "-z",
+    ])).stdout, trackedBefore);
+    assert.equal(fixture.audits.some(({ action }) => action === "harness.adapter.start"), false);
+    const retained = JSON.parse(await readFile(
+      join(fixture.dataDir, "harness-runs.json"),
+      "utf8",
+    ));
+    assert.deepEqual(retained.runs, []);
+  } finally {
+    await fixture?.manager.waitForIdle().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a post-probe adapter rejection rolls back the manifest and its new exclude rule", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-rollback-"));
+  let fixture;
+  let workerEnvironmentPath;
+  let originalWorkerEnvironment;
+  try {
+    fixture = await createProductionFixture(root, null, {
+      probeRealProviderReadiness: async () => {
+        workerEnvironmentPath = join(
+          fixture.projectPath,
+          ...fixture.pinned.project.harness.preparation.projection.path.split("/"),
+          "worker-environment.json",
+        );
+        originalWorkerEnvironment = await readFile(workerEnvironmentPath, "utf8");
+        const changed = JSON.parse(originalWorkerEnvironment);
+        changed.executionRuntimeInputs[0].version = "0.145.0";
+        await writeFile(workerEnvironmentPath, `${JSON.stringify(changed, null, 2)}\n`);
+        return true;
+      },
+    });
+    const manifestPath = join(fixture.projectPath, "sandcastle.real-provider.json");
+    const excludePath = join(fixture.projectPath, ".git", "info", "exclude");
+    const excludeBefore = await readFile(excludePath, "utf8");
+
+    const rejected = await fixture.manager.launch(launchRequest(
+      fixture.project.project.projectId,
+      {
+        requestId: "launch-with-post-probe-rejection",
+        idempotencyKeyHash: `sha256:${"d".repeat(64)}`,
+      },
+    ));
+    assert.equal(rejected.type, "harness.run.launch.failure");
+    assert.equal(rejected.code, "harness_worker_provider_unavailable");
+    await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
+    assert.equal(await readFile(excludePath, "utf8"), excludeBefore);
+    assert.equal(fixture.audits.some(({ action }) => action === "harness.adapter.start"), false);
+    const retained = JSON.parse(await readFile(
+      join(fixture.dataDir, "harness-runs.json"),
+      "utf8",
+    ));
+    assert.deepEqual(retained.runs, []);
+  } finally {
+    if (workerEnvironmentPath && originalWorkerEnvironment) {
+      await writeFile(workerEnvironmentPath, originalWorkerEnvironment).catch(() => undefined);
+    }
+    await fixture?.manager.waitForIdle().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a durably accepted production launch retains its manifest for Host reconciliation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-reconciliation-"));
+  let restorePath = () => undefined;
+  let fixture;
+  try {
+    restorePath = await installRealProviderProbeCommands(root);
+    fixture = await createProductionFixture(root, null, {
+      probeRealProviderReadiness: () => true,
+      faultInjector: (point) => {
+        if (point === "harness_run_launch.after_state_commit") {
+          throw new Error("simulate_host_loss_after_durable_acceptance");
+        }
+      },
+    });
+    const manifestPath = join(fixture.projectPath, "sandcastle.real-provider.json");
+
+    await assert.rejects(
+      fixture.manager.launch(launchRequest(fixture.project.project.projectId, {
+        requestId: "launch-before-host-reconciliation",
+        idempotencyKeyHash: `sha256:${"e".repeat(64)}`,
+      })),
+      /simulate_host_loss_after_durable_acceptance/,
+    );
+
+    assert.deepEqual(JSON.parse(await readFile(manifestPath, "utf8")), {
+      schemaVersion: 1,
+      provider: { kind: "openai-codex", ready: true },
+      scenario: "project-commit",
+    });
+    const retained = JSON.parse(await readFile(
+      join(fixture.dataDir, "harness-runs.json"),
+      "utf8",
+    ));
+    assert.equal(retained.runs.length, 1);
+    assert.equal(retained.runs[0].status, "starting");
+  } finally {
+    await fixture?.manager.waitForIdle().catch(() => undefined);
+    restorePath();
     await rm(root, { recursive: true, force: true });
   }
 });
