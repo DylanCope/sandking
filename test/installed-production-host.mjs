@@ -162,6 +162,8 @@ export const writeProviderMutationPause = async ({
   const releasePath = join(root, "release-provider-mutation");
   const capturedPath = join(root, "provider-mutation-captured");
   const capturedReleasePath = join(root, "release-captured-provider-mutation");
+  const reconciliationBlockedPath = join(root, "provider-reconciliation-blocked");
+  const reconciliationReleasePath = join(root, "release-provider-reconciliation");
   const preloadPath = join(root, "pause-provider-mutation.mjs");
   await writeFile(preloadPath, `
 import fsPromises from "node:fs/promises";
@@ -171,6 +173,7 @@ const excludePath = ${JSON.stringify(excludePath)};
 const mode = ${JSON.stringify(mode)};
 const originalAccess = fsPromises.access.bind(fsPromises);
 const originalLink = fsPromises.link.bind(fsPromises);
+const originalOpen = fsPromises.open.bind(fsPromises);
 const originalReadFile = fsPromises.readFile.bind(fsPromises);
 const originalRename = fsPromises.rename.bind(fsPromises);
 const originalRm = fsPromises.rm.bind(fsPromises);
@@ -192,14 +195,36 @@ const pause = async () => {
 };
 let excludeCaptureCount = 0;
 let manifestRollbackCaptureFailed = false;
+let reconciliationPaused = false;
 fsPromises.link = async (from, to, ...rest) => {
   if (mode === "creation" && String(to) === manifestPath) await pause();
-  if (mode === "exclude-after-capture" && String(to) === excludePath) await pause();
+  if (
+    ["exclude-after-capture", "exclude-reconciliation-rebase"].includes(mode)
+    && String(to) === excludePath
+  ) await pause();
   if (mode === "exclude-cleanup-after-capture" && String(to) === excludePath) {
     const candidate = await originalReadFile(from, "utf8").catch(() => "");
     if (!candidate.includes("# Sand-King temporary production provider")) await pause();
   }
   return originalLink(from, to, ...rest);
+};
+fsPromises.open = async (path, flags, ...rest) => {
+  if (
+    mode === "exclude-reconciliation-rebase"
+    && String(path) === excludePath
+    && ["a", "a+"].includes(flags)
+    && !reconciliationPaused
+  ) {
+    reconciliationPaused = true;
+    await originalWriteFile(${JSON.stringify(reconciliationBlockedPath)}, "blocked\\n");
+    while (await originalAccess(${JSON.stringify(reconciliationReleasePath)}).then(
+      () => false,
+      () => true,
+    )) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  return originalOpen(path, flags, ...rest);
 };
 fsPromises.rename = async (from, to, ...rest) => {
   let pauseForExcludeCommit = false;
@@ -261,6 +286,8 @@ syncBuiltinESMExports();
     capturedPath,
     capturedReleasePath,
     preloadPath,
+    reconciliationBlockedPath,
+    reconciliationReleasePath,
     releasePath,
   };
 };

@@ -323,7 +323,9 @@ const projectPreparationReplacementCaptureId = (temporaryId) =>
  * Preserve every line from each observed Git-exclude generation while keeping
  * the newest public generation authoritative. Git ignore rules are ordered,
  * so missing older lines are followed by the current rules again instead of
- * being allowed to reverse a concurrent ignore or unignore decision.
+ * being allowed to reverse a concurrent ignore or unignore decision. Identity
+ * and complete bytes are revalidated through the append handle because a
+ * same-inode append does not change the filesystem identity.
  *
  * @param {string} path
  * @param {string} capturedPath
@@ -358,12 +360,14 @@ const mergeCapturedProjectGitExcludeLines = async (
     /** @type {import("node:fs/promises").FileHandle | undefined} */
     let handle;
     try {
-      handle = await open(path, "a");
+      handle = await open(path, "a+");
       const details = await handle.stat({ bigint: true });
       if (!projectPreparationFileIdentityMatches(
         current.identity,
         projectPreparationFileIdentity(details),
       )) continue;
+      const sourceBeforeAppend = await handle.readFile("utf8");
+      if (sourceBeforeAppend !== current.source) continue;
       const addition = `${current.source.length > 0 && !current.source.endsWith("\n")
         ? "\n"
         : ""}${[...missingLines, ...currentSourceLines].join("\n")}\n`;

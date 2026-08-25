@@ -132,14 +132,16 @@ test("installed launch retries selector cleanup after preparation rollback is de
   }
 });
 
-test("installed launch preserves concurrent Git exclude ordering after publication collides", async () => {
+test("installed launch rebases concurrent Git exclude ordering throughout collision recovery", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-exclude-collision-recovery-"));
   const endpoint = join(root, "controller.sock");
   const retryDirectory = join(root, "controller-private");
   const userHome = join(root, "user-home");
-  const orderedTarget = "ordered-target";
-  const existingRule = `/${orderedTarget}`;
-  const userRule = `!/${orderedTarget}`;
+  const exposedTarget = "concurrently-exposed-target";
+  const hiddenTarget = "concurrently-hidden-target";
+  const existingRules = [`/${exposedTarget}`, `!/${hiddenTarget}`];
+  const replacementRules = [`!/${exposedTarget}`, `!/${hiddenTarget}`];
+  const latestRule = `/${hiddenTarget}`;
   let host;
   let pause;
   let restorePath = () => undefined;
@@ -162,7 +164,7 @@ test("installed launch preserves concurrent Git exclude ordering after publicati
       "info",
       "exclude",
     );
-    await appendFile(excludePath, `${existingRule}\n`);
+    await appendFile(excludePath, `${existingRules.join("\n")}\n`);
     const excludeBefore = await readFile(excludePath, "utf8");
     const preparationStatePath = join(
       registration.dataDir,
@@ -171,7 +173,7 @@ test("installed launch preserves concurrent Git exclude ordering after publicati
     pause = await writeProviderMutationPause({
       excludePath,
       manifestPath,
-      mode: "exclude-after-capture",
+      mode: "exclude-reconciliation-rebase",
       root,
     });
     await writeFile(pause.armPath, "armed\n");
@@ -201,8 +203,11 @@ test("installed launch preserves concurrent Git exclude ordering after publicati
     });
 
     await waitForPathState(pause.blockedPath, true);
-    await writeFile(excludePath, `${userRule}\n`);
+    await writeFile(excludePath, `${replacementRules.join("\n")}\n`);
     await writeFile(pause.releasePath, "release\n");
+    await waitForPathState(pause.reconciliationBlockedPath, true);
+    await appendFile(excludePath, `${latestRule}\n`);
+    await writeFile(pause.reconciliationReleasePath, "release\n");
     await assert.rejects(launch, (error) => {
       assert.match(`${error.stderr ?? ""}`, /harness_projection_collision/);
       return true;
@@ -223,20 +228,27 @@ test("installed launch preserves concurrent Git exclude ordering after publicati
     for (const rule of excludeBefore.split("\n").filter(Boolean)) {
       assert.equal(recoveredRules.has(rule), true, `missing prior rule: ${rule}`);
     }
-    assert.equal(recoveredRules.has(userRule), true);
-    await writeFile(
-      join(registration.projectPath, orderedTarget),
-      "concurrently exposed Project file\n",
-    );
+    for (const rule of [...replacementRules, latestRule]) {
+      assert.equal(recoveredRules.has(rule), true, `missing concurrent rule: ${rule}`);
+    }
+    await Promise.all([
+      writeFile(join(registration.projectPath, exposedTarget), "exposed Project file\n"),
+      writeFile(join(registration.projectPath, hiddenTarget), "hidden Project file\n"),
+    ]);
     await assert.rejects(execFileAsync("git", [
       "-C", registration.projectPath,
-      "check-ignore", "--no-index", "--quiet", orderedTarget,
+      "check-ignore", "--no-index", "--quiet", exposedTarget,
     ]), { code: 1 });
+    await execFileAsync("git", [
+      "-C", registration.projectPath,
+      "check-ignore", "--no-index", "--quiet", hiddenTarget,
+    ]);
     await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
     assert.deepEqual(await listProjectPreparationDebris(registration.projectPath), []);
   } finally {
     if (pause) {
       await writeFile(pause.releasePath, "release\n").catch(() => undefined);
+      await writeFile(pause.reconciliationReleasePath, "release\n").catch(() => undefined);
     }
     await host?.stop().catch(() => undefined);
     restorePath();

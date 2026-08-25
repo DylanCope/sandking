@@ -210,7 +210,9 @@ the mutation to rebase instead of replacing the user-owned file. When a writer c
 the public exclude path after capture, the old capture, new generation, and candidate
 remain recoverable until missing older rules have been restored ahead of the newest
 public ordering, preserving the latest ignore or unignore decision, and the temporary
-generations are removed. Before changing the Project, the Host
+generations are removed. Recovery revalidates both filesystem identity and complete
+exclude bytes before appending, so a same-inode concurrent edit also forces a rebase.
+Before changing the Project, the Host
 journals the Project registration and a unique Git-exclusion ownership marker in
 Host-private state. The no-clobber publication retains a short-lived filesystem link
 until the selector's device/inode/birth-time identity is added to that journal, closing
