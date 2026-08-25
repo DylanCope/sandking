@@ -33,7 +33,7 @@
       "path": "github-credential-contract.mjs",
       "sourcePath": "src/github-credential-contract.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:4d4f5b628089478710086196534cf3fd60a728206f546ed28e12884753b1e1bb",
+      "integrity": "sha256:6083e4ec432656dbb8bf84579b0fc497a2ed938cac6305979cd083e599269bc0",
       "executable": false
     },
     {
@@ -54,7 +54,7 @@
       "path": "adapters/sandcastle.mjs",
       "sourcePath": "src/production-sandcastle-adapter/sandcastle-v4.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:32a597d1338746a7985154f0f0ac2c581982abb4c0d423f2277cb3f8bab7d0c4",
+      "integrity": "sha256:dc5644893af7bf809d999711379689cc662fc684583f698310c59fff7cb62ec9",
       "executable": false
     },
     {
@@ -85,13 +85,13 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:4b3b6dab9aaab7f0476f3522b354d42a5db01f6ba69096deea6a2ff8e2ee0e9b",
+      "integrity": "sha256:94d0665f43e457681352a79139d8672aa0d6181170d3302f2ff5729c7ffb6fb0",
       "executable": false
     },
     {
       "path": "skills.lock.json",
       "source": "seed",
-      "integrity": "sha256:12c9bdcf868c0dff83f40d7939778ffc387391b07b4776c6ab70c4c38f512e38",
+      "integrity": "sha256:dd6846e1723d561e5953f144dd985b74ef11677cec73e1f25427c52cfc8212f0",
       "executable": false
     },
     {

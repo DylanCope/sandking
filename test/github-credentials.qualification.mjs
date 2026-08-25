@@ -67,6 +67,26 @@ const readTreeText = async (root) => {
     "utf8").catch(() => "")))).join("\n");
 };
 
+const waitForTransportTerminalCleanup = async (transport, harnessRunId, projectPath) => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const observation = await transport.requestHostOperation({
+      type: "harness.run.observe",
+      requestId: "observe-github-credential-qualification",
+      harnessRunId,
+      afterSequence: 0,
+    });
+    const selectorRemoved = await readFile(
+      join(projectPath, "sandcastle.real-provider.json"),
+      "utf8",
+    ).then(() => false, (error) => error?.code === "ENOENT");
+    if (["succeeded", "failed", "cancelled"].includes(observation.run?.status)
+      && selectorRemoved) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("production_terminal_cleanup_timeout");
+};
+
 test("GitHub credentials are explicitly configured in Host-private state with Project precedence", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-github-credentials-"));
   try {
@@ -324,6 +344,11 @@ exit 93
     });
     assert.equal(unconfigured.type, "harness.run.launch.result", JSON.stringify(unconfigured));
     await assert.rejects(readFile(ghInvokedPath, "utf8"), { code: "ENOENT" });
+    await waitForTransportTerminalCleanup(
+      transport,
+      unconfigured.run.harnessRunId,
+      fixture.projectPath,
+    );
 
     const enabled = await transport.requestHostOperation({
       type: "github.credentials.host.configure",
