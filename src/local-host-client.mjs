@@ -45,6 +45,7 @@ export const withLocalHostControl = async (dataDir, operation) =>
         "--data-dir", dataDir,
         ...(binding.allowHostIdentityCreate ? ["--allow-host-identity-create"] : []),
       ],
+      credentialOperationsOnly: true,
       hostCapabilities,
       hostSchemaDigest: HOST_SCHEMA_DIGEST,
       protocolVersion,

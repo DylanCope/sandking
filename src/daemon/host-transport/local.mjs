@@ -184,7 +184,12 @@ const launchHost = async (runtimeId) => {
   // This explicit environment is the credential boundary. Only destination-account
   // identity and executable discovery values cross; provider credentials and
   // NODE_OPTIONS do not.
-  const hostEnvironment = createDestinationWorkerEnvironment();
+  const hostEnvironment = {
+    ...createDestinationWorkerEnvironment(),
+    ...(runtime.credentialOperationsOnly === true
+      ? { SANDKING_LOCAL_HOST_OPERATION_SCOPE: "github-credentials" }
+      : {}),
+  };
   const child = spawn(process.execPath, hostArgs, {
     cwd: runtime.args.dataDir,
     stdio: ["pipe", "pipe", "pipe"],

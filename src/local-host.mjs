@@ -44,6 +44,8 @@ const parseArgs = (argv) => {
 };
 
 const { dataDir, allowHostIdentityCreate } = parseArgs(process.argv.slice(2));
+const credentialsOnly = process.env.SANDKING_LOCAL_HOST_OPERATION_SCOPE
+  === "github-credentials";
 const hostAuditPath = join(dataDir, "audit.jsonl");
 
 /** @param {"accepted" | "rejected" | "observed"} outcome @param {Record<string, unknown>} details @param {string} [auditId] */
@@ -291,41 +293,25 @@ const main = async () => {
     await handleHostIdentityAcceptance(identityFrame.message, negotiatedHostId);
   }
 
-  const projectRegistry = await createProjectRegistry({
-    dataDir,
-    recordAudit: recordProjectAudit,
-  });
   const githubCredentials = await createGitHubCredentialManager({
     dataDir,
     recordAudit: recordProjectAudit,
   });
-  let harnessRunsPromise;
-  const loadHarnessRuns = () => {
-    harnessRunsPromise ??= createHarnessRunManager({
+  const projectRegistry = /** @type {any} */ (credentialsOnly
+    ? null
+    : await createProjectRegistry({
+        dataDir,
+        recordAudit: recordProjectAudit,
+      }));
+  const harnessRuns = /** @type {any} */ (credentialsOnly
+    ? null
+    : await createHarnessRunManager({
       dataDir,
       hostId: negotiatedHostId,
       recordAudit: recordProjectAudit,
       loadLaunchContext: projectRegistry.loadLaunchContext,
       resolveGitHubCredential: githubCredentials.resolveForProject,
-    });
-    return harnessRunsPromise;
-  };
-  const harnessRuns = /** @type {any} */ ({
-    launch: async (/** @type {any} */ request) =>
-      (await loadHarnessRuns()).launch(request),
-    cancel: async (/** @type {any} */ request) =>
-      (await loadHarnessRuns()).cancel(request),
-    recover: async (/** @type {any} */ request) =>
-      (await loadHarnessRuns()).recover(request),
-    lookupRecovery: async (/** @type {any} */ request) =>
-      (await loadHarnessRuns()).lookupRecovery(request),
-    lookup: async (/** @type {any} */ request) =>
-      (await loadHarnessRuns()).lookup(request),
-    observe: async (/** @type {any} */ request) =>
-      (await loadHarnessRuns()).observe(request),
-    readLogs: async (/** @type {any} */ request) =>
-      (await loadHarnessRuns()).readLogs(request),
-  });
+    }));
   // The Host is a durable process boundary. It remains available after
   // negotiation and keeps control and opaque bulk frames structurally distinct.
   while (true) {
@@ -354,6 +340,10 @@ const main = async () => {
     }
     if (frame.message.type === "github.credentials.host.configure") {
       writeFrame(process.stdout, await githubCredentials.configureHost(frame.message));
+      continue;
+    }
+    if (credentialsOnly) {
+      rejectHandshake("host_protocol_unexpected_message");
       continue;
     }
     if (frame.message.type === "project.inspect") {
