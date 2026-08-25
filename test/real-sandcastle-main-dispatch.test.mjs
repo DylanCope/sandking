@@ -98,14 +98,6 @@ test("cancellation reaches main.mts and preserves its structured failure", async
     await writeFile(join(executionPath, ".sandcastle", "main.mts"), "// pinned main\n");
     await writeFile(join(executionPath, "node_modules", "tsx", "dist", "cli.mjs"), `
 import { writeSync } from "node:fs";
-writeSync(3, JSON.stringify({
-  type: "sandcastle.delivery.progress",
-  issueNumber: 262,
-  phase: "planning",
-  label: "Plan issue #262",
-  summary: "The scoped planner is ready for cancellation.",
-  status: "running",
-}) + "\\n");
 process.once("SIGTERM", () => {
   writeSync(3, JSON.stringify({
     type: "sandcastle.delivery.result",
@@ -116,6 +108,14 @@ process.once("SIGTERM", () => {
   }) + "\\n");
   process.exit(1);
 });
+writeSync(3, JSON.stringify({
+  type: "sandcastle.delivery.progress",
+  issueNumber: 262,
+  phase: "planning",
+  label: "Plan issue #262",
+  summary: "The scoped planner is ready for cancellation.",
+  status: "running",
+}) + "\\n");
 setInterval(() => undefined, 10);
 `);
     const controller = new AbortController();

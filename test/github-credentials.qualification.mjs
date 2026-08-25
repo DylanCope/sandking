@@ -204,7 +204,7 @@ test("GitHub credentials are explicitly configured in Host-private state with Pr
   }
 });
 
-test("the credential-free production canary ignores absent or unavailable optional GitHub credentials", async () => {
+test("unscoped production delegation fails before optional GitHub credential resolution", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-github-credential-launch-"));
   let restorePath = () => undefined;
   let manager;
@@ -227,9 +227,11 @@ test("the credential-free production canary ignores absent or unavailable option
     });
     const projectId = fixture.project.project.projectId;
 
-    const unconfigured = await manager.launch(productionLaunchRequest(projectId));
-    assert.equal(unconfigured.type, "harness.run.launch.result", JSON.stringify(unconfigured));
-    await observeProductionTerminal(manager, unconfigured.run.harnessRunId);
+    const unconfigured = await manager.launch(productionLaunchRequest(projectId, {
+      parameters: {},
+    }));
+    assert.equal(unconfigured.type, "harness.run.launch.failure");
+    assert.equal(unconfigured.code, "real_delegation_issue_required");
 
     await credentials.configureHost({
       requestId: "enable-unavailable-host-session",
@@ -241,13 +243,14 @@ test("the credential-free production canary ignores absent or unavailable option
     });
     const unavailable = await manager.launch(productionLaunchRequest(projectId, {
       requestId: "launch-with-unavailable-host-session",
+      parameters: {},
       idempotencyKeyHash: `sha256:${"5".repeat(64)}`,
     }));
-    assert.equal(unavailable.type, "harness.run.launch.result", JSON.stringify(unavailable));
-    await observeProductionTerminal(manager, unavailable.run.harnessRunId);
+    assert.equal(unavailable.type, "harness.run.launch.failure");
+    assert.equal(unavailable.code, "real_delegation_issue_required");
     const requiredUnavailable = await manager.launch(productionLaunchRequest(projectId, {
       requestId: "reject-required-unavailable-host-session",
-      parameters: { verifyGitHubAccess: true },
+      parameters: { issueNumber: 262 },
       idempotencyKeyHash: `sha256:${"6".repeat(64)}`,
     }));
     assert.equal(requiredUnavailable.type, "harness.run.launch.failure");
@@ -341,23 +344,15 @@ exit 93
         idempotencyKeyHash: `sha256:${"8".repeat(64)}`,
       }),
     });
-    assert.equal(
-      legacyIssueLaunch.type,
-      "harness.run.launch.result",
-      JSON.stringify(legacyIssueLaunch),
-    );
+    assert.equal(legacyIssueLaunch.type, "harness.run.launch.failure");
+    assert.equal(legacyIssueLaunch.code, "github_credential_unconfigured");
     await assert.rejects(readFile(ghInvokedPath, "utf8"), { code: "ENOENT" });
-    await waitForTransportTerminalCleanup(
-      transport,
-      legacyIssueLaunch.run.harnessRunId,
-      fixture.projectPath,
-    );
 
     const unconfigured = await transport.requestHostOperation({
       type: "harness.run.launch",
       ...productionLaunchRequest(fixture.project.project.projectId, {
         requestId: "reject-unconfigured-shipped-host-launch",
-        parameters: { verifyGitHubAccess: true },
+        parameters: { issueNumber: 261, verifyGitHubAccess: true },
         idempotencyKeyHash: `sha256:${"9".repeat(64)}`,
       }),
     });
@@ -390,7 +385,7 @@ exit 93
       type: "harness.run.launch",
       ...productionLaunchRequest(fixture.project.project.projectId, {
         requestId: "launch-with-host-path-session",
-        parameters: { verifyGitHubAccess: true },
+        parameters: { issueNumber: 261, verifyGitHubAccess: true },
         idempotencyKeyHash: `sha256:${"a".repeat(64)}`,
       }),
     });

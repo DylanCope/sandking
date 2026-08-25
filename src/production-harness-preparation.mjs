@@ -757,13 +757,15 @@ export const prepareProductionHarness = async (options) => {
     if (!/^\.sandcastle\/.*\.m[jt]s$/.test(path)) continue;
     const promptProperties = [...source.matchAll(/\bpromptFile\s*:/g)];
     const staticPromptFiles = [...source.matchAll(
-      /\bpromptFile\s*:\s*(["'])(\.\/[^"']+)\1/g,
+      /\bpromptFile\s*:\s*(?:(["'])(\.\/[^"']+)\1|harnessFile\((["'])([^"']+)\3\))/g,
     )];
     if (promptProperties.length !== staticPromptFiles.length) {
       throw new ProductionHarnessPreparationError("harness_skill_lock_invalid");
     }
     for (const match of staticPromptFiles) {
-      const promptPath = posix.normalize(match[2].slice(2));
+      const promptPath = posix.normalize(
+        match[2]?.slice(2) ?? `.sandcastle/${match[4]}`,
+      );
       if (!lockedSkillPaths.has(promptPath)) {
         throw new ProductionHarnessPreparationError("harness_skill_lock_invalid");
       }

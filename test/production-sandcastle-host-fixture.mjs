@@ -35,8 +35,32 @@ export const writeExecutable = async (path, source) => {
 
 export const installReadyProbeCommands = async (root) => {
   const binPath = join(root, "bin");
+  const pinnedMainFixturePath = join(root, "pinned-main-fixture.mjs");
   const originalPath = process.env.PATH;
   await mkdir(binPath, { recursive: true });
+  await writeFile(pinnedMainFixturePath, `import { writeSync } from "node:fs";
+const [, mainPath, issueFlag, issueValue] = process.argv.slice(1);
+const issueNumber = Number(issueValue);
+if (!mainPath.endsWith("/.sandcastle/main.mts") || issueFlag !== "--issue"
+    || !Number.isSafeInteger(issueNumber)) process.exit(94);
+writeSync(3, JSON.stringify({
+  type: "sandcastle.delivery.progress",
+  issueNumber,
+  phase: "planning",
+  label: "Plan scoped issue",
+  summary: "The pinned main.mts qualification fixture accepted the issue.",
+  status: "running",
+}) + "\\n");
+await new Promise((resolve) => setTimeout(resolve, 500));
+writeSync(3, JSON.stringify({
+  type: "sandcastle.delivery.result",
+  issueNumber,
+  status: "failed",
+  code: "delivery_execution_failed",
+  completion: null,
+}) + "\\n");
+process.exitCode = 1;
+`);
   await Promise.all([
     writeExecutable(join(binPath, "codex"), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 0.146.0'; exit 0; fi
@@ -45,7 +69,11 @@ exit 91
 `),
     writeExecutable(join(binPath, "npm"), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
-if [ "$1" = "ci" ]; then exit 0; fi
+if [ "$1" = "ci" ]; then
+  mkdir -p node_modules/tsx/dist
+  cp '${pinnedMainFixturePath}' node_modules/tsx/dist/cli.mjs
+  exit 0
+fi
 exit 92
 `),
     writeExecutable(join(binPath, "docker"), `#!/bin/sh
@@ -147,6 +175,10 @@ export const createProductionFixture = async (
     hostId: `host-${"1".repeat(24)}`,
     recordAudit,
     loadLaunchContext: registration.registry.loadLaunchContext,
+    resolveGitHubCredential: async () => ({
+      mode: "project-pat",
+      token: "github_pat_production_fixture_delivery",
+    }),
     ...runManagerOptions,
   });
   return { ...registration, manager, recordAudit };
@@ -155,7 +187,7 @@ export const createProductionFixture = async (
 export const productionLaunchRequest = (projectId, overrides = {}) => ({
   requestId: "launch-production-work",
   projectId,
-  parameters: {},
+  parameters: { issueNumber: 173 },
   controllerId: `runtime-${"2".repeat(24)}`,
   controllerSessionId: `controller-session-${"3".repeat(24)}`,
   source: "controller-cli",

@@ -31,10 +31,12 @@ const alteredWorkerSource = [
 
 const installRunnableProviderCommands = async (root, { blockDependencies = false } = {}) => {
   const restore = await installReadyProbeCommands(root);
+  if (!blockDependencies) return restore;
   await writeExecutable(join(root, "bin", "npm"), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
 if [ "$1" = "ci" ]; then
-${blockDependencies ? "  trap 'exit 0' TERM INT\n  while true; do sleep 1; done" : "  exit 0"}
+  trap 'exit 0' TERM INT
+  while true; do sleep 1; done
 fi
 exit 92
 `);
@@ -99,7 +101,7 @@ test("the ordinary launch seam delegates once through the pinned production adap
     });
     assert.equal(
       observed.outcome.result.code,
-      "real_provider_execution_failed",
+      "delivery_execution_failed",
       diagnostics.data.toString("utf8"),
     );
     assert.equal(observed.terminalEnvelopeValidation.exactlyOne, true);
@@ -122,7 +124,7 @@ test("the ordinary launch seam delegates once through the pinned production adap
     const conflict = await fixture.manager.launch({
       ...request,
       requestId: "conflict-production-work",
-      parameters: { issueNumber: 173 },
+      parameters: { issueNumber: 174 },
     });
     assert.equal(conflict.type, "harness.run.launch.failure");
     assert.equal(conflict.code, "idempotency_key_conflict");
@@ -173,7 +175,7 @@ test("an accepted production launch executes its immutable pinned runtime snapsh
       launched.run.harnessRunId,
     );
     assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
-    assert.equal(terminal.outcome.result.code, "real_provider_execution_failed");
+    assert.equal(terminal.outcome.result.code, "delivery_execution_failed");
     await assert.rejects(
       readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
       { code: "ENOENT" },
@@ -261,7 +263,7 @@ test("the accepted Worker bytes remain bound after the adapter process starts", 
       launched.run.harnessRunId,
     );
     assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
-    assert.equal(terminal.outcome.result.code, "real_provider_execution_failed");
+    assert.equal(terminal.outcome.result.code, "delivery_execution_failed");
     await assert.rejects(
       readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
       { code: "ENOENT" },
@@ -365,6 +367,7 @@ test("the installed ordinary CLI discovers production parameters and launches th
     ];
     const githubAccessLaunchArguments = [
       "launch", projectId,
+      "--issue", "174",
       "--verify-github-access", "true",
       "--json",
     ];
@@ -376,25 +379,6 @@ test("the installed ordinary CLI discovers production parameters and launches th
       SANDKING_CONTROLLER_RETRY_DIRECTORY: retryDirectory,
       SANDKING_WORK_CONTEXT_ID: projectId,
     };
-    const { stdout: legacyIssueStdout } = await execFileAsync(
-      installed.command,
-      legacyIssueLaunchArguments,
-      {
-        cwd: root,
-        env: launchEnvironment,
-      },
-    );
-    const legacyIssueLaunch = JSON.parse(legacyIssueStdout);
-    assert.equal(
-      legacyIssueLaunch.type,
-      "harness.run.launch.result",
-      JSON.stringify(legacyIssueLaunch),
-    );
-    assert.deepEqual(legacyIssueLaunch.run.parameters, {
-      issueNumber: 173,
-      targetBranch: "sandcastle/issue-173",
-    });
-    await observeProductionTerminal(fixture.manager, legacyIssueLaunch.run.harnessRunId);
     const adapterStartsBeforeCredentialFailure = fixture.audits.filter(
       ({ action }) => action === "harness.adapter.start",
     ).length;
@@ -454,13 +438,36 @@ test("the installed ordinary CLI discovers production parameters and launches th
     });
     assert.equal(configured.type, "github.credentials.configure.result");
 
+    const { stdout: legacyIssueStdout } = await execFileAsync(
+      installed.command,
+      legacyIssueLaunchArguments,
+      {
+        cwd: root,
+        env: launchEnvironment,
+      },
+    );
+    const legacyIssueLaunch = JSON.parse(legacyIssueStdout);
+    assert.equal(
+      legacyIssueLaunch.type,
+      "harness.run.launch.result",
+      JSON.stringify(legacyIssueLaunch),
+    );
+    assert.deepEqual(legacyIssueLaunch.run.parameters, {
+      issueNumber: 173,
+      targetBranch: "sandcastle/issue-173",
+    });
+    await observeProductionTerminal(fixture.manager, legacyIssueLaunch.run.harnessRunId);
+
     const { stdout } = await execFileAsync(installed.command, githubAccessLaunchArguments, {
       cwd: root,
       env: launchEnvironment,
     });
     const launched = JSON.parse(stdout);
     assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
-    assert.deepEqual(launched.run.parameters, { verifyGitHubAccess: true });
+    assert.deepEqual(launched.run.parameters, {
+      issueNumber: 174,
+      verifyGitHubAccess: true,
+    });
     const observed = await observeProductionTerminal(
       fixture.manager,
       launched.run.harnessRunId,
@@ -468,7 +475,7 @@ test("the installed ordinary CLI discovers production parameters and launches th
     assert.equal(observed.run.status, "failed", JSON.stringify(observed));
     assert.equal(observed.run.adapterId, "sandcastle-harness-adapter-v1");
     assert.equal(observed.outcome.code, "harness_run_failed");
-    assert.equal(observed.outcome.result.code, "real_provider_execution_failed");
+    assert.equal(observed.outcome.result.code, "delivery_execution_failed");
     assert.equal(observed.terminalEnvelopeValidation.exactlyOne, true);
     assert.deepEqual(requests.map(({ operation }) => operation), [
       "describe",
@@ -575,7 +582,7 @@ test("terminal cleanup retry preserves a Project replacement after readiness", a
   let repairManifest = Promise.resolve();
   let restorePath = () => undefined;
   try {
-    restorePath = await installReadyProbeCommands(root);
+    restorePath = await installRunnableProviderCommands(root);
     fixture = await createProductionFixture(root, null, {
       faultInjector: async (point) => {
         if (point !== "harness_run_lifecycle.adapter_ready.before_commit") return;
@@ -602,7 +609,7 @@ test("terminal cleanup retry preserves a Project replacement after readiness", a
       launched.run.harnessRunId,
     );
     assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
-    assert.equal(terminal.outcome.result.code, "real_provider_execution_failed");
+    assert.equal(terminal.outcome.result.code, "delivery_execution_failed");
     await repairManifest;
     assert.equal(await readFile(manifestPath, "utf8"), REAL_PROVIDER_MANIFEST_SOURCE);
     assert.equal(await readFile(excludePath, "utf8"), excludeBefore);

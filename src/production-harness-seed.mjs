@@ -30,9 +30,9 @@ const sourceUrlSchema = z.url().refine((value) => {
 });
 
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
-const SAND_KING_SEED_REVISION = "5227e22f427b80477f3c72a50a30d5faeb7539c7";
+const SAND_KING_SEED_REVISION = "99b848ab1d1931a59c80064f1b6c4f29ea2982a8";
 const SAND_KING_SEED_SOURCE_INTEGRITY =
-  "sha256:685355451765224c6e5cabd23d26938ec42a7f7f9a80ebb7914f1ab7581ca654";
+  "sha256:ecbdfd66adf937ad6e647a90e72749e462d01dd08818e9cac4c39630ecfef089";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -337,13 +337,15 @@ const findWorkerVisibleSkillPaths = (files) => {
     const text = source.toString("utf8");
     const promptFileProperties = [...text.matchAll(/\bpromptFile\s*:/g)];
     const staticPromptFiles = [...text.matchAll(
-      /\bpromptFile\s*:\s*(["'])(\.\/[^"']+)\1/g,
+      /\bpromptFile\s*:\s*(?:(["'])(\.\/[^"']+)\1|harnessFile\((["'])([^"']+)\3\))/g,
     )];
     if (promptFileProperties.length !== staticPromptFiles.length) {
       throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
     }
     for (const match of staticPromptFiles) {
-      const promptPath = posix.normalize(match[2].slice(2));
+      const promptPath = posix.normalize(
+        match[2]?.slice(2) ?? `.sandcastle/${match[4]}`,
+      );
       if (!relativeFileSchema.safeParse(promptPath).success) {
         throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
       }
