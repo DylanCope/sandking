@@ -11,7 +11,6 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { canonicalJson } from "./common/canonical-json.mjs";
 import { digestHex } from "./common/digest.mjs";
-import { GitHubCredentialUnavailableError } from "./github-credential-contract.mjs";
 
 const execFileAsync = promisify(execFile);
 const adapterProtocol = Object.freeze({
@@ -604,15 +603,6 @@ const requireSuccessfulControllerLaunch = (outcome, request) => {
     outcome?.type === "harness.run.launch.failure"
     && /^[a-z0-9_]{1,128}$/.test(outcome.code ?? "")
   ) {
-    if ([
-      "github_credential_unconfigured",
-      "github_host_gh_session_unavailable",
-    ].includes(outcome.code)) {
-      throw new GitHubCredentialUnavailableError(
-        outcome.code,
-        outcome.configurationOptions,
-      );
-    }
     throw new Error(outcome.code);
   }
   throw new Error("controller_cli_protocol_invalid");
@@ -884,25 +874,17 @@ const openControllerCliServer = async ({
           ok: true,
           outcome,
         })}\n`),
-        (error) => {
-          const code = error instanceof GitHubCredentialUnavailableError
-            ? error.code
-            : error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
+        (error) => socket.end(`${JSON.stringify({
+          type: "sandking.cli.result",
+          protocol: "1.0.0",
+          requestId: request.requestId,
+          ok: false,
+          failure: {
+            code: error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
               ? error.message
-              : "controller_cli_operation_failed";
-          socket.end(`${JSON.stringify({
-            type: "sandking.cli.result",
-            protocol: "1.0.0",
-            requestId: request.requestId,
-            ok: false,
-            failure: {
-              code,
-              ...(error instanceof GitHubCredentialUnavailableError
-                ? { configurationOptions: error.configurationOptions }
-                : {}),
-            },
-          })}\n`);
-        },
+              : "controller_cli_operation_failed",
+          },
+        })}\n`),
       );
     });
   });
