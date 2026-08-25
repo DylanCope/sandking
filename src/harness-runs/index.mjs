@@ -70,7 +70,7 @@ export const createHarnessRunManager = async (options) => {
     supervisionOperations: new Set(),
     /** @type {Map<string, string>} */
     acceptedCancellations: new Map(),
-    /** @type {Map<string, {count: number, preparationId: string, ownershipMarker: string, manifestIdentity: {birthtimeNanoseconds: string, device: string, inode: string}, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null}>} */
+    /** @type {Map<string, {count: number, preparationId: string, ownershipMarker: string, manifestIdentity: {birthtimeNanoseconds: string, device: string, inode: string}, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null, cleanupRetryTimer: ReturnType<typeof setTimeout> | null}>} */
     activeProductionProviderPreparations: new Map(),
   });
 
@@ -84,6 +84,8 @@ export const createHarnessRunManager = async (options) => {
   runtime.retainProductionProviderManifestIdentity =
     providerPreparationStore.retainManifestIdentity;
   runtime.releaseProductionProviderPreparation = providerPreparationStore.release;
+  runtime.scheduleProductionProviderPreparationReconciliation =
+    providerPreparationStore.scheduleReconciliation;
 
   // Project preparation can precede run acceptance, so reconcile its durable
   // ownership before relying on retained runs to identify affected Projects.

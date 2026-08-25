@@ -145,10 +145,16 @@ const finishReleasedProjectPreparationCapture = async (releasedCapturePath) => {
     if (
       !details.isDirectory()
       || details.isSymbolicLink()
-      || entries.length !== 1
-      || entries[0] !== "release"
+      || (
+        entries.length !== 0
+        && (entries.length !== 1 || entries[0] !== "release")
+      )
     ) {
       throw new ProjectPreparationFileError("harness_projection_collision");
+    }
+    if (entries.length === 0) {
+      await rmdir(releasedCapturePath);
+      return;
     }
     const releasePath = join(releasedCapturePath, "release");
     const release = await readProjectPreparationFile(releasePath, {

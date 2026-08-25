@@ -14,6 +14,8 @@ import test from "node:test";
 import { REAL_PROVIDER_MANIFEST_SOURCE } from "../src/production-provider-preparation.mjs";
 import { installCurrentPackage } from "./installed-package.mjs";
 import {
+  installedProductionLaunchArguments,
+  installedProductionLaunchEnvironment,
   listProjectPreparationDebris,
   startInstalledProductionHost,
   waitForPathState,
@@ -24,22 +26,6 @@ import {
   execFileAsync,
   installReadyProbeCommands,
 } from "./production-sandcastle-host-fixture.mjs";
-
-const launchArguments = (projectId) => [
-  "launch", projectId,
-  "--issue", "256",
-  "--target-branch", "sandcastle/issue-256",
-  "--json",
-];
-
-const launchEnvironment = ({ endpoint, projectId, retryDirectory, userHome }) => ({
-  ...process.env,
-  HOME: userHome,
-  SANDKING_CONTROLLER_ENDPOINT: endpoint,
-  SANDKING_CONTROLLER_SESSION_ID: `controller-session-${"5".repeat(24)}`,
-  SANDKING_CONTROLLER_RETRY_DIRECTORY: retryDirectory,
-  SANDKING_WORK_CONTEXT_ID: projectId,
-});
 
 test("installed launch preserves a Git exclusion written through a pre-capture descriptor", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-exclude-open-descriptor-"));
@@ -85,9 +71,14 @@ test("installed launch preserves a Git exclusion written through a pre-capture d
       registration,
     });
 
-    const launch = execFileAsync(installed.command, launchArguments(projectId), {
+    const launch = execFileAsync(installed.command, installedProductionLaunchArguments(projectId), {
       cwd: root,
-      env: launchEnvironment({ endpoint, projectId, retryDirectory, userHome }),
+      env: installedProductionLaunchEnvironment({
+        endpoint,
+        projectId,
+        retryDirectory,
+        userHome,
+      }),
     });
     await waitForPathState(pause.blockedPath, true);
     await descriptor.appendFile(`${lateRule}\n`);
@@ -158,9 +149,14 @@ test("installed launch restores a selector changed through its pre-capture descr
       registration,
     });
 
-    const launch = execFileAsync(installed.command, launchArguments(projectId), {
+    const launch = execFileAsync(installed.command, installedProductionLaunchArguments(projectId), {
       cwd: root,
-      env: launchEnvironment({ endpoint, projectId, retryDirectory, userHome }),
+      env: installedProductionLaunchEnvironment({
+        endpoint,
+        projectId,
+        retryDirectory,
+        userHome,
+      }),
     });
     assert.equal(JSON.parse((await launch).stdout).type, "harness.run.launch.result");
     await waitForPathState(pause.blockedPath, true);
@@ -240,9 +236,14 @@ test("installed launch preserves a Git exclusion changed at captured-generation 
       registration,
     });
 
-    const launch = execFileAsync(installed.command, launchArguments(projectId), {
+    const launch = execFileAsync(installed.command, installedProductionLaunchArguments(projectId), {
       cwd: root,
-      env: launchEnvironment({ endpoint, projectId, retryDirectory, userHome }),
+      env: installedProductionLaunchEnvironment({
+        endpoint,
+        projectId,
+        retryDirectory,
+        userHome,
+      }),
     });
     await waitForPathState(pause.blockedPath, true);
     await descriptor.appendFile(`${lateRule}\n`);
@@ -313,9 +314,14 @@ test("installed launch restores a selector changed at captured-generation releas
       registration,
     });
 
-    const launch = execFileAsync(installed.command, launchArguments(projectId), {
+    const launch = execFileAsync(installed.command, installedProductionLaunchArguments(projectId), {
       cwd: root,
-      env: launchEnvironment({ endpoint, projectId, retryDirectory, userHome }),
+      env: installedProductionLaunchEnvironment({
+        endpoint,
+        projectId,
+        retryDirectory,
+        userHome,
+      }),
     });
     assert.equal(JSON.parse((await launch).stdout).type, "harness.run.launch.result");
     await waitForPathState(pause.blockedPath, true);
@@ -395,9 +401,14 @@ test("Host restart restores a selector changed while its private release guard i
       registration,
     });
 
-    const launch = execFileAsync(installed.command, launchArguments(projectId), {
+    const launch = execFileAsync(installed.command, installedProductionLaunchArguments(projectId), {
       cwd: root,
-      env: launchEnvironment({ endpoint, projectId, retryDirectory, userHome }),
+      env: installedProductionLaunchEnvironment({
+        endpoint,
+        projectId,
+        retryDirectory,
+        userHome,
+      }),
     });
     assert.equal(JSON.parse((await launch).stdout).type, "harness.run.launch.result");
     await waitForPathState(pause.blockedPath, true);
@@ -489,9 +500,14 @@ test("Host restart resumes an open-descriptor Git exclusion rollback", {
       registration,
     });
 
-    const launch = execFileAsync(installed.command, launchArguments(projectId), {
+    const launch = execFileAsync(installed.command, installedProductionLaunchArguments(projectId), {
       cwd: root,
-      env: launchEnvironment({ endpoint, projectId, retryDirectory, userHome }),
+      env: installedProductionLaunchEnvironment({
+        endpoint,
+        projectId,
+        retryDirectory,
+        userHome,
+      }),
     });
     await waitForPathState(pause.blockedPath, true);
     await descriptor.appendFile(`${lateRule}\n`);

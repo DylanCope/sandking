@@ -96,7 +96,12 @@ that pre-capture descriptors have closed through the platform ownership boundary
 then re-reads that retained inode. Writes in the former revalidation-to-unlink window are
 therefore restored for selectors and rebased for Git exclusions. Release itself moves
 through a restartable private directory, so process loss cannot discard the last name or
-mistake a newer public candidate for the captured generation.
+mistake a newer public candidate for the captured generation. Descriptor ownership probes
+remain bounded, but a zero-holder preparation lease automatically starts another cleanup
+attempt until safe release succeeds; restart reconciliation does the same for retained
+journals. Finalization also accepts the durable empty-directory phase after the release link
+has already been unlinked, so process loss between that unlink and directory removal is
+idempotently completed instead of reported as a Project collision.
 A failed preparation retains the durably recorded selector identity through cleanup, so
 a transient rollback failure is retried without releasing the preparation journal or
 leaving a false readiness selector. A concurrent replacement is restored or left at the

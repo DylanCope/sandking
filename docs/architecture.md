@@ -225,7 +225,11 @@ Darwin open-file inventory, or a Windows exclusive open) and re-reads the retain
 A write at the former final-unlink boundary therefore restores the selector or joins the
 Git-exclude rebase instead of disappearing. The retained release link is moved through a
 restartable release directory before deletion, so Host loss cannot discard the only name
-of a changed generation or recapture the newer public candidate. Startup resolves
+of a changed generation or recapture the newer public candidate. Each descriptor-ownership
+wait is bounded, while the zero-holder lease and retained preparation journal keep scheduling
+cleanup attempts until the generation is safely released. If Host loss follows release-link
+deletion but precedes directory deletion, the empty owned release directory is a valid
+idempotent finalization state rather than a Project collision. Startup resolves
 the journaled Project registration without re-entering production projection, allowing an
 interrupted exclusion rollback to restore its temporarily absent public path first.
 Before changing the Project, the Host

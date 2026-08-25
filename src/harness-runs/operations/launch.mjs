@@ -10,6 +10,7 @@ import { materializeProductionHarnessExecutionSnapshot } from "../../production-
 import {
   cleanupProductionProviderPreparation,
   prepareProductionProviderLaunch,
+  ProductionProviderPreparationError,
   productionProviderGitExcludeMarker,
 } from "../../production-provider-preparation.mjs";
 import {
@@ -31,23 +32,46 @@ import {
 import { logPath, retainedLaunchOutcome } from "../store.mjs";
 import { createProductionProviderPreparationId } from "../provider-preparation-store.mjs";
 
+const PRODUCTION_PROVIDER_CLEANUP_RETRY_MS = 100;
+
 /** @param {any} runtime */
 export const createLaunchOperation = (runtime) => {
   const { cancellationGraceMs, now, options, parsedHostId } = runtime;
 
   /**
-   * Finish one zero-holder provider lease. Keep failed cleanup retryable: the
-   * readiness boundary and terminal supervision deliberately share this
-   * operation so a transient Project-filesystem failure cannot strand the
-   * selector after the first attempt.
+   * @param {string} projectPath
+   * @param {{count: number, preparationId: string, ownershipMarker: string, manifestIdentity: {birthtimeNanoseconds: string, device: string, inode: string}, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null, cleanupRetryTimer: ReturnType<typeof setTimeout> | null}} lease
+   */
+  const scheduleProductionProviderCleanup = (projectPath, lease) => {
+    if (
+      lease.cleanupRetryTimer
+      || lease.count > 0
+      || runtime.activeProductionProviderPreparations.get(projectPath) !== lease
+    ) return;
+    lease.cleanupRetryTimer = setTimeout(() => {
+      lease.cleanupRetryTimer = null;
+      void cleanupProductionProviderLease(projectPath, lease).catch(() => undefined);
+    }, PRODUCTION_PROVIDER_CLEANUP_RETRY_MS);
+    lease.cleanupRetryTimer.unref?.();
+  };
+
+  /**
+   * Finish one zero-holder provider lease. Readiness and terminal supervision
+   * share each attempt; a transient failure schedules the next bounded attempt
+   * while the lease and its durable preparation journal retain ownership.
    *
    * @param {string} projectPath
-   * @param {{count: number, preparationId: string, ownershipMarker: string, manifestIdentity: {birthtimeNanoseconds: string, device: string, inode: string}, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null}} lease
+   * @param {{count: number, preparationId: string, ownershipMarker: string, manifestIdentity: {birthtimeNanoseconds: string, device: string, inode: string}, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null, cleanupRetryTimer: ReturnType<typeof setTimeout> | null}} lease
    */
   const cleanupProductionProviderLease = async (projectPath, lease) => {
-    if (lease.count > 0) return;
+    if (
+      lease.count > 0
+      || runtime.activeProductionProviderPreparations.get(projectPath) !== lease
+    ) return;
     if (!lease.cleanupOperation) {
       lease.cleanupOperation = lease.rollback().then(() => {
+        if (lease.cleanupRetryTimer) clearTimeout(lease.cleanupRetryTimer);
+        lease.cleanupRetryTimer = null;
         if (
           lease.count === 0
           && runtime.activeProductionProviderPreparations.get(projectPath) === lease
@@ -56,6 +80,12 @@ export const createLaunchOperation = (runtime) => {
         }
       }).catch((error) => {
         lease.cleanupOperation = null;
+        if (
+          error instanceof ProductionProviderPreparationError
+          && error.code === "harness_projection_failed"
+        ) {
+          scheduleProductionProviderCleanup(projectPath, lease);
+        }
         throw error;
       });
     }
@@ -109,13 +139,18 @@ export const createLaunchOperation = (runtime) => {
         retained.count -= 1;
         await cleanupProductionProviderLease(preparation.projectPath, retained);
       } else if (ownershipRetained) {
-        await cleanupProductionProviderPreparation({
-          projectPath: preparation.projectPath,
-          preparationId,
-          ownershipMarker,
-          manifestIdentity: retainedManifestIdentity,
-        });
-        await runtime.releaseProductionProviderPreparation(preparationId);
+        try {
+          await cleanupProductionProviderPreparation({
+            projectPath: preparation.projectPath,
+            preparationId,
+            ownershipMarker,
+            manifestIdentity: retainedManifestIdentity,
+          });
+          await runtime.releaseProductionProviderPreparation(preparationId);
+        } catch (cleanupError) {
+          runtime.scheduleProductionProviderPreparationReconciliation();
+          throw cleanupError;
+        }
       }
       throw error;
     }
@@ -129,6 +164,7 @@ export const createLaunchOperation = (runtime) => {
         await runtime.releaseProductionProviderPreparation(preparationId);
       },
       cleanupOperation: null,
+      cleanupRetryTimer: null,
     };
     if (!retained) {
       runtime.activeProductionProviderPreparations.set(preparation.projectPath, lease);

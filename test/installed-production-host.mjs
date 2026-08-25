@@ -150,6 +150,27 @@ export const waitForPathState = async (path, exists) => {
   throw new Error(`production_provider_race_timeout:${path}:${exists}`);
 };
 
+export const installedProductionLaunchArguments = (projectId) => [
+  "launch", projectId,
+  "--issue", "256",
+  "--target-branch", "sandcastle/issue-256",
+  "--json",
+];
+
+export const installedProductionLaunchEnvironment = ({
+  endpoint,
+  projectId,
+  retryDirectory,
+  userHome,
+}) => ({
+  ...process.env,
+  HOME: userHome,
+  SANDKING_CONTROLLER_ENDPOINT: endpoint,
+  SANDKING_CONTROLLER_SESSION_ID: `controller-session-${"5".repeat(24)}`,
+  SANDKING_CONTROLLER_RETRY_DIRECTORY: retryDirectory,
+  SANDKING_WORK_CONTEXT_ID: projectId,
+});
+
 export const listProjectPreparationDebris = async (projectPath) => {
   const [projectEntries, gitInfoEntries] = await Promise.all([
     readdir(projectPath),
@@ -295,6 +316,7 @@ fsPromises.rename = async (from, to, ...rest) => {
     || (
       [
         "selector-open-descriptor",
+        "selector-long-lived-descriptor",
         "selector-post-refresh-descriptor",
         "selector-release-guard-crash",
       ].includes(mode)
@@ -312,6 +334,9 @@ fsPromises.rename = async (from, to, ...rest) => {
     throw error;
   }
   const result = await originalRename(from, to, ...rest);
+  if (mode === "selector-long-lived-descriptor" && String(from) === manifestPath) {
+    await originalWriteFile(${JSON.stringify(capturedPath)}, "captured\\n");
+  }
   if (mode === "capture-crash" && String(from) === manifestPath) {
     await originalWriteFile(${JSON.stringify(capturedPath)}, "captured\\n");
     while (await originalAccess(${JSON.stringify(capturedReleasePath)}).then(
@@ -349,6 +374,19 @@ fsPromises.rm = async (path, ...rest) => {
     && String(path).endsWith("/captured")
   ) await pauseReconciliation();
   const result = await originalRm(path, ...rest);
+  if (
+    mode === "selector-release-directory-crash"
+    && String(path).startsWith(selectorCapturePrefix)
+    && String(path).endsWith(".released/release")
+  ) {
+    await originalWriteFile(${JSON.stringify(capturedPath)}, "captured\\n");
+    while (await originalAccess(${JSON.stringify(capturedReleasePath)}).then(
+      () => false,
+      () => true,
+    )) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
   if (
     mode === "selector-release-guard-crash"
     && String(path).startsWith(selectorCapturePrefix)

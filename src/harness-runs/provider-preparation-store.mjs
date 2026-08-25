@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   cleanupProductionProviderPreparation,
+  ProductionProviderPreparationError,
   productionProviderGitExcludeMarker,
 } from "../production-provider-preparation.mjs";
 import {
@@ -11,6 +12,8 @@ import {
   writePrivateJson,
 } from "../private-state.mjs";
 import { projectIdSchema } from "./schemas.mjs";
+
+const PREPARATION_RECONCILIATION_RETRY_MS = 250;
 
 const preparationIdSchema = z.string()
   .regex(/^provider-preparation-[a-f0-9]{24}$/);
@@ -49,6 +52,8 @@ export const createProductionProviderPreparationId = () =>
 export const createProductionProviderPreparationStore = (options) => {
   const path = preparationStatePath(options.dataDir);
   let mutationQueue = Promise.resolve();
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let reconciliationTimer = null;
 
   const readState = async () => preparationStateSchema.parse(await readJson(path, {
     schemaVersion: 1,
@@ -119,6 +124,7 @@ export const createProductionProviderPreparationStore = (options) => {
   const reconcile = () => withMutationLock(async () => {
     const state = await readState();
     const retained = [];
+    let retryRequired = false;
     for (const preparation of state.preparations) {
       try {
         const context = await options.loadLaunchContext(preparation.projectId, {
@@ -132,17 +138,38 @@ export const createProductionProviderPreparationStore = (options) => {
           ),
           manifestIdentity: preparation.manifestIdentity,
         });
-      } catch {
+      } catch (error) {
         retained.push(preparation);
+        retryRequired ||= error instanceof ProductionProviderPreparationError
+          && error.code === "harness_projection_failed";
       }
     }
-    if (retained.length === state.preparations.length) return;
+    if (retained.length === state.preparations.length) {
+      if (retryRequired) scheduleReconciliation();
+      return;
+    }
     if (retained.length === 0) {
       await removePrivateFile(path);
       return;
     }
     await writePrivateJson(path, { ...state, preparations: retained });
+    if (retryRequired) scheduleReconciliation();
   });
 
-  return { reconcile, release, retain, retainManifestIdentity };
+  const scheduleReconciliation = () => {
+    if (reconciliationTimer) return;
+    reconciliationTimer = setTimeout(() => {
+      reconciliationTimer = null;
+      void reconcile().catch(() => scheduleReconciliation());
+    }, PREPARATION_RECONCILIATION_RETRY_MS);
+    reconciliationTimer.unref?.();
+  };
+
+  return {
+    reconcile,
+    release,
+    retain,
+    retainManifestIdentity,
+    scheduleReconciliation,
+  };
 };
