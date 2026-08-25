@@ -220,6 +220,7 @@ export const captureProjectPreparationFile = async (path, options = {}) => {
           exists: false,
           identity: undefined,
           source: "",
+          refresh: async () => ({ exists: false, identity: undefined, source: "" }),
           remove: async () => undefined,
           restore: async () => undefined,
         };
@@ -280,6 +281,9 @@ export const captureProjectPreparationFile = async (path, options = {}) => {
   let active = true;
   return {
     ...current,
+    refresh: () => readProjectPreparationFile(capturedPath, {
+      maximumLinks: options.maximumLinks,
+    }),
     remove: async () => {
       if (!active) return;
       await rm(capturedPath);
@@ -320,6 +324,10 @@ const writeProjectPreparationTemporaryFile = async (path, source, temporaryId) =
 /** @param {string} temporaryId */
 const projectPreparationReplacementCaptureId = (temporaryId) =>
   `replace-${temporaryId}`;
+
+/** @param {string} temporaryId */
+const projectPreparationRollbackCaptureId = (temporaryId) =>
+  `rollback-${temporaryId}`;
 
 /** @param {string} temporaryId */
 const projectPreparationReconciliationTemporaryId = (temporaryId) =>
@@ -423,6 +431,74 @@ const mergeCapturedProjectGitExcludeLines = async (
 };
 
 /**
+ * Finish rolling an already-published Host candidate back after the captured
+ * generation changed through an older file descriptor. Both inodes remain in
+ * named captures until the changed generation is public again, so restart can
+ * resume every boundary without discarding either set of bytes.
+ *
+ * @param {string} path
+ * @param {string} temporaryId
+ */
+const recoverProjectPreparationFileRollback = async (path, temporaryId) => {
+  const rollbackCaptureId = projectPreparationRollbackCaptureId(temporaryId);
+  const rollbackDirectory = `${path}.sandking-capture-${rollbackCaptureId}`;
+  const rollbackExists = await lstat(rollbackDirectory).then(
+    () => true,
+    (error) => hasFileErrorCode(error, "ENOENT") ? false : Promise.reject(error),
+  );
+  if (!rollbackExists) return;
+
+  const rollback = await captureProjectPreparationFile(path, {
+    captureId: rollbackCaptureId,
+    maximumLinks: 2,
+  });
+  const temporary = await readProjectPreparationTemporaryFile(path, temporaryId);
+  if (
+    !rollback.exists
+    || !temporary.exists
+    || !projectPreparationFileIdentityMatches(rollback.identity, temporary.identity)
+  ) {
+    const destination = await readProjectPreparationFile(path, { maximumLinks: 2 });
+    if (!destination.exists) await rollback.restore();
+    throw new ProjectPreparationFileError("harness_projection_collision");
+  }
+
+  const replacementCaptureId = projectPreparationReplacementCaptureId(temporaryId);
+  const replacementDirectory = `${path}.sandking-capture-${replacementCaptureId}`;
+  const replacementExists = await lstat(replacementDirectory).then(
+    () => true,
+    (error) => hasFileErrorCode(error, "ENOENT") ? false : Promise.reject(error),
+  );
+  if (replacementExists) {
+    const changed = await captureProjectPreparationFile(path, {
+      captureId: replacementCaptureId,
+      maximumLinks: 2,
+    });
+    const destination = await readProjectPreparationFile(path, { maximumLinks: 2 });
+    if (
+      !changed.exists
+      || (destination.exists && !projectPreparationFileIdentityMatches(
+        destination.identity,
+        changed.identity,
+      ))
+    ) {
+      throw new ProjectPreparationFileError("harness_projection_collision");
+    }
+    await changed.restore();
+  }
+
+  const destination = await readProjectPreparationFile(path, { maximumLinks: 2 });
+  if (!destination.exists || projectPreparationFileIdentityMatches(
+    destination.identity,
+    rollback.identity,
+  )) {
+    await rollback.restore();
+  } else {
+    await rollback.remove();
+  }
+};
+
+/**
  * Finish a replacement interrupted after its old public generation was
  * captured. A published candidate is identified by its retained temporary
  * hard link; otherwise the captured user-owned generation returns to its
@@ -438,6 +514,7 @@ const recoverProjectPreparationFileReplacement = async (
   recoveryDepth = 0,
 ) => {
   if (!temporaryId) return;
+  await recoverProjectPreparationFileRollback(path, temporaryId);
   const captureId = projectPreparationReplacementCaptureId(temporaryId);
   const captureDirectory = `${path}.sandking-capture-${captureId}`;
   const captureExists = await lstat(captureDirectory).then(
@@ -516,6 +593,8 @@ const replaceProjectPreparationFile = async (path, expected, source, options = {
   let temporaryPath;
   /** @type {Awaited<ReturnType<typeof captureProjectPreparationFile>> | null} */
   let captured = null;
+  /** @type {Awaited<ReturnType<typeof captureProjectPreparationFile>> | null} */
+  let rollback = null;
   let candidatePublished = false;
   try {
     temporaryPath = await writeProjectPreparationTemporaryFile(
@@ -547,6 +626,45 @@ const replaceProjectPreparationFile = async (path, expected, source, options = {
       await link(temporaryPath, path);
       candidatePublished = true;
     }
+    const capturedAfterPublication = await captured.refresh();
+    if (
+      capturedAfterPublication.source !== captured.source
+      || !projectPreparationFileIdentityMatches(
+        capturedAfterPublication.identity,
+        captured.identity,
+      )
+    ) {
+      if (source === null) {
+        await captured.restore();
+        captured = null;
+        return { committed: false };
+      }
+      if (!temporaryPath) {
+        throw new ProjectPreparationFileError("harness_projection_failed");
+      }
+      const temporary = await readProjectPreparationTemporaryFile(path, temporaryId);
+      rollback = await captureProjectPreparationFile(path, {
+        captureId: projectPreparationRollbackCaptureId(temporaryId),
+        maximumLinks: 2,
+      });
+      if (
+        !temporary.exists
+        || !rollback.exists
+        || !projectPreparationFileIdentityMatches(temporary.identity, rollback.identity)
+      ) {
+        await rollback.restore();
+        rollback = null;
+        throw new ProjectPreparationFileError("harness_projection_collision");
+      }
+      await captured.restore();
+      captured = null;
+      await rollback.remove();
+      rollback = null;
+      candidatePublished = false;
+      await rm(temporaryPath);
+      temporaryPath = undefined;
+      return { committed: false };
+    }
     await captured.remove();
     captured = null;
     if (temporaryPath) {
@@ -555,6 +673,10 @@ const replaceProjectPreparationFile = async (path, expected, source, options = {
     }
     return { committed: true };
   } catch (error) {
+    if (rollback) {
+      await recoverProjectPreparationFileRollback(path, temporaryId).catch(() => undefined);
+      rollback = null;
+    }
     if (!candidatePublished) {
       let recoveryRetained = false;
       try {

@@ -213,7 +213,14 @@ public ordering, preserving the latest ignore or unignore decision, and the temp
 generations are removed. Recovery treats each observed file as an ordered sequence,
 including meaningful duplicate rules, and publishes the reconciled bytes through the
 same generation-checked capture primitive. A same-inode edit after the final read is
-therefore detected before publication and forces another rebase.
+therefore detected before publication and forces another rebase. Publication also
+re-reads the captured inode after the candidate becomes public. If a descriptor opened
+before capture wrote to that older inode, the Host durably captures its own candidate,
+restores the changed inode to the public path, and retries from those newer bytes.
+Selector cleanup performs the same post-inspection byte revalidation; a changed captured
+selector is restored as Project-owned content instead of being unlinked. Startup resolves
+the journaled Project registration without re-entering production projection, allowing an
+interrupted exclusion rollback to restore its temporarily absent public path first.
 Before changing the Project, the Host
 journals the Project registration and a unique Git-exclusion ownership marker in
 Host-private state. The no-clobber publication retains a short-lived filesystem link

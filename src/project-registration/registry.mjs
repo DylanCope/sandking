@@ -1249,8 +1249,11 @@ export const createProjectRegistry = async (options) => {
     return response;
   });
 
-  /** @param {string} projectId */
-  const loadLaunchContext = (projectId) => withMutationLock(async () => {
+  /**
+   * @param {string} projectId
+   * @param {{prepareProductionHarness?: boolean}} [loadOptions]
+   */
+  const loadLaunchContext = (projectId, loadOptions = {}) => withMutationLock(async () => {
     const projectState = await readProjectState(options.dataDir);
     const harnessState = await readHarnessState(options.dataDir);
     const project = projectState.projects.find((candidate) =>
@@ -1279,6 +1282,9 @@ export const createProjectRegistry = async (options) => {
     }
     if (harness.immutableRevision !== project.harness.pinnedRevision) {
       throw new Error("harness_pin_invalid");
+    }
+    if (loadOptions.prepareProductionHarness === false) {
+      return { project: { canonicalPath: project.canonicalPath } };
     }
     let productionHarnessProjectionPath = null;
     if (harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID) {

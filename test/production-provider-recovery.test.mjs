@@ -4,7 +4,6 @@ import {
   mkdir,
   mkdtemp,
   readFile,
-  readdir,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -13,6 +12,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { installCurrentPackage } from "./installed-package.mjs";
 import {
+  listProjectPreparationDebris,
   startInstalledProductionHost,
   waitForPathState,
   writeProviderMutationPause,
@@ -22,17 +22,6 @@ import {
   execFileAsync,
   installReadyProbeCommands,
 } from "./production-sandcastle-host-fixture.mjs";
-
-const listProjectPreparationDebris = async (projectPath) => {
-  const [projectEntries, gitInfoEntries] = await Promise.all([
-    readdir(projectPath),
-    readdir(join(projectPath, ".git", "info")),
-  ]);
-  return [
-    ...projectEntries.map((name) => `Project/${name}`),
-    ...gitInfoEntries.map((name) => `.git/info/${name}`),
-  ].filter((name) => name.includes(".sandking-") || name.includes("sandking-capture-"));
-};
 
 const assertProjectRulesEffective = async (projectPath, rules) => {
   for (const rule of rules) {

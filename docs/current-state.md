@@ -79,11 +79,18 @@ rules ahead of the newest public generation, and replays that newest ordering so
 concurrent ignore or unignore decision keeps its Git precedence. Only then does it
 remove the capture and temporary candidate. Recovery preserves each generation as an
 ordered sequence, including duplicate rules, and uses a generation-checked atomic
-publication. Same-inode edits made after its final read therefore rebase too.
+publication. Same-inode edits made after its final read therefore rebase too. The
+publication boundary re-reads the captured inode after the Host candidate is public;
+when an already-open descriptor changed that older inode, the candidate is durably
+captured, the changed inode is restored, and the mutation retries from the newer bytes.
+Startup restores an interrupted rollback before re-entering production Harness
+preparation, so a temporarily absent public exclude path cannot block journal recovery.
 Selector cleanup atomically captures the exact candidate under a stable
 name derived from the journaled preparation ID before checking its contents, Git
 ownership, and recorded filesystem identity. Startup resumes that capture and restores
 a Project-owned replacement when Host loss occurred while its public name was absent.
+A post-inspection byte revalidation likewise restores a captured selector changed
+through an already-open descriptor rather than unlinking the new Project content.
 A failed preparation retains the durably recorded selector identity through cleanup, so
 a transient rollback failure is retried without releasing the preparation journal or
 leaving a false readiness selector. A concurrent replacement is restored or left at the

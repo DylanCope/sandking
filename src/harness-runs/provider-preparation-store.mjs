@@ -41,7 +41,10 @@ export const createProductionProviderPreparationId = () =>
  * until exact cleanup succeeds. This state is independent of run acceptance so
  * startup can recover the pre-commit window where no run exists yet.
  *
- * @param {{dataDir: string, loadLaunchContext: (projectId: string) => Promise<any>}} options
+ * @param {{dataDir: string, loadLaunchContext: (
+ *   projectId: string,
+ *   options?: {prepareProductionHarness?: boolean},
+ * ) => Promise<any>}} options
  */
 export const createProductionProviderPreparationStore = (options) => {
   const path = preparationStatePath(options.dataDir);
@@ -118,7 +121,9 @@ export const createProductionProviderPreparationStore = (options) => {
     const retained = [];
     for (const preparation of state.preparations) {
       try {
-        const context = await options.loadLaunchContext(preparation.projectId);
+        const context = await options.loadLaunchContext(preparation.projectId, {
+          prepareProductionHarness: false,
+        });
         await cleanupProductionProviderPreparation({
           projectPath: context.project.canonicalPath,
           preparationId: preparation.preparationId,

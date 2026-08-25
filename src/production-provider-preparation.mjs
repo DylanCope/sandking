@@ -97,6 +97,18 @@ export const removeStaleProductionProviderManifest = async (options) => {
       captured = null;
       return { removed: false };
     }
+    const capturedAfterInspection = await captured.refresh();
+    if (
+      capturedAfterInspection.source !== captured.source
+      || !projectPreparationFileIdentityMatches(
+        capturedAfterInspection.identity,
+        captured.identity,
+      )
+    ) {
+      await captured.restore();
+      captured = null;
+      return { removed: false };
+    }
     await captured.remove();
     captured = null;
     return { removed: true };

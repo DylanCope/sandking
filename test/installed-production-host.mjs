@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { access, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { access, readdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const startInstalledProductionHost = async ({
@@ -150,6 +150,17 @@ export const waitForPathState = async (path, exists) => {
   throw new Error(`production_provider_race_timeout:${path}:${exists}`);
 };
 
+export const listProjectPreparationDebris = async (projectPath) => {
+  const [projectEntries, gitInfoEntries] = await Promise.all([
+    readdir(projectPath),
+    readdir(join(projectPath, ".git", "info")),
+  ]);
+  return [
+    ...projectEntries.map((name) => `Project/${name}`),
+    ...gitInfoEntries.map((name) => `.git/info/${name}`),
+  ].filter((name) => name.includes(".sandking-") || name.includes("sandking-capture-"));
+};
+
 export const writeProviderMutationPause = async ({
   excludePath,
   mode,
@@ -196,10 +207,28 @@ const pause = async () => {
 let excludeCaptureCount = 0;
 let manifestRollbackCaptureFailed = false;
 let reconciliationPaused = false;
+const pauseReconciliation = async () => {
+  if (reconciliationPaused) return;
+  reconciliationPaused = true;
+  await originalWriteFile(
+    ${JSON.stringify(reconciliationBlockedPath)},
+    "blocked\\n",
+  );
+  while (await originalAccess(${JSON.stringify(reconciliationReleasePath)}).then(
+    () => false,
+    () => true,
+  )) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
 fsPromises.link = async (from, to, ...rest) => {
   if (mode === "creation" && String(to) === manifestPath) await pause();
   if (
-    ["exclude-after-capture", "exclude-reconciliation-rebase"].includes(mode)
+    [
+      "exclude-after-capture",
+      "exclude-open-descriptor-rollback-crash",
+      "exclude-reconciliation-rebase",
+    ].includes(mode)
     && String(to) === excludePath
   ) await pause();
   if (mode === "exclude-cleanup-after-capture" && String(to) === excludePath) {
@@ -210,28 +239,26 @@ fsPromises.link = async (from, to, ...rest) => {
 };
 fsPromises.open = async (path, flags, ...rest) => {
   const handle = await originalOpen(path, flags, ...rest);
+  const selectorCaptureRead = mode === "selector-open-descriptor"
+    && String(path).startsWith(${JSON.stringify(
+      excludePath ? `${dirname(excludePath)}/.sandking-capture-` : "",
+    )})
+    && String(path).endsWith("/captured")
+    && flags === "r"
+    && !reconciliationPaused;
   if (
-    mode === "exclude-reconciliation-rebase"
-    && String(path) === excludePath
-    && ["a", "a+"].includes(flags)
-    && !reconciliationPaused
+    selectorCaptureRead
+    || (
+      mode === "exclude-reconciliation-rebase"
+      && String(path) === excludePath
+      && ["a", "a+"].includes(flags)
+      && !reconciliationPaused
+    )
   ) {
     const originalHandleReadFile = handle.readFile.bind(handle);
     handle.readFile = async (...readArguments) => {
       const source = await originalHandleReadFile(...readArguments);
-      if (!reconciliationPaused) {
-        reconciliationPaused = true;
-        await originalWriteFile(
-          ${JSON.stringify(reconciliationBlockedPath)},
-          "blocked\\n",
-        );
-        while (await originalAccess(${JSON.stringify(reconciliationReleasePath)}).then(
-          () => false,
-          () => true,
-        )) {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-      }
+      await pauseReconciliation();
       return source;
     };
   }
@@ -262,6 +289,7 @@ fsPromises.rename = async (from, to, ...rest) => {
       && String(from) === manifestPath
       && await originalAccess(manifestPath).then(() => true, () => false)
     )
+    || (mode === "selector-open-descriptor" && String(from) === manifestPath)
   ) await pause();
   if (
     mode === "rollback-retry"
@@ -275,6 +303,19 @@ fsPromises.rename = async (from, to, ...rest) => {
   }
   const result = await originalRename(from, to, ...rest);
   if (mode === "capture-crash" && String(from) === manifestPath) {
+    await originalWriteFile(${JSON.stringify(capturedPath)}, "captured\\n");
+    while (await originalAccess(${JSON.stringify(capturedReleasePath)}).then(
+      () => false,
+      () => true,
+    )) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  if (
+    mode === "exclude-open-descriptor-rollback-crash"
+    && String(from) === excludePath
+    && String(to).includes(".sandking-capture-rollback-")
+  ) {
     await originalWriteFile(${JSON.stringify(capturedPath)}, "captured\\n");
     while (await originalAccess(${JSON.stringify(capturedReleasePath)}).then(
       () => false,
