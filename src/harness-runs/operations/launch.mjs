@@ -77,6 +77,7 @@ export const createLaunchOperation = (runtime) => {
     const ownershipMarker = retained?.ownershipMarker
       ?? productionProviderGitExcludeMarker(preparationId);
     let ownershipRetained = false;
+    let retainedManifestIdentity;
     let prepared;
     try {
       prepared = await prepareProductionProviderLaunch({
@@ -96,6 +97,7 @@ export const createLaunchOperation = (runtime) => {
         retainManifestIdentity: retained
           ? undefined
           : async (manifestIdentity) => {
+              retainedManifestIdentity = manifestIdentity;
               await runtime.retainProductionProviderManifestIdentity(
                 preparationId,
                 manifestIdentity,
@@ -111,6 +113,7 @@ export const createLaunchOperation = (runtime) => {
           projectPath: preparation.projectPath,
           preparationId,
           ownershipMarker,
+          manifestIdentity: retainedManifestIdentity,
         });
         await runtime.releaseProductionProviderPreparation(preparationId);
       }

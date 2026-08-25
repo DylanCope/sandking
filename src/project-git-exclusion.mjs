@@ -320,6 +320,70 @@ const projectPreparationReplacementCaptureId = (temporaryId) =>
   `replace-${temporaryId}`;
 
 /**
+ * Make every line from each observed Git-exclude generation effective at the
+ * public path. The retained capture stays durable until the merged public
+ * generation has been verified, so restart can repeat an interrupted merge.
+ *
+ * @param {string} path
+ * @param {string} capturedPath
+ * @param {string[]} observedSources
+ */
+const mergeCapturedProjectGitExcludeLines = async (
+  path,
+  capturedPath,
+  observedSources,
+) => {
+  const requiredLines = new Set(observedSources.flatMap((source) =>
+    source.split("\n").filter(Boolean)));
+  for (let attempt = 0; attempt < MAX_PROJECT_PREPARATION_COMMIT_ATTEMPTS; attempt += 1) {
+    let current = await readProjectPreparationFile(path, { maximumLinks: 2 });
+    if (!current.exists) {
+      try {
+        await link(capturedPath, path);
+      } catch (error) {
+        if (hasFileErrorCode(error, "EEXIST")) continue;
+        throw new ProjectPreparationFileError("harness_projection_failed");
+      }
+      current = await readProjectPreparationFile(path, { maximumLinks: 2 });
+    }
+    for (const line of current.source.split("\n").filter(Boolean)) {
+      requiredLines.add(line);
+    }
+    const currentLines = new Set(current.source.split("\n"));
+    const missingLines = [...requiredLines].filter((line) => !currentLines.has(line));
+    if (missingLines.length === 0) return;
+
+    /** @type {import("node:fs/promises").FileHandle | undefined} */
+    let handle;
+    try {
+      handle = await open(path, "a");
+      const details = await handle.stat({ bigint: true });
+      if (!projectPreparationFileIdentityMatches(
+        current.identity,
+        projectPreparationFileIdentity(details),
+      )) continue;
+      const addition = `${current.source.length > 0 && !current.source.endsWith("\n")
+        ? "\n"
+        : ""}${missingLines.join("\n")}\n`;
+      const { bytesWritten } = await handle.write(addition, null, "utf8");
+      if (bytesWritten !== Buffer.byteLength(addition)) {
+        throw new ProjectPreparationFileError("harness_projection_failed");
+      }
+      await handle.sync();
+    } catch (error) {
+      if (error instanceof ProjectPreparationFileError) throw error;
+      throw new ProjectPreparationFileError("harness_projection_failed");
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
+    const merged = await readProjectPreparationFile(path, { maximumLinks: 2 });
+    const mergedLines = new Set(merged.source.split("\n"));
+    if ([...requiredLines].every((line) => mergedLines.has(line))) return;
+  }
+  throw new ProjectPreparationFileError("harness_projection_collision");
+};
+
+/**
  * Finish a replacement interrupted after its old public generation was
  * captured. A published candidate is identified by its retained temporary
  * hard link; otherwise the captured user-owned generation returns to its
@@ -367,7 +431,12 @@ const recoverProjectPreparationFileReplacement = async (path, temporaryId) => {
     await captured.restore();
     return;
   }
-  throw new ProjectPreparationFileError("harness_projection_collision");
+  await mergeCapturedProjectGitExcludeLines(
+    path,
+    join(captureDirectory, "captured"),
+    [captured.source, destination.source],
+  );
+  await captured.remove();
 };
 
 /**
@@ -427,8 +496,26 @@ const replaceProjectPreparationFile = async (path, expected, source, options = {
     return { committed: true };
   } catch (error) {
     if (!candidatePublished) {
-      await captured?.restore().catch(() => undefined);
-      if (temporaryPath) await rm(temporaryPath, { force: true }).catch(() => undefined);
+      let recoveryRetained = false;
+      try {
+        await captured?.restore();
+        captured = null;
+      } catch {
+        recoveryRetained = true;
+      }
+      if (recoveryRetained && temporaryPath) {
+        try {
+          await recoverProjectPreparationFileReplacement(path, temporaryId);
+          await removeProjectPreparationTemporaryFile(path, temporaryId);
+          temporaryPath = undefined;
+          recoveryRetained = false;
+        } catch {
+          // Keep both generations and the candidate for a durably owned retry.
+        }
+      }
+      if (!recoveryRetained && temporaryPath) {
+        await rm(temporaryPath, { force: true }).catch(() => undefined);
+      }
     }
     if (error instanceof ProjectPreparationFileError) throw error;
     if (hasFileErrorCode(error, "EEXIST")) {

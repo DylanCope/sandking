@@ -191,8 +191,14 @@ const pause = async () => {
   }
 };
 let excludeCaptureCount = 0;
+let manifestRollbackCaptureFailed = false;
 fsPromises.link = async (from, to, ...rest) => {
   if (mode === "creation" && String(to) === manifestPath) await pause();
+  if (mode === "exclude-after-capture" && String(to) === excludePath) await pause();
+  if (mode === "exclude-cleanup-after-capture" && String(to) === excludePath) {
+    const candidate = await originalReadFile(from, "utf8").catch(() => "");
+    if (!candidate.includes("# Sand-King temporary production provider")) await pause();
+  }
   return originalLink(from, to, ...rest);
 };
 fsPromises.rename = async (from, to, ...rest) => {
@@ -209,6 +215,11 @@ fsPromises.rename = async (from, to, ...rest) => {
   }
   if (pauseForExcludeCommit) await pause();
   if (
+    mode === "rollback-retry"
+    && String(from).startsWith(\`${manifestPath}.sandking-\`)
+    && String(from).endsWith(".tmp")
+  ) await pause();
+  if (
     (mode === "creation" && String(to) === manifestPath)
     || (
       (mode === "cleanup" || mode === "capture-crash")
@@ -216,6 +227,16 @@ fsPromises.rename = async (from, to, ...rest) => {
       && await originalAccess(manifestPath).then(() => true, () => false)
     )
   ) await pause();
+  if (
+    mode === "rollback-retry"
+    && String(from) === manifestPath
+    && !manifestRollbackCaptureFailed
+  ) {
+    manifestRollbackCaptureFailed = true;
+    const error = new Error("transient provider rollback denial");
+    error.code = "EACCES";
+    throw error;
+  }
   const result = await originalRename(from, to, ...rest);
   if (mode === "capture-crash" && String(from) === manifestPath) {
     await originalWriteFile(${JSON.stringify(capturedPath)}, "captured\\n");

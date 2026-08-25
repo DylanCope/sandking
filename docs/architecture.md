@@ -206,18 +206,23 @@ left in place, including a same-byte valid selector published on a different ino
 cleanup never infers ownership from contents alone. Terminal supervision is a fallback
 cleanup boundary. Exclude-file append and cleanup also capture and compare the exact
 generation they read before publishing with a no-clobber link; a concurrent edit causes
-the mutation to rebase instead of replacing the user-owned file. Before changing the
-Project, the Host journals the Project registration and a unique Git-exclusion ownership
-marker in Host-private state. The
-no-clobber publication retains a short-lived filesystem link until the selector's
-device/inode/birth-time identity is added to that journal, closing the process-loss gap
-between creation and durable ownership. Startup reconciles the journal even if process
-loss preceded run acceptance, when no retained run exists. Cleanup removes only the
-marked Host-owned exclude block from the current file, preserving lines added by a
-person or another tool while launch was active. A tracked, unjournaled, or
-identity-mismatched manifest remains Project-owned and is rejected as a collision rather
-than deleted. The transient selector is untracked, and preparation again requires
-unchanged `git status` and `git ls-files` inventories.
+the mutation to rebase instead of replacing the user-owned file. When a writer creates
+the public exclude path after capture, the old capture, new generation, and candidate
+remain recoverable until their observed rules have been made effective at the public
+path and the temporary generations are removed. Before changing the Project, the Host
+journals the Project registration and a unique Git-exclusion ownership marker in
+Host-private state. The no-clobber publication retains a short-lived filesystem link
+until the selector's device/inode/birth-time identity is added to that journal, closing
+the process-loss gap between creation and durable ownership. Startup reconciles the
+journal even if process loss preceded run acceptance, when no retained run exists.
+Cleanup removes only the marked Host-owned exclude block from the current file,
+preserving lines added by a person or another tool while launch was active. Preparation
+failure passes the durably retained selector identity into cleanup and releases the
+journal only after that cleanup succeeds, so a transient first rollback cannot strand a
+readiness selector. A tracked,
+unjournaled, or identity-mismatched manifest remains Project-owned and is rejected as a
+collision rather than deleted. The transient selector is untracked, and preparation
+again requires unchanged `git status` and `git ls-files` inventories.
 
 ## Data/state boundaries
 
