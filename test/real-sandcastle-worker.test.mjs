@@ -119,7 +119,7 @@ for (const mode of [null, "project-pat", "host-gh-session"]) {
       const fakeGhPath = join(fakeBin, "gh");
       await writeFile(fakeGhPath, `#!/bin/sh
 set -eu
-if [ "$1 $2" = "auth status" ]; then
+if [ "$1 $2 $3 $4 $5 $6" = "api user --hostname github.com --jq .login" ]; then
   [ "$GH_TOKEN" = "${githubToken}" ]
   [ ! -e "$GH_CONFIG_DIR/hosts.yml" ]
   exit 0
@@ -280,10 +280,10 @@ exit 97
         /rm -rf "\$\{HOME\}\/\.codex"/);
       if (mode) {
         assert.match(captured.run.hooks.sandbox.onSandboxReady[0].command,
-          /gh auth status --hostname github\.com/);
+          /gh api user --hostname github\.com --jq \.login/);
       } else {
         assert.doesNotMatch(captured.run.hooks.sandbox.onSandboxReady[0].command,
-          /gh auth (?:login|status)/);
+          /gh (?:api|auth)/);
       }
       assert.doesNotMatch(captured.run.hooks.sandbox.onSandboxReady[0].command,
         /sandbox_authentication_secret_261/);

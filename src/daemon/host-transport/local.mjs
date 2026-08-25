@@ -4,6 +4,7 @@ import { WebSocket } from "ws";
 import { digest } from "../../common/digest.mjs";
 import { BrowserProtocolError, serializeRuntimeControl } from "../../browser-protocol.mjs";
 import { ControllerSessionError } from "../../controller-sessions.mjs";
+import { createDestinationWorkerEnvironment } from "../../destination-worker-environment.mjs";
 import { appendPrivateJsonLine, writePrivateJson } from "../../private-state.mjs";
 import {
   MAX_BULK_CHUNK_BYTES,
@@ -180,11 +181,10 @@ const stopChild = async (child) => {
 const launchHost = async (runtimeId) => {
   const hostArgs = [...runtime.hostArgs];
 
-  // This explicit environment is the credential boundary. Controller-side
-  // environment variables, provider credentials, and NODE_OPTIONS do not cross it.
-  const hostEnvironment = process.platform === "win32" && process.env.SystemRoot
-    ? { SystemRoot: process.env.SystemRoot }
-    : { LANG: "C.UTF-8" };
+  // This explicit environment is the credential boundary. Only destination-account
+  // identity and executable discovery values cross; provider credentials and
+  // NODE_OPTIONS do not.
+  const hostEnvironment = createDestinationWorkerEnvironment();
   const child = spawn(process.execPath, hostArgs, {
     cwd: runtime.args.dataDir,
     stdio: ["pipe", "pipe", "pipe"],

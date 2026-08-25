@@ -14,9 +14,14 @@ const adapterPath = new URL(
   "../src/production-sandcastle-adapter/sandcastle-v4.mjs",
   import.meta.url,
 );
+const githubCredentialContractPath = new URL(
+  "../src/github-credential-contract.mjs",
+  import.meta.url,
+);
 const adapterId = "sandcastle-harness-adapter-v1";
 const adapterProtocol = "1.0.0";
 const workerPath = ".sandcastle/real-worker-v2.mjs";
+const githubCredentialContractSource = await readFile(githubCredentialContractPath, "utf8");
 
 const encode = (value) => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 const integrity = (source) => `sha256:${createHash("sha256").update(source).digest("hex")}`;
@@ -63,6 +68,10 @@ const createFixture = async ({
     ],
     executionRuntimeInputs: [{ identity: "openai.codex-cli", version: "0.146.0" }],
   })}\n`);
+  await writeFile(
+    join(executionPath, "github-credential-contract.mjs"),
+    githubCredentialContractSource,
+  );
   await writeExecutable(join(binPath, "codex"), `#!/bin/sh
 if [ "$1" = "--version" ]; then
   printf '%s\\n' 'codex-cli 0.146.0'

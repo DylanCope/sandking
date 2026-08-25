@@ -1,6 +1,7 @@
 import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseGitHubCredential } from "../github-credential-contract.mjs";
 
 export const githubSandboxEnvironment = Object.freeze({
   PATH: "/home/agent/.sandcastle-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -21,29 +22,17 @@ export const githubSandboxReadyCommands = (configured) => [
     'github_executable="$(command -v gh)"',
     'printf \'%s\\n\' \'#!/bin/sh\' \'set -eu\' \'GH_TOKEN="$(cat "${HOME}/.sandcastle-secrets/github-token")"\' \'export GH_TOKEN\' "exec \\"${github_executable}\\" \\"\\$@\\"" > "${HOME}/.sandcastle-bin/gh"',
     'chmod 700 "${HOME}/.sandcastle-bin/gh"',
-    "gh auth status --hostname github.com >/dev/null",
+    "gh api user --hostname github.com --jq .login >/dev/null",
   ] : []),
 ];
 
 export const materializeGitHubCredential = async (credential) => {
   if (credential === null || credential === undefined) return null;
-  if (
-    !credential
-    || typeof credential !== "object"
-    || Array.isArray(credential)
-    || !["project-pat", "host-gh-session"].includes(credential.mode)
-    || typeof credential.token !== "string"
-    || credential.token.length < 1
-    || credential.token.length > 4_096
-    || credential.token.trim() !== credential.token
-    || /[\s\0]/.test(credential.token)
-  ) {
-    throw new Error("github_credential_invalid");
-  }
+  const parsedCredential = parseGitHubCredential(credential);
   const directory = await mkdtemp(join(tmpdir(), "sandking-github-auth-"));
   const path = join(directory, "token");
   try {
-    await writeFile(path, `${credential.token}\n`, { flag: "wx", mode: 0o600 });
+    await writeFile(path, `${parsedCredential.token}\n`, { flag: "wx", mode: 0o600 });
     const details = await lstat(path);
     if (!details.isFile() || details.isSymbolicLink()) {
       throw new Error("github_credential_invalid");

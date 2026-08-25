@@ -32,7 +32,7 @@ const sourceUrlSchema = z.url().refine((value) => {
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
 const SAND_KING_SEED_REVISION = "b356c241ea5ed94e4adf5516ed643b81e2b58e9a";
 const SAND_KING_SEED_SOURCE_INTEGRITY =
-  "sha256:af0280147775b3f61bde9948bd5837c3a220b50ad9a1f37ca19be6e2c76c1218";
+  "sha256:59afb1b9c2c174f133265e3b925558ecd9075781b2765c226297647c1be5df67";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -148,6 +148,12 @@ const productionSeedFileContract = Object.freeze([
   {
     path: ".sandcastle/github-credential-v1.mjs",
     sourcePath: "src/production-sandcastle-adapter/github-credential-v1.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
+    path: "github-credential-contract.mjs",
+    sourcePath: "src/github-credential-contract.mjs",
     source: "sandking-package",
     executable: false,
   },

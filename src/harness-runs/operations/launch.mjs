@@ -3,6 +3,7 @@ import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "../../harness-adapter-identity.mjs";
 import {
+  GitHubCredentialUnavailableError,
   githubCredentialConfigurationOptions as configurationOptionsForGitHubCredentialFailure,
 } from "../../github-credentials.mjs";
 import {
@@ -273,9 +274,6 @@ export const createLaunchOperation = (runtime) => {
           context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
           && context.project.harness.preparation
         ) {
-          githubCredential = await options.resolveGitHubCredential?.(
-            context.project.projectId,
-          ) ?? null;
           providerPreparation = await acquireProductionProvider({
             projectId: context.project.projectId,
             projectPath: context.project.canonicalPath,
@@ -293,6 +291,21 @@ export const createLaunchOperation = (runtime) => {
             !== context.project.harness.boundedConfiguration.adapterProtocol
         ) {
           code = "harness_pin_invalid";
+        }
+        const githubAccessRequired = !code
+          && context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+          && prepared.suppliedCapabilities.includes("github.issues.read");
+        if (githubAccessRequired) {
+          if (!options.resolveGitHubCredential) {
+            throw new GitHubCredentialUnavailableError("github_credential_unconfigured");
+          }
+          githubCredential = await options.resolveGitHubCredential(
+            context.project.projectId,
+            { required: true },
+          );
+          if (!githubCredential) {
+            throw new GitHubCredentialUnavailableError("github_credential_unconfigured");
+          }
         }
       } catch (error) {
         const typedCode = typedErrorCode(error);

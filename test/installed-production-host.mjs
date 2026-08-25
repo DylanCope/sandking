@@ -36,6 +36,10 @@ const manager = await createHarnessRunManager({
   hostId: \`host-\${"7".repeat(24)}\`,
   recordAudit,
   loadLaunchContext: registry.loadLaunchContext,
+  resolveGitHubCredential: async () => ({
+    mode: "project-pat",
+    token: "github_pat_installed_production_fixture_261",
+  }),
 });
 const server = createServer((socket) => {
   socket.setEncoding("utf8");

@@ -7,6 +7,11 @@ import { canonicalJson } from "./common/canonical-json.mjs";
 import { digest } from "./common/digest.mjs";
 import { projectIdPattern } from "./common/identifiers.mjs";
 import { createDestinationWorkerEnvironment } from "./destination-worker-environment.mjs";
+import {
+  GITHUB_CREDENTIAL_AUTHORIZATION_CLASS,
+  HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
+  isGitHubCredentialToken,
+} from "./github-credential-contract.mjs";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "./harness-adapter-identity.mjs";
 import { readJson, writePrivateJson } from "./private-state.mjs";
 import { readProjectState } from "./project-registration/state.mjs";
@@ -15,8 +20,8 @@ const execFileAsync = promisify(execFile);
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const auditIdSchema = z.string().regex(/^audit-[a-f0-9]{24}$/);
 const projectIdSchema = z.string().regex(projectIdPattern);
-const tokenSchema = z.string().min(1).max(4_096).refine(
-  (value) => value.trim() === value && !/[\s\0]/.test(value),
+const tokenSchema = z.string().refine(
+  isGitHubCredentialToken,
   "GitHub tokens cannot contain whitespace or NUL bytes",
 );
 const mutationOutcomeSchema = z.object({
@@ -32,8 +37,7 @@ const githubCredentialStateSchema = z.object({
   mutationOutcomes: z.array(mutationOutcomeSchema).max(256),
 }).strict();
 
-export const HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT =
-  "I understand this grants every unscoped Project my full Host GitHub access.";
+export { HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT };
 
 const configurationOptions = Object.freeze([
   {
@@ -182,7 +186,7 @@ export const createGitHubCredentialManager = async (options) => {
    */
   const configure = (request, target) => withMutationLock(async () => {
     const state = await readState(options.dataDir);
-    const authorizationClass = "host_local_github_credentials";
+    const authorizationClass = GITHUB_CREDENTIAL_AUTHORIZATION_CLASS;
     const idempotencyKeyHash = typeof request.idempotencyKey === "string"
       && request.idempotencyKey.length > 0
       && request.idempotencyKey.length <= 256

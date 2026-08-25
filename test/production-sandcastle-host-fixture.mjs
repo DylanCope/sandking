@@ -146,6 +146,10 @@ export const createProductionFixture = async (
     hostId: `host-${"1".repeat(24)}`,
     recordAudit,
     loadLaunchContext: registration.registry.loadLaunchContext,
+    resolveGitHubCredential: async () => ({
+      mode: "project-pat",
+      token: "github_pat_production_fixture_261",
+    }),
     ...runManagerOptions,
   });
   return { ...registration, manager, recordAudit };

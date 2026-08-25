@@ -26,7 +26,14 @@
       "path": ".sandcastle/github-credential-v1.mjs",
       "sourcePath": "src/production-sandcastle-adapter/github-credential-v1.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:6c8f2fa9dd2ff10c9977f7e6a97dd2efdeadaeb4bd92c52315df5dbe9db202a2",
+      "integrity": "sha256:90d9a8460c85e43712de864e9bd07f5b96d72020e0059e5b456823eb6ca3f367",
+      "executable": false
+    },
+    {
+      "path": "github-credential-contract.mjs",
+      "sourcePath": "src/github-credential-contract.mjs",
+      "source": "sandking-package",
+      "integrity": "sha256:4d4f5b628089478710086196534cf3fd60a728206f546ed28e12884753b1e1bb",
       "executable": false
     },
     {
@@ -47,7 +54,7 @@
       "path": "adapters/sandcastle.mjs",
       "sourcePath": "src/production-sandcastle-adapter/sandcastle-v4.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:0e8780d36d4b056765185f377f7c059557ee82139c48774cef6f74e3763cae00",
+      "integrity": "sha256:a4dbd6777e49c757c4f9f9de6744e72104041388387582ad34ab84d8ec45c3fa",
       "executable": false
     },
     {
@@ -78,7 +85,7 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:d195f9c0b0e4bacad537bdcb5a395a59a997a022ab07bb6cbbde080c8524db12",
+      "integrity": "sha256:418806a39c4274a9d06471e6e5d19028286a4083906b06473cacd280266bb848",
       "executable": false
     },
     {

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test from "node:test";
+import { createLocalHostTransport } from "../src/daemon/host-transport/local.mjs";
+import { createDestinationWorkerEnvironment } from "../src/destination-worker-environment.mjs";
 import {
   GitHubCredentialUnavailableError,
   HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
@@ -13,7 +15,9 @@ import { createHarnessRunManager } from "../src/harness-runs.mjs";
 import {
   createProductionRegistration,
   execFileAsync,
+  installReadyProbeCommands,
   productionLaunchRequest,
+  writeExecutable,
 } from "./production-sandcastle-host-fixture.mjs";
 import {
   HOST_SCHEMA_DIGEST,
@@ -31,6 +35,36 @@ import {
 
 const projectToken = "github_pat_project_specific_secret_261";
 const hostToken = "gho_host_session_secret_261";
+
+const createTransportRuntime = ({ dataDir, hostId, recordAudit, startupId }) => ({
+  args: {
+    allowHostIdentityCreate: true,
+    dataDir,
+    expectedHostId: hostId,
+    startupId,
+  },
+  controllerProtocol: protocolVersion,
+  controllerRequiredCapabilities: [...hostCapabilities],
+  controllerSchemaDigest: HOST_SCHEMA_DIGEST,
+  hostArgs: [
+    join(process.cwd(), "src", "local-host.mjs"),
+    "--data-dir", dataDir,
+    "--allow-host-identity-create",
+  ],
+  hostCapabilities,
+  hostSchemaDigest: HOST_SCHEMA_DIGEST,
+  protocolVersion,
+  recordAudit,
+  state: null,
+});
+
+const readTreeText = async (root) => {
+  const entries = await readdir(root, { recursive: true, withFileTypes: true })
+    .catch(() => []);
+  const files = entries.filter((entry) => entry.isFile());
+  return (await Promise.all(files.map((entry) => readFile(join(entry.parentPath, entry.name),
+    "utf8").catch(() => "")))).join("\n");
+};
 
 test("GitHub credentials are explicitly configured in Host-private state with Project precedence", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-github-credentials-"));
@@ -163,7 +197,9 @@ test("GitHub credentials are explicitly configured in Host-private state with Pr
 
 test("a GitHub-dependent launch fails with typed sanitized guidance for both configuration paths", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-github-credential-launch-"));
+  let restorePath = () => undefined;
   try {
+    restorePath = await installReadyProbeCommands(root);
     const fixture = await createProductionRegistration(root);
     const credentials = await createGitHubCredentialManager({
       dataDir: fixture.dataDir,
@@ -177,8 +213,7 @@ test("a GitHub-dependent launch fails with typed sanitized guidance for both con
       hostId: `host-${"1".repeat(24)}`,
       recordAudit: fixture.recordAudit,
       loadLaunchContext: fixture.registry.loadLaunchContext,
-      resolveGitHubCredential: (projectId) =>
-        credentials.resolveForProject(projectId, { required: true }),
+      resolveGitHubCredential: credentials.resolveForProject,
     });
     const projectId = fixture.project.project.projectId;
 
@@ -218,7 +253,272 @@ test("a GitHub-dependent launch fails with typed sanitized guidance for both con
       "-C", fixture.projectPath, "status", "--porcelain=v1", "--untracked-files=all",
     ])).stdout, "");
   } finally {
+    restorePath();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the normal local Host finds gh on the Host account PATH for global session reuse", {
+  skip: process.platform === "win32" ? "POSIX executable fixture" : false,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-host-gh-path-"));
+  const originalPath = process.env.PATH;
+  let transport;
+  try {
+    const fixture = await createProductionRegistration(root);
+    const binPath = join(root, "host-account-bin");
+    const ghInvokedPath = join(root, "host-gh-invoked");
+    await mkdir(binPath);
+    await Promise.all([
+      writeExecutable(join(binPath, "gh"), `#!/bin/sh
+set -eu
+if [ "$1 $2 $3 $4" = "auth token --hostname github.com" ]; then
+  printf '%s\\n' 'invoked' > '${ghInvokedPath}'
+  printf '%s\\n' '${hostToken}'
+  exit 0
+fi
+exit 94
+`),
+      writeExecutable(join(binPath, "codex"), `#!/bin/sh
+if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 0.146.0'; exit 0; fi
+if [ "$1 $2" = "login status" ]; then printf '%s\\n' 'Logged in using fixture'; exit 0; fi
+exit 91
+`),
+      writeExecutable(join(binPath, "npm"), `#!/bin/sh
+if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
+if [ "$1" = "ci" ]; then exit 0; fi
+exit 92
+`),
+      writeExecutable(join(binPath, "docker"), `#!/bin/sh
+if [ "$1 $2" = "version --format" ]; then printf '%s\\n' '27.5.1'; exit 0; fi
+if [ "$1 $2 $3" = "image inspect sandcastle:sandking-real-worker" ]; then
+  printf '%s\\n' 'sha256:${"d".repeat(64)}'
+  exit 0
+fi
+exit 93
+`),
+    ]);
+    process.env.PATH = `${binPath}${delimiter}${originalPath ?? ""}`;
+
+    const hostId = `host-${"6".repeat(24)}`;
+    const runtime = createTransportRuntime({
+      dataDir: fixture.dataDir,
+      hostId,
+      recordAudit: fixture.recordAudit,
+      startupId: "github-host-path-qualification",
+    });
+    transport = createLocalHostTransport(runtime);
+    await transport.launchHost(`runtime-${"7".repeat(24)}`);
+
+    const unconfigured = await transport.requestHostOperation({
+      type: "harness.run.launch",
+      ...productionLaunchRequest(fixture.project.project.projectId, {
+        requestId: "reject-unconfigured-shipped-host-launch",
+        idempotencyKeyHash: `sha256:${"8".repeat(64)}`,
+      }),
+    });
+    assert.equal(unconfigured.type, "harness.run.launch.failure");
+    assert.equal(unconfigured.code, "github_credential_unconfigured");
+    assert.deepEqual(unconfigured.configurationOptions.map(({ mode }) => mode), [
+      "project-pat",
+      "host-gh-session",
+    ]);
+
+    const enabled = await transport.requestHostOperation({
+      type: "github.credentials.host.configure",
+      requestId: "enable-host-path-session",
+      action: "enable",
+      riskAcknowledgement: HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
+      authorizationClass: "host_local_github_credentials",
+      idempotencyKey: "enable-host-path-session",
+      expectedRevision: 0,
+    });
+    assert.equal(enabled.type, "github.credentials.configure.result");
+
+    const launched = await transport.requestHostOperation({
+      type: "harness.run.launch",
+      ...productionLaunchRequest(fixture.project.project.projectId, {
+        requestId: "launch-with-host-path-session",
+      }),
+    });
+    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
+    assert.equal(await readFile(ghInvokedPath, "utf8"), "invoked\n");
+  } finally {
+    await transport?.stopHost().catch(() => undefined);
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("both credential modes authenticate to GitHub through the real Host and Docker boundary without disclosure", {
+  skip: process.env.SANDKING_REAL_GITHUB_CREDENTIAL_QUALIFICATION === "1"
+    && process.platform !== "win32"
+    ? false
+    : "requires the explicit real GitHub credential qualification gate on a POSIX Docker Host",
+  timeout: 5 * 60_000,
+}, async (t) => {
+  const cleanHostEnvironment = createDestinationWorkerEnvironment();
+  const [{ stdout: projectTokenOutput }, { stdout: hostTokenOutput }] = await Promise.all([
+    execFileAsync("gh", ["auth", "token", "--hostname", "github.com"], {
+      env: process.env,
+      timeout: 10_000,
+      maxBuffer: 16_384,
+    }),
+    execFileAsync("gh", ["auth", "token", "--hostname", "github.com"], {
+      env: cleanHostEnvironment,
+      timeout: 10_000,
+      maxBuffer: 16_384,
+    }),
+    execFileAsync("docker", ["version", "--format", "{{.Server.Version}}"], {
+      env: cleanHostEnvironment,
+      timeout: 10_000,
+    }),
+    execFileAsync("codex", ["login", "status"], {
+      env: cleanHostEnvironment,
+      timeout: 10_000,
+    }),
+  ]);
+  const realTokens = {
+    "project-pat": projectTokenOutput.trim(),
+    "host-gh-session": hostTokenOutput.trim(),
+  };
+
+  for (const [index, mode] of ["project-pat", "host-gh-session"].entries()) {
+    await t.test(mode, async () => {
+      const root = await mkdtemp(join(tmpdir(), `sandking-real-github-${mode}-`));
+      const token = realTokens[mode];
+      const existingContainers = new Set((await execFileAsync("docker", [
+        "ps", "--filter", "ancestor=sandcastle:sandking-real-worker", "--format", "{{.ID}}",
+      ], { env: cleanHostEnvironment })).stdout.trim().split("\n").filter(Boolean));
+      let transport;
+      let observedContainerId = null;
+      try {
+        const fixture = await createProductionRegistration(root);
+        const hostId = `host-${String(index + 8).repeat(24)}`;
+        const runtime = createTransportRuntime({
+          dataDir: fixture.dataDir,
+          hostId,
+          recordAudit: fixture.recordAudit,
+          startupId: `real-github-${mode}`,
+        });
+        transport = createLocalHostTransport(runtime);
+        await transport.launchHost(`runtime-${String(index + 8).repeat(24)}`);
+
+        const configured = mode === "project-pat"
+          ? await transport.requestHostOperation({
+              type: "github.credentials.project.configure",
+              requestId: `configure-real-${mode}`,
+              projectId: fixture.project.project.projectId,
+              action: "set",
+              personalAccessToken: token,
+              authorizationClass: "host_local_github_credentials",
+              idempotencyKey: `configure-real-${mode}`,
+              expectedRevision: 0,
+            })
+          : await transport.requestHostOperation({
+              type: "github.credentials.host.configure",
+              requestId: `configure-real-${mode}`,
+              action: "enable",
+              riskAcknowledgement: HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
+              authorizationClass: "host_local_github_credentials",
+              idempotencyKey: `configure-real-${mode}`,
+              expectedRevision: 0,
+            });
+        assert.equal(configured.type, "github.credentials.configure.result");
+
+        const controllerId = `runtime-${String(index + 3).repeat(24)}`;
+        const controllerSessionId = `controller-session-${String(index + 3).repeat(24)}`;
+        const launched = await transport.requestHostOperation({
+          type: "harness.run.launch",
+          ...productionLaunchRequest(fixture.project.project.projectId, {
+            requestId: `launch-real-${mode}`,
+            controllerId,
+            controllerSessionId,
+            idempotencyKeyHash: `sha256:${String(index + 6).repeat(64)}`,
+          }),
+        });
+        assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
+
+        const authenticationDeadline = Date.now() + 60_000;
+        let containerArguments = "";
+        while (Date.now() < authenticationDeadline) {
+          const containerIds = (await execFileAsync("docker", [
+            "ps", "--filter", "ancestor=sandcastle:sandking-real-worker", "--format", "{{.ID}}",
+          ], { env: cleanHostEnvironment })).stdout.trim().split("\n").filter(Boolean);
+          observedContainerId = containerIds.find((id) => !existingContainers.has(id)) ?? null;
+          if (observedContainerId) {
+            containerArguments = (await execFileAsync("docker", [
+              "top", observedContainerId, "-eo", "args",
+            ], { env: cleanHostEnvironment }).catch(() => ({ stdout: "" }))).stdout;
+            if (/\bcodex\b/.test(containerArguments)) break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        assert.match(containerArguments, /\bcodex\b/,
+          "the Codex process starts only after the real gh api authentication hook succeeds");
+
+        const [hostArguments, containerEnvironment] = await Promise.all([
+          execFileAsync("ps", ["-ww", "-axo", "command="], {
+            env: cleanHostEnvironment,
+            maxBuffer: 2 * 1024 * 1024,
+          }).then(({ stdout }) => stdout),
+          execFileAsync("docker", [
+            "inspect", observedContainerId, "--format", "{{json .Config.Env}}",
+          ], { env: cleanHostEnvironment }).then(({ stdout }) => stdout),
+        ]);
+        assert.equal(hostArguments.includes(token), false);
+        assert.equal(containerArguments.includes(token), false);
+        assert.equal(containerEnvironment.includes(token), false);
+
+        const cancelled = await transport.requestHostOperation({
+          type: "harness.run.cancel",
+          requestId: `cancel-real-${mode}`,
+          harnessRunId: launched.run.harnessRunId,
+          controllerId,
+          controllerSessionId,
+          source: "controller-cli",
+          authorizationClass: "harness_run_cancellation",
+          idempotencyKeyHash: `sha256:${String(index + 4).repeat(64)}`,
+        });
+        assert.equal(cancelled.type, "harness.run.cancel.result", JSON.stringify(cancelled));
+
+        const terminalDeadline = Date.now() + 60_000;
+        let observation;
+        while (Date.now() < terminalDeadline) {
+          observation = await transport.requestHostOperation({
+            type: "harness.run.observe",
+            requestId: `observe-real-${mode}`,
+            harnessRunId: launched.run.harnessRunId,
+            afterSequence: 0,
+          });
+          if (["succeeded", "failed", "cancelled"].includes(observation.run?.status)) break;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        assert.ok(["succeeded", "failed", "cancelled"].includes(observation?.run?.status));
+
+        const retained = [
+          await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
+          await readFile(join(fixture.dataDir, "audit.jsonl"), "utf8"),
+          await readTreeText(join(
+            fixture.dataDir,
+            "harness-runs",
+            launched.run.harnessRunId,
+          )),
+        ].join("\n");
+        assert.equal(retained.includes(token), false);
+        assert.equal(JSON.stringify(observation).includes(token), false);
+        assert.equal((await readTreeText(fixture.projectPath)).includes(token), false);
+      } finally {
+        await transport?.stopHost().catch(() => undefined);
+        if (observedContainerId) {
+          await execFileAsync("docker", ["rm", "--force", observedContainerId], {
+            env: cleanHostEnvironment,
+          }).catch(() => undefined);
+        }
+        await rm(root, { recursive: true, force: true });
+      }
+    });
   }
 });
 

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { createDestinationWorkerEnvironment } from "./destination-worker-environment.mjs";
+import { isGitHubCredential } from "./github-credential-contract.mjs";
 import {
   CONFORMANCE_HARNESS_ADAPTER_ID,
   SANDCASTLE_HARNESS_ADAPTER_ID,
@@ -256,11 +257,7 @@ export const retainedExecutionInputSchema = z.object({
     Buffer.byteLength(value, "utf8") <= 12_000),
 }).strict();
 
-export const githubCredentialSchema = z.object({
-  mode: z.enum(["project-pat", "host-gh-session"]),
-  token: z.string().min(1).max(4_096).refine((value) =>
-    value.trim() === value && !/[\s\0]/.test(value)),
-}).strict();
+export const githubCredentialSchema = z.unknown().refine(isGitHubCredential);
 
 export const harnessRunStartRequestSchema = z.object({
   type: z.literal("harness.run.start"),

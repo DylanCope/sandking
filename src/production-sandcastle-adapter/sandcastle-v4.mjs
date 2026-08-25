@@ -5,6 +5,11 @@ import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
+const githubCredentialContractUrl = import.meta.url.endsWith("/[eval1]")
+  ? pathToFileURL(join(process.cwd(), "github-credential-contract.mjs")).href
+  : new URL("../github-credential-contract.mjs", import.meta.url).href;
+const { parseGitHubCredential } = await import(githubCredentialContractUrl);
+
 const adapterProtocol = "1.0.0";
 const adapterId = "sandcastle-harness-adapter-v1";
 const capabilities = ["harness.launch.prepare.v1", "harness.run.v1"];
@@ -136,22 +141,12 @@ const readRunStart = (execution) => {
     retainedExecutionInputs.set(input.path, input.source);
   }
   const githubCredential = message.githubCredential ?? null;
-  if (githubCredential !== null && (
-    !githubCredential
-    || typeof githubCredential !== "object"
-    || Array.isArray(githubCredential)
-    || JSON.stringify(Object.keys(githubCredential).sort())
-      !== JSON.stringify(["mode", "token"])
-    || !["project-pat", "host-gh-session"].includes(githubCredential.mode)
-    || typeof githubCredential.token !== "string"
-    || githubCredential.token.length < 1
-    || githubCredential.token.length > 4_096
-    || githubCredential.token.trim() !== githubCredential.token
-    || /[\s\0]/.test(githubCredential.token)
-  )) {
-    throw new Error("harness_run_start_invalid");
-  }
-  return { retainedExecutionInputs, githubCredential };
+  return {
+    retainedExecutionInputs,
+    githubCredential: githubCredential === null
+      ? null
+      : parseGitHubCredential(githubCredential, "harness_run_start_invalid"),
+  };
 };
 
 const parseParameters = (encoded) => {
@@ -764,7 +759,9 @@ if (!invokedAsAdapter) {
       adapterProtocol,
       adapterId,
       negotiatedCapabilities: ["harness.launch.prepare.v1"],
-      suppliedCapabilities: ["github.issues.read", "project.git.read"],
+      suppliedCapabilities: readiness.realProvider
+        ? ["github.issues.read", "project.git.read"]
+        : ["project.git.read"],
       retainedExecutionInputs: [readiness.workerPath],
       sanitizedPreview: {
         summary: readiness.realProvider

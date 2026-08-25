@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { identifierSchemas } from "./common/identifiers.mjs";
 import {
+  GITHUB_CREDENTIAL_AUTHORIZATION_CLASS,
+  GITHUB_CREDENTIAL_MODES,
+  HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
+  isGitHubCredentialToken,
+} from "./github-credential-contract.mjs";
+import {
   projectHarnessAdapterIdentityAgrees,
   harnessRegistrationSchema,
   projectRegistrationSchema,
@@ -204,13 +210,11 @@ const hostIdentityFailureSchema = z.object({
 }).strip();
 
 const githubCredentialAuthorizationClassSchema = z.literal(
-  "host_local_github_credentials",
+  GITHUB_CREDENTIAL_AUTHORIZATION_CLASS,
 );
-const githubCredentialTokenSchema = z.string().min(1).max(4_096).refine(
-  (value) => value.trim() === value && !/[\s\0]/.test(value),
-);
+const githubCredentialTokenSchema = z.string().refine(isGitHubCredentialToken);
 const githubCredentialConfigurationOptionSchema = z.object({
-  mode: z.enum(["project-pat", "host-gh-session"]),
+  mode: z.enum(GITHUB_CREDENTIAL_MODES),
   guidance: z.string().min(1).max(1_024),
 }).strict();
 const githubCredentialStatusShape = {
@@ -218,7 +222,7 @@ const githubCredentialStatusShape = {
   revision: z.number().int().nonnegative(),
   projectPat: z.enum(["configured", "not-configured"]).nullable(),
   hostGhSessionReuse: z.enum(["enabled", "disabled"]),
-  effectiveMode: z.enum(["project-pat", "host-gh-session"]).nullable(),
+  effectiveMode: z.enum(GITHUB_CREDENTIAL_MODES).nullable(),
   configurationOptions: z.array(githubCredentialConfigurationOptionSchema).max(2),
 };
 const githubCredentialsInspectSchema = z.object({
@@ -255,9 +259,7 @@ const githubCredentialsHostConfigureSchema = z.object({
   type: z.literal("github.credentials.host.configure"),
   requestId: identifierSchema,
   action: z.enum(["enable", "disable"]),
-  riskAcknowledgement: z.literal(
-    "I understand this grants every unscoped Project my full Host GitHub access.",
-  ).optional(),
+  riskAcknowledgement: z.literal(HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT).optional(),
   authorizationClass: githubCredentialAuthorizationClassSchema,
   idempotencyKey: z.string().min(1).max(256),
   expectedRevision: z.number().int().nonnegative(),
