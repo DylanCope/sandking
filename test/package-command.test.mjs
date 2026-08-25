@@ -241,9 +241,53 @@ test("an installed production package launches outside the source checkout", asy
     ], { cwd: root, env: process.env })).stdout);
     assert.equal(disabled.hostGhSessionReuse, "disabled");
     assert.equal(disabled.code, "github_credentials_unconfigured");
+
+    const concurrentActions = Array.from({ length: 16 }, (_, index) => {
+      if (index % 2 === 0) {
+        return execFileWithStdin(
+          command,
+          [
+            "github-credentials", "set-project-pat", projectId, ...credentialArgs,
+          ],
+          `github_pat_concurrent_secret_261_${index}\n`,
+          { cwd: root, env: process.env },
+        );
+      }
+      return execFileAsync(command, [
+        "github-credentials", "enable-host-session",
+        "--acknowledge-full-host-access", ...credentialArgs,
+      ], { cwd: root, env: process.env });
+    });
+    const concurrentOutcomes = await Promise.allSettled(concurrentActions);
+    assert.equal(
+      concurrentOutcomes.every(({ status }) => status === "fulfilled"),
+      true,
+      concurrentOutcomes
+        .filter(({ status }) => status === "rejected")
+        .map(({ reason }) => reason.stderr ?? reason.message)
+        .join("\n"),
+    );
+    const retainedCredentialState = JSON.parse(await readFile(
+      join(credentialFixture.dataDir, "github-credentials.json"),
+      "utf8",
+    ));
+    assert.equal(retainedCredentialState.revision, 4 + concurrentActions.length);
+    assert.equal(
+      retainedCredentialState.mutationOutcomes.length,
+      4 + concurrentActions.length,
+    );
+    assert.equal(retainedCredentialState.reuseHostGhSession, true);
+    assert.equal(
+      Object.hasOwn(retainedCredentialState.projectPersonalAccessTokens, projectId),
+      true,
+    );
+    assert.match(
+      await readFile(join(credentialFixture.dataDir, "host-identity.json"), "utf8"),
+      /"hostId": "host-[a-f0-9]{24}"/,
+    );
     assert.doesNotMatch(
       await readFile(join(credentialFixture.dataDir, "audit.jsonl"), "utf8"),
-      /installed_cli_secret_261/,
+      /installed_cli_secret_261|concurrent_secret_261/,
     );
     assert.equal((await execFileAsync("git", [
       "-C", credentialFixture.projectPath,

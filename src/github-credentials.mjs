@@ -9,11 +9,14 @@ import { projectIdPattern } from "./common/identifiers.mjs";
 import { createDestinationWorkerEnvironment } from "./destination-worker-environment.mjs";
 import {
   GITHUB_CREDENTIAL_AUTHORIZATION_CLASS,
+  GitHubCredentialUnavailableError,
   HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
+  githubCredentialConfigurationOptions,
   isGitHubCredentialToken,
 } from "./github-credential-contract.mjs";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "./harness-adapter-identity.mjs";
 import { readJson, writePrivateJson } from "./private-state.mjs";
+import { withPrivateStateLock } from "./private-state-lock.mjs";
 import { readProjectState } from "./project-registration/state.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -37,30 +40,15 @@ const githubCredentialStateSchema = z.object({
   mutationOutcomes: z.array(mutationOutcomeSchema).max(256),
 }).strict();
 
-export { HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT };
+export {
+  GitHubCredentialUnavailableError,
+  HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
+  githubCredentialConfigurationOptions,
+};
 
-const configurationOptions = Object.freeze([
-  {
-    mode: "project-pat",
-    guidance: "Configure a fine-grained Project PAT limited to this repository with Contents write, Pull requests write, and Issues read/write permissions.",
-  },
-  {
-    mode: "host-gh-session",
-    guidance: `Explicitly enable reuse of the full Host GitHub access returned by \`gh auth token\`. A Project PAT still takes precedence. Acknowledgement required: ${HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT}`,
-  },
-]);
-
-/** @param {"github_credential_unconfigured" | "github_host_gh_session_unavailable"} code */
-export const githubCredentialConfigurationOptions = (code) =>
-  code === "github_credential_unconfigured"
-    ? structuredClone(configurationOptions)
-    : [
-        structuredClone(configurationOptions[0]),
-        {
-          mode: "host-gh-session",
-          guidance: "Run `gh auth login` on this Host to repair the explicitly enabled Host session reuse mode.",
-        },
-      ];
+const configurationOptions = githubCredentialConfigurationOptions(
+  "github_credential_unconfigured",
+);
 
 const initialState = () => ({
   schemaVersion: 1,
@@ -73,19 +61,6 @@ const initialState = () => ({
 /** @param {string} dataDir */
 export const githubCredentialStatePath = (dataDir) =>
   join(dataDir, "github-credentials.json");
-
-export class GitHubCredentialUnavailableError extends Error {
-  /** @param {"github_credential_unconfigured" | "github_host_gh_session_unavailable"} code */
-  constructor(code) {
-    const message = code === "github_credential_unconfigured"
-      ? "GitHub authentication is not configured. Set a fine-grained Project PAT, or explicitly enable reuse of this Host's gh CLI session."
-      : "The explicitly enabled Host gh CLI session did not provide a GitHub token. Run `gh auth login` on the Host or configure a fine-grained Project PAT.";
-    super(message);
-    this.name = "GitHubCredentialUnavailableError";
-    this.code = code;
-    this.configurationOptions = githubCredentialConfigurationOptions(code);
-  }
-}
 
 /** @param {string} dataDir */
 const readState = async (dataDir) => {
@@ -132,7 +107,15 @@ export const createGitHubCredentialManager = async (options) => {
   let mutationQueue = Promise.resolve();
   /** @template T @param {() => Promise<T>} operation */
   const withMutationLock = (operation) => {
-    const current = mutationQueue.catch(() => undefined).then(operation);
+    const current = mutationQueue.catch(() => undefined).then(() =>
+      withPrivateStateLock(
+        join(options.dataDir, "github-credentials.lock"),
+        operation,
+        {
+          timeoutMs: 12_000,
+          timeoutCode: "github_credential_lock_timeout",
+        },
+      ));
     mutationQueue = current.then(() => undefined, () => undefined);
     return current;
   };

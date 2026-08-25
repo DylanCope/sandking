@@ -299,12 +299,32 @@ const main = async () => {
     dataDir,
     recordAudit: recordProjectAudit,
   });
-  const harnessRuns = await createHarnessRunManager({
-    dataDir,
-    hostId: negotiatedHostId,
-    recordAudit: recordProjectAudit,
-    loadLaunchContext: projectRegistry.loadLaunchContext,
-    resolveGitHubCredential: githubCredentials.resolveForProject,
+  let harnessRunsPromise;
+  const loadHarnessRuns = () => {
+    harnessRunsPromise ??= createHarnessRunManager({
+      dataDir,
+      hostId: negotiatedHostId,
+      recordAudit: recordProjectAudit,
+      loadLaunchContext: projectRegistry.loadLaunchContext,
+      resolveGitHubCredential: githubCredentials.resolveForProject,
+    });
+    return harnessRunsPromise;
+  };
+  const harnessRuns = /** @type {any} */ ({
+    launch: async (/** @type {any} */ request) =>
+      (await loadHarnessRuns()).launch(request),
+    cancel: async (/** @type {any} */ request) =>
+      (await loadHarnessRuns()).cancel(request),
+    recover: async (/** @type {any} */ request) =>
+      (await loadHarnessRuns()).recover(request),
+    lookupRecovery: async (/** @type {any} */ request) =>
+      (await loadHarnessRuns()).lookupRecovery(request),
+    lookup: async (/** @type {any} */ request) =>
+      (await loadHarnessRuns()).lookup(request),
+    observe: async (/** @type {any} */ request) =>
+      (await loadHarnessRuns()).observe(request),
+    readLogs: async (/** @type {any} */ request) =>
+      (await loadHarnessRuns()).readLogs(request),
   });
   // The Host is a durable process boundary. It remains available after
   // negotiation and keeps control and opaque bulk frames structurally distinct.

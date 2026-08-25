@@ -176,6 +176,19 @@ test("real-provider preparation fails closed unless its exact gate and credentia
       }
       assert.deepEqual(await waitForExit(invocation.child), { code: 0, signal: null });
     }
+    const issueInvocation = await invoke({
+      command: "prepare",
+      encoded: encode({ issueNumber: 261 }),
+      executionPath: readyOnStderr.executionPath,
+      environment: readyOnStderr.environment,
+    });
+    const issueFrame = await readHarnessAdapterFrame(issueInvocation.channel);
+    assert.equal(issueFrame.type, "harness.launch.prepared");
+    assert.deepEqual(issueFrame.suppliedCapabilities, [
+      "github.issues.read",
+      "project.git.read",
+    ]);
+    assert.deepEqual(await waitForExit(issueInvocation.child), { code: 0, signal: null });
   } finally {
     await Promise.all([
       disabled,

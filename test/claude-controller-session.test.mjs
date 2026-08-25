@@ -269,7 +269,17 @@ if (args.length === 1 && args[0] === "--version") {
               }
             : launchAttempts === 2 ? {
                 type: "harness.run.launch.failure",
-                code: "harness_workspace_invalid",
+                code: "github_credential_unconfigured",
+                configurationOptions: [
+                  {
+                    mode: "project-pat",
+                    guidance: "Configure a fine-grained Project PAT for this repository.",
+                  },
+                  {
+                    mode: "host-gh-session",
+                    guidance: "Explicitly enable reuse of this Host's gh CLI session.",
+                  },
+                ],
               } : {
                 type: "harness.run.launch.result",
                 code: "harness_run_created",
@@ -366,9 +376,8 @@ if (args.length === 1 && args[0] === "--version") {
       .catch(() => assert.fail(`ordinary CLI launch output missing:\n${output.join("")}`));
     await enter("launch 152");
     await waitFor(
-      () => output.join("").includes(
-        `LAUNCH_RESULT {"status":1,"stdout":"","stderr":"harness_workspace_invalid"}`,
-      ),
+      () => /LAUNCH_RESULT .*github_credential_unconfigured.*fine-grained Project PAT.*Host.*gh CLI session/is
+        .test(output.join("")),
       18_000,
     ).catch(() => assert.fail(`typed CLI failure output missing:\n${output.join("")}`));
     await enter("launch 152");

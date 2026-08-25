@@ -759,7 +759,10 @@ if (!invokedAsAdapter) {
       adapterProtocol,
       adapterId,
       negotiatedCapabilities: ["harness.launch.prepare.v1"],
-      suppliedCapabilities: ["project.git.read"],
+      suppliedCapabilities: [
+        ...(parameters.issueNumber === undefined ? [] : ["github.issues.read"]),
+        "project.git.read",
+      ],
       retainedExecutionInputs: [readiness.workerPath],
       sanitizedPreview: {
         summary: readiness.realProvider

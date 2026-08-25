@@ -5,8 +5,7 @@ import {
   HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
   isGitHubCredentialToken,
 } from "./github-credential-contract.mjs";
-import { createGitHubCredentialManager } from "./github-credentials.mjs";
-import { createHostOperationAuditRecorder } from "./host-audit.mjs";
+import { withLocalHostControl } from "./local-host-client.mjs";
 import { resolveDataDir } from "./runtime.mjs";
 
 export const githubCredentialsHelp = `Usage:
@@ -137,16 +136,20 @@ export const runGitHubCredentialsCli = async (argv) => {
   }
 
   const dataDir = resolveDataDir(options.dataDir);
-  const manager = await createGitHubCredentialManager({
-    dataDir,
-    recordAudit: createHostOperationAuditRecorder(dataDir),
-  });
   const requestId = `github-cli-${randomBytes(12).toString("hex")}`;
-  let outcome;
-  if (inspectAction) {
-    outcome = await manager.inspect({ requestId, ...(projectId ? { projectId } : {}) });
-  } else {
-    const inspected = await manager.inspect({
+  const personalAccessToken = options.action === "set-project-pat"
+    ? await readProjectPat()
+    : undefined;
+  const outcome = await withLocalHostControl(dataDir, async (requestHostOperation) => {
+    if (inspectAction) {
+      return requestHostOperation({
+        type: "github.credentials.inspect",
+        requestId,
+        ...(projectId ? { projectId } : {}),
+      });
+    }
+    const inspected = await requestHostOperation({
+      type: "github.credentials.inspect",
       requestId: `github-cli-${randomBytes(12).toString("hex")}`,
       ...(projectId ? { projectId } : {}),
     });
@@ -156,28 +159,27 @@ export const runGitHubCredentialsCli = async (argv) => {
       idempotencyKey: randomBytes(32).toString("hex"),
       expectedRevision: inspected.revision,
     };
-    if (projectAction) {
-      outcome = await manager.configureProject({
-        ...mutation,
-        projectId,
-        action: options.action === "set-project-pat" ? "set" : "clear",
-        ...(options.action === "set-project-pat"
-          ? { personalAccessToken: await readProjectPat() }
-          : {}),
-      });
-    } else {
-      outcome = await manager.configureHost({
-        ...mutation,
-        action: options.action === "enable-host-session" ? "enable" : "disable",
-        ...(options.action === "enable-host-session"
-          ? { riskAcknowledgement: HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT }
-          : {}),
-      });
+    const configured = projectAction
+      ? await requestHostOperation({
+          type: "github.credentials.project.configure",
+          ...mutation,
+          projectId,
+          action: options.action === "set-project-pat" ? "set" : "clear",
+          ...(personalAccessToken === undefined ? {} : { personalAccessToken }),
+        })
+      : await requestHostOperation({
+          type: "github.credentials.host.configure",
+          ...mutation,
+          action: options.action === "enable-host-session" ? "enable" : "disable",
+          ...(options.action === "enable-host-session"
+            ? { riskAcknowledgement: HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT }
+            : {}),
+        });
+    if (configured.type === "github.credentials.configure.failure") {
+      throw new Error(`GitHub credential configuration failed: ${configured.code}. Retry after inspecting the current configuration.`);
     }
-    if (outcome.type === "github.credentials.configure.failure") {
-      throw new Error(`GitHub credential configuration failed: ${outcome.code}. Retry after inspecting the current configuration.`);
-    }
-  }
+    return configured;
+  });
   const status = publicStatus(outcome);
   return {
     output: options.json ? JSON.stringify(status) : formatStatus(status),

@@ -1,7 +1,6 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { chmod, open, readFile, stat } from "node:fs/promises";
+import { chmod, open, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +16,7 @@ import {
   removePrivateFile,
   writePrivateJson,
 } from "./private-state.mjs";
+import { pidIsRunning, withPrivateStateLock } from "./private-state-lock.mjs";
 import {
   acceptControllerHostBinding,
   prepareControllerHostBinding,
@@ -404,57 +404,9 @@ const ensureBootstrapDerivationKey = async (dataDir) => {
   }
 };
 
-/** @param {number} pid */
-export const pidIsRunning = (pid) => {
-  if (!Number.isSafeInteger(pid) || pid <= 1) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    if (process.platform === "linux") {
-      try {
-        const fields = readFileSync(`/proc/${pid}/stat`, "utf8").split(" ");
-        if (fields[2] === "Z") {
-          return false;
-        }
-      } catch {
-        return false;
-      }
-    }
-    return true;
-  } catch (error) {
-    return hasErrorCode(error, "EPERM");
-  }
-};
+export { pidIsRunning };
 
 const defaultDataDir = () => join(homedir(), ".sandking");
-
-/** @param {string} lockPath */
-const inspectLaunchLock = async (lockPath) => {
-  try {
-    return {
-      owner: await readJson(lockPath, null),
-      recentlyIncomplete: false,
-    };
-  } catch (error) {
-    if (!(error instanceof SyntaxError)) {
-      throw error;
-    }
-    const lockStat = await stat(lockPath).catch(() => null);
-    return {
-      owner: null,
-      recentlyIncomplete: Boolean(lockStat && Date.now() - lockStat.mtimeMs < 1_000),
-    };
-  }
-};
-
-/** @param {string} lockPath @param {string} lockId */
-const releaseOwnedLock = async (lockPath, lockId) => {
-  const { owner: current } = await inspectLaunchLock(lockPath);
-  if (current && typeof current === "object" && current.lockId === lockId) {
-    await removePrivateFile(lockPath);
-  }
-};
 
 /**
  * @template T
@@ -464,93 +416,10 @@ const releaseOwnedLock = async (lockPath, lockId) => {
  * @returns {Promise<T>}
  */
 const withRuntimeLock = async (dataDir, operation, timeoutMs = LOCK_TIMEOUT_MS) => {
-  const lockPath = join(dataDir, "runtime.lock");
-  const recoveryPath = join(dataDir, "runtime.lock.recovery");
-  const lockId = randomBytes(12).toString("hex");
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() < deadline) {
-    const recoveryText = await readFile(recoveryPath, "utf8").catch(() => null);
-    if (recoveryText !== null) {
-      let recoveryPid = Number.NaN;
-      try {
-        recoveryPid = Number(JSON.parse(recoveryText).pid);
-      } catch {
-        const recoveryStat = await stat(recoveryPath).catch(() => null);
-        if (recoveryStat && Date.now() - recoveryStat.mtimeMs < 1_000) {
-          await delay(25);
-          continue;
-        }
-      }
-      if (pidIsRunning(recoveryPid)) {
-        await delay(25);
-        continue;
-      }
-      await removePrivateFile(recoveryPath);
-      continue;
-    }
-    try {
-      const handle = await open(lockPath, "wx", PRIVATE_FILE_MODE);
-      try {
-        await handle.writeFile(`${JSON.stringify({ pid: process.pid, lockId })}\n`, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await chmod(lockPath, PRIVATE_FILE_MODE);
-
-      try {
-        return await operation();
-      } finally {
-        await releaseOwnedLock(lockPath, lockId);
-      }
-    } catch (error) {
-      if (!hasErrorCode(error, "EEXIST")) {
-        throw error;
-      }
-
-      const inspectedOwner = await inspectLaunchLock(lockPath);
-      if (inspectedOwner.recentlyIncomplete) {
-        await delay(25);
-        continue;
-      }
-      const owner = inspectedOwner.owner;
-      const ownerPid = owner && typeof owner === "object" && "pid" in owner
-        ? Number(owner.pid)
-        : Number.NaN;
-      if (!pidIsRunning(ownerPid)) {
-        let recoveryHandle;
-        try {
-          recoveryHandle = await open(recoveryPath, "wx", PRIVATE_FILE_MODE);
-          await recoveryHandle.writeFile(`${JSON.stringify({ pid: process.pid })}\n`, "utf8");
-          await recoveryHandle.sync();
-          const confirmedInspection = await inspectLaunchLock(lockPath);
-          const confirmedOwner = confirmedInspection.owner;
-          const confirmedPid = confirmedOwner
-            && typeof confirmedOwner === "object"
-            && "pid" in confirmedOwner
-            ? Number(confirmedOwner.pid)
-            : Number.NaN;
-          if (!confirmedInspection.recentlyIncomplete && !pidIsRunning(confirmedPid)) {
-            await removePrivateFile(lockPath);
-          }
-        } catch (recoveryError) {
-          if (!hasErrorCode(recoveryError, "EEXIST")) {
-            throw recoveryError;
-          }
-        } finally {
-          await recoveryHandle?.close();
-          if (recoveryHandle) {
-            await removePrivateFile(recoveryPath);
-          }
-        }
-        continue;
-      }
-      await delay(50);
-    }
-  }
-
-  throw new Error("runtime_lock_timeout");
+  return withPrivateStateLock(join(dataDir, "runtime.lock"), operation, {
+    timeoutMs,
+    timeoutCode: "runtime_lock_timeout",
+  });
 };
 
 /**
