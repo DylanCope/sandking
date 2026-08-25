@@ -351,20 +351,10 @@ export const createGitHubCredentialManager = async (options) => {
     return null;
   };
 
-  /** @param {string} projectId */
-  const requireForProject = async (projectId) => {
-    const credential = await resolveForProject(projectId);
-    if (!credential) {
-      throw new GitHubCredentialUnavailableError(GITHUB_CREDENTIAL_UNCONFIGURED_CODE);
-    }
-    return credential;
-  };
-
   return {
     configureHost,
     configureProject,
     inspect,
-    requireForProject,
     resolveForProject,
   };
 };

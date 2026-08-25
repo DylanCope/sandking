@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import { createLocalHostTransport } from "../src/daemon/host-transport/local.mjs";
 import { createDestinationWorkerEnvironment } from "../src/destination-worker-environment.mjs";
 import {
-  GitHubCredentialUnavailableError,
   HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
   createGitHubCredentialManager,
 } from "../src/github-credentials.mjs";
@@ -160,7 +159,7 @@ test("GitHub credentials are explicitly configured in Host-private state with Pr
       "-C", fixture.projectPath, "status", "--porcelain=v1", "--untracked-files=all",
     ])).stdout, "");
 
-    assert.deepEqual(await manager.requireForProject(projectId), {
+    assert.deepEqual(await manager.resolveForProject(projectId), {
       mode: "project-pat",
       token: projectToken,
     });
@@ -175,7 +174,7 @@ test("GitHub credentials are explicitly configured in Host-private state with Pr
       expectedRevision: 2,
     });
     assert.equal(cleared.projectPat, "not-configured");
-    assert.deepEqual(await manager.requireForProject(projectId), {
+    assert.deepEqual(await manager.resolveForProject(projectId), {
       mode: "host-gh-session",
       token: hostToken,
     });
@@ -190,17 +189,6 @@ test("GitHub credentials are explicitly configured in Host-private state with Pr
     });
     assert.equal(disabled.hostGhSessionReuse, "disabled");
     assert.equal(await manager.resolveForProject(projectId), null);
-    await assert.rejects(
-      manager.requireForProject(projectId),
-      (error) => {
-        assert.ok(error instanceof GitHubCredentialUnavailableError);
-        assert.equal(error.code, "github_credential_unconfigured");
-        assert.doesNotMatch(JSON.stringify(error), /secret_261/);
-        assert.match(error.message, /Project PAT/);
-        assert.match(error.message, /Host.*gh CLI session/);
-        return true;
-      },
-    );
 
     const stateDetails = await stat(statePath);
     const directoryDetails = await stat(fixture.dataDir);
@@ -257,16 +245,15 @@ test("the credential-free production canary ignores absent or unavailable option
     }));
     assert.equal(unavailable.type, "harness.run.launch.result", JSON.stringify(unavailable));
     await observeProductionTerminal(manager, unavailable.run.harnessRunId);
-    await assert.rejects(
-      credentials.requireForProject(projectId),
-      (error) => {
-        assert.ok(error instanceof GitHubCredentialUnavailableError);
-        assert.equal(error.code, "github_host_gh_session_unavailable");
-        assert.match(error.configurationOptions[0].guidance, /Project PAT/i);
-        assert.match(error.configurationOptions[1].guidance, /gh auth login/i);
-        return true;
-      },
-    );
+    const requiredUnavailable = await manager.launch(productionLaunchRequest(projectId, {
+      requestId: "reject-required-unavailable-host-session",
+      parameters: { verifyGitHubAccess: true },
+      idempotencyKeyHash: `sha256:${"6".repeat(64)}`,
+    }));
+    assert.equal(requiredUnavailable.type, "harness.run.launch.failure");
+    assert.equal(requiredUnavailable.code, "github_host_gh_session_unavailable");
+    assert.match(requiredUnavailable.configurationOptions[0].guidance, /Project PAT/i);
+    assert.match(requiredUnavailable.configurationOptions[1].guidance, /gh auth login/i);
 
     const retained = [
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
@@ -283,23 +270,30 @@ test("the credential-free production canary ignores absent or unavailable option
   }
 });
 
-test("the normal local Host finds gh on the Host account PATH for global session reuse", {
+test("the POSIX local Host reads the configured gh session for global reuse", {
   skip: process.platform === "win32" ? "POSIX executable fixture" : false,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-host-gh-path-"));
   const originalPath = process.env.PATH;
+  const originalGitHubConfigDirectory = process.env.GH_CONFIG_DIR;
   let transport;
   try {
     const fixture = await createProductionRegistration(root);
     const binPath = join(root, "host-account-bin");
+    const githubConfigDirectory = join(root, "host-account-gh-config");
     const ghInvokedPath = join(root, "host-gh-invoked");
-    await mkdir(binPath);
+    await Promise.all([
+      mkdir(binPath),
+      mkdir(githubConfigDirectory),
+    ]);
+    await writeFile(join(githubConfigDirectory, "hosts.yml"), `${hostToken}\n`);
     await Promise.all([
       writeExecutable(join(binPath, "gh"), `#!/bin/sh
 set -eu
 if [ "$1 $2 $3 $4" = "auth token --hostname github.com" ]; then
+  [ "$(cat "$GH_CONFIG_DIR/hosts.yml")" = "${hostToken}" ]
   printf '%s\\n' 'invoked' > '${ghInvokedPath}'
-  printf '%s\\n' '${hostToken}'
+  cat "$GH_CONFIG_DIR/hosts.yml"
   exit 0
 fi
 exit 94
@@ -324,6 +318,7 @@ exit 93
 `),
     ]);
     process.env.PATH = `${binPath}${delimiter}${originalPath ?? ""}`;
+    process.env.GH_CONFIG_DIR = githubConfigDirectory;
 
     const hostId = `host-${"6".repeat(24)}`;
     const runtime = createTransportRuntime({
@@ -405,6 +400,61 @@ exit 93
     await transport?.stopHost().catch(() => undefined);
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
+    if (originalGitHubConfigDirectory === undefined) delete process.env.GH_CONFIG_DIR;
+    else process.env.GH_CONFIG_DIR = originalGitHubConfigDirectory;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the native Windows Host resolver reads gh's default AppData session", {
+  skip: process.platform === "win32"
+    ? false
+    : "requires the native Windows GitHub CLI configuration path",
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-windows-host-gh-config-"));
+  const originalAppData = process.env.APPDATA;
+  const originalGitHubConfigDirectory = process.env.GH_CONFIG_DIR;
+  const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+  try {
+    const appDataDirectory = join(root, "Roaming");
+    const githubConfigDirectory = join(appDataDirectory, "GitHub CLI");
+    await mkdir(githubConfigDirectory, { recursive: true });
+    await writeFile(join(githubConfigDirectory, "hosts.yml"), `github.com:
+    git_protocol: https
+    users:
+        sandking-fixture:
+            oauth_token: ${hostToken}
+    user: sandking-fixture
+`);
+    process.env.APPDATA = appDataDirectory;
+    delete process.env.GH_CONFIG_DIR;
+    delete process.env.XDG_CONFIG_HOME;
+
+    const fixture = await createProductionRegistration(root);
+    const credentials = await createGitHubCredentialManager({
+      dataDir: fixture.dataDir,
+      recordAudit: fixture.recordAudit,
+    });
+    const enabled = await credentials.configureHost({
+      requestId: "enable-native-windows-host-session",
+      action: "enable",
+      riskAcknowledgement: HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
+      authorizationClass: "host_local_github_credentials",
+      idempotencyKey: "enable-native-windows-host-session",
+      expectedRevision: 0,
+    });
+    assert.equal(enabled.type, "github.credentials.configure.result");
+    assert.deepEqual(
+      await credentials.resolveForProject(fixture.project.project.projectId),
+      { mode: "host-gh-session", token: hostToken },
+    );
+  } finally {
+    if (originalAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = originalAppData;
+    if (originalGitHubConfigDirectory === undefined) delete process.env.GH_CONFIG_DIR;
+    else process.env.GH_CONFIG_DIR = originalGitHubConfigDirectory;
+    if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
     await rm(root, { recursive: true, force: true });
   }
 });
