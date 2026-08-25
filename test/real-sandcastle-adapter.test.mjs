@@ -178,19 +178,43 @@ test("real-provider preparation fails closed unless its exact gate and credentia
   }
 });
 
-test("real-provider failure yields one terminal result and leaves partial Project state", {
-  skip: process.platform === "win32" ? "POSIX command fixture" : false,
-}, async () => {
-  const fixture = await createFixture();
-  const runId = `harness-run-${"2".repeat(24)}`;
-  const fakeWorker = `
-import { writeSync } from "node:fs";
+for (const mode of ["project-pat", "host-gh-session"]) {
+  test(`real-provider ${mode} credentials stay off argv and retained output`, {
+    skip: process.platform === "win32" ? "POSIX command fixture" : false,
+  }, async () => {
+    const fixture = await createFixture();
+    const runId = `harness-run-${(mode === "project-pat" ? "2" : "3").repeat(24)}`;
+    const githubToken = mode === "project-pat"
+      ? "github_pat_adapter_pipe_secret_261"
+      : "gho_adapter_pipe_secret_261";
+    const fakeWorker = `
+import { execFileSync } from "node:child_process";
+import { readFileSync, writeSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 const projectPath = process.argv.at(-1);
+const githubCredential = JSON.parse(readFileSync(4, "utf8"));
+const visibleArguments = execFileSync("ps", ["-ww", "-o", "command=", "-p", String(process.pid)], {
+  encoding: "utf8",
+});
+if (
+  githubCredential.mode !== "${mode}"
+  || !githubCredential.token.endsWith("adapter_pipe_secret_261")
+  || visibleArguments.includes(githubCredential.token)
+) throw new Error("github_credential_pipe_invalid");
 await writeFile(join(projectPath, "partial-provider-state.txt"), "inspectable partial state\\n");
 process.stdout.write("provider transcript must be discarded\\n");
 process.stderr.write("token=reusable-provider-secret\\n");
+const tokenBoundary = Math.floor(githubCredential.token.length / 2);
+process.stderr.write("bare credential " + githubCredential.token.slice(0, tokenBoundary));
+await new Promise((resolve) => setTimeout(resolve, 50));
+process.stderr.write(githubCredential.token.slice(tokenBoundary) + "\\n");
+writeSync(3, JSON.stringify({
+  type: "sandcastle.worker.progress",
+  label: "Credential-safe progress",
+  summary: "credential echo " + githubCredential.token,
+  status: "running",
+}) + "\\n");
 writeSync(3, JSON.stringify({
   type: "sandcastle.worker.result",
   status: "failed",
@@ -199,49 +223,55 @@ writeSync(3, JSON.stringify({
     kind: "sandcastle.delegation",
     code: "real_provider_execution_failed",
     provider: { kind: "openai-codex" },
+    credentialEcho: githubCredential.token,
   },
 }) + "\\n");
 `;
-  try {
-    const invocation = await invoke({
-      command: "run",
-      encoded: encode({ harnessRunId: runId, parameters: {} }),
-      executionPath: fixture.executionPath,
-      environment: fixture.environment,
-    });
-    let diagnostic = "";
-    invocation.child.stderr.on("data", (chunk) => {
-      diagnostic += Buffer.from(chunk).toString("utf8");
-    });
-    writeHarnessAdapterFrame(invocation.channel, {
-      type: "harness.run.start",
-      adapterProtocol,
-      adapterId,
-      harnessRunId: runId,
-      retainedExecutionInputs: [{
-        path: workerPath,
-        source: fakeWorker,
-        integrity: integrity(fakeWorker),
-      }],
-    });
+    try {
+      const invocation = await invoke({
+        command: "run",
+        encoded: encode({ harnessRunId: runId, parameters: {} }),
+        executionPath: fixture.executionPath,
+        environment: fixture.environment,
+      });
+      let diagnostic = "";
+      invocation.child.stderr.on("data", (chunk) => {
+        diagnostic += Buffer.from(chunk).toString("utf8");
+      });
+      writeHarnessAdapterFrame(invocation.channel, {
+        type: "harness.run.start",
+        adapterProtocol,
+        adapterId,
+        harnessRunId: runId,
+        retainedExecutionInputs: [{
+          path: workerPath,
+          source: fakeWorker,
+          integrity: integrity(fakeWorker),
+        }],
+        githubCredential: { mode, token: githubToken },
+      });
 
-    const frames = [];
-    while (!frames.some(({ type }) => type === "harness.run.terminal")) {
-      frames.push(await readHarnessAdapterFrame(invocation.channel));
+      const frames = [];
+      while (!frames.some(({ type }) => type === "harness.run.terminal")) {
+        frames.push(await readHarnessAdapterFrame(invocation.channel));
+      }
+      assert.deepEqual(await waitForExit(invocation.child), { code: 0, signal: null });
+      const terminals = frames.filter(({ type }) => type === "harness.run.terminal");
+      assert.equal(terminals.length, 1);
+      assert.equal(terminals[0].status, "failed");
+      assert.equal(terminals[0].result.code, "real_provider_execution_failed");
+      assert.equal(
+        await readFile(join(fixture.projectPath, "partial-provider-state.txt"), "utf8"),
+        "inspectable partial state\n",
+      );
+      await assert.rejects(access(join(fixture.executionPath, "node_modules")));
+      assert.match(diagnostic, /token=\[redacted\]/);
+      assert.match(diagnostic, /bare credential \[redacted\]/);
+      assert.doesNotMatch(diagnostic,
+        /reusable-provider-secret|provider transcript|adapter_pipe_secret_261/);
+      assert.doesNotMatch(JSON.stringify(frames), /adapter_pipe_secret_261/);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
     }
-    assert.deepEqual(await waitForExit(invocation.child), { code: 0, signal: null });
-    const terminals = frames.filter(({ type }) => type === "harness.run.terminal");
-    assert.equal(terminals.length, 1);
-    assert.equal(terminals[0].status, "failed");
-    assert.equal(terminals[0].result.code, "real_provider_execution_failed");
-    assert.equal(
-      await readFile(join(fixture.projectPath, "partial-provider-state.txt"), "utf8"),
-      "inspectable partial state\n",
-    );
-    await assert.rejects(access(join(fixture.executionPath, "node_modules")));
-    assert.match(diagnostic, /token=\[redacted\]/);
-    assert.doesNotMatch(diagnostic, /reusable-provider-secret|provider transcript/);
-  } finally {
-    await rm(fixture.root, { recursive: true, force: true });
-  }
-});
+  });
+}

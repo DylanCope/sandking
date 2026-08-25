@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -87,135 +96,228 @@ test("the real Worker rejects extra tracked changes in the delegated commit", as
   }
 });
 
-test("the real Worker gives Sandcastle only the complete pinned skills and Docker sandbox", async () => {
-  const root = await mkdtemp(join(tmpdir(), "sandking-real-worker-pinned-"));
-  const projectPath = join(root, "project");
-  const executionPath = join(projectPath, ".sandking", "projection");
-  const authPath = join(root, "destination-auth.json");
-  const captured = {};
-  try {
-    await mkdir(executionPath, { recursive: true });
-    await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
-    await writeFile(join(projectPath, ".git", "info", "exclude"), ".sandking/\n");
-    await writeFile(join(projectPath, "README.md"), "unrelated tracked content\n");
-    await execFileAsync("git", ["-C", projectPath, "add", "README.md"]);
-    await commit(projectPath, "Initialize disposable Project");
-    await writeFile(authPath, "{}\n", { mode: 0o600 });
+for (const mode of [null, "project-pat", "host-gh-session"]) {
+  test(`the real Worker isolates gh in its Docker sandbox with ${mode ?? "no configured credential"}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "sandking-real-worker-pinned-"));
+    const projectPath = join(root, "project");
+    const executionPath = join(projectPath, ".sandking", "projection");
+    const authPath = join(root, "destination-auth.json");
+    const githubToken = mode === "project-pat"
+      ? "github_pat_sandbox_authentication_secret_261"
+      : "gho_sandbox_authentication_secret_261";
+    const captured = {};
+    try {
+      await mkdir(executionPath, { recursive: true });
+      await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
+      await writeFile(join(projectPath, ".git", "info", "exclude"), ".sandking/\n");
+      await writeFile(join(projectPath, "README.md"), "unrelated tracked content\n");
+      await execFileAsync("git", ["-C", projectPath, "add", "README.md"]);
+      await commit(projectPath, "Initialize disposable Project");
+      await writeFile(authPath, "{}\n", { mode: 0o600 });
+      const fakeBin = join(root, "bin");
+      await mkdir(fakeBin);
+      const fakeGhPath = join(fakeBin, "gh");
+      await writeFile(fakeGhPath, `#!/bin/sh
+set -eu
+if [ "$1 $2" = "auth status" ]; then
+  [ "$GH_TOKEN" = "${githubToken}" ]
+  [ ! -e "$GH_CONFIG_DIR/hosts.yml" ]
+  exit 0
+fi
+exit 97
+`);
+      await chmod(fakeGhPath, 0o700);
 
-    const skills = [];
-    for (const identity of skillIdentities) {
-      const source = `Pinned instructions for ${identity}.\n`;
-      const path = `worker-skills/${identity}/SKILL.md`;
-      await mkdir(join(executionPath, "worker-skills", identity), { recursive: true });
-      await writeFile(join(executionPath, ...path.split("/")), source);
-      skills.push({
-        identity,
-        revision: "a".repeat(40),
-        contentIntegrity: sha256(source),
-        path,
+      const skills = [];
+      for (const identity of skillIdentities) {
+        const source = `Pinned instructions for ${identity}.\n`;
+        const path = `worker-skills/${identity}/SKILL.md`;
+        await mkdir(join(executionPath, "worker-skills", identity), { recursive: true });
+        await writeFile(join(executionPath, ...path.split("/")), source);
+        skills.push({
+          identity,
+          revision: "a".repeat(40),
+          contentIntegrity: sha256(source),
+          path,
+        });
+      }
+      await writeFile(join(executionPath, "worker-environment.json"), `${JSON.stringify({
+        schemaVersion: 1,
+        skillSetLockDigest: `sha256:${"b".repeat(64)}`,
+        skillDiscovery: {
+          ambient: "disabled",
+          roots: ["worker-skills"],
+          unlisted: "reject",
+        },
+        skills,
+        executionRuntimeInputs: [{ identity: "openai.codex-cli", version: "0.146.0" }],
+      })}\n`);
+      await writeFile(join(executionPath, "package-lock.json"), `${JSON.stringify({
+        packages: {
+          "node_modules/@ai-hero/sandcastle": {
+            version: "0.12.0",
+            resolved: "https://registry.npmjs.org/@ai-hero/sandcastle/-/sandcastle-0.12.0.tgz",
+            integrity: "sha512-kdQ414rM8t1QiWeqZ3Klz4KSd0PqQG4bRVuqGpRDUomWhojSZkEAc1tbcEcThVmBEaHkCt8LmYR49vqEPNIoYQ==",
+          },
+        },
+      })}\n`);
+      await mkdir(join(executionPath, ".sandcastle"), { recursive: true });
+      await writeFile(
+        join(executionPath, ".sandcastle", "Dockerfile"),
+        "FROM node:22-bookworm\n",
+      );
+
+      const result = await runRealDelegation({
+        executionPath,
+        projectPath,
+        authPath,
+        githubCredential: mode ? { mode, token: githubToken } : null,
+        signal: AbortSignal.timeout(10_000),
+        inspectSandboxImage: async () => `sha256:${"c".repeat(64)}`,
+        loadSandcastle: async () => [{
+          codex: (model, options) => {
+            captured.agent = { model, options };
+            return { name: "codex" };
+          },
+          run: async (options) => {
+            captured.run = options;
+            const githubMount = captured.docker.mounts.find(({ sandboxPath }) =>
+              sandboxPath.endsWith("/github-token"));
+            const sandboxHome = join(root, "sandbox-home");
+            await Promise.all([
+              mkdir(join(sandboxHome, ".sandcastle-secrets"), { recursive: true }),
+              mkdir(join(sandboxHome, ".config", "gh"), { recursive: true }),
+            ]);
+            await writeFile(
+              join(sandboxHome, ".config", "gh", "hosts.yml"),
+              "ambient-image-credential-must-not-survive\n",
+            );
+            await copyFile(
+              authPath,
+              join(sandboxHome, ".sandcastle-secrets", "codex-auth.json"),
+            );
+            if (mode) {
+              assert.equal(await readFile(githubMount.hostPath, "utf8"), `${githubToken}\n`);
+              assert.equal((await stat(githubMount.hostPath)).mode & 0o777, 0o600);
+              await copyFile(
+                githubMount.hostPath,
+                join(sandboxHome, ".sandcastle-secrets", "github-token"),
+              );
+            } else {
+              assert.equal(githubMount, undefined);
+            }
+            await execFileAsync("sh", [
+              "-c",
+              options.hooks.sandbox.onSandboxReady[0].command,
+            ], {
+              env: {
+                ...captured.docker.env,
+                HOME: sandboxHome,
+                PATH: `${sandboxHome}/.sandcastle-bin:${fakeBin}:/usr/bin:/bin`,
+                GH_CONFIG_DIR: join(sandboxHome, ".config", "gh"),
+              },
+            });
+            if (!mode) {
+              await assert.rejects(
+                readFile(join(sandboxHome, ".config", "gh", "hosts.yml"), "utf8"),
+                { code: "ENOENT" },
+              );
+            }
+            await writeFile(join(projectPath, REAL_DELEGATION_ARTIFACT), REAL_DELEGATION_CONTENT);
+            await execFileAsync("git", ["-C", projectPath, "add", REAL_DELEGATION_ARTIFACT]);
+            await execFileAsync("git", [
+              "-C", projectPath,
+              "-c", "user.name=Sandcastle Real Worker",
+              "-c", "user.email=real-worker@sandking.invalid",
+              "-c", "commit.gpgSign=false",
+              "commit", "--quiet", "-m", "Prove pinned Sandcastle delegation",
+            ]);
+            return {
+              completionSignal: "<promise>COMPLETE</promise>",
+              commits: [{
+                sha: (await execFileAsync("git", ["-C", projectPath, "rev-parse", "HEAD"]))
+                  .stdout.trim(),
+              }],
+            };
+          },
+        }, {
+          docker: (options) => {
+            captured.docker = options;
+            return { name: "docker", options };
+          },
+        }],
       });
-    }
-    await writeFile(join(executionPath, "worker-environment.json"), `${JSON.stringify({
-      schemaVersion: 1,
-      skillSetLockDigest: `sha256:${"b".repeat(64)}`,
-      skillDiscovery: {
+
+      assert.deepEqual(captured.agent, {
+        model: "gpt-5.6-sol",
+        options: { effort: "medium", captureSessions: false },
+      });
+      assert.equal(captured.run.sandbox.name, "docker");
+      assert.equal(captured.docker.imageName, REAL_SANDBOX_IMAGE);
+      assert.deepEqual(captured.docker.mounts.map(({ sandboxPath, readonly }) => ({
+        sandboxPath,
+        readonly,
+      })), [
+        {
+          sandboxPath: "/home/agent/.sandcastle-secrets/codex-auth.json",
+          readonly: true,
+        },
+        ...(mode ? [{
+          sandboxPath: "/home/agent/.sandcastle-secrets/github-token",
+          readonly: true,
+        }] : []),
+      ]);
+      assert.deepEqual(captured.docker.env, {
+        PATH: "/home/agent/.sandcastle-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        GH_CONFIG_DIR: "/home/agent/.config/gh",
+        GH_PROMPT_DISABLED: "1",
+        GH_TOKEN: "",
+        GITHUB_TOKEN: "",
+        GH_ENTERPRISE_TOKEN: "",
+        GITHUB_ENTERPRISE_TOKEN: "",
+      });
+      assert.match(captured.run.hooks.sandbox.onSandboxReady[0].command,
+        /rm -rf "\$\{HOME\}\/\.codex"/);
+      if (mode) {
+        assert.match(captured.run.hooks.sandbox.onSandboxReady[0].command,
+          /gh auth status --hostname github\.com/);
+      } else {
+        assert.doesNotMatch(captured.run.hooks.sandbox.onSandboxReady[0].command,
+          /gh auth (?:login|status)/);
+      }
+      assert.doesNotMatch(captured.run.hooks.sandbox.onSandboxReady[0].command,
+        /sandbox_authentication_secret_261/);
+      if (mode) {
+        await assert.rejects(
+          readFile(captured.docker.mounts[1].hostPath, "utf8"),
+          { code: "ENOENT" },
+        );
+      }
+      assert.equal(captured.run.logging.type, "stdout");
+      assert.equal(captured.run.branchStrategy.type, "head");
+      for (const identity of skillIdentities) {
+        assert.match(captured.run.prompt, new RegExp(`<skill identity="${identity}"`));
+        assert.match(captured.run.prompt, new RegExp(`Pinned instructions for ${identity}`));
+      }
+      assert.equal(result.resolvedSkillCount, 4);
+      assert.deepEqual(result.skillDelivery, {
         ambient: "disabled",
-        roots: ["worker-skills"],
-        unlisted: "reject",
-      },
-      skills,
-      executionRuntimeInputs: [{ identity: "openai.codex-cli", version: "0.146.0" }],
-    })}\n`);
-    await writeFile(join(executionPath, "package-lock.json"), `${JSON.stringify({
-      packages: {
-        "node_modules/@ai-hero/sandcastle": {
-          version: "0.12.0",
-          resolved: "https://registry.npmjs.org/@ai-hero/sandcastle/-/sandcastle-0.12.0.tgz",
-          integrity: "sha512-kdQ414rM8t1QiWeqZ3Klz4KSd0PqQG4bRVuqGpRDUomWhojSZkEAc1tbcEcThVmBEaHkCt8LmYR49vqEPNIoYQ==",
-        },
-      },
-    })}\n`);
-    await mkdir(join(executionPath, ".sandcastle"), { recursive: true });
-    await writeFile(
-      join(executionPath, ".sandcastle", "Dockerfile"),
-      "FROM node:22-bookworm\n",
-    );
-
-    const result = await runRealDelegation({
-      executionPath,
-      projectPath,
-      authPath,
-      signal: AbortSignal.timeout(10_000),
-      inspectSandboxImage: async () => `sha256:${"c".repeat(64)}`,
-      loadSandcastle: async () => [{
-        codex: (model, options) => {
-          captured.agent = { model, options };
-          return { name: "codex" };
-        },
-        run: async (options) => {
-          captured.run = options;
-          await writeFile(join(projectPath, REAL_DELEGATION_ARTIFACT), REAL_DELEGATION_CONTENT);
-          await execFileAsync("git", ["-C", projectPath, "add", REAL_DELEGATION_ARTIFACT]);
-          await execFileAsync("git", [
-            "-C", projectPath,
-            "-c", "user.name=Sandcastle Real Worker",
-            "-c", "user.email=real-worker@sandking.invalid",
-            "-c", "commit.gpgSign=false",
-            "commit", "--quiet", "-m", "Prove pinned Sandcastle delegation",
-          ]);
-          return {
-            completionSignal: "<promise>COMPLETE</promise>",
-            commits: [{
-              sha: (await execFileAsync("git", ["-C", projectPath, "rev-parse", "HEAD"]))
-                .stdout.trim(),
-            }],
-          };
-        },
-      }, {
-        docker: (options) => {
-          captured.docker = options;
-          return { name: "docker", options };
-        },
-      }],
-    });
-
-    assert.deepEqual(captured.agent, {
-      model: "gpt-5.6-sol",
-      options: { effort: "medium", captureSessions: false },
-    });
-    assert.equal(captured.run.sandbox.name, "docker");
-    assert.equal(captured.docker.imageName, REAL_SANDBOX_IMAGE);
-    assert.deepEqual(captured.docker.mounts, [{
-      hostPath: authPath,
-      sandboxPath: "/home/agent/.sandcastle-secrets/codex-auth.json",
-      readonly: true,
-    }]);
-    assert.match(captured.run.hooks.sandbox.onSandboxReady[0].command,
-      /rm -rf "\$\{HOME\}\/\.codex"/);
-    assert.equal(captured.run.logging.type, "stdout");
-    assert.equal(captured.run.branchStrategy.type, "head");
-    for (const identity of skillIdentities) {
-      assert.match(captured.run.prompt, new RegExp(`<skill identity="${identity}"`));
-      assert.match(captured.run.prompt, new RegExp(`Pinned instructions for ${identity}`));
+        method: "complete-pinned-inventory-in-worker-prompt",
+        deliveredIdentities: skillIdentities,
+      });
+      assert.deepEqual(result.sandbox, {
+        provider: "docker",
+        image: REAL_SANDBOX_IMAGE,
+        imageId: `sha256:${"c".repeat(64)}`,
+        configurationSource: ".sandcastle/Dockerfile",
+        configurationIntegrity: sha256("FROM node:22-bookworm\n"),
+        destinationIsolation: true,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
-    assert.equal(result.resolvedSkillCount, 4);
-    assert.deepEqual(result.skillDelivery, {
-      ambient: "disabled",
-      method: "complete-pinned-inventory-in-worker-prompt",
-      deliveredIdentities: skillIdentities,
-    });
-    assert.deepEqual(result.sandbox, {
-      provider: "docker",
-      image: REAL_SANDBOX_IMAGE,
-      imageId: `sha256:${"c".repeat(64)}`,
-      configurationSource: ".sandcastle/Dockerfile",
-      configurationIntegrity: sha256("FROM node:22-bookworm\n"),
-      destinationIsolation: true,
-    });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
+  });
+}
 
 test("failed real work publishes one truthful failure and preserves partial Project state", async () => {
   const projectPath = await mkdtemp(join(tmpdir(), "sandking-real-worker-partial-"));

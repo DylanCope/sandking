@@ -1,7 +1,14 @@
 import { execFile } from "node:child_process";
-import { writeSync } from "node:fs";
-import { lstat, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { readFileSync, writeSync } from "node:fs";
+import {
+  chmod,
+  lstat,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { digest as sha256 } from "../common/digest.mjs";
@@ -121,6 +128,41 @@ const verifyCodexAuthPath = async (authPath) => {
   }
 };
 
+const materializeGitHubCredential = async (credential) => {
+  if (credential === null || credential === undefined) return null;
+  if (
+    !credential
+    || typeof credential !== "object"
+    || Array.isArray(credential)
+    || !["project-pat", "host-gh-session"].includes(credential.mode)
+    || typeof credential.token !== "string"
+    || credential.token.length < 1
+    || credential.token.length > 4_096
+    || credential.token.trim() !== credential.token
+    || /[\s\0]/.test(credential.token)
+  ) {
+    throw new Error("github_credential_invalid");
+  }
+  const directory = await mkdtemp(join(tmpdir(), "sandking-github-auth-"));
+  const path = join(directory, "token");
+  try {
+    await chmod(directory, 0o700);
+    await writeFile(path, `${credential.token}\n`, { flag: "wx", mode: 0o600 });
+    await chmod(path, 0o600);
+    const details = await lstat(path);
+    if (!details.isFile() || details.isSymbolicLink()) {
+      throw new Error("github_credential_invalid");
+    }
+    return {
+      path,
+      cleanup: () => rm(directory, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+};
+
 const inspectPinnedSandboxImage = async () => {
   const { stdout } = await execFileAsync("docker", [
     "image", "inspect", REAL_SANDBOX_IMAGE, "--format={{.Id}}",
@@ -157,6 +199,7 @@ export const runRealDelegation = async ({
   projectPath,
   signal,
   authPath = destinationCodexAuthPath(),
+  githubCredential = null,
   inspectSandboxImage = inspectPinnedSandboxImage,
   loadSandcastle = async () => Promise.all([
     import("@ai-hero/sandcastle"),
@@ -172,83 +215,113 @@ export const runRealDelegation = async ({
   ) {
     throw new Error("real_delegation_project_dirty");
   }
-  const [sandcastle, sandboxProvider] = await loadSandcastle();
-  const run = await sandcastle.run({
-    agent: sandcastle.codex(REAL_PROVIDER_MODEL, {
-      effort: REAL_PROVIDER_EFFORT,
-      captureSessions: false,
-    }),
-    sandbox: sandboxProvider.docker({
-      imageName: REAL_SANDBOX_IMAGE,
-      mounts: [{
+  const materializedGitHubCredential = await materializeGitHubCredential(githubCredential);
+  try {
+    const [sandcastle, sandboxProvider] = await loadSandcastle();
+    const mounts = [{
         hostPath: authPath,
         sandboxPath: "/home/agent/.sandcastle-secrets/codex-auth.json",
         readonly: true,
-      }],
-    }),
-    cwd: projectPath,
-    branchStrategy: { type: "head" },
-    prompt: createPinnedSkillPrompt(pinned.skills),
-    maxIterations: 1,
-    completionSignal: "<promise>COMPLETE</promise>",
-    idleTimeoutSeconds: 600,
-    completionTimeoutSeconds: 30,
-    hooks: {
-      sandbox: {
-        onSandboxReady: [{
-          command: [
-            "set -eu",
-            'rm -rf "${HOME}/.codex"',
-            'mkdir -p "${HOME}/.codex"',
-            'cp "${HOME}/.sandcastle-secrets/codex-auth.json" "${HOME}/.codex/auth.json"',
-            'chmod 600 "${HOME}/.codex/auth.json"',
-          ].join("; "),
-        }],
       },
-    },
-    logging: { type: "stdout" },
-    signal,
-    name: "pinned-real-delegation",
-  });
-  const afterCommit = await verifyRealDelegationCommit({ projectPath, beforeCommit });
-  if (
-    run.completionSignal !== "<promise>COMPLETE</promise>"
-    || run.commits.length !== 1
-    || run.commits[0]?.sha !== afterCommit
-  ) {
-    throw new Error("real_delegation_sandcastle_result_invalid");
+      ...(materializedGitHubCredential ? [{
+        hostPath: materializedGitHubCredential.path,
+        sandboxPath: "/home/agent/.sandcastle-secrets/github-token",
+        readonly: true,
+      }] : []),
+    ];
+    const sandboxReadyCommands = [
+      "set -eu",
+      'rm -rf "${HOME}/.codex"',
+      'mkdir -p "${HOME}/.codex"',
+      'cp "${HOME}/.sandcastle-secrets/codex-auth.json" "${HOME}/.codex/auth.json"',
+      'chmod 600 "${HOME}/.codex/auth.json"',
+      'rm -rf "${HOME}/.config/gh"',
+      'mkdir -p "${HOME}/.config/gh"',
+      'rm -rf "${HOME}/.sandcastle-bin"',
+      ...(materializedGitHubCredential ? [
+        'mkdir -p "${HOME}/.sandcastle-bin"',
+        'github_executable="$(command -v gh)"',
+        'printf \'%s\\n\' \'#!/bin/sh\' \'set -eu\' \'GH_TOKEN="$(cat "${HOME}/.sandcastle-secrets/github-token")"\' \'export GH_TOKEN\' "exec \\"${github_executable}\\" \\"\\$@\\"" > "${HOME}/.sandcastle-bin/gh"',
+        'chmod 700 "${HOME}/.sandcastle-bin/gh"',
+        'gh auth status --hostname github.com >/dev/null',
+      ] : []),
+    ];
+    const run = await sandcastle.run({
+      agent: sandcastle.codex(REAL_PROVIDER_MODEL, {
+        effort: REAL_PROVIDER_EFFORT,
+        captureSessions: false,
+      }),
+      sandbox: sandboxProvider.docker({
+        imageName: REAL_SANDBOX_IMAGE,
+        mounts,
+        env: {
+          PATH: "/home/agent/.sandcastle-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          GH_CONFIG_DIR: "/home/agent/.config/gh",
+          GH_PROMPT_DISABLED: "1",
+          GH_TOKEN: "",
+          GITHUB_TOKEN: "",
+          GH_ENTERPRISE_TOKEN: "",
+          GITHUB_ENTERPRISE_TOKEN: "",
+        },
+      }),
+      cwd: projectPath,
+      branchStrategy: { type: "head" },
+      prompt: createPinnedSkillPrompt(pinned.skills),
+      maxIterations: 1,
+      completionSignal: "<promise>COMPLETE</promise>",
+      idleTimeoutSeconds: 600,
+      completionTimeoutSeconds: 30,
+      hooks: {
+        sandbox: {
+          onSandboxReady: [{ command: sandboxReadyCommands.join("; ") }],
+        },
+      },
+      logging: { type: "stdout" },
+      signal,
+      name: "pinned-real-delegation",
+    });
+    const afterCommit = await verifyRealDelegationCommit({ projectPath, beforeCommit });
+    if (
+      run.completionSignal !== "<promise>COMPLETE</promise>"
+      || run.commits.length !== 1
+      || run.commits[0]?.sha !== afterCommit
+    ) {
+      throw new Error("real_delegation_sandcastle_result_invalid");
+    }
+    return {
+      schemaVersion: 1,
+      kind: "sandcastle.delegation",
+      code: "real_work_committed",
+      provider: {
+        kind: REAL_PROVIDER_KIND,
+        model: REAL_PROVIDER_MODEL,
+        effort: REAL_PROVIDER_EFFORT,
+      },
+      upstream: {
+        package: "@ai-hero/sandcastle",
+        version: SANDCASTLE_VERSION,
+      },
+      skillSetLockDigest: pinned.skillSetLockDigest,
+      resolvedSkillCount: pinned.skills.length,
+      skillDelivery: {
+        ambient: "disabled",
+        method: "complete-pinned-inventory-in-worker-prompt",
+        deliveredIdentities: pinned.skills.map(({ identity }) => identity),
+      },
+      sandbox: {
+        provider: "docker",
+        image: REAL_SANDBOX_IMAGE,
+        imageId: sandboxImageId,
+        configurationSource: REAL_SANDBOX_CONFIGURATION,
+        configurationIntegrity: pinned.sandboxConfigurationIntegrity,
+        destinationIsolation: true,
+      },
+      artifact: REAL_DELEGATION_ARTIFACT,
+      commit: afterCommit,
+    };
+  } finally {
+    await materializedGitHubCredential?.cleanup();
   }
-  return {
-    schemaVersion: 1,
-    kind: "sandcastle.delegation",
-    code: "real_work_committed",
-    provider: {
-      kind: REAL_PROVIDER_KIND,
-      model: REAL_PROVIDER_MODEL,
-      effort: REAL_PROVIDER_EFFORT,
-    },
-    upstream: {
-      package: "@ai-hero/sandcastle",
-      version: SANDCASTLE_VERSION,
-    },
-    skillSetLockDigest: pinned.skillSetLockDigest,
-    resolvedSkillCount: pinned.skills.length,
-    skillDelivery: {
-      ambient: "disabled",
-      method: "complete-pinned-inventory-in-worker-prompt",
-      deliveredIdentities: pinned.skills.map(({ identity }) => identity),
-    },
-    sandbox: {
-      provider: "docker",
-      image: REAL_SANDBOX_IMAGE,
-      imageId: sandboxImageId,
-      configurationSource: REAL_SANDBOX_CONFIGURATION,
-      configurationIntegrity: pinned.sandboxConfigurationIntegrity,
-      destinationIsolation: true,
-    },
-    artifact: REAL_DELEGATION_ARTIFACT,
-    commit: afterCommit,
-  };
 };
 
 export const executeRealDelegation = async ({ runDelegation = runRealDelegation, ...options }) => {
@@ -281,6 +354,12 @@ if (invokedPath.endsWith("/.sandcastle/real-worker-v2.mjs")) {
   const invocationPaths = process.argv.slice(2);
   const executionPath = invocationPaths.length > 1 ? invocationPaths[0] : process.cwd();
   const projectPath = invocationPaths.at(-1);
+  let githubCredential;
+  try {
+    githubCredential = JSON.parse(readFileSync(4, "utf8"));
+  } catch {
+    throw new Error("github_credential_channel_invalid");
+  }
   const controller = new AbortController();
   process.once("SIGTERM", () => controller.abort(new Error("real_worker_cancelled")));
   publish({
@@ -292,6 +371,7 @@ if (invokedPath.endsWith("/.sandcastle/real-worker-v2.mjs")) {
   const outcome = await executeRealDelegation({
     executionPath,
     projectPath,
+    githubCredential,
     signal: controller.signal,
   });
   if (outcome.status === "failed") {

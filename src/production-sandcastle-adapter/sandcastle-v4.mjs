@@ -101,6 +101,7 @@ const readRunStart = (execution) => {
       "adapterId",
       "harnessRunId",
       "retainedExecutionInputs",
+      "githubCredential",
     ].includes(key))
     || message.type !== "harness.run.start"
     || message.adapterProtocol !== adapterProtocol
@@ -134,7 +135,23 @@ const readRunStart = (execution) => {
     }
     retainedExecutionInputs.set(input.path, input.source);
   }
-  return retainedExecutionInputs;
+  const githubCredential = message.githubCredential ?? null;
+  if (githubCredential !== null && (
+    !githubCredential
+    || typeof githubCredential !== "object"
+    || Array.isArray(githubCredential)
+    || JSON.stringify(Object.keys(githubCredential).sort())
+      !== JSON.stringify(["mode", "token"])
+    || !["project-pat", "host-gh-session"].includes(githubCredential.mode)
+    || typeof githubCredential.token !== "string"
+    || githubCredential.token.length < 1
+    || githubCredential.token.length > 4_096
+    || githubCredential.token.trim() !== githubCredential.token
+    || /[\s\0]/.test(githubCredential.token)
+  )) {
+    throw new Error("harness_run_start_invalid");
+  }
+  return { retainedExecutionInputs, githubCredential };
 };
 
 const parseParameters = (encoded) => {
@@ -422,16 +439,37 @@ const stableId = (prefix, ...parts) => `${prefix}-${createHash("sha256")
   .digest("hex")
   .slice(0, 24)}`;
 
-const sanitizeDiagnostic = (source) => source
-  .replace(/\b(token|secret|password|authorization)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+const sanitizeDiagnostic = (source, secrets = []) => secrets.reduce(
+  (sanitized, secret) => sanitized.replaceAll(secret, "[redacted]"),
+  source,
+).replace(/\b(token|secret|password|authorization)\s*[:=]\s*\S+/gi, "$1=[redacted]")
   .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+
+const sanitizeWorkerValue = (value, secrets) => {
+  if (typeof value === "string") {
+    return secrets.reduce(
+      (sanitized, secret) => sanitized.replaceAll(secret, "[redacted]"),
+      value,
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeWorkerValue(entry, secrets));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+      sanitizeWorkerValue(key, secrets),
+      sanitizeWorkerValue(entry, secrets),
+    ]));
+  }
+  return value;
+};
 
 const waitForExit = (child) => new Promise((resolve) => {
   child.once("error", () => resolve({ code: null, startFailed: true }));
   child.once("close", (code) => resolve({ code, startFailed: false }));
 });
 
-const runWorker = async (execution, readiness) => {
+const runWorker = async (execution, readiness, githubCredential) => {
   const now = () => new Date().toISOString();
   writeFrame({
     type: "harness.run.ready",
@@ -442,13 +480,22 @@ const runWorker = async (execution, readiness) => {
     readyAt: now(),
   });
 
-  let diagnosticBytes = 0;
+  const secrets = githubCredential ? [githubCredential.token] : [];
+  const diagnosticChunks = [];
+  let diagnosticSourceBytes = 0;
   const diagnostic = (chunk) => {
-    if (diagnosticBytes >= 16_384) return;
-    const sanitized = Buffer.from(sanitizeDiagnostic(Buffer.from(chunk).toString("utf8")));
-    const bounded = sanitized.subarray(0, 16_384 - diagnosticBytes);
-    diagnosticBytes += bounded.byteLength;
-    process.stderr.write(bounded);
+    if (diagnosticSourceBytes >= 65_536) return;
+    const source = Buffer.from(chunk);
+    const bounded = source.subarray(0, 65_536 - diagnosticSourceBytes);
+    diagnosticSourceBytes += bounded.byteLength;
+    diagnosticChunks.push(bounded);
+  };
+  const flushDiagnostic = () => {
+    const sanitized = Buffer.from(sanitizeDiagnostic(
+      Buffer.concat(diagnosticChunks).toString("utf8"),
+      secrets,
+    ));
+    process.stderr.write(sanitized.subarray(0, 16_384));
   };
   let activeChild = null;
   let cancelled = false;
@@ -540,9 +587,17 @@ const runWorker = async (execution, readiness) => {
           : readiness.root,
         env: readiness.realProvider ? process.env : { LANG: "C.UTF-8" },
         stdio: readiness.realProvider
-          ? ["ignore", "pipe", "pipe", "pipe"]
+          ? ["ignore", "pipe", "pipe", "pipe", "pipe"]
           : ["ignore", "pipe", "pipe"],
       });
+      if (readiness.realProvider) {
+        const credentialStream = activeChild.stdio[4];
+        if (!credentialStream || !("writable" in credentialStream)) {
+          activeChild.kill("SIGKILL");
+          throw new Error("worker_credential_channel_unavailable");
+        }
+        credentialStream.end(JSON.stringify(githubCredential));
+      }
       activeChild.stderr?.on("data", diagnostic);
       if (readiness.realProvider) activeChild.stdout?.resume();
       const protocolStream = readiness.realProvider ? activeChild.stdio[3] : activeChild.stdout;
@@ -561,6 +616,7 @@ const runWorker = async (execution, readiness) => {
           outputInvalid = true;
           return;
         }
+        message = sanitizeWorkerValue(message, secrets);
         if (message?.type === "sandcastle.worker.progress") {
           if (
             results.length > 0
@@ -604,6 +660,7 @@ const runWorker = async (execution, readiness) => {
         dependencyCleanupFailure = true;
       }
     }
+    flushDiagnostic();
   }
   process.removeListener("SIGTERM", cancelWorker);
   process.removeListener("message", handleCancellationMessage);
@@ -726,8 +783,8 @@ if (!invokedAsAdapter) {
   }
 } else if (command === "run") {
   const execution = parseExecution(encodedParameters);
-  const retainedExecutionInputs = readRunStart(execution);
-  const readiness = inspectRuntime(retainedExecutionInputs);
+  const runStart = readRunStart(execution);
+  const readiness = inspectRuntime(runStart.retainedExecutionInputs);
   if (!readiness.ready) {
     const completedAt = new Date().toISOString();
     writeFrame({
@@ -753,7 +810,7 @@ if (!invokedAsAdapter) {
       },
     });
   } else {
-    await runWorker(execution, readiness);
+    await runWorker(execution, readiness, runStart.githubCredential);
   }
 } else {
   throw new Error("harness_adapter_command_invalid");

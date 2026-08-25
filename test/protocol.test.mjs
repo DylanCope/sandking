@@ -72,6 +72,107 @@ test("Host identity acceptance is an explicit revisioned and idempotent mutation
   );
 });
 
+test("GitHub credential configuration is a one-way capability-negotiated Host operation", async () => {
+  assert.ok(hostCapabilities.includes("sandking.github-credentials.v1"));
+  const stream = new PassThrough();
+  const projectId = `project-${"1".repeat(24)}`;
+  const projectRequest = {
+    type: "github.credentials.project.configure",
+    requestId: "configure-project-github-pat",
+    projectId,
+    action: "set",
+    personalAccessToken: "github_pat_protocol_secret_261",
+    authorizationClass: "host_local_github_credentials",
+    idempotencyKey: "configure-project-github-pat",
+    expectedRevision: 0,
+  };
+  const hostRequest = {
+    type: "github.credentials.host.configure",
+    requestId: "enable-host-github-session",
+    action: "enable",
+    riskAcknowledgement:
+      "I understand this grants every unscoped Project my full Host GitHub access.",
+    authorizationClass: "host_local_github_credentials",
+    idempotencyKey: "enable-host-github-session",
+    expectedRevision: 1,
+  };
+  const inspectRequest = {
+    type: "github.credentials.inspect",
+    requestId: "inspect-github-credentials",
+    projectId,
+  };
+  const configured = {
+    type: "github.credentials.configure.result",
+    requestId: projectRequest.requestId,
+    code: "github_credentials_configured",
+    revision: 1,
+    projectPat: "configured",
+    hostGhSessionReuse: "disabled",
+    effectiveMode: "project-pat",
+    configurationOptions: [],
+    authorizationClass: "host_local_github_credentials",
+    idempotencyKeyHash: `sha256:${"2".repeat(64)}`,
+    expectedRevision: 0,
+    idempotentReplay: false,
+    auditId: `audit-${"3".repeat(24)}`,
+  };
+  const unconfigured = {
+    type: "github.credentials.inspect.result",
+    requestId: inspectRequest.requestId,
+    code: "github_credentials_unconfigured",
+    revision: 0,
+    projectPat: "not-configured",
+    hostGhSessionReuse: "disabled",
+    effectiveMode: null,
+    configurationOptions: [
+      {
+        mode: "project-pat",
+        guidance: "Configure a fine-grained Project PAT limited to this repository.",
+      },
+      {
+        mode: "host-gh-session",
+        guidance: "Explicitly enable reuse of the full Host GitHub access.",
+      },
+    ],
+  };
+  const launchFailure = {
+    type: "harness.run.launch.failure",
+    requestId: "launch-without-required-github-credential",
+    code: "github_credential_unconfigured",
+    retryable: true,
+    authorizationClass: "harness_run_launch",
+    idempotencyKeyHash: `sha256:${"4".repeat(64)}`,
+    idempotentReplay: false,
+    auditId: `audit-${"5".repeat(24)}`,
+    prohibitedSideEffects: {
+      harnessRunCreated: false,
+      adapterStarted: false,
+      projectWrite: false,
+    },
+    configurationOptions: unconfigured.configurationOptions,
+  };
+
+  for (const message of [
+    projectRequest,
+    hostRequest,
+    inspectRequest,
+    configured,
+    unconfigured,
+    launchFailure,
+  ]) {
+    writeFrame(stream, message);
+    assert.deepEqual(await readFrame(stream), message);
+  }
+  assert.doesNotMatch(JSON.stringify(configured), /protocol_secret_261/);
+  assert.throws(
+    () => writeFrame(stream, {
+      ...hostRequest,
+      riskAcknowledgement: undefined,
+    }),
+    (error) => error instanceof ProtocolError && error.code === "frame_schema_invalid",
+  );
+});
+
 test("Project registration resolution is one capability-negotiated Host operation", async () => {
   assert.ok(hostCapabilities.includes("sandking.project-registration-resolution.v1"));
   const stream = new PassThrough();

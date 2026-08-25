@@ -357,6 +357,9 @@ export const superviseHarnessAdapter = async (run, context, observer) => {
         adapterId: run.adapterId,
         harnessRunId: run.harnessRunId,
         retainedExecutionInputs: retainedHarnessExecutionInputs,
+        ...(context.githubCredential
+          ? { githubCredential: context.githubCredential }
+          : {}),
       });
     } catch {
       terminateContainedAdapter();

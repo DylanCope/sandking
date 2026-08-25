@@ -20,6 +20,7 @@ import {
   writeFrame,
 } from "./protocol.mjs";
 import { acceptHostIdentity, readHostIdentity } from "./host-identity.mjs";
+import { createGitHubCredentialManager } from "./github-credentials.mjs";
 import { appendPrivateJsonLine } from "./private-state.mjs";
 import { createProjectRegistry } from "./project-registration.mjs";
 import { createHarnessRunManager, HarnessRunStateError } from "./harness-runs.mjs";
@@ -353,11 +354,16 @@ const main = async () => {
     dataDir,
     recordAudit: recordProjectAudit,
   });
+  const githubCredentials = await createGitHubCredentialManager({
+    dataDir,
+    recordAudit: recordProjectAudit,
+  });
   const harnessRuns = await createHarnessRunManager({
     dataDir,
     hostId: negotiatedHostId,
     recordAudit: recordProjectAudit,
     loadLaunchContext: projectRegistry.loadLaunchContext,
+    resolveGitHubCredential: githubCredentials.resolveForProject,
   });
   // The Host is a durable process boundary. It remains available after
   // negotiation and keeps control and opaque bulk frames structurally distinct.
@@ -375,6 +381,18 @@ const main = async () => {
     }
     if (frame.message.type === "host.identity.accept") {
       await handleHostIdentityAcceptance(frame.message, negotiatedHostId);
+      continue;
+    }
+    if (frame.message.type === "github.credentials.inspect") {
+      writeFrame(process.stdout, await githubCredentials.inspect(frame.message));
+      continue;
+    }
+    if (frame.message.type === "github.credentials.project.configure") {
+      writeFrame(process.stdout, await githubCredentials.configureProject(frame.message));
+      continue;
+    }
+    if (frame.message.type === "github.credentials.host.configure") {
+      writeFrame(process.stdout, await githubCredentials.configureHost(frame.message));
       continue;
     }
     if (frame.message.type === "project.inspect") {

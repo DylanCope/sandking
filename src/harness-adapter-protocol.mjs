@@ -256,12 +256,19 @@ export const retainedExecutionInputSchema = z.object({
     Buffer.byteLength(value, "utf8") <= 12_000),
 }).strict();
 
+export const githubCredentialSchema = z.object({
+  mode: z.enum(["project-pat", "host-gh-session"]),
+  token: z.string().min(1).max(4_096).refine((value) =>
+    value.trim() === value && !/[\s\0]/.test(value)),
+}).strict();
+
 export const harnessRunStartRequestSchema = z.object({
   type: z.literal("harness.run.start"),
   adapterProtocol: adapterProtocolSchema,
   adapterId: harnessAdapterIdSchema,
   harnessRunId: harnessRunIdSchema,
   retainedExecutionInputs: z.array(retainedExecutionInputSchema).max(8),
+  githubCredential: githubCredentialSchema.optional(),
 }).strict().superRefine((request, context) => {
   if (new Set(request.retainedExecutionInputs.map(({ path }) => path)).size
       !== request.retainedExecutionInputs.length) {
@@ -269,6 +276,16 @@ export const harnessRunStartRequestSchema = z.object({
       code: "custom",
       message: "retained execution input paths must be unique",
       path: ["retainedExecutionInputs"],
+    });
+  }
+  if (
+    request.githubCredential
+    && request.adapterId !== SANDCASTLE_HARNESS_ADAPTER_ID
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "GitHub credentials are supported only by the production Sandcastle adapter",
+      path: ["githubCredential"],
     });
   }
 });

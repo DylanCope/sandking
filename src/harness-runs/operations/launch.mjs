@@ -3,6 +3,9 @@ import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "../../harness-adapter-identity.mjs";
 import {
+  githubCredentialConfigurationOptions as configurationOptionsForGitHubCredentialFailure,
+} from "../../github-credentials.mjs";
+import {
   launchParametersSchema,
   validateHarnessLaunch,
 } from "../../harness-launch.mjs";
@@ -33,6 +36,14 @@ import { logPath, retainedLaunchOutcome } from "../store.mjs";
 import { createProductionProviderPreparationId } from "../provider-preparation-store.mjs";
 
 const PRODUCTION_PROVIDER_CLEANUP_RETRY_MS = 100;
+
+/** @param {unknown} error */
+const typedErrorCode = (error) => error && typeof error === "object"
+  && "code" in error && typeof error.code === "string"
+  ? error.code
+  : error instanceof Error
+    ? error.message
+    : "";
 
 /** @param {any} runtime */
 export const createLaunchOperation = (runtime) => {
@@ -187,6 +198,9 @@ export const createLaunchOperation = (runtime) => {
   const launch = (request) => runtime.withMutationLock(async () => {
     /** @type {Awaited<ReturnType<typeof acquireProductionProvider>> | null} */
     let providerPreparation = null;
+    /** @type {{mode: "project-pat" | "host-gh-session", token: string} | null} */
+    let githubCredential = null;
+    let githubCredentialConfigurationOptions = null;
     let launchAccepted = false;
     try {
     const authorizationClass = "harness_run_launch";
@@ -259,6 +273,9 @@ export const createLaunchOperation = (runtime) => {
           context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
           && context.project.harness.preparation
         ) {
+          githubCredential = await options.resolveGitHubCredential?.(
+            context.project.projectId,
+          ) ?? null;
           providerPreparation = await acquireProductionProvider({
             projectId: context.project.projectId,
             projectPath: context.project.canonicalPath,
@@ -278,7 +295,14 @@ export const createLaunchOperation = (runtime) => {
           code = "harness_pin_invalid";
         }
       } catch (error) {
-        const typedCode = error instanceof Error ? error.message : "";
+        const typedCode = typedErrorCode(error);
+        if (typedCode === "github_credential_unconfigured") {
+          githubCredentialConfigurationOptions =
+            configurationOptionsForGitHubCredentialFailure(typedCode);
+        } else if (typedCode === "github_host_gh_session_unavailable") {
+          githubCredentialConfigurationOptions =
+            configurationOptionsForGitHubCredentialFailure(typedCode);
+        }
         code = new Set([
           "project_not_found",
           "harness_not_found",
@@ -300,6 +324,8 @@ export const createLaunchOperation = (runtime) => {
           "harness_capability_unsupported",
           "harness_adapter_protocol_invalid",
           "harness_preparation_side_effect_detected",
+          "github_credential_unconfigured",
+          "github_host_gh_session_unavailable",
         ]).has(typedCode) ? typedCode : "harness_workspace_invalid";
       }
     }
@@ -357,6 +383,8 @@ export const createLaunchOperation = (runtime) => {
         "harness_projection_failed",
         "harness_execution_runtime_unavailable",
         "harness_worker_provider_unavailable",
+        "github_credential_unconfigured",
+        "github_host_gh_session_unavailable",
       ]);
       const auditId = await options.recordAudit("harness.run.launch", "rejected", {
         code: failureCode,
@@ -390,6 +418,9 @@ export const createLaunchOperation = (runtime) => {
           adapterStarted: false,
           projectWrite: false,
         },
+        ...(githubCredentialConfigurationOptions
+          ? { configurationOptions: githubCredentialConfigurationOptions }
+          : {}),
       };
       if (idempotencyKeyHash) {
         retained.launchOutcomes.push({ idempotencyKeyHash, requestFingerprint, response });
@@ -542,6 +573,7 @@ export const createLaunchOperation = (runtime) => {
         parameters: structuredClone(parameters.data),
         harnessExecutionPath,
         retainedHarnessExecutionInputs,
+        githubCredential,
         cancellationGraceMs,
         hostLossTerminationEvidencePath: join(
           options.dataDir,
