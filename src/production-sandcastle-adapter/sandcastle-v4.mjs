@@ -5,6 +5,14 @@ import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
+const githubCredentialContractUrl = import.meta.url.endsWith("/[eval1]")
+  ? pathToFileURL(join(process.cwd(), "github-credential-contract.mjs")).href
+  : new URL("../github-credential-contract.mjs", import.meta.url).href;
+const {
+  GITHUB_AUTHENTICATION_VERIFICATION_CAPABILITY,
+  parseGitHubCredential,
+} = await import(githubCredentialContractUrl);
+
 const adapterProtocol = "1.0.0";
 const adapterId = "sandcastle-harness-adapter-v1";
 const capabilities = ["harness.launch.prepare.v1", "harness.run.v1"];
@@ -57,6 +65,14 @@ const launchParameters = {
       minLength: 1,
       maxLength: 128,
     },
+    {
+      name: "verifyGitHubAccess",
+      label: "Verify GitHub access",
+      description: "Run an authenticated GitHub API check inside the sandbox before delegation.",
+      cliFlag: "--verify-github-access",
+      valueType: "boolean",
+      required: false,
+    },
   ],
 };
 
@@ -101,6 +117,7 @@ const readRunStart = (execution) => {
       "adapterId",
       "harnessRunId",
       "retainedExecutionInputs",
+      "githubCredential",
     ].includes(key))
     || message.type !== "harness.run.start"
     || message.adapterProtocol !== adapterProtocol
@@ -134,7 +151,13 @@ const readRunStart = (execution) => {
     }
     retainedExecutionInputs.set(input.path, input.source);
   }
-  return retainedExecutionInputs;
+  const githubCredential = message.githubCredential ?? null;
+  return {
+    retainedExecutionInputs,
+    githubCredential: githubCredential === null
+      ? null
+      : parseGitHubCredential(githubCredential, "harness_run_start_invalid"),
+  };
 };
 
 const parseParameters = (encoded) => {
@@ -148,7 +171,11 @@ const parseParameters = (encoded) => {
     throw new Error("bounded_configuration_invalid");
   }
   const keys = Object.keys(value);
-  if (keys.some((key) => key !== "issueNumber" && key !== "targetBranch")) {
+  if (keys.some((key) => ![
+    "issueNumber",
+    "targetBranch",
+    "verifyGitHubAccess",
+  ].includes(key))) {
     throw new Error("bounded_configuration_invalid");
   }
   if (value.issueNumber !== undefined && (
@@ -163,6 +190,12 @@ const parseParameters = (encoded) => {
     || value.targetBranch.length < 1
     || value.targetBranch.length > 128
   )) {
+    throw new Error("bounded_configuration_invalid");
+  }
+  if (
+    value.verifyGitHubAccess !== undefined
+    && typeof value.verifyGitHubAccess !== "boolean"
+  ) {
     throw new Error("bounded_configuration_invalid");
   }
   return value;
@@ -422,16 +455,37 @@ const stableId = (prefix, ...parts) => `${prefix}-${createHash("sha256")
   .digest("hex")
   .slice(0, 24)}`;
 
-const sanitizeDiagnostic = (source) => source
-  .replace(/\b(token|secret|password|authorization)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+const sanitizeDiagnostic = (source, secrets = []) => secrets.reduce(
+  (sanitized, secret) => sanitized.replaceAll(secret, "[redacted]"),
+  source,
+).replace(/\b(token|secret|password|authorization)\s*[:=]\s*\S+/gi, "$1=[redacted]")
   .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+
+const sanitizeWorkerValue = (value, secrets) => {
+  if (typeof value === "string") {
+    return secrets.reduce(
+      (sanitized, secret) => sanitized.replaceAll(secret, "[redacted]"),
+      value,
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeWorkerValue(entry, secrets));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+      sanitizeWorkerValue(key, secrets),
+      sanitizeWorkerValue(entry, secrets),
+    ]));
+  }
+  return value;
+};
 
 const waitForExit = (child) => new Promise((resolve) => {
   child.once("error", () => resolve({ code: null, startFailed: true }));
   child.once("close", (code) => resolve({ code, startFailed: false }));
 });
 
-const runWorker = async (execution, readiness) => {
+const runWorker = async (execution, readiness, githubCredential) => {
   const now = () => new Date().toISOString();
   writeFrame({
     type: "harness.run.ready",
@@ -442,13 +496,22 @@ const runWorker = async (execution, readiness) => {
     readyAt: now(),
   });
 
-  let diagnosticBytes = 0;
+  const secrets = githubCredential ? [githubCredential.token] : [];
+  const diagnosticChunks = [];
+  let diagnosticSourceBytes = 0;
   const diagnostic = (chunk) => {
-    if (diagnosticBytes >= 16_384) return;
-    const sanitized = Buffer.from(sanitizeDiagnostic(Buffer.from(chunk).toString("utf8")));
-    const bounded = sanitized.subarray(0, 16_384 - diagnosticBytes);
-    diagnosticBytes += bounded.byteLength;
-    process.stderr.write(bounded);
+    if (diagnosticSourceBytes >= 65_536) return;
+    const source = Buffer.from(chunk);
+    const bounded = source.subarray(0, 65_536 - diagnosticSourceBytes);
+    diagnosticSourceBytes += bounded.byteLength;
+    diagnosticChunks.push(bounded);
+  };
+  const flushDiagnostic = () => {
+    const sanitized = Buffer.from(sanitizeDiagnostic(
+      Buffer.concat(diagnosticChunks).toString("utf8"),
+      secrets,
+    ));
+    process.stderr.write(sanitized.subarray(0, 16_384));
   };
   let activeChild = null;
   let cancelled = false;
@@ -540,9 +603,17 @@ const runWorker = async (execution, readiness) => {
           : readiness.root,
         env: readiness.realProvider ? process.env : { LANG: "C.UTF-8" },
         stdio: readiness.realProvider
-          ? ["ignore", "pipe", "pipe", "pipe"]
+          ? ["ignore", "pipe", "pipe", "pipe", "pipe"]
           : ["ignore", "pipe", "pipe"],
       });
+      if (readiness.realProvider) {
+        const credentialStream = activeChild.stdio[4];
+        if (!credentialStream || !("writable" in credentialStream)) {
+          activeChild.kill("SIGKILL");
+          throw new Error("worker_credential_channel_unavailable");
+        }
+        credentialStream.end(JSON.stringify(githubCredential));
+      }
       activeChild.stderr?.on("data", diagnostic);
       if (readiness.realProvider) activeChild.stdout?.resume();
       const protocolStream = readiness.realProvider ? activeChild.stdio[3] : activeChild.stdout;
@@ -561,6 +632,7 @@ const runWorker = async (execution, readiness) => {
           outputInvalid = true;
           return;
         }
+        message = sanitizeWorkerValue(message, secrets);
         if (message?.type === "sandcastle.worker.progress") {
           if (
             results.length > 0
@@ -604,6 +676,7 @@ const runWorker = async (execution, readiness) => {
         dependencyCleanupFailure = true;
       }
     }
+    flushDiagnostic();
   }
   process.removeListener("SIGTERM", cancelWorker);
   process.removeListener("message", handleCancellationMessage);
@@ -707,13 +780,18 @@ if (!invokedAsAdapter) {
       adapterProtocol,
       adapterId,
       negotiatedCapabilities: ["harness.launch.prepare.v1"],
-      suppliedCapabilities: ["github.issues.read", "project.git.read"],
+      suppliedCapabilities: [
+        ...(parameters.verifyGitHubAccess === true
+          ? [GITHUB_AUTHENTICATION_VERIFICATION_CAPABILITY]
+          : []),
+        "project.git.read",
+      ],
       retainedExecutionInputs: [readiness.workerPath],
       sanitizedPreview: {
-        summary: readiness.realProvider
-          ? "Delegate one real Project commit through the pinned Sandcastle Harness."
-          : parameters.issueNumber
-            ? `Delegate GitHub issue #${parameters.issueNumber} through the pinned Sandcastle Harness.`
+        summary: parameters.verifyGitHubAccess === true
+          ? "Verify authenticated GitHub API access, then delegate through the pinned Sandcastle Harness."
+          : readiness.realProvider
+            ? "Delegate one real Project commit through the pinned Sandcastle Harness."
             : "Delegate work through the pinned Sandcastle Harness.",
         secretFree: true,
       },
@@ -726,8 +804,8 @@ if (!invokedAsAdapter) {
   }
 } else if (command === "run") {
   const execution = parseExecution(encodedParameters);
-  const retainedExecutionInputs = readRunStart(execution);
-  const readiness = inspectRuntime(retainedExecutionInputs);
+  const runStart = readRunStart(execution);
+  const readiness = inspectRuntime(runStart.retainedExecutionInputs);
   if (!readiness.ready) {
     const completedAt = new Date().toISOString();
     writeFrame({
@@ -753,7 +831,7 @@ if (!invokedAsAdapter) {
       },
     });
   } else {
-    await runWorker(execution, readiness);
+    await runWorker(execution, readiness, runStart.githubCredential);
   }
 } else {
   throw new Error("harness_adapter_command_invalid");

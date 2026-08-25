@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { GITHUB_CREDENTIAL_CAPABILITIES } from "./github-credential-contract.mjs";
 import {
   harnessAdapterEntryPointSchema,
   harnessAdapterProbeSchema,
@@ -15,7 +16,10 @@ import { harnessAdapterIdSchema } from "./harness-adapter-identity.mjs";
 
 const execFileAsync = promisify(execFile);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
-const capabilitySchema = z.enum(["github.issues.read", "project.git.read"]);
+const capabilitySchema = z.enum([
+  ...GITHUB_CREDENTIAL_CAPABILITIES,
+  "project.git.read",
+]);
 
 const launchParameterNameSchema = z.string().min(1).max(64)
   .regex(/^[a-z][a-zA-Z0-9]*$/);

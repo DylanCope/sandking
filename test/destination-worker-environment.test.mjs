@@ -6,20 +6,22 @@ import { createDestinationWorkerEnvironment } from "../src/destination-worker-en
 test("the Host derives a minimal destination-local Worker environment", () => {
   const environment = createDestinationWorkerEnvironment({
     executablePath: "/opt/sandking-node/bin/node",
+    githubConfigDirectory: null,
     homeDirectory: "/srv/destination-user",
     pathValue: "/srv/destination-user/.local/bin:/opt/provider/bin:/usr/bin",
     platform: "linux",
     systemRoot: null,
+    xdgConfigHome: null,
   });
 
   assert.deepEqual(environment, {
     LANG: "C.UTF-8",
     HOME: "/srv/destination-user",
     PATH: [
-      "/opt/sandking-node/bin",
       "/srv/destination-user/.local/bin",
       "/opt/provider/bin",
       "/usr/bin",
+      "/opt/sandking-node/bin",
       "/usr/local/bin",
       "/bin",
     ].join(delimiter),
@@ -29,28 +31,57 @@ test("the Host derives a minimal destination-local Worker environment", () => {
   assert.equal(environment.CODEX_HOME, undefined);
 });
 
-test("the Windows destination keeps configured Git, Codex, and npm locations", () => {
+test("the Host preserves GitHub CLI configuration locators without token variables", () => {
   const environment = createDestinationWorkerEnvironment({
-    executablePath: "C:\\Program Files\\nodejs\\node.exe",
-    homeDirectory: "C:\\Users\\destination",
-    commandInterpreter: "C:\\Windows\\System32\\cmd.exe",
-    pathValue: [
-      "C:\\Users\\destination\\AppData\\Roaming\\npm",
-      "C:\\Program Files\\Git\\cmd",
-      "C:\\Program Files\\nodejs",
-    ].join(";"),
-    platform: "win32",
-    pathExtensions: ".COM;.EXE;.BAT;.CMD",
-    systemRoot: "C:\\Windows",
+    executablePath: "/opt/sandking-node/bin/node",
+    githubConfigDirectory: "/srv/destination-user/private-gh",
+    homeDirectory: "/srv/destination-user",
+    pathValue: "/usr/bin",
+    platform: "linux",
+    systemRoot: null,
+    xdgConfigHome: "/srv/destination-user/config",
   });
+
+  assert.equal(environment.GH_CONFIG_DIR, "/srv/destination-user/private-gh");
+  assert.equal(environment.XDG_CONFIG_HOME, "/srv/destination-user/config");
+  assert.equal(environment.GH_TOKEN, undefined);
+  assert.equal(environment.GITHUB_TOKEN, undefined);
+});
+
+test("the Windows destination keeps configured Git, Codex, and npm locations", () => {
+  const originalAppData = process.env.APPDATA;
+  process.env.APPDATA = "D:\\Destination Profile\\Roaming";
+  let environment;
+  try {
+    environment = createDestinationWorkerEnvironment({
+      executablePath: "C:\\Program Files\\nodejs\\node.exe",
+      githubConfigDirectory: null,
+      homeDirectory: "C:\\Users\\destination",
+      commandInterpreter: "C:\\Windows\\System32\\cmd.exe",
+      pathValue: [
+        "C:\\Users\\destination\\AppData\\Roaming\\npm",
+        "C:\\Program Files\\Git\\cmd",
+        "C:\\Program Files\\nodejs",
+      ].join(";"),
+      platform: "win32",
+      pathExtensions: ".COM;.EXE;.BAT;.CMD",
+      systemRoot: "C:\\Windows",
+      xdgConfigHome: null,
+    });
+  } finally {
+    if (originalAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = originalAppData;
+  }
 
   assert.deepEqual(environment, {
     LANG: "C.UTF-8",
+    HOME: "C:\\Users\\destination",
     USERPROFILE: "C:\\Users\\destination",
+    APPDATA: "D:\\Destination Profile\\Roaming",
     PATH: [
-      "C:\\Program Files\\nodejs",
       "C:\\Users\\destination\\AppData\\Roaming\\npm",
       "C:\\Program Files\\Git\\cmd",
+      "C:\\Program Files\\nodejs",
       "C:\\Windows\\System32",
       "C:\\Windows",
     ].join(";"),

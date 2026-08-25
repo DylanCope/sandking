@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { createProductionRegistration } from "./production-sandcastle-host-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = new URL("..", import.meta.url);
@@ -16,6 +17,34 @@ const productionHarnessSeedManifest = JSON.parse(await readFile(
 const productionHarnessPackageSources = productionHarnessSeedManifest.files
   .filter(({ source }) => source === "sandking-package")
   .map(({ path, sourcePath }) => sourcePath ?? path);
+
+const execFileWithStdin = (file, args, input, options) => new Promise((resolve, reject) => {
+  const child = spawn(file, args, { ...options, stdio: ["pipe", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  child.once("error", reject);
+  child.once("close", (code, signal) => {
+    if (code === 0) {
+      resolve({ stdout, stderr });
+      return;
+    }
+    reject(Object.assign(new Error(`command failed: ${code ?? signal ?? "unknown"}`), {
+      code,
+      signal,
+      stdout,
+      stderr,
+    }));
+  });
+  child.stdin.end(input);
+});
 
 test("the stable sandking command is public, executable, and contains module-relative runtime assets", async () => {
   assert.equal(packageJson.private, false);
@@ -133,6 +162,137 @@ test("an installed production package launches outside the source checkout", asy
       });
       assert.equal(discoveredHelp, help);
     }
+
+    const credentialFixture = await createProductionRegistration(
+      join(root, "credential-configuration"),
+    );
+    const credentialArgs = [
+      "--data-dir", credentialFixture.dataDir,
+      "--json",
+    ];
+    const { stdout: credentialHelp } = await execFileAsync(command, [
+      "github-credentials", "--help",
+    ], { cwd: root, env: process.env });
+    assert.match(credentialHelp, /fine-grained Project PAT/i);
+    assert.match(credentialHelp, /standard input/i);
+    assert.match(credentialHelp, /full Host GitHub access/i);
+    assert.match(credentialHelp, /--acknowledge-full-host-access/);
+
+    const projectId = credentialFixture.project.project.projectId;
+    const inspect = async (id) => JSON.parse((await execFileAsync(command, [
+      "github-credentials", "inspect", ...(id ? [id] : []), ...credentialArgs,
+    ], { cwd: root, env: process.env })).stdout);
+    const initialCredentials = await inspect(projectId);
+    assert.deepEqual({
+      ...initialCredentials,
+      configurationOptions: initialCredentials.configurationOptions.map(({ mode }) => mode),
+    }, {
+      code: "github_credentials_unconfigured",
+      revision: 0,
+      projectPat: "not-configured",
+      hostGhSessionReuse: "disabled",
+      effectiveMode: null,
+      configurationOptions: ["project-pat", "host-gh-session"],
+    });
+    assert.match(initialCredentials.configurationOptions[0].guidance, /fine-grained/i);
+    assert.match(initialCredentials.configurationOptions[1].guidance, /full Host/i);
+
+    const projectToken = "github_pat_installed_cli_secret_261";
+    const setArguments = [
+      "github-credentials", "set-project-pat", projectId, ...credentialArgs,
+    ];
+    const set = JSON.parse((await execFileWithStdin(
+      command,
+      setArguments,
+      `${projectToken}\n`,
+      { cwd: root, env: process.env },
+    )).stdout);
+    assert.equal(set.projectPat, "configured");
+    assert.equal(set.revision, 1);
+    assert.doesNotMatch(JSON.stringify(set), /installed_cli_secret_261/);
+    assert.equal(setArguments.includes(projectToken), false);
+
+    await assert.rejects(execFileAsync(command, [
+      "github-credentials", "enable-host-session", ...credentialArgs,
+    ], { cwd: root, env: process.env }), (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /full Host GitHub access/i);
+      assert.match(error.stderr, /--acknowledge-full-host-access/);
+      return true;
+    });
+    assert.equal((await inspect(projectId)).revision, 1);
+
+    const enabled = JSON.parse((await execFileAsync(command, [
+      "github-credentials", "enable-host-session",
+      "--acknowledge-full-host-access", ...credentialArgs,
+    ], { cwd: root, env: process.env })).stdout);
+    assert.equal(enabled.hostGhSessionReuse, "enabled");
+    assert.equal(enabled.revision, 2);
+    assert.equal((await inspect(projectId)).effectiveMode, "project-pat");
+
+    const cleared = JSON.parse((await execFileAsync(command, [
+      "github-credentials", "clear-project-pat", projectId, ...credentialArgs,
+    ], { cwd: root, env: process.env })).stdout);
+    assert.equal(cleared.projectPat, "not-configured");
+    assert.equal(cleared.effectiveMode, "host-gh-session");
+
+    const disabled = JSON.parse((await execFileAsync(command, [
+      "github-credentials", "disable-host-session", ...credentialArgs,
+    ], { cwd: root, env: process.env })).stdout);
+    assert.equal(disabled.hostGhSessionReuse, "disabled");
+    assert.equal(disabled.code, "github_credentials_unconfigured");
+
+    const concurrentActions = Array.from({ length: 16 }, (_, index) => {
+      if (index % 2 === 0) {
+        return execFileWithStdin(
+          command,
+          [
+            "github-credentials", "set-project-pat", projectId, ...credentialArgs,
+          ],
+          `github_pat_concurrent_secret_261_${index}\n`,
+          { cwd: root, env: process.env },
+        );
+      }
+      return execFileAsync(command, [
+        "github-credentials", "enable-host-session",
+        "--acknowledge-full-host-access", ...credentialArgs,
+      ], { cwd: root, env: process.env });
+    });
+    const concurrentOutcomes = await Promise.allSettled(concurrentActions);
+    assert.equal(
+      concurrentOutcomes.every(({ status }) => status === "fulfilled"),
+      true,
+      concurrentOutcomes
+        .filter(({ status }) => status === "rejected")
+        .map(({ reason }) => reason.stderr ?? reason.message)
+        .join("\n"),
+    );
+    const retainedCredentialState = JSON.parse(await readFile(
+      join(credentialFixture.dataDir, "github-credentials.json"),
+      "utf8",
+    ));
+    assert.equal(retainedCredentialState.revision, 4 + concurrentActions.length);
+    assert.equal(
+      retainedCredentialState.mutationOutcomes.length,
+      4 + concurrentActions.length,
+    );
+    assert.equal(retainedCredentialState.reuseHostGhSession, true);
+    assert.equal(
+      Object.hasOwn(retainedCredentialState.projectPersonalAccessTokens, projectId),
+      true,
+    );
+    assert.match(
+      await readFile(join(credentialFixture.dataDir, "host-identity.json"), "utf8"),
+      /"hostId": "host-[a-f0-9]{24}"/,
+    );
+    assert.doesNotMatch(
+      await readFile(join(credentialFixture.dataDir, "audit.jsonl"), "utf8"),
+      /installed_cli_secret_261|concurrent_secret_261/,
+    );
+    assert.equal((await execFileAsync("git", [
+      "-C", credentialFixture.projectPath,
+      "status", "--porcelain=v1", "--untracked-files=all",
+    ])).stdout, "");
 
     const prohibitedFaultState = join(root, "prohibited-fault-state");
     await assert.rejects(execFileAsync(command, [

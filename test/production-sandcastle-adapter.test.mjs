@@ -35,6 +35,7 @@ import {
   installRealReadinessProcesses,
   REAL_READINESS_TEST_API_KEY,
 } from "./real-readiness-processes.mjs";
+import "./github-credentials.qualification.mjs";
 import "./production-sandcastle-qualification.mjs";
 
 const launchRequest = productionLaunchRequest;

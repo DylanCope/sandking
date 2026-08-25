@@ -256,7 +256,13 @@ test("packaged Cockpit removes pre-commit production preparation after real Host
       if (await readFile(manifestPath, "utf8").then(() => true, () => false)) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    assert.deepEqual(JSON.parse(await readFile(manifestPath, "utf8")), {
+    const manifestSource = await readFile(manifestPath, "utf8").catch(async (error) => {
+      const launchFeedback = await page.locator("#harness-launch-feedback").textContent();
+      throw new Error(`provider_manifest_unavailable: ${launchFeedback}`, {
+        cause: error,
+      });
+    });
+    assert.deepEqual(JSON.parse(manifestSource), {
       schemaVersion: 1,
       provider: { kind: "openai-codex", ready: true },
       scenario: "project-commit",

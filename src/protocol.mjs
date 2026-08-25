@@ -2,6 +2,14 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { identifierSchemas } from "./common/identifiers.mjs";
 import {
+  GITHUB_CREDENTIAL_AUTHORIZATION_CLASS,
+  GITHUB_CREDENTIAL_FAILURE_CODES,
+  GITHUB_CREDENTIAL_MODES,
+  HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
+  isGitHubCredentialFailureCode,
+  isGitHubCredentialToken,
+} from "./github-credential-contract.mjs";
+import {
   projectHarnessAdapterIdentityAgrees,
   harnessRegistrationSchema,
   projectRegistrationSchema,
@@ -46,6 +54,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.project-registration-resolution.v1",
   "sandking.conformance-harness-registration.v1",
   "sandking.production-harness-registration.v1",
+  "sandking.github-credentials.v1",
   "sandking.harness-run.launch.v2",
   "sandking.harness-run.v2",
   "sandking.harness-run-reconciliation.v1",
@@ -53,7 +62,7 @@ export const hostCapabilities = Object.freeze([
   "sandking.harness-run.recovery.v1",
 ]);
 export const HOST_SCHEMA_DIGEST = `sha256:${createHash("sha256")
-  .update("sandking-host-control-schema-v1-with-truthful-project-registration-failures")
+  .update("sandking-host-control-schema-v1-with-explicit-github-credentials")
   .digest("hex")}`;
 
 const protocolErrorDetails = Object.freeze({
@@ -200,6 +209,103 @@ const hostIdentityFailureSchema = z.object({
   expectedRevision: z.number().int().nonnegative(),
   actualRevision: z.number().int().nonnegative(),
   auditId: auditIdSchema,
+}).strip();
+
+const githubCredentialAuthorizationClassSchema = z.literal(
+  GITHUB_CREDENTIAL_AUTHORIZATION_CLASS,
+);
+const githubCredentialTokenSchema = z.string().refine(isGitHubCredentialToken);
+const githubCredentialConfigurationOptionSchema = z.object({
+  mode: z.enum(GITHUB_CREDENTIAL_MODES),
+  guidance: z.string().min(1).max(1_024),
+}).strict();
+const githubCredentialStatusShape = {
+  code: z.enum(["github_credentials_configured", "github_credentials_unconfigured"]),
+  revision: z.number().int().nonnegative(),
+  projectPat: z.enum(["configured", "not-configured"]).nullable(),
+  hostGhSessionReuse: z.enum(["enabled", "disabled"]),
+  effectiveMode: z.enum(GITHUB_CREDENTIAL_MODES).nullable(),
+  configurationOptions: z.array(githubCredentialConfigurationOptionSchema).max(2),
+};
+const githubCredentialsInspectSchema = z.object({
+  type: z.literal("github.credentials.inspect"),
+  requestId: identifierSchema,
+  projectId: projectIdSchema.optional(),
+}).strip();
+const githubCredentialsInspectResultSchema = z.object({
+  type: z.literal("github.credentials.inspect.result"),
+  requestId: identifierSchema,
+  ...githubCredentialStatusShape,
+}).strip();
+const githubCredentialsProjectConfigureSchema = z.object({
+  type: z.literal("github.credentials.project.configure"),
+  requestId: identifierSchema,
+  projectId: projectIdSchema,
+  action: z.enum(["set", "clear"]),
+  personalAccessToken: githubCredentialTokenSchema.optional(),
+  authorizationClass: githubCredentialAuthorizationClassSchema,
+  idempotencyKey: z.string().min(1).max(256),
+  expectedRevision: z.number().int().nonnegative(),
+}).strip().superRefine((request, context) => {
+  if (
+    (request.action === "set") !== (request.personalAccessToken !== undefined)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "setting a Project PAT requires exactly one credential value",
+      path: ["personalAccessToken"],
+    });
+  }
+});
+const githubCredentialsHostConfigureSchema = z.object({
+  type: z.literal("github.credentials.host.configure"),
+  requestId: identifierSchema,
+  action: z.enum(["enable", "disable"]),
+  riskAcknowledgement: z.literal(HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT).optional(),
+  authorizationClass: githubCredentialAuthorizationClassSchema,
+  idempotencyKey: z.string().min(1).max(256),
+  expectedRevision: z.number().int().nonnegative(),
+}).strip().superRefine((request, context) => {
+  if (
+    (request.action === "enable") !== (request.riskAcknowledgement !== undefined)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Host gh session reuse requires an explicit risk acknowledgement",
+      path: ["riskAcknowledgement"],
+    });
+  }
+});
+const githubCredentialsConfigureResultSchema = z.object({
+  type: z.literal("github.credentials.configure.result"),
+  requestId: identifierSchema,
+  ...githubCredentialStatusShape,
+  authorizationClass: githubCredentialAuthorizationClassSchema,
+  idempotencyKeyHash: digestSchema,
+  expectedRevision: z.number().int().nonnegative(),
+  idempotentReplay: z.boolean(),
+  auditId: auditIdSchema,
+}).strip();
+const githubCredentialsConfigureFailureSchema = z.object({
+  type: z.literal("github.credentials.configure.failure"),
+  requestId: identifierSchema,
+  code: z.enum([
+    "mutation_contract_invalid",
+    "idempotency_key_conflict",
+    "mutation_revision_conflict",
+    "github_credential_project_not_production",
+    "github_host_session_risk_not_acknowledged",
+  ]),
+  retryable: z.boolean(),
+  authorizationClass: githubCredentialAuthorizationClassSchema,
+  idempotencyKeyHash: digestSchema.nullable(),
+  expectedRevision: z.number().int().nonnegative().nullable(),
+  actualRevision: z.number().int().nonnegative(),
+  auditId: auditIdSchema,
+  prohibitedSideEffects: z.object({
+    credentialChanged: z.literal(false),
+    projectWrite: z.literal(false),
+  }).strict(),
 }).strip();
 
 const projectPathSchema = z.string().max(4_096);
@@ -523,6 +629,7 @@ export const harnessRunLaunchFailureSchema = z.object({
     "harness_projection_failed",
     "harness_execution_runtime_unavailable",
     "harness_worker_provider_unavailable",
+    ...GITHUB_CREDENTIAL_FAILURE_CODES,
     "harness_capability_unsupported",
     "harness_adapter_protocol_invalid",
     "harness_preparation_side_effect_detected",
@@ -538,7 +645,28 @@ export const harnessRunLaunchFailureSchema = z.object({
     adapterStarted: z.literal(false).default(false),
     projectWrite: z.literal(false),
   }).strict(),
-}).strip();
+  configurationOptions: z.array(githubCredentialConfigurationOptionSchema)
+    .length(2).optional(),
+}).strip().superRefine((failure, context) => {
+  const credentialFailure = isGitHubCredentialFailureCode(failure.code);
+  if (credentialFailure !== (failure.configurationOptions !== undefined)) {
+    context.addIssue({
+      code: "custom",
+      message: "GitHub credential launch failures require sanitized configuration guidance",
+      path: ["configurationOptions"],
+    });
+  }
+  if (
+    failure.configurationOptions
+    && new Set(failure.configurationOptions.map(({ mode }) => mode)).size !== 2
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "GitHub credential launch failures must identify both configuration modes",
+      path: ["configurationOptions"],
+    });
+  }
+});
 export const harnessRunLaunchOutcomeSchema = z.union([
   harnessRunLaunchResultSchema,
   harnessRunLaunchFailureSchema,
@@ -782,6 +910,12 @@ export const controlMessageSchema = z.discriminatedUnion("type", [
   hostIdentityAcceptSchema,
   hostIdentityResultSchema,
   hostIdentityFailureSchema,
+  githubCredentialsInspectSchema,
+  githubCredentialsInspectResultSchema,
+  githubCredentialsProjectConfigureSchema,
+  githubCredentialsHostConfigureSchema,
+  githubCredentialsConfigureResultSchema,
+  githubCredentialsConfigureFailureSchema,
   projectInspectSchema,
   projectInspectResultSchema,
   projectRegisterSchema,

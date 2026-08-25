@@ -30,9 +30,9 @@ const sourceUrlSchema = z.url().refine((value) => {
 });
 
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
-const SAND_KING_SEED_REVISION = "2c14d1695052777776aacc2c2f75d1bb05939975";
+const SAND_KING_SEED_REVISION = "5227e22f427b80477f3c72a50a30d5faeb7539c7";
 const SAND_KING_SEED_SOURCE_INTEGRITY =
-  "sha256:2f0e91a766517377a3d5c5a56a3aa640939e00fb114cff57d1e7be884790d852";
+  "sha256:685355451765224c6e5cabd23d26938ec42a7f7f9a80ebb7914f1ab7581ca654";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -142,6 +142,18 @@ const productionSeedFileContract = Object.freeze([
   {
     path: ".sandcastle/controlled-worker-fixture.mjs",
     sourcePath: "src/production-sandcastle-adapter/controlled-worker-fixture.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
+    path: ".sandcastle/github-credential-v1.mjs",
+    sourcePath: "src/production-sandcastle-adapter/github-credential-v1.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
+    path: "github-credential-contract.mjs",
+    sourcePath: "src/github-credential-contract.mjs",
     source: "sandking-package",
     executable: false,
   },

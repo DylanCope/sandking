@@ -5,6 +5,10 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { createDestinationWorkerEnvironment } from "./destination-worker-environment.mjs";
 import {
+  GITHUB_CREDENTIAL_CAPABILITIES,
+  isGitHubCredential,
+} from "./github-credential-contract.mjs";
+import {
   CONFORMANCE_HARNESS_ADAPTER_ID,
   SANDCASTLE_HARNESS_ADAPTER_ID,
   harnessAdapterIdSchema,
@@ -148,12 +152,22 @@ if (conformanceHarnessLaunchParametersDeclaration.kind !== "fields") {
 export const sandcastleHarnessLaunchParametersDeclaration =
   harnessLaunchParametersDeclarationSchema.parse({
     kind: "fields",
-    fields: conformanceHarnessLaunchParametersDeclaration.fields.map((field) => ({
-      ...field,
-      description: field.name === "issueNumber"
-        ? "Optional GitHub issue identifier for Sandcastle delivery."
-        : "Optional canonical sandcastle branch for the issue.",
-    })),
+    fields: [
+      ...conformanceHarnessLaunchParametersDeclaration.fields.map((field) => ({
+        ...field,
+        description: field.name === "issueNumber"
+          ? "Optional GitHub issue identifier retained for launch compatibility."
+          : "Optional canonical sandcastle branch retained for launch compatibility.",
+      })),
+      {
+        name: "verifyGitHubAccess",
+        label: "Verify GitHub access",
+        description: "Run an authenticated GitHub API check inside the sandbox before delegation.",
+        cliFlag: "--verify-github-access",
+        valueType: "boolean",
+        required: false,
+      },
+    ],
   });
 
 // Adapter protocol 1.0.0 originally required this conformance-only shape in
@@ -200,7 +214,7 @@ export const harnessPreparedEnvelopeSchema = z.object({
   adapterId: harnessAdapterIdSchema,
   negotiatedCapabilities: z.array(z.literal("harness.launch.prepare.v1")).length(1),
   suppliedCapabilities: z.array(z.enum([
-    "github.issues.read",
+    ...GITHUB_CREDENTIAL_CAPABILITIES,
     "project.git.read",
   ])).min(1).max(8),
   retainedExecutionInputs: retainedExecutionInputPathsSchema.default([]),
@@ -256,12 +270,15 @@ export const retainedExecutionInputSchema = z.object({
     Buffer.byteLength(value, "utf8") <= 12_000),
 }).strict();
 
+export const githubCredentialSchema = z.unknown().refine(isGitHubCredential);
+
 export const harnessRunStartRequestSchema = z.object({
   type: z.literal("harness.run.start"),
   adapterProtocol: adapterProtocolSchema,
   adapterId: harnessAdapterIdSchema,
   harnessRunId: harnessRunIdSchema,
   retainedExecutionInputs: z.array(retainedExecutionInputSchema).max(8),
+  githubCredential: githubCredentialSchema.optional(),
 }).strict().superRefine((request, context) => {
   if (new Set(request.retainedExecutionInputs.map(({ path }) => path)).size
       !== request.retainedExecutionInputs.length) {
@@ -269,6 +286,16 @@ export const harnessRunStartRequestSchema = z.object({
       code: "custom",
       message: "retained execution input paths must be unique",
       path: ["retainedExecutionInputs"],
+    });
+  }
+  if (
+    request.githubCredential
+    && request.adapterId !== SANDCASTLE_HARNESS_ADAPTER_ID
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "GitHub credentials are supported only by the production Sandcastle adapter",
+      path: ["githubCredential"],
     });
   }
 });

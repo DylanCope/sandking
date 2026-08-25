@@ -8,6 +8,10 @@ import { digest } from "./common/digest.mjs";
 import { projectIdPattern } from "./common/identifiers.mjs";
 import { harnessLaunchParametersDeclarationSchema } from "./harness-adapter-protocol.mjs";
 import { launchParametersSchema } from "./harness-launch.mjs";
+import {
+  GitHubCredentialUnavailableError,
+  isGitHubCredentialFailureCode,
+} from "./github-credential-contract.mjs";
 import { readJson, removePrivateFile, writePrivateJson } from "./private-state.mjs";
 
 const controllerSessionPattern = /^controller-session-[a-f0-9]{24}$/;
@@ -76,7 +80,18 @@ const pendingLaunchStateFile = "harness-launch-retries.json";
 const pendingCancellationStateFile = "harness-cancellation-retries.json";
 const pendingRecoveryStateFile = "harness-recovery-retries.json";
 
-class ControllerCliAcknowledgedFailure extends Error {}
+export class ControllerCliAcknowledgedFailure extends Error {
+  /** @param {string} code @param {unknown} [configurationOptions] */
+  constructor(code, configurationOptions) {
+    const credentialFailure = isGitHubCredentialFailureCode(code)
+      ? new GitHubCredentialUnavailableError(code, configurationOptions)
+      : null;
+    super(credentialFailure?.message ?? code);
+    this.name = "ControllerCliAcknowledgedFailure";
+    this.code = code;
+    this.configurationOptions = credentialFailure?.configurationOptions;
+  }
+}
 
 const definitiveCancellationFailureCodes = new Set([
   "mutation_contract_invalid",
@@ -276,6 +291,7 @@ const requestControllerOperation = async (request, environment) => {
         if (response.ok !== true) {
           throw new ControllerCliAcknowledgedFailure(
             response?.failure?.code ?? "controller_cli_operation_failed",
+            response?.failure?.configurationOptions,
           );
         }
         finish(null, response.outcome);
@@ -415,7 +431,7 @@ export const requestControllerCancel = async (request, environment = process.env
   } catch (error) {
     if (
       error instanceof ControllerCliAcknowledgedFailure
-      && definitiveCancellationFailureCodes.has(error.message)
+      && definitiveCancellationFailureCodes.has(error.code)
     ) {
       // These are retained Host outcomes that prove cancellation was rejected
       // without signalling. Transport, provider, and Host failures remain
@@ -467,7 +483,7 @@ export const requestControllerRecover = async (request, environment = process.en
   } catch (error) {
     if (
       error instanceof ControllerCliAcknowledgedFailure
-      && definitiveRecoveryFailureCodes.has(error.message)
+      && definitiveRecoveryFailureCodes.has(error.code)
     ) {
       await clearPendingLaunch(pending);
     }

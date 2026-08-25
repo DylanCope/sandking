@@ -713,11 +713,13 @@ export const prepareProductionHarness = async (options) => {
   const committedRuntimePaths = committedPaths.filter((path) =>
     path.startsWith(".sandcastle/")
     || path.startsWith("common/")
+    || path === "github-credential-contract.mjs"
     || path === "package.json"
     || path === "package-lock.json").sort();
   const runtimePaths = seedManifest.files.map(({ path }) => path).filter((path) =>
     path.startsWith(".sandcastle/")
     || path.startsWith("common/")
+    || path === "github-credential-contract.mjs"
     || path === "package.json"
     || path === "package-lock.json").sort();
   const lockedSkillPaths = new Set(skillLock.skills.map((skill) => skill.source.path));

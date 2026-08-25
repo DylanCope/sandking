@@ -143,7 +143,11 @@ const runInstalledCliDelegation = async ({ installed, root, sandboxImageId }) =>
     mkdir(userHome, { recursive: true, mode: 0o700 }),
   ]);
   const projectBefore = await initializeProject(cliProjectPath);
-  const [{ createProjectRegistry }, { createHarnessRunManager }] = await Promise.all([
+  const [
+    { createProjectRegistry },
+    { createHarnessRunManager },
+    { createGitHubCredentialManager },
+  ] = await Promise.all([
     import(pathToFileURL(join(
       installed.packageDirectory,
       "src",
@@ -153,6 +157,11 @@ const runInstalledCliDelegation = async ({ installed, root, sandboxImageId }) =>
       installed.packageDirectory,
       "src",
       "harness-runs.mjs",
+    )).href),
+    import(pathToFileURL(join(
+      installed.packageDirectory,
+      "src",
+      "github-credentials.mjs",
     )).href),
   ]);
   const audits = [];
@@ -193,11 +202,33 @@ const runInstalledCliDelegation = async ({ installed, root, sandboxImageId }) =>
     idempotencyKey: "pin-real-cli-harness",
     expectedRevision: 1,
   });
+  const githubCredentials = await createGitHubCredentialManager({
+    dataDir: cliDataDir,
+    recordAudit,
+  });
+  const githubToken = (await execFileAsync(
+    "gh",
+    ["auth", "token", "--hostname", "github.com"],
+    { env: process.env, timeout: 10_000, maxBuffer: 16_384 },
+  )).stdout.trim();
+  const credentialConfigured = await githubCredentials.configureProject({
+    requestId: "configure-real-cli-project-pat",
+    projectId: project.project.projectId,
+    action: "set",
+    personalAccessToken: githubToken,
+    authorizationClass: "host_local_github_credentials",
+    idempotencyKey: "configure-real-cli-project-pat",
+    expectedRevision: 0,
+  });
+  if (credentialConfigured.type !== "github.credentials.configure.result") {
+    throw new Error(`issue_174_github_credential_failed:${credentialConfigured.code}`);
+  }
   const manager = await createHarnessRunManager({
     dataDir: cliDataDir,
     hostId: `host-${"7".repeat(24)}`,
     recordAudit,
     loadLaunchContext: registry.loadLaunchContext,
+    resolveGitHubCredential: githubCredentials.resolveForProject,
   });
   const controllerSessionId = `controller-session-${"8".repeat(24)}`;
   const requests = [];
