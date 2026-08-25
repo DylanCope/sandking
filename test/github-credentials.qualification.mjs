@@ -16,6 +16,7 @@ import {
   createProductionRegistration,
   execFileAsync,
   installReadyProbeCommands,
+  observeProductionTerminal,
   productionLaunchRequest,
   writeExecutable,
 } from "./production-sandcastle-host-fixture.mjs";
@@ -220,6 +221,7 @@ test("the credential-free production canary ignores absent or unavailable option
 
     const unconfigured = await manager.launch(productionLaunchRequest(projectId));
     assert.equal(unconfigured.type, "harness.run.launch.result", JSON.stringify(unconfigured));
+    await observeProductionTerminal(manager, unconfigured.run.harnessRunId);
 
     await credentials.configureHost({
       requestId: "enable-unavailable-host-session",
@@ -234,6 +236,7 @@ test("the credential-free production canary ignores absent or unavailable option
       idempotencyKeyHash: `sha256:${"5".repeat(64)}`,
     }));
     assert.equal(unavailable.type, "harness.run.launch.result", JSON.stringify(unavailable));
+    await observeProductionTerminal(manager, unavailable.run.harnessRunId);
     await assert.rejects(
       credentials.requireForProject(projectId),
       (error) => {

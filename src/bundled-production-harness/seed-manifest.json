@@ -54,7 +54,7 @@
       "path": "adapters/sandcastle.mjs",
       "sourcePath": "src/production-sandcastle-adapter/sandcastle-v4.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:a4dbd6777e49c757c4f9f9de6744e72104041388387582ad34ab84d8ec45c3fa",
+      "integrity": "sha256:32a597d1338746a7985154f0f0ac2c581982abb4c0d423f2277cb3f8bab7d0c4",
       "executable": false
     },
     {
@@ -85,13 +85,13 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:170f6511810554aaa4ec9319091ddbe9f85394a31441a33ab13739f62eed5046",
+      "integrity": "sha256:4b3b6dab9aaab7f0476f3522b354d42a5db01f6ba69096deea6a2ff8e2ee0e9b",
       "executable": false
     },
     {
       "path": "skills.lock.json",
       "source": "seed",
-      "integrity": "sha256:85c0b3b6d678177eb50d2a846c705f82a8611143eabec78cd2ffffea88cc801d",
+      "integrity": "sha256:12c9bdcf868c0dff83f40d7939778ffc387391b07b4776c6ab70c4c38f512e38",
       "executable": false
     },
     {
