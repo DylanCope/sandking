@@ -1,17 +1,15 @@
 import { execFile } from "node:child_process";
 import { readFileSync, writeSync } from "node:fs";
-import {
-  chmod,
-  lstat,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { lstat, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { digest as sha256 } from "../common/digest.mjs";
+import {
+  githubSandboxEnvironment,
+  githubSandboxReadyCommands,
+  materializeGitHubCredential,
+} from "./github-credential-v1.mjs";
 
 const execFileAsync = promisify(execFile);
 export const REAL_PROVIDER_KIND = "openai-codex";
@@ -128,41 +126,6 @@ const verifyCodexAuthPath = async (authPath) => {
   }
 };
 
-const materializeGitHubCredential = async (credential) => {
-  if (credential === null || credential === undefined) return null;
-  if (
-    !credential
-    || typeof credential !== "object"
-    || Array.isArray(credential)
-    || !["project-pat", "host-gh-session"].includes(credential.mode)
-    || typeof credential.token !== "string"
-    || credential.token.length < 1
-    || credential.token.length > 4_096
-    || credential.token.trim() !== credential.token
-    || /[\s\0]/.test(credential.token)
-  ) {
-    throw new Error("github_credential_invalid");
-  }
-  const directory = await mkdtemp(join(tmpdir(), "sandking-github-auth-"));
-  const path = join(directory, "token");
-  try {
-    await chmod(directory, 0o700);
-    await writeFile(path, `${credential.token}\n`, { flag: "wx", mode: 0o600 });
-    await chmod(path, 0o600);
-    const details = await lstat(path);
-    if (!details.isFile() || details.isSymbolicLink()) {
-      throw new Error("github_credential_invalid");
-    }
-    return {
-      path,
-      cleanup: () => rm(directory, { recursive: true, force: true }),
-    };
-  } catch (error) {
-    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
-    throw error;
-  }
-};
-
 const inspectPinnedSandboxImage = async () => {
   const { stdout } = await execFileAsync("docker", [
     "image", "inspect", REAL_SANDBOX_IMAGE, "--format={{.Id}}",
@@ -235,16 +198,7 @@ export const runRealDelegation = async ({
       'mkdir -p "${HOME}/.codex"',
       'cp "${HOME}/.sandcastle-secrets/codex-auth.json" "${HOME}/.codex/auth.json"',
       'chmod 600 "${HOME}/.codex/auth.json"',
-      'rm -rf "${HOME}/.config/gh"',
-      'mkdir -p "${HOME}/.config/gh"',
-      'rm -rf "${HOME}/.sandcastle-bin"',
-      ...(materializedGitHubCredential ? [
-        'mkdir -p "${HOME}/.sandcastle-bin"',
-        'github_executable="$(command -v gh)"',
-        'printf \'%s\\n\' \'#!/bin/sh\' \'set -eu\' \'GH_TOKEN="$(cat "${HOME}/.sandcastle-secrets/github-token")"\' \'export GH_TOKEN\' "exec \\"${github_executable}\\" \\"\\$@\\"" > "${HOME}/.sandcastle-bin/gh"',
-        'chmod 700 "${HOME}/.sandcastle-bin/gh"',
-        'gh auth status --hostname github.com >/dev/null',
-      ] : []),
+      ...githubSandboxReadyCommands(Boolean(materializedGitHubCredential)),
     ];
     const run = await sandcastle.run({
       agent: sandcastle.codex(REAL_PROVIDER_MODEL, {
@@ -254,15 +208,7 @@ export const runRealDelegation = async ({
       sandbox: sandboxProvider.docker({
         imageName: REAL_SANDBOX_IMAGE,
         mounts,
-        env: {
-          PATH: "/home/agent/.sandcastle-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-          GH_CONFIG_DIR: "/home/agent/.config/gh",
-          GH_PROMPT_DISABLED: "1",
-          GH_TOKEN: "",
-          GITHUB_TOKEN: "",
-          GH_ENTERPRISE_TOKEN: "",
-          GITHUB_ENTERPRISE_TOKEN: "",
-        },
+        env: githubSandboxEnvironment,
       }),
       cwd: projectPath,
       branchStrategy: { type: "head" },

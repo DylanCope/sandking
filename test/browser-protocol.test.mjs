@@ -385,7 +385,10 @@ test("browser/runtime WebSocket negotiation is versioned, typed, sanitized, and 
     });
     assert.equal(ack.viewModel.projectPreparation.current, null);
     assert.doesNotMatch(JSON.stringify(ack), new RegExp(secret));
-    assert.doesNotMatch(JSON.stringify(ack), /bootstrap|credential|filesystem|dataDir|process\.env/i);
+    assert.doesNotMatch(
+      JSON.stringify(ack),
+      /bootstrap|personalAccessToken|githubToken|GH_TOKEN|GITHUB_TOKEN|filesystem|dataDir|process\.env/i,
+    );
     socket.close();
 
     const reconnect = await connect(runtime.runtime.port, cookie);
