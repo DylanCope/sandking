@@ -49,44 +49,78 @@ left anywhere in `src/`. If real GitHub-backed planning is wanted, it is now
 a from-scratch feature addition against a clean slate, not a matter of
 "turning on" dormant fixture code.
 
-### 2. The production Harness cannot currently be launched by a person at all
-Confirmed by reproducing Dylan's exact error (`harness_worker_provider_unavailable`)
-on a real registered Project. `sandcastle-v4.mjs`'s readiness check
-(`inspectRuntime`, line 263) requires exactly one of two manifest files —
-`sandcastle.worker-fixture.json` or `sandcastle.real-provider.json` — to exist
-in the Project root before it will run at all. Grepped every write of either
-filename across the repo: **the only writers are `test/*.test.mjs` files**,
-which `mkdtemp` a throwaway directory, hand-write the manifest as fixture
-setup, and drive the adapter directly. No code path in `src/` — not
-`production-harness-preparation.mjs`, not `harness-runs.mjs`, not the Cockpit
-— ever writes either file into a real Project.
+### 2. Production reachability is fixed; real work is still a fixed canary
 
-**This blocks both branches, not just the real one.** A follow-up audit found
-`controlled-worker-fixture.mjs:9` — the deterministic test-double worker,
-previously believed reachable — has the identical unconditional dependency on
-`sandcastle.worker-fixture.json` with no fallback. So the entire
-production-adapter payload (`sandcastle-v4.mjs`'s dispatch logic,
-`real-worker-v2.mjs`, and `controlled-worker-fixture.mjs` — ~1,072 lines) is
-unreachable from the shipped product in both its real and fixture modes. See
-`docs/code-inventory.md` for the full line-by-line breakdown of the codebase
-by this same real/speculative/test-only taxonomy.
+**Update (#256):** the manifest reachability half of this gap is closed.
+The shared Host launch operation used by both the Cockpit and `sandking launch`
+now runs the production adapter's exact Codex/npm and Docker-engine readiness
+probes before adapter preflight. If the fixed sandbox image is absent, shipped
+Host preparation builds it from the verified production Harness projection
+and then re-runs the adapter's exact image probe. When readiness passes, it
+publishes the exact `sandcastle.real-provider.json` selector expected by
+`inspectRuntime()` with a no-clobber filesystem operation and adds a local
+`.git/info/exclude` rule. The operation verifies `git status` and `git ls-files`
+are unchanged. A selector created concurrently wins with a typed Project
+collision instead of being replaced. When any probe fails, launch returns the typed
+`harness_worker_provider_unavailable` failure before a run or adapter process
+exists and without writing the manifest. The selector exists only until the
+adapter publishes readiness after inspecting it; the Host then removes the
+selector and any exclude rule it added. Pre-acceptance failures and terminal
+supervision provide rollback boundaries, a later launch removes an exact
+untracked stale selector before probing, and Host-private preparation ownership
+is durably journaled before the Project mutation. Host startup therefore cleans
+the selector even when process loss happened before run acceptance and there is
+no retained run. The temporary exclude block has a unique ownership marker, so cleanup
+preserves concurrent edits to `.git/info/exclude`. Both exclude append and cleanup rebase
+when the exact file generation changes before commit and publish without clobbering a
+new public path. If a writer creates that path after the old exclude generation has
+already been captured, recovery keeps both generations durable, restores missing older
+rules ahead of the newest public generation, and replays that newest ordering so a
+concurrent ignore or unignore decision keeps its Git precedence. Only then does it
+remove the capture and temporary candidate. Recovery preserves each generation as an
+ordered sequence, including duplicate rules, and uses a generation-checked atomic
+publication. Same-inode edits made after its final read therefore rebase too. The
+publication boundary re-reads the captured inode after the Host candidate is public;
+when an already-open descriptor changed that older inode, the candidate is durably
+captured, the changed inode is restored, and the mutation retries from the newer bytes.
+Startup restores an interrupted rollback before re-entering production Harness
+preparation, so a temporarily absent public exclude path cannot block journal recovery.
+Selector cleanup atomically captures the exact candidate under a stable
+name derived from the journaled preparation ID before checking its contents, Git
+ownership, and recorded filesystem identity. Startup resumes that capture and restores
+a Project-owned replacement when Host loss occurred while its public name was absent.
+A post-inspection byte revalidation likewise restores a captured selector changed
+through an already-open descriptor rather than unlinking the new Project content. The
+shared capture primitive retains a private release link across the final unlink, proves
+that pre-capture descriptors have closed through the platform ownership boundary, and
+then re-reads that retained inode. Writes in the former revalidation-to-unlink window are
+therefore restored for selectors and rebased for Git exclusions. Release itself moves
+through a restartable private directory, so process loss cannot discard the last name or
+mistake a newer public candidate for the captured generation. Descriptor ownership probes
+remain bounded, but a zero-holder preparation lease automatically starts another cleanup
+attempt until safe release succeeds; restart reconciliation does the same for retained
+journals. Finalization also accepts the durable empty-directory phase after the release link
+has already been unlinked, so process loss between that unlink and directory removal is
+idempotently completed instead of reported as a Project collision.
+A failed preparation retains the durably recorded selector identity through cleanup, so
+a transient rollback failure is retried without releasing the preparation journal or
+leaving a false readiness selector. A concurrent replacement is restored or left at the
+public path rather than deleted, even when it contains the same valid selector JSON.
+Tracked, unjournaled, or
+identity-mismatched manifest files are never deleted and continue to fail as Project
+collisions.
 
-**Practical consequence**: clicking Launch with the production Harness
-selected, on any Project, with Docker and Codex auth perfectly configured,
-will always fail with `harness_worker_provider_unavailable`. This is not a
-local misconfiguration — it reproduces for anyone. Issue #174's real-provider
-proof is genuine (it really did drive Codex through the real adapter), but it
-achieved this by having its *test script* pre-stage the manifest the shipped
-product never creates — technically satisfying "launches through the ordinary
-Cockpit/CLI surface" (the launch call is ordinary) while depending on a
-precondition no person using the product can produce. Closing this gap is a
-prerequisite to everything below — the canary task described next has never
-actually been reachable through the Cockpit, only through test harnesses.
+The explicit `sandcastle.worker-fixture.json` branch remains available only at
+the adapter protocol's deterministic qualification boundary; a production
+registration never selects it. The gated real acceptance now starts without a
+provider manifest or sandbox image and requires product preparation to create
+both before accepting delegated commits through the Cockpit and installed
+`sandking launch`. The conformance Harness does not enter this preparation path
+and never writes the selector.
 
-Separately, even once that manifest gap is closed, the task the real adapter
-performs is a **fixed canary prompt**
+What remains is the task the real adapter performs: a **fixed canary prompt**
 (`.sandcastle/real-delegation-prompt.md`: write one file, commit it, stop),
-not real work — see below.
+not GitHub-issue-driven work — see below.
 
 The important part: **this isn't a missing capability, it's a disconnected
 one.** The full `.sandcastle` toolkit — `main.mts`, `issue-delivery.mjs`,
@@ -101,7 +135,7 @@ The pinned adapter (`sandcastle-v4.mjs` → `real-worker-v2.mjs`) is a separate,
 bespoke script that runs `codex exec` directly with a hand-built prompt. It
 never shells out to `main.mts`.
 
-**What closing this gap looks like**: point the adapter's execution step at
+**What closing the remaining gap looks like**: point the adapter's execution step at
 `main.mts` (mapping the already-declared `issueNumber`/`targetBranch` launch
 parameters to `--issue`/`--parent`) instead of the fixed canary prompt. The
 Docker sandbox, credential handling, and skill-pinning work from #174 should

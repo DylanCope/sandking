@@ -139,6 +139,9 @@ export const createRunSupervisor = (runtime) => {
           await injectSupervisionFault(
             "harness_run_lifecycle.adapter_ready.before_commit",
           );
+          // The adapter has already consumed the selector. Complete Project
+          // cleanup before making readiness visible in canonical run state.
+          await context.releaseLaunchPreparation?.();
           await updateRun(initialRun.harnessRunId, (run) => {
             if (run.status !== "starting" && run.status !== "cancelling") {
               throw new Error("harness_run_state_invalid");

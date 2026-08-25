@@ -8,6 +8,12 @@ import {
 } from "../../harness-launch.mjs";
 import { materializeProductionHarnessExecutionSnapshot } from "../../production-harness-preparation.mjs";
 import {
+  cleanupProductionProviderPreparation,
+  prepareProductionProviderLaunch,
+  ProductionProviderPreparationError,
+  productionProviderGitExcludeMarker,
+} from "../../production-provider-preparation.mjs";
+import {
   ensurePrivateDirectory,
   PRIVATE_FILE_MODE,
 } from "../../private-state.mjs";
@@ -24,13 +30,165 @@ import {
   storedRunSchema,
 } from "../schemas.mjs";
 import { logPath, retainedLaunchOutcome } from "../store.mjs";
+import { createProductionProviderPreparationId } from "../provider-preparation-store.mjs";
+
+const PRODUCTION_PROVIDER_CLEANUP_RETRY_MS = 100;
 
 /** @param {any} runtime */
 export const createLaunchOperation = (runtime) => {
   const { cancellationGraceMs, now, options, parsedHostId } = runtime;
 
+  /**
+   * @param {string} projectPath
+   * @param {{count: number, preparationId: string, ownershipMarker: string, manifestIdentity: {birthtimeNanoseconds: string, device: string, inode: string}, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null, cleanupRetryTimer: ReturnType<typeof setTimeout> | null}} lease
+   */
+  const scheduleProductionProviderCleanup = (projectPath, lease) => {
+    if (
+      lease.cleanupRetryTimer
+      || lease.count > 0
+      || runtime.activeProductionProviderPreparations.get(projectPath) !== lease
+    ) return;
+    lease.cleanupRetryTimer = setTimeout(() => {
+      lease.cleanupRetryTimer = null;
+      void cleanupProductionProviderLease(projectPath, lease).catch(() => undefined);
+    }, PRODUCTION_PROVIDER_CLEANUP_RETRY_MS);
+    lease.cleanupRetryTimer.unref?.();
+  };
+
+  /**
+   * Finish one zero-holder provider lease. Readiness and terminal supervision
+   * share each attempt; a transient failure schedules the next bounded attempt
+   * while the lease and its durable preparation journal retain ownership.
+   *
+   * @param {string} projectPath
+   * @param {{count: number, preparationId: string, ownershipMarker: string, manifestIdentity: {birthtimeNanoseconds: string, device: string, inode: string}, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null, cleanupRetryTimer: ReturnType<typeof setTimeout> | null}} lease
+   */
+  const cleanupProductionProviderLease = async (projectPath, lease) => {
+    if (
+      lease.count > 0
+      || runtime.activeProductionProviderPreparations.get(projectPath) !== lease
+    ) return;
+    if (!lease.cleanupOperation) {
+      lease.cleanupOperation = lease.rollback().then(() => {
+        if (lease.cleanupRetryTimer) clearTimeout(lease.cleanupRetryTimer);
+        lease.cleanupRetryTimer = null;
+        if (
+          lease.count === 0
+          && runtime.activeProductionProviderPreparations.get(projectPath) === lease
+        ) {
+          runtime.activeProductionProviderPreparations.delete(projectPath);
+        }
+      }).catch((error) => {
+        lease.cleanupOperation = null;
+        if (
+          error instanceof ProductionProviderPreparationError
+          && error.code === "harness_projection_failed"
+        ) {
+          scheduleProductionProviderCleanup(projectPath, lease);
+        }
+        throw error;
+      });
+    }
+    await lease.cleanupOperation;
+  };
+
+  /** @param {{projectId: string, projectPath: string, projectionPath: string, productionPreparation: unknown}} preparation */
+  const acquireProductionProvider = async (preparation) => {
+    let retained = runtime.activeProductionProviderPreparations.get(
+      preparation.projectPath,
+    );
+    if (retained?.count === 0) {
+      await cleanupProductionProviderLease(preparation.projectPath, retained);
+      retained = undefined;
+    }
+    if (retained) retained.count += 1;
+    const preparationId = retained?.preparationId
+      ?? createProductionProviderPreparationId();
+    const ownershipMarker = retained?.ownershipMarker
+      ?? productionProviderGitExcludeMarker(preparationId);
+    let ownershipRetained = false;
+    let retainedManifestIdentity;
+    let prepared;
+    try {
+      prepared = await prepareProductionProviderLaunch({
+        ...preparation,
+        expectedManifestIdentity: retained?.manifestIdentity,
+        preparationId,
+        ownershipMarker,
+        beforeProjectMutation: retained
+          ? undefined
+          : async () => {
+              await runtime.retainProductionProviderPreparation({
+                preparationId,
+                projectId: preparation.projectId,
+              });
+              ownershipRetained = true;
+            },
+        retainManifestIdentity: retained
+          ? undefined
+          : async (manifestIdentity) => {
+              retainedManifestIdentity = manifestIdentity;
+              await runtime.retainProductionProviderManifestIdentity(
+                preparationId,
+                manifestIdentity,
+              );
+            },
+      });
+    } catch (error) {
+      if (retained) {
+        retained.count -= 1;
+        await cleanupProductionProviderLease(preparation.projectPath, retained);
+      } else if (ownershipRetained) {
+        try {
+          await cleanupProductionProviderPreparation({
+            projectPath: preparation.projectPath,
+            preparationId,
+            ownershipMarker,
+            manifestIdentity: retainedManifestIdentity,
+          });
+          await runtime.releaseProductionProviderPreparation(preparationId);
+        } catch (cleanupError) {
+          runtime.scheduleProductionProviderPreparationReconciliation();
+          throw cleanupError;
+        }
+      }
+      throw error;
+    }
+    const lease = retained ?? {
+      count: 1,
+      preparationId,
+      ownershipMarker,
+      manifestIdentity: prepared.manifestIdentity,
+      rollback: async () => {
+        await prepared.rollback();
+        await runtime.releaseProductionProviderPreparation(preparationId);
+      },
+      cleanupOperation: null,
+      cleanupRetryTimer: null,
+    };
+    if (!retained) {
+      runtime.activeProductionProviderPreparations.set(preparation.projectPath, lease);
+    }
+    let released = false;
+    return {
+      providerKind: prepared.providerKind,
+      manifestWritten: prepared.manifestWritten,
+      rollback: async () => {
+        if (!released) {
+          released = true;
+          lease.count -= 1;
+        }
+        await cleanupProductionProviderLease(preparation.projectPath, lease);
+      },
+    };
+  };
+
   /** @param {any} request */
   const launch = (request) => runtime.withMutationLock(async () => {
+    /** @type {Awaited<ReturnType<typeof acquireProductionProvider>> | null} */
+    let providerPreparation = null;
+    let launchAccepted = false;
+    try {
     const authorizationClass = "harness_run_launch";
     const idempotencyKeyHash = requestIdempotencyKeyHash(request);
     const requestFingerprint = launchRequestFingerprint(request);
@@ -97,6 +255,17 @@ export const createLaunchOperation = (runtime) => {
     if (!code && parameters.success) {
       try {
         context = await options.loadLaunchContext(request.projectId);
+        if (
+          context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+          && context.project.harness.preparation
+        ) {
+          providerPreparation = await acquireProductionProvider({
+            projectId: context.project.projectId,
+            projectPath: context.project.canonicalPath,
+            projectionPath: context.productionHarnessProjectionPath,
+            productionPreparation: context.project.harness.preparation,
+          });
+        }
         prepared = await validateHarnessLaunch(context, parameters.data);
         if (
           context.project.projectId !== request.projectId
@@ -356,6 +525,10 @@ export const createLaunchOperation = (runtime) => {
     // published before this canonical commit.
     await options.faultInjector?.("harness_run_launch.before_commit");
     await runtime.persist(retained);
+    // Once the run is durable, Host restart reconciliation owns its eventual
+    // supervision. Keep the provider selector only until the adapter confirms
+    // that its run-time inspection has accepted the prepared provider.
+    launchAccepted = true;
     // The Host-private snapshot is already sufficient for exact replay here,
     // but the accepted audit may still need idempotent publication after an
     // interruption. Keep this repairable window distinct from the completed
@@ -376,6 +549,11 @@ export const createLaunchOperation = (runtime) => {
           run.harnessRunId,
           "host-loss-termination.json",
         ),
+        releaseLaunchPreparation: async () => {
+          await providerPreparation?.rollback().catch(() => undefined);
+        },
+      }).finally(async () => {
+        await providerPreparation?.rollback();
       });
       runtime.supervisionOperations.add(operation);
       void operation.then(
@@ -385,6 +563,11 @@ export const createLaunchOperation = (runtime) => {
       void operation.catch(() => undefined);
     });
     return response;
+    } finally {
+      if (providerPreparation && !launchAccepted) {
+        await providerPreparation.rollback();
+      }
+    }
   });
 
   return { launch };

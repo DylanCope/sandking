@@ -648,8 +648,6 @@ test("post-negotiation Host framing failure degrades only Host-scoped Cockpit vi
       });
       const response = await page.goto(launch.bootstrapUrl, { waitUntil: "domcontentloaded" });
       assert.equal(response?.status(), 200);
-      await page.waitForSelector("#project-preparation[data-host-freshness='current']");
-
       await page.waitForSelector(
         "#connection-status[data-host-status='disconnected'][data-failure-code='host_protocol_invalid']",
         { timeout: 90_000 },

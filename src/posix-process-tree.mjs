@@ -1,9 +1,6 @@
 import { spawn } from "node:child_process";
 import {
-  accessSync,
   closeSync,
-  constants,
-  lstatSync,
   readFileSync,
   readdirSync,
   writeSync,
@@ -14,28 +11,9 @@ import { spawnDarwinProcessTree } from "./darwin-process-tree.mjs";
 import {
   prepareHostLossTerminationEvidence,
 } from "./host-loss-termination-evidence.mjs";
+import { ensureLinuxNativeHelper } from "./linux-native-helper.mjs";
 
 const supervisorPath = fileURLToPath(import.meta.url);
-/** @type {Record<string, string>} */
-const packagedLinuxHelpers = {
-  x64: fileURLToPath(new URL("./native/linux-x64/posix-process-tree-helper", import.meta.url)),
-  arm64: fileURLToPath(new URL("./native/linux-arm64/posix-process-tree-helper", import.meta.url)),
-};
-/** @type {string | null} */
-let retainedLinuxHelperPath = null;
-
-const ensureLinuxProcessTreeHelper = () => {
-  if (retainedLinuxHelperPath) return retainedLinuxHelperPath;
-  const helperPath = packagedLinuxHelpers[process.arch];
-  if (!helperPath) throw new Error("posix_process_tree_helper_unsupported_architecture");
-  const helperStat = lstatSync(helperPath);
-  if (!helperStat.isFile() || helperStat.isSymbolicLink()) {
-    throw new Error("posix_process_tree_helper_invalid");
-  }
-  accessSync(helperPath, constants.X_OK);
-  retainedLinuxHelperPath = helperPath;
-  return helperPath;
-};
 
 /** @typedef {{code: number | null, signal: string | null, startFailed: boolean}} AdapterExitResult */
 /** @typedef {{code: number | null, signal: NodeJS.Signals | null}} WrapperExitResult */
@@ -374,7 +352,7 @@ export const spawnPosixProcessTree = (executable, args, options) => {
     throw new Error("posix_process_tree_platform_unsupported");
   }
   const linuxHelperPath = process.platform === "linux"
-    ? ensureLinuxProcessTreeHelper()
+    ? ensureLinuxNativeHelper()
     : null;
   const child = spawn(linuxHelperPath ?? process.execPath, linuxHelperPath
     ? [

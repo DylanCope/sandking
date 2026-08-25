@@ -125,8 +125,19 @@ sequenceDiagram
     D->>H: framed request
     H->>H: prepareProductionHarness — re-verify pinned<br/>commit bytes match seed (separate from registration check)
     Note over H: production Harness only:<br/>projects pinned files into<br/>&lt;project&gt;/.sandking/harnesses/&lt;id&gt;/<br/>(git-invisible via .git/info/exclude,<br/>see below)
+    H->>H: production only: run shared Codex/npm +<br/>Docker-engine readiness probes
+    alt production provider unavailable
+        H-->>C: typed readiness failure<br/>(no run, manifest, or adapter)
+    else sandbox image missing
+        H->>H: build fixed image from verified projection<br/>and verify it with the adapter's image probe
+    end
+    opt production provider ready
+        H->>H: durably retain preparation and selector identity
+        H->>H: publish transient selector without replacement<br/>and locally exclude sandcastle.real-provider.json
+    end
     H->>A: spawn adapter, invokePinnedHarnessAdapter<br/>(frame protocol over fd 3)
     A-->>H: readiness envelope
+    H->>H: remove real-provider selector<br/>and newly added exclude rule
     A->>W: (production only) docker exec, real-worker-v2.mjs
     W->>W: codex exec with pinned-skill prompt
     A-->>H: progress envelopes
@@ -152,7 +163,7 @@ filesystem. Staging the projection inside the Project directory lets it be
 integrity-verified and proven collision-free against your real tracked files,
 on the same filesystem the sandbox will use, without a second bind mount.
 
-It's kept git-invisible on purpose: the code appends rules to
+It's kept git-invisible on purpose: shared Project-preparation code appends rules to
 `.git/info/exclude` (the local, untracked exclude file — not your committed
 `.gitignore`) and explicitly diffs `git status`/`git ls-files` before and
 after to guarantee the projection never perturbs real Project content. This
@@ -179,18 +190,77 @@ essentially the same pinned bytes: the registered Harness workspace
 (`~/.sandking/.../harness-runs/<id>/execution/`). See `docs/current-state.md`
 for this as a loose-end item.
 
+During production preparation, the Host checks Codex/npm and the Docker engine.
+If the fixed image is absent, it builds that image from this verified projection
+and accepts it only after the adapter's image probe succeeds. Immediately before
+adapter preflight, the exclusion mechanism publishes `sandcastle.real-provider.json`
+at the Project root with a no-clobber filesystem operation. A file created after
+inspection wins the collision and is never replaced. A rejected launch rolls back a
+new manifest and exclude rule. After the adapter has inspected the selector and
+published readiness, the Host atomically moves the cleanup candidate into a capture
+whose stable name is derived from the journaled preparation ID before checking its exact
+contents, Git ownership, and durably recorded filesystem identity. Startup resumes that
+same capture, restoring a Project-owned replacement if process loss occurred while its
+public name was absent. A replacement created before or after the claim is restored or
+left in place, including a same-byte valid selector published on a different inode;
+cleanup never infers ownership from contents alone. Terminal supervision is a fallback
+cleanup boundary. Exclude-file append and cleanup also capture and compare the exact
+generation they read before publishing with a no-clobber link; a concurrent edit causes
+the mutation to rebase instead of replacing the user-owned file. When a writer creates
+the public exclude path after capture, the old capture, new generation, and candidate
+remain recoverable until missing older rules have been restored ahead of the newest
+public ordering, preserving the latest ignore or unignore decision, and the temporary
+generations are removed. Recovery treats each observed file as an ordered sequence,
+including meaningful duplicate rules, and publishes the reconciled bytes through the
+same generation-checked capture primitive. A same-inode edit after the final read is
+therefore detected before publication and forces another rebase. Publication also
+re-reads the captured inode after the candidate becomes public. If a descriptor opened
+before capture wrote to that older inode, the Host durably captures its own candidate,
+restores the changed inode to the public path, and retries from those newer bytes.
+Selector cleanup performs the same post-inspection byte revalidation; a changed captured
+selector is restored as Project-owned content instead of being unlinked. Ownership release
+also retains a second private hard link while removing the capture's first name. The Host
+then proves that descriptors opened before capture have closed (with a Linux file lease,
+Darwin open-file inventory, or a Windows exclusive open) and re-reads the retained inode.
+A write at the former final-unlink boundary therefore restores the selector or joins the
+Git-exclude rebase instead of disappearing. The retained release link is moved through a
+restartable release directory before deletion, so Host loss cannot discard the only name
+of a changed generation or recapture the newer public candidate. Each descriptor-ownership
+wait is bounded, while the zero-holder lease and retained preparation journal keep scheduling
+cleanup attempts until the generation is safely released. If Host loss follows release-link
+deletion but precedes directory deletion, the empty owned release directory is a valid
+idempotent finalization state rather than a Project collision. Startup resolves
+the journaled Project registration without re-entering production projection, allowing an
+interrupted exclusion rollback to restore its temporarily absent public path first.
+Before changing the Project, the Host
+journals the Project registration and a unique Git-exclusion ownership marker in
+Host-private state. The no-clobber publication retains a short-lived filesystem link
+until the selector's device/inode/birth-time identity is added to that journal, closing
+the process-loss gap between creation and durable ownership. Startup reconciles the
+journal even if process loss preceded run acceptance, when no retained run exists.
+Cleanup removes only the marked Host-owned exclude block from the current file,
+preserving lines added by a person or another tool while launch was active. Preparation
+failure passes the durably retained selector identity into cleanup and releases the
+journal only after that cleanup succeeds, so a transient first rollback cannot strand a
+readiness selector. A tracked,
+unjournaled, or identity-mismatched manifest remains Project-owned and is rejected as a
+collision rather than deleted. The transient selector is untracked, and preparation
+again requires unchanged `git status` and `git ls-files` inventories.
+
 ## Data/state boundaries
 
 - **Host-private state** (`~/.sandking` by default): runtime lifecycle
   revision, launch/stop lock, Controller↔Host identity binding, bootstrap
   claims, audit records, Project registry, Harness workspaces (each its own
-  git repo), Harness run state/logs, and (production Harness only) a
-  per-run execution snapshot.
+  git repo), Harness run state/logs, temporary production-provider preparation
+  ownership, and (production Harness only) a per-run execution snapshot.
 - **Project directory**: untouched by the **conformance** Harness path and by
   registration in general. The **production** Harness path writes a
   persistent, git-invisible `.sandking/harnesses/<harnessId>/` projection into
-  the Project on every launch — see above. Beyond that, only touched if a
-  Harness run's Worker itself commits to it (that's the whole point of a run).
+  the Project on every launch and, once live readiness passes, briefly writes
+  the exact git-invisible `sandcastle.real-provider.json` selector until the
+  adapter accepts it — see above. Beyond that, only touched if a Harness run's
+  Worker itself commits to it (that's the whole point of a run).
 - **Harness workspace**: a separate, Host-private git repo per registered
   Harness, pinned to an exact commit. For the production Harness, this is a
   verified-integrity projection of the bundled seed (see below) — not a live
@@ -237,12 +307,12 @@ Only one is live:
 |---|---|---|
 | `sandcastle-v1.mjs` / `v2.mjs` / `v3.mjs` | No | Dead code, deliberately excluded from the shipped package (`.npmignore`), retained only so a boundary test can assert-by-path they never ship |
 | `real-worker.mjs` | Only imported by dead v2/v3 | Dead |
-| `sandcastle-v4.mjs` (lines 1–~260: framing/arg-parsing/gate) | Yes — this is the pinned production adapter | Live |
-| `sandcastle-v4.mjs` (lines ~260–708: dispatch past the gate) | **Correction**: no — gated behind a manifest only tests create, see below | Test-reachable only |
-| `real-worker-v2.mjs` | **Correction**: no, same gate | Test-reachable only |
-| `controlled-worker-fixture.mjs` | **Correction**: no — previously listed here as "Live," but it has the identical unconditional dependency on the same missing manifest (`controlled-worker-fixture.mjs:9`), no fallback | Test-reachable only |
+| `sandcastle-v4.mjs` (framing, argument parsing, and provider gate) | Yes — this is the pinned production adapter, and its readiness probe is shared with Host preparation | Live |
+| `sandcastle-v4.mjs` (dispatch past the gate) | Yes — Host launch preparation writes the exact real-provider selector after live readiness passes | Live |
+| `real-worker-v2.mjs` | Yes, for a ready production launch | Live fixed-canary path |
+| `controlled-worker-fixture.mjs` | Only when an explicit controlled manifest is supplied | Qualification-test path |
 
-**What the adapter would do if it were reachable:** `sandcastle-v4.mjs` →
+**What the reachable adapter does:** `sandcastle-v4.mjs` →
 `real-worker-v2.mjs` runs a real `openai-codex` provider inside Docker with
 the Worker's pinned skill inventory — but the prompt is a **fixed canary
 task** (`.sandcastle/real-delegation-prompt.md`: create one file, commit it,
@@ -254,22 +324,16 @@ plan→implement→review loop — is bundled into the production seed
 (`seed-manifest.json`) and integrity-verified, but **no code path in `src/`
 ever executes it.** It rides along, fully capable, permanently dormant.
 
-**More fundamentally: none of this is reachable through the shipped product
-today — in either mode.** `inspectRuntime()` (`sandcastle-v4.mjs:263`) gates
-everything past it on a `sandcastle.worker-fixture.json` or
-`sandcastle.real-provider.json` manifest existing in the Project root — and
-the only code anywhere that writes either file is `test/*.test.mjs` fixture
-setup. This blocks not just the real-provider branch but also
-`controlled-worker-fixture.mjs`'s own test-double branch (it has the same
-unconditional read, no fallback) — so the entire production-adapter payload,
-real and fixture alike, is unreachable. No `src/` code path (not
-`production-harness-preparation.mjs`, not `harness-runs.mjs`, not the
-Cockpit) ever creates either manifest. A real Cockpit launch of the
-production Harness fails closed with `harness_worker_provider_unavailable`
-on every Project, regardless of Docker/Codex configuration — confirmed by
-reproducing this exact error from a real launch. See `docs/current-state.md`
-gap #2 and `docs/code-inventory.md` for the full quantitative breakdown
-and severity.
+**Reachability update (#256):** `inspectRuntime()` still fails closed unless
+exactly one supported provider selector exists; its schema and protocol did
+not change. Shared Host preparation now imports the adapter's exact readiness
+predicates, builds a missing fixed sandbox image from verified projected bytes,
+and atomically prepares the real selector only for the production Harness.
+Both the Cockpit and `sandking launch` reach this operation. Unavailable Codex,
+authentication, npm, Docker, or a failed/unverifiable sandbox-image build returns
+`harness_worker_provider_unavailable` with no run, manifest, or adapter. The
+remaining limitation is dispatch: the live real path still performs only the
+fixed canary commit and does not execute the bundled GitHub-issue workflow.
 
 ## Cross-platform process supervision
 

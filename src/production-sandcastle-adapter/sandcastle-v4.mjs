@@ -1,8 +1,9 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, readSync, rmSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readSync, rmSync, writeSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 
 const adapterProtocol = "1.0.0";
 const adapterId = "sandcastle-harness-adapter-v1";
@@ -13,14 +14,15 @@ const controlledProviderKind = "controlled-worker-fixture";
 const realProviderKind = "openai-codex";
 const controlledWorkerRuntimePath = ".sandcastle/controlled-worker-fixture.mjs";
 const realWorkerRuntimePath = ".sandcastle/real-worker-v2.mjs";
-const codexVersion = "0.146.0";
-const realSandboxImage = "sandcastle:sandking-real-worker";
-const realSkillIdentities = [
+export const REAL_PROVIDER_CODEX_VERSION = "0.146.0";
+export const REAL_PROVIDER_SANDBOX_IMAGE = "sandcastle:sandking-real-worker";
+export const REAL_PROVIDER_SANDBOX_CONFIGURATION = ".sandcastle/Dockerfile";
+export const REAL_PROVIDER_SKILL_IDENTITIES = Object.freeze([
   "sandking.issue-implementation",
   "sandking.issue-planning",
   "sandking.pull-request-review",
   "sandking.real-delegation",
-];
+]);
 const supportedScenarios = new Set([
   "succeeded",
   "succeeded-nonzero",
@@ -210,27 +212,39 @@ const hasExactKeys = (value, keys) => value
   && !Array.isArray(value)
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
 
-const realProviderAvailable = () => {
+/**
+ * @param {{
+ *   environment?: NodeJS.ProcessEnv,
+ *   execFileSync?: typeof execFileSync,
+ *   platform?: NodeJS.Platform,
+ *   spawnSync?: typeof spawnSync,
+ * }} [options]
+ */
+export const realProviderAvailable = (options = {}) => {
+  const environment = options.environment ?? process.env;
+  const execute = options.execFileSync ?? execFileSync;
+  const platform = options.platform ?? process.platform;
+  const spawnCommand = options.spawnSync ?? spawnSync;
   try {
-    const version = execFileSync("codex", ["--version"], {
+    const version = execute("codex", ["--version"], {
       encoding: "utf8",
-      env: process.env,
-      shell: process.platform === "win32",
+      env: environment,
+      shell: platform === "win32",
       timeout: 5_000,
     }).trim();
-    const authentication = spawnSync("codex", ["login", "status"], {
+    const authentication = spawnCommand("codex", ["login", "status"], {
       encoding: "utf8",
-      env: process.env,
-      shell: process.platform === "win32",
+      env: environment,
+      shell: platform === "win32",
       timeout: 5_000,
     });
-    execFileSync("npm", ["--version"], {
+    execute("npm", ["--version"], {
       encoding: "utf8",
-      env: process.env,
-      shell: process.platform === "win32",
+      env: environment,
+      shell: platform === "win32",
       timeout: 5_000,
     });
-    return version === `codex-cli ${codexVersion}`
+    return version === `codex-cli ${REAL_PROVIDER_CODEX_VERSION}`
       && authentication.error === undefined
       && authentication.status === 0
       && /^Logged in\b/m.test(`${authentication.stdout}\n${authentication.stderr}`);
@@ -239,26 +253,51 @@ const realProviderAvailable = () => {
   }
 };
 
-const realSandboxAvailable = () => {
+/**
+ * @param {{environment?: NodeJS.ProcessEnv, execFileSync?: typeof execFileSync}} [options]
+ */
+export const realSandboxEngineAvailable = (options = {}) => {
+  const environment = options.environment ?? process.env;
+  const execute = options.execFileSync ?? execFileSync;
   try {
-    const version = execFileSync("docker", ["version", "--format", "{{.Server.Version}}"], {
+    const version = execute("docker", ["version", "--format", "{{.Server.Version}}"], {
       encoding: "utf8",
-      env: process.env,
+      env: environment,
       timeout: 5_000,
     }).trim();
-    const imageId = execFileSync("docker", [
-      "image", "inspect", realSandboxImage, "--format={{.Id}}",
-    ], {
-      encoding: "utf8",
-      env: process.env,
-      timeout: 5_000,
-    }).trim();
-    return /^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(version)
-      && /^sha256:[a-f0-9]{64}$/.test(imageId);
+    return /^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(version);
   } catch {
     return false;
   }
 };
+
+/**
+ * @param {{environment?: NodeJS.ProcessEnv, execFileSync?: typeof execFileSync}} [options]
+ */
+export const realSandboxImageAvailable = (options = {}) => {
+  const environment = options.environment ?? process.env;
+  const execute = options.execFileSync ?? execFileSync;
+  try {
+    const imageId = execute("docker", [
+      "image", "inspect", REAL_PROVIDER_SANDBOX_IMAGE, "--format={{.Id}}",
+    ], {
+      encoding: "utf8",
+      env: environment,
+      timeout: 5_000,
+    }).trim();
+    return /^sha256:[a-f0-9]{64}$/.test(imageId);
+  } catch {
+    return false;
+  }
+};
+
+/** @param {Parameters<typeof realProviderAvailable>[0]} [options] */
+export const realSandboxAvailable = (options = {}) =>
+  realSandboxEngineAvailable(options) && realSandboxImageAvailable(options);
+
+/** @param {Parameters<typeof realProviderAvailable>[0]} [options] */
+export const probeRealProviderReadiness = (options = {}) =>
+  realProviderAvailable(options) && realSandboxAvailable(options);
 
 const inspectRuntime = (retainedExecutionInputs = null) => {
   const workerEnvironment = readJson(join(process.cwd(), "worker-environment.json"));
@@ -304,13 +343,12 @@ const inspectRuntime = (retainedExecutionInputs = null) => {
       && real.provider.kind === realProviderKind
       && real.provider.ready === true
       && real.scenario === "project-commit"
-      && runtime?.version === codexVersion
+      && runtime?.version === REAL_PROVIDER_CODEX_VERSION
       && workerEnvironment.skillDiscovery?.ambient === "disabled"
       && workerEnvironment.skillDiscovery?.unlisted === "reject"
       && JSON.stringify(workerEnvironment.skills.map(({ identity }) => identity))
-        === JSON.stringify(realSkillIdentities)
-      && realProviderAvailable()
-      && realSandboxAvailable()
+        === JSON.stringify(REAL_PROVIDER_SKILL_IDENTITIES)
+      && probeRealProviderReadiness()
       && (retainedExecutionInputs === null
         || retainedExecutionInputs.has(realWorkerRuntimePath));
     return providerReady
@@ -484,8 +522,9 @@ const runWorker = async (execution, readiness) => {
     workerExit = { code: null, startFailed: dependencyFailure };
     if (!cancelled && !dependencyFailure) {
       const workerPath = join(process.cwd(), ...readiness.workerPath.split("/"));
+      const workerDirectory = dirname(workerPath);
       const workerArguments = readiness.realProvider
-        ? [workerPath, readiness.root]
+        ? [workerPath, process.cwd(), readiness.root]
         : [
             workerPath,
             Buffer.from(JSON.stringify(execution.parameters), "utf8").toString("base64url"),
@@ -496,7 +535,9 @@ const runWorker = async (execution, readiness) => {
         readiness.workerSource,
         ...workerArguments,
       ], {
-        cwd: readiness.realProvider ? process.cwd() : readiness.root,
+        cwd: readiness.realProvider && existsSync(workerDirectory)
+          ? workerDirectory
+          : readiness.root,
         env: readiness.realProvider ? process.env : { LANG: "C.UTF-8" },
         stdio: readiness.realProvider
           ? ["ignore", "pipe", "pipe", "pipe"]
@@ -635,8 +676,19 @@ const runWorker = async (execution, readiness) => {
   });
 };
 
+const invokedAsAdapter = import.meta.url.endsWith("/[eval1]") || (() => {
+  try {
+    return typeof process.argv[1] === "string"
+      && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+  } catch {
+    return false;
+  }
+})();
+
 const [command, encodedParameters] = process.argv.slice(2);
-if (command === "probe") {
+if (!invokedAsAdapter) {
+  // The Host imports the live readiness seam from these exact adapter bytes.
+} else if (command === "probe") {
   writeFrame({
     type: "harness.adapter.probe",
     adapterProtocol,

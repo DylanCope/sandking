@@ -19,6 +19,7 @@ import { createLaunchOperation } from "./operations/launch.mjs";
 import { createCancelOperation } from "./operations/cancel.mjs";
 import { createRecoverOperation } from "./operations/recover.mjs";
 import { createQueryOperations } from "./operations/queries.mjs";
+import { createProductionProviderPreparationStore } from "./provider-preparation-store.mjs";
 
 export {
   HarnessRunStateError,
@@ -69,15 +70,29 @@ export const createHarnessRunManager = async (options) => {
     supervisionOperations: new Set(),
     /** @type {Map<string, string>} */
     acceptedCancellations: new Map(),
+    /** @type {Map<string, {count: number, preparationId: string, ownershipMarker: string, manifestIdentity: {birthtimeNanoseconds: string, device: string, inode: string}, rollback: () => Promise<void>, cleanupOperation: Promise<void> | null, cleanupRetryTimer: ReturnType<typeof setTimeout> | null}>} */
+    activeProductionProviderPreparations: new Map(),
   });
 
   Object.assign(runtime, createHarnessRunStore(options));
   Object.assign(runtime, createHarnessRunReconciliation(runtime));
+  const providerPreparationStore = createProductionProviderPreparationStore({
+    dataDir: options.dataDir,
+    loadLaunchContext: options.loadLaunchContext,
+  });
+  runtime.retainProductionProviderPreparation = providerPreparationStore.retain;
+  runtime.retainProductionProviderManifestIdentity =
+    providerPreparationStore.retainManifestIdentity;
+  runtime.releaseProductionProviderPreparation = providerPreparationStore.release;
+  runtime.scheduleProductionProviderPreparationReconciliation =
+    providerPreparationStore.scheduleReconciliation;
 
+  // Project preparation can precede run acceptance, so reconcile its durable
+  // ownership before relying on retained runs to identify affected Projects.
+  await providerPreparationStore.reconcile();
   // Complete terminal-view repair and active-run reconciliation before
   // exposing observation or mutation methods to the framed Host loop.
   await runtime.reconcileInterruptedRuns();
-
   Object.assign(runtime, createRunSupervisor(runtime));
   Object.assign(runtime, createLaunchOperation(runtime));
   Object.assign(runtime, createCancelOperation(runtime));

@@ -10,6 +10,7 @@
 #include <sys/prctl.h>
 #include <sys/ptrace.h>
 #include <sys/syscall.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -19,7 +20,39 @@ enum {
   SANDKING_IDENTITY_ABSENT = 3,
   SANDKING_UNCERTAIN = 4,
   SANDKING_SIGNAL_DELIVERED = 5,
+  SANDKING_FILE_BUSY = 6,
 };
+
+static int prove_file_ownership_release(
+  const char *path,
+  const char *device_text,
+  const char *inode_text
+) {
+  char *device_end = NULL;
+  char *inode_end = NULL;
+  errno = 0;
+  unsigned long long expected_device = strtoull(device_text, &device_end, 10);
+  unsigned long long expected_inode = strtoull(inode_text, &inode_end, 10);
+  if (errno != 0 || device_end == device_text || *device_end != '\0'
+      || inode_end == inode_text || *inode_end != '\0') {
+    return SANDKING_UNCERTAIN;
+  }
+  int descriptor = open(path, O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0) return SANDKING_UNCERTAIN;
+  struct stat details;
+  if (fstat(descriptor, &details) != 0
+      || (unsigned long long)details.st_dev != expected_device
+      || (unsigned long long)details.st_ino != expected_inode) {
+    close(descriptor);
+    return SANDKING_UNCERTAIN;
+  }
+  int leased = fcntl(descriptor, F_SETLEASE, F_WRLCK);
+  int lease_error = errno;
+  if (leased == 0) (void)fcntl(descriptor, F_SETLEASE, F_UNLCK);
+  close(descriptor);
+  if (leased == 0) return SANDKING_OK;
+  return lease_error == EAGAIN ? SANDKING_FILE_BUSY : SANDKING_UNCERTAIN;
+}
 
 enum {
   SANDKING_COMMAND_DESCRIPTOR = 6,
@@ -481,6 +514,9 @@ static int supervise(const char *evidence_path, char **supervisor_argv) {
 }
 
 int main(int argc, char **argv) {
+  if (argc == 5 && strcmp(argv[1], "ownership-release") == 0) {
+    return prove_file_ownership_release(argv[2], argv[3], argv[4]);
+  }
   if (argc >= 5 && strcmp(argv[1], "subreaper") == 0) {
     return supervise(argv[2], &argv[3]);
   }
