@@ -45,6 +45,7 @@ exit 91
 `),
     writeExecutable(join(binPath, "npm"), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
+if [ "$1" = "ci" ]; then exit 0; fi
 exit 92
 `),
     writeExecutable(join(binPath, "docker"), `#!/bin/sh

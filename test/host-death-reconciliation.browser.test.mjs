@@ -19,6 +19,7 @@ import {
   installCurrentPackage,
   pauseInstalledHostAtHarnessRunFault,
 } from "./installed-package.mjs";
+import { configureInstalledProductionProjectCredential } from "./installed-production-host.mjs";
 import { installReadyProbeCommands } from "./production-sandcastle-host-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -244,6 +245,12 @@ test("packaged Cockpit removes pre-commit production preparation after real Host
         + "[data-harness-adapter-id='sandcastle-harness-adapter-v1']",
       { timeout: 90_000 },
     );
+    const credentialConfiguration = await configureInstalledProductionProjectCredential({
+      dataDir,
+      installed,
+      projectPath,
+    });
+    assert.equal(credentialConfiguration.type, "github.credentials.configure.result");
     const excludeBeforeLaunch = await readFile(excludePath, "utf8");
     const statusBeforeLaunch = (await execFileAsync("git", [
       "-C", projectPath, "status", "--porcelain=v1", "--untracked-files=all",
@@ -256,7 +263,13 @@ test("packaged Cockpit removes pre-commit production preparation after real Host
       if (await readFile(manifestPath, "utf8").then(() => true, () => false)) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    assert.deepEqual(JSON.parse(await readFile(manifestPath, "utf8")), {
+    const manifestSource = await readFile(manifestPath, "utf8").catch(async (error) => {
+      const launchFeedback = await page.locator("#harness-launch-feedback").textContent();
+      throw new Error(`provider_manifest_unavailable: ${launchFeedback}`, {
+        cause: error,
+      });
+    });
+    assert.deepEqual(JSON.parse(manifestSource), {
       schemaVersion: 1,
       provider: { kind: "openai-codex", ready: true },
       scenario: "project-commit",

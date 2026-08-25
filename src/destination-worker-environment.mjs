@@ -35,16 +35,16 @@ export const createDestinationWorkerEnvironment = (options = {}) => {
   const destinationPathEntries = pathValue.split(path.delimiter).filter(Boolean);
   const pathEntries = platform === "win32"
     ? [
-        executableDirectory,
         ...destinationPathEntries,
+        executableDirectory,
         ...(systemRoot ? [
           `${systemRoot}\\System32`,
           systemRoot,
         ] : []),
       ]
     : [
-        executableDirectory,
         ...destinationPathEntries,
+        executableDirectory,
         "/usr/local/bin",
         "/usr/bin",
         "/bin",

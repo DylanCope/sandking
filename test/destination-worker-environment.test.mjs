@@ -16,10 +16,10 @@ test("the Host derives a minimal destination-local Worker environment", () => {
     LANG: "C.UTF-8",
     HOME: "/srv/destination-user",
     PATH: [
-      "/opt/sandking-node/bin",
       "/srv/destination-user/.local/bin",
       "/opt/provider/bin",
       "/usr/bin",
+      "/opt/sandking-node/bin",
       "/usr/local/bin",
       "/bin",
     ].join(delimiter),
@@ -48,9 +48,9 @@ test("the Windows destination keeps configured Git, Codex, and npm locations", (
     LANG: "C.UTF-8",
     USERPROFILE: "C:\\Users\\destination",
     PATH: [
-      "C:\\Program Files\\nodejs",
       "C:\\Users\\destination\\AppData\\Roaming\\npm",
       "C:\\Program Files\\Git\\cmd",
+      "C:\\Program Files\\nodejs",
       "C:\\Windows\\System32",
       "C:\\Windows",
     ].join(";"),

@@ -3,6 +3,56 @@ import { access, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+export const configureInstalledProductionProjectCredential = async ({
+  dataDir,
+  installed,
+  projectPath,
+}) => {
+  const githubCredentialsUrl = pathToFileURL(join(
+    installed.packageDirectory,
+    "src",
+    "github-credentials.mjs",
+  )).href;
+  const githubCredentialContractUrl = pathToFileURL(join(
+    installed.packageDirectory,
+    "src",
+    "github-credential-contract.mjs",
+  )).href;
+  const projectStateUrl = pathToFileURL(join(
+    installed.packageDirectory,
+    "src",
+    "project-registration",
+    "state.mjs",
+  )).href;
+  const [
+    { createGitHubCredentialManager },
+    { GITHUB_CREDENTIAL_AUTHORIZATION_CLASS },
+    { readProjectState },
+  ] = await Promise.all([
+    import(githubCredentialsUrl),
+    import(githubCredentialContractUrl),
+    import(projectStateUrl),
+  ]);
+  const projectState = await readProjectState(dataDir);
+  const project = projectState.projects.find((candidate) =>
+    candidate.status === "active" && candidate.canonicalPath === projectPath);
+  if (!project) throw new Error("installed_production_project_not_registered");
+  const manager = await createGitHubCredentialManager({
+    dataDir,
+    recordAudit: async (_action, _outcome, _details, requestedAuditId) =>
+      requestedAuditId ?? `audit-${"f".repeat(24)}`,
+  });
+  return manager.configureProject({
+    requestId: "configure-installed-production-project-credential",
+    projectId: project.projectId,
+    action: "set",
+    personalAccessToken: "github_pat_installed_production_fixture_261",
+    authorizationClass: GITHUB_CREDENTIAL_AUTHORIZATION_CLASS,
+    idempotencyKey: "configure-installed-production-project-credential",
+    expectedRevision: 0,
+  });
+};
+
 export const startInstalledProductionHost = async ({
   endpoint,
   installed,
