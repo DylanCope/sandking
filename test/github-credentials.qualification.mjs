@@ -26,6 +26,9 @@ import {
   writeFrame,
 } from "../src/protocol.mjs";
 
+// Imported by production-sandcastle-adapter.test.mjs so production Host
+// qualification remains serialized in one test process.
+
 const projectToken = "github_pat_project_specific_secret_261";
 const hostToken = "gho_host_session_secret_261";
 
