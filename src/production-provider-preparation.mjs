@@ -57,6 +57,7 @@ const git = (projectPath, args) => execFileAsync("git", ["-C", projectPath, ...a
  * @param {{
  *   projectPath: string,
  *   expectedIdentity?: {birthtimeNanoseconds: string, device: string, inode: string},
+ *   preparationId?: string,
  * }} options
  */
 export const removeStaleProductionProviderManifest = async (options) => {
@@ -68,6 +69,7 @@ export const removeStaleProductionProviderManifest = async (options) => {
   try {
     const excludePath = await resolveProjectGitExcludePath(projectRoot);
     captured = await captureProjectPreparationFile(manifestPath, {
+      captureId: options.preparationId,
       directory: dirname(excludePath),
       maximumLinks: 2,
     });
@@ -151,6 +153,7 @@ export const cleanupProductionProviderPreparation = async (options) => {
     await removeStaleProductionProviderManifest({
       projectPath: options.projectPath,
       expectedIdentity: manifestIdentity,
+      preparationId: options.preparationId,
     });
     await removeProjectPreparationTemporaryFile(
       manifestPath,
@@ -256,6 +259,7 @@ export const prepareProductionProviderManifest = async (options) => {
       await removeStaleProductionProviderManifest({
         projectPath: projectRoot,
         expectedIdentity: manifestIdentity,
+        preparationId: options.preparationId,
       });
       manifestWritten = false;
     }

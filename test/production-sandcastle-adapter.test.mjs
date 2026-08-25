@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import {
-  access,
+  appendFile,
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rename,
   rm,
   writeFile,
@@ -12,11 +12,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
-import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { createHarnessRunManager } from "../src/harness-runs.mjs";
 import { REAL_PROVIDER_MANIFEST_SOURCE } from "../src/production-provider-preparation.mjs";
 import { installCurrentPackage } from "./installed-package.mjs";
+import {
+  startInstalledProductionHost,
+  waitForPathState,
+  writeProviderMutationPause,
+} from "./installed-production-host.mjs";
 import {
   createProductionFixture,
   createProductionRegistration,
@@ -36,202 +40,6 @@ import "./production-sandcastle-qualification.mjs";
 const launchRequest = productionLaunchRequest;
 const observeRunning = observeProductionRunning;
 const observeTerminal = observeProductionTerminal;
-
-const startInstalledProductionHost = async ({
-  endpoint,
-  installed,
-  nodePath,
-  preloadPath,
-  registration,
-}) => {
-  const harnessRunsUrl = pathToFileURL(join(
-    installed.packageDirectory,
-    "src",
-    "harness-runs.mjs",
-  )).href;
-  const projectRegistrationUrl = pathToFileURL(join(
-    installed.packageDirectory,
-    "src",
-    "project-registration.mjs",
-  )).href;
-  const source = `
-import { createServer } from "node:net";
-import { createHarnessRunManager } from ${JSON.stringify(harnessRunsUrl)};
-import { createProjectRegistry } from ${JSON.stringify(projectRegistrationUrl)};
-const dataDir = ${JSON.stringify(registration.dataDir)};
-const endpoint = ${JSON.stringify(endpoint)};
-const projectId = ${JSON.stringify(registration.project.project.projectId)};
-let auditSequence = 0;
-const recordAudit = async (_action, _outcome, _details, requestedAuditId) =>
-  requestedAuditId ?? \`audit-\${String(++auditSequence).padStart(24, "0")}\`;
-const registry = await createProjectRegistry({ dataDir, recordAudit });
-const manager = await createHarnessRunManager({
-  dataDir,
-  hostId: \`host-\${"7".repeat(24)}\`,
-  recordAudit,
-  loadLaunchContext: registry.loadLaunchContext,
-});
-const server = createServer((socket) => {
-  socket.setEncoding("utf8");
-  let input = "";
-  socket.on("data", async (chunk) => {
-    input += chunk;
-    if (!input.includes("\\n")) return;
-    try {
-      const request = JSON.parse(input.slice(0, input.indexOf("\\n")));
-      const outcome = request.operation === "describe"
-        ? {
-            type: "controller.cli.description",
-            protocol: "1.0.0",
-            command: "sandking launch",
-            focusedProjectId: projectId,
-            projectArgumentOptional: true,
-            pluginRequired: false,
-            launchParameters: ${JSON.stringify(registration.harness.harness.launchParameters)},
-          }
-        : await manager.launch({
-            requestId: request.requestId,
-            projectId,
-            parameters: request.parameters ?? {},
-            controllerId: \`runtime-\${"8".repeat(24)}\`,
-            controllerSessionId: request.controllerSessionId,
-            source: "controller-cli",
-            authorizationClass: "harness_run_launch",
-            idempotencyKeyHash: request.idempotencyKeyHash,
-          });
-      const succeeded = outcome.type === "controller.cli.description"
-        || outcome.type === "harness.run.launch.result";
-      socket.end(\`\${JSON.stringify({
-        type: "sandking.cli.result",
-        protocol: "1.0.0",
-        requestId: request.requestId,
-        ok: succeeded,
-        ...(succeeded ? { outcome } : { failure: { code: outcome.code } }),
-      })}\\n\`);
-    } catch (error) {
-      socket.destroy(error instanceof Error ? error : undefined);
-    }
-  });
-});
-process.once("SIGTERM", async () => {
-  await manager.waitForIdle();
-  server.close(() => process.exit(0));
-});
-server.listen(endpoint, () => process.stdout.write("ready\\n"));
-`;
-  const child = spawn(nodePath, [
-    ...(preloadPath ? ["--import", pathToFileURL(preloadPath).href] : []),
-    "--input-type=module",
-    "--eval",
-    source,
-  ], {
-    env: process.env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let diagnostic = "";
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (chunk) => {
-    diagnostic += chunk;
-  });
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error(`installed_readiness_host_timeout: ${diagnostic}`));
-    }, 10_000);
-    let output = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
-      if (!output.includes("ready\n")) return;
-      clearTimeout(timeout);
-      resolve();
-    });
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once("exit", (code, signal) => {
-      if (output.includes("ready\n")) return;
-      clearTimeout(timeout);
-      reject(new Error(
-        `installed_readiness_host_exited: ${code ?? signal ?? "unknown"}: ${diagnostic}`,
-      ));
-    });
-  });
-  return {
-    diagnostic: () => diagnostic,
-    stop: async () => {
-      if (child.exitCode !== null || child.signalCode !== null) return;
-      const exited = new Promise((resolve) => child.once("close", resolve));
-      child.kill("SIGTERM");
-      await exited;
-    },
-  };
-};
-
-const waitForPathState = async (path, exists) => {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    const current = await access(path).then(() => true, () => false);
-    if (current === exists) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`production_provider_race_timeout:${path}:${exists}`);
-};
-
-const writeProviderMutationPause = async ({ mode, root, manifestPath }) => {
-  const armPath = join(root, "arm-provider-mutation");
-  const blockedPath = join(root, "provider-mutation-blocked");
-  const claimedPath = join(root, "claimed-provider-mutation");
-  const releasePath = join(root, "release-provider-mutation");
-  const preloadPath = join(root, "pause-provider-mutation.mjs");
-  await writeFile(preloadPath, `
-import fsPromises from "node:fs/promises";
-import { syncBuiltinESMExports } from "node:module";
-const manifestPath = ${JSON.stringify(manifestPath)};
-const mode = ${JSON.stringify(mode)};
-const originalAccess = fsPromises.access.bind(fsPromises);
-const originalLink = fsPromises.link.bind(fsPromises);
-const originalRename = fsPromises.rename.bind(fsPromises);
-const originalRm = fsPromises.rm.bind(fsPromises);
-const originalWriteFile = fsPromises.writeFile.bind(fsPromises);
-const pause = async () => {
-  try {
-    await originalRename(${JSON.stringify(armPath)}, ${JSON.stringify(claimedPath)});
-  } catch (error) {
-    if (error?.code === "ENOENT") return;
-    throw error;
-  }
-  await originalWriteFile(${JSON.stringify(blockedPath)}, "blocked\\n");
-  while (await originalAccess(${JSON.stringify(releasePath)}).then(
-    () => false,
-    () => true,
-  )) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-};
-fsPromises.link = async (from, to, ...rest) => {
-  if (mode === "creation" && String(to) === manifestPath) await pause();
-  return originalLink(from, to, ...rest);
-};
-fsPromises.rename = async (from, to, ...rest) => {
-  if (
-    (mode === "creation" && String(to) === manifestPath)
-    || (
-      mode === "cleanup"
-      && String(from) === manifestPath
-      && await originalAccess(manifestPath).then(() => true, () => false)
-    )
-  ) await pause();
-  return originalRename(from, to, ...rest);
-};
-fsPromises.rm = async (path, ...rest) => {
-  if (mode === "cleanup" && String(path) === manifestPath) await pause();
-  return originalRm(path, ...rest);
-};
-syncBuiltinESMExports();
-`);
-  return { armPath, blockedPath, preloadPath, releasePath };
-};
 
 test("unavailable real providers reject the Host launch before a run, manifest, or adapter", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-host-provider-unavailable-"));
@@ -704,6 +512,210 @@ test("installed sandking launch preserves concurrent Project selector contents",
           }
           assert.equal(await readFile(manifestPath, "utf8"), concurrentSource);
           assert.equal(await readFile(excludePath, "utf8"), excludeBefore);
+        } finally {
+          if (pause) {
+            await writeFile(pause.releasePath, "release\n").catch(() => undefined);
+          }
+          await host?.stop().catch(() => undefined);
+        }
+      });
+    }
+  } finally {
+    restorePath();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("installed sandking launch restores a captured Project selector after Host death", {
+  skip: process.platform !== "linux"
+    ? "the deterministic Host interruption uses a Linux process signal"
+    : false,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-selector-capture-crash-"));
+  const endpoint = join(root, "controller.sock");
+  const retryDirectory = join(root, "controller-private");
+  const userHome = join(root, "user-home");
+  const concurrentSource = "user-owned concurrent replacement\n";
+  let host;
+  let pause;
+  let restorePath = () => undefined;
+  try {
+    const installed = await installCurrentPackage(root);
+    restorePath = await installReadyProbeCommands(root);
+    await Promise.all([
+      mkdir(retryDirectory, { recursive: true }),
+      mkdir(userHome, { recursive: true }),
+    ]);
+    const registration = await createProductionRegistration(root);
+    const projectId = registration.project.project.projectId;
+    const manifestPath = join(
+      registration.projectPath,
+      "sandcastle.real-provider.json",
+    );
+    const excludePath = join(
+      registration.projectPath,
+      ".git",
+      "info",
+      "exclude",
+    );
+    const excludeBefore = await readFile(excludePath, "utf8");
+    pause = await writeProviderMutationPause({
+      mode: "capture-crash",
+      root,
+      manifestPath,
+    });
+    await writeFile(pause.armPath, "armed\n");
+    host = await startInstalledProductionHost({
+      endpoint,
+      installed,
+      nodePath: process.execPath,
+      preloadPath: pause.preloadPath,
+      registration,
+    });
+    const { stdout } = await execFileAsync(installed.command, [
+      "launch", projectId,
+      "--issue", "256",
+      "--target-branch", "sandcastle/issue-256",
+      "--json",
+    ], {
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: userHome,
+        SANDKING_CONTROLLER_ENDPOINT: endpoint,
+        SANDKING_CONTROLLER_SESSION_ID: `controller-session-${"5".repeat(24)}`,
+        SANDKING_CONTROLLER_RETRY_DIRECTORY: retryDirectory,
+        SANDKING_WORK_CONTEXT_ID: projectId,
+      },
+    });
+    assert.equal(JSON.parse(stdout).type, "harness.run.launch.result");
+
+    await waitForPathState(pause.blockedPath, true);
+    const replacementPath = join(root, "concurrent-selector");
+    await writeFile(replacementPath, concurrentSource);
+    await rename(replacementPath, manifestPath);
+    await writeFile(pause.releasePath, "release\n");
+    await waitForPathState(pause.capturedPath, true);
+    await host.kill();
+    host = undefined;
+    await rm(endpoint, { force: true });
+
+    host = await startInstalledProductionHost({
+      endpoint,
+      installed,
+      nodePath: process.execPath,
+      registration,
+    });
+    await waitForPathState(
+      join(registration.dataDir, "production-provider-preparations.json"),
+      false,
+    );
+
+    assert.equal(await readFile(manifestPath, "utf8"), concurrentSource);
+    assert.equal(await readFile(excludePath, "utf8"), excludeBefore);
+    assert.deepEqual(
+      (await readdir(join(registration.projectPath, ".git", "info")))
+        .filter((name) => name.startsWith(".sandking-capture-")),
+      [],
+    );
+  } finally {
+    if (pause) {
+      await writeFile(pause.releasePath, "release\n").catch(() => undefined);
+      await writeFile(pause.capturedReleasePath, "release\n").catch(() => undefined);
+    }
+    await host?.stop().catch(() => undefined);
+    restorePath();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("installed sandking launch preserves Git exclude edits at each commit boundary", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-exclude-commit-races-"));
+  let restorePath = () => undefined;
+  try {
+    const installed = await installCurrentPackage(root);
+    restorePath = await installReadyProbeCommands(root);
+    for (const phase of ["append", "cleanup"]) {
+      await t.test(phase, async () => {
+        const scenarioRoot = join(root, phase);
+        const endpoint = join(scenarioRoot, "controller.sock");
+        const retryDirectory = join(scenarioRoot, "controller-private");
+        const userHome = join(scenarioRoot, "user-home");
+        const userRule = `/user-added-at-${phase}-commit`;
+        let host;
+        let pause;
+        try {
+          await Promise.all([
+            mkdir(retryDirectory, { recursive: true }),
+            mkdir(userHome, { recursive: true }),
+          ]);
+          const registration = await createProductionRegistration(scenarioRoot);
+          const projectId = registration.project.project.projectId;
+          const manifestPath = join(
+            registration.projectPath,
+            "sandcastle.real-provider.json",
+          );
+          const excludePath = join(
+            registration.projectPath,
+            ".git",
+            "info",
+            "exclude",
+          );
+          const excludeBefore = await readFile(excludePath, "utf8");
+          pause = await writeProviderMutationPause({
+            excludePath,
+            manifestPath,
+            mode: `exclude-${phase}`,
+            root: scenarioRoot,
+          });
+          await writeFile(pause.armPath, "armed\n");
+          host = await startInstalledProductionHost({
+            endpoint,
+            installed,
+            nodePath: process.execPath,
+            preloadPath: pause.preloadPath,
+            registration,
+          });
+          const launch = execFileAsync(installed.command, [
+            "launch", projectId,
+            "--issue", "256",
+            "--target-branch", "sandcastle/issue-256",
+            "--json",
+          ], {
+            cwd: scenarioRoot,
+            env: {
+              ...process.env,
+              HOME: userHome,
+              SANDKING_CONTROLLER_ENDPOINT: endpoint,
+              SANDKING_CONTROLLER_SESSION_ID:
+                `controller-session-${"5".repeat(24)}`,
+              SANDKING_CONTROLLER_RETRY_DIRECTORY: retryDirectory,
+              SANDKING_WORK_CONTEXT_ID: projectId,
+            },
+          });
+
+          if (phase === "append") {
+            await waitForPathState(pause.blockedPath, true);
+            await appendFile(excludePath, `${userRule}\n`);
+            await writeFile(pause.releasePath, "release\n");
+          }
+          const launched = JSON.parse((await launch).stdout);
+          assert.equal(launched.type, "harness.run.launch.result");
+          if (phase === "cleanup") {
+            await waitForPathState(pause.blockedPath, true);
+            await appendFile(excludePath, `${userRule}\n`);
+            await writeFile(pause.releasePath, "release\n");
+          }
+          await waitForPathState(
+            join(registration.dataDir, "production-provider-preparations.json"),
+            false,
+          );
+
+          assert.equal(
+            await readFile(excludePath, "utf8"),
+            `${excludeBefore}${userRule}\n`,
+          );
+          await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
         } finally {
           if (pause) {
             await writeFile(pause.releasePath, "release\n").catch(() => undefined);

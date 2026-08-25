@@ -197,13 +197,18 @@ adapter preflight, the exclusion mechanism publishes `sandcastle.real-provider.j
 at the Project root with a no-clobber filesystem operation. A file created after
 inspection wins the collision and is never replaced. A rejected launch rolls back a
 new manifest and exclude rule. After the adapter has inspected the selector and
-published readiness, the Host atomically moves the cleanup candidate away from the
-public path before checking its exact contents, Git ownership, and durably recorded
-filesystem identity. A replacement created before or after that claim is restored or
+published readiness, the Host atomically moves the cleanup candidate into a capture
+whose stable name is derived from the journaled preparation ID before checking its exact
+contents, Git ownership, and durably recorded filesystem identity. Startup resumes that
+same capture, restoring a Project-owned replacement if process loss occurred while its
+public name was absent. A replacement created before or after the claim is restored or
 left in place, including a same-byte valid selector published on a different inode;
 cleanup never infers ownership from contents alone. Terminal supervision is a fallback
-cleanup boundary. Before changing the Project, the Host journals the Project
-registration and a unique Git-exclusion ownership marker in Host-private state. The
+cleanup boundary. Exclude-file append and cleanup also capture and compare the exact
+generation they read before publishing with a no-clobber link; a concurrent edit causes
+the mutation to rebase instead of replacing the user-owned file. Before changing the
+Project, the Host journals the Project registration and a unique Git-exclusion ownership
+marker in Host-private state. The
 no-clobber publication retains a short-lived filesystem link until the selector's
 device/inode/birth-time identity is added to that journal, closing the process-loss gap
 between creation and durable ownership. Startup reconciles the journal even if process

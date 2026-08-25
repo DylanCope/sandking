@@ -71,12 +71,16 @@ untracked stale selector before probing, and Host-private preparation ownership
 is durably journaled before the Project mutation. Host startup therefore cleans
 the selector even when process loss happened before run acceptance and there is
 no retained run. The temporary exclude block has a unique ownership marker, so cleanup
-preserves concurrent edits to `.git/info/exclude`. Selector cleanup atomically captures
-the exact candidate before checking its contents, Git ownership, and the filesystem
-identity durably journaled at no-clobber publication. A concurrent replacement is
-restored or left at the public path rather than deleted, even when it contains the same
-valid selector JSON. Tracked, unjournaled, or identity-mismatched manifest files are
-never deleted and continue to fail as Project collisions.
+preserves concurrent edits to `.git/info/exclude`. Both exclude append and cleanup rebase
+when the exact file generation changes before commit and publish without clobbering a
+new public path. Selector cleanup atomically captures the exact candidate under a stable
+name derived from the journaled preparation ID before checking its contents, Git
+ownership, and recorded filesystem identity. Startup resumes that capture and restores
+a Project-owned replacement when Host loss occurred while its public name was absent.
+A concurrent replacement is restored or left at the public path rather than deleted,
+even when it contains the same valid selector JSON. Tracked, unjournaled, or
+identity-mismatched manifest files are never deleted and continue to fail as Project
+collisions.
 
 The explicit `sandcastle.worker-fixture.json` branch remains available only at
 the adapter protocol's deterministic qualification boundary; a production

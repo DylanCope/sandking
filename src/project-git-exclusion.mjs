@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   open,
+  readdir,
   rename,
   rm,
   rmdir,
@@ -14,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const MAX_PROJECT_PREPARATION_COMMIT_ATTEMPTS = 8;
 
 export class ProjectPreparationFileError extends Error {
   /** @param {"harness_projection_collision" | "harness_projection_failed"} code */
@@ -137,39 +139,91 @@ const assertSafeFileParent = async (path) => {
 const hasFileErrorCode = (error, code) =>
   Boolean(error && typeof error === "object" && "code" in error && error.code === code);
 
+/** @param {string} captureId */
+const assertProjectPreparationCaptureId = (captureId) => {
+  if (!/^[a-z0-9-]{1,192}$/.test(captureId)) {
+    throw new ProjectPreparationFileError("harness_projection_failed");
+  }
+};
+
+/**
+ * @param {string} path
+ * @param {{captureId?: string, directory?: string}} options
+ */
+const openProjectPreparationCaptureDirectory = async (path, options) => {
+  const prefix = options.directory
+    ? join(options.directory, ".sandking-capture-")
+    : `${path}.sandking-capture-`;
+  if (!options.captureId) {
+    try {
+      return { path: await mkdtemp(prefix), recovered: false };
+    } catch {
+      throw new ProjectPreparationFileError("harness_projection_failed");
+    }
+  }
+  assertProjectPreparationCaptureId(options.captureId);
+  const capturePath = `${prefix}${options.captureId}`;
+  try {
+    await mkdir(capturePath, { mode: 0o700 });
+    return { path: capturePath, recovered: false };
+  } catch (error) {
+    if (!hasFileErrorCode(error, "EEXIST")) {
+      throw new ProjectPreparationFileError("harness_projection_failed");
+    }
+    try {
+      const details = await lstat(capturePath);
+      const entries = await readdir(capturePath);
+      if (
+        !details.isDirectory()
+        || details.isSymbolicLink()
+        || entries.some((entry) => entry !== "captured")
+      ) {
+        throw new ProjectPreparationFileError("harness_projection_collision");
+      }
+      return { path: capturePath, recovered: true };
+    } catch (recoveryError) {
+      if (recoveryError instanceof ProjectPreparationFileError) throw recoveryError;
+      throw new ProjectPreparationFileError("harness_projection_failed");
+    }
+  }
+};
+
 /**
  * Atomically move the current path into a private capture directory before
  * inspecting or removing it. A file created at the public path after this
  * claim is a distinct Project mutation and is never overwritten or deleted.
  *
  * @param {string} path
- * @param {{directory?: string, maximumLinks?: number}} [options]
+ * A caller with durable cleanup ownership supplies a stable capture ID. A
+ * restart then resumes the same capture instead of treating the missing public
+ * path as a completed removal.
+ *
+ * @param {{captureId?: string, directory?: string, maximumLinks?: number}} [options]
  */
 export const captureProjectPreparationFile = async (path, options = {}) => {
   await assertSafeFileParent(path);
-  let captureDirectory;
-  try {
-    captureDirectory = await mkdtemp(options.directory
-      ? join(options.directory, ".sandking-capture-")
-      : `${path}.sandking-capture-`);
-  } catch {
-    throw new ProjectPreparationFileError("harness_projection_failed");
-  }
+  const capture = await openProjectPreparationCaptureDirectory(path, options);
+  const captureDirectory = capture.path;
   const capturedPath = join(captureDirectory, "captured");
-  try {
-    await rename(path, capturedPath);
-  } catch (error) {
-    await rmdir(captureDirectory).catch(() => undefined);
-    if (hasFileErrorCode(error, "ENOENT")) {
-      return {
-        exists: false,
-        identity: undefined,
-        source: "",
-        remove: async () => undefined,
-        restore: async () => undefined,
-      };
+  if (!capture.recovered || !(await lstat(capturedPath).then(
+    () => true,
+    (error) => hasFileErrorCode(error, "ENOENT") ? false : Promise.reject(error),
+  ))) {
+    try {
+      await rename(path, capturedPath);
+    } catch (error) {
+      await rmdir(captureDirectory).catch(() => undefined);
+      if (hasFileErrorCode(error, "ENOENT")) {
+        return {
+          exists: false,
+          identity: undefined,
+          source: "",
+          remove: async () => undefined,
+          restore: async () => undefined,
+        };
+      }
+      throw new ProjectPreparationFileError("harness_projection_failed");
     }
-    throw new ProjectPreparationFileError("harness_projection_failed");
   }
 
   let current;
@@ -183,7 +237,19 @@ export const captureProjectPreparationFile = async (path, options = {}) => {
       await rm(capturedPath);
     } catch (error) {
       if (hasFileErrorCode(error, "EEXIST")) {
-        throw new ProjectPreparationFileError("harness_projection_collision");
+        const [captured, destination] = await Promise.all([
+          readProjectPreparationFile(capturedPath, { maximumLinks: 2 }),
+          readProjectPreparationFile(path, { maximumLinks: 2 }),
+        ]);
+        if (!projectPreparationFileIdentityMatches(
+          captured.identity,
+          destination.identity,
+        )) {
+          throw new ProjectPreparationFileError("harness_projection_collision");
+        }
+        await rm(capturedPath);
+        await closeCaptureDirectory();
+        return;
       }
       const destinationExists = await lstat(path).then(
         () => true,
@@ -249,23 +315,125 @@ const writeProjectPreparationTemporaryFile = async (path, source, temporaryId) =
   }
 };
 
-/** @param {string} path @param {string} source @param {{temporaryId?: string}} [options] */
-const replaceProjectPreparationFile = async (path, source, options = {}) => {
+/** @param {string} temporaryId */
+const projectPreparationReplacementCaptureId = (temporaryId) =>
+  `replace-${temporaryId}`;
+
+/**
+ * Finish a replacement interrupted after its old public generation was
+ * captured. A published candidate is identified by its retained temporary
+ * hard link; otherwise the captured user-owned generation returns to its
+ * public name before another mutation attempt.
+ *
+ * @param {string} path
+ * @param {string | undefined} temporaryId
+ */
+const recoverProjectPreparationFileReplacement = async (path, temporaryId) => {
+  if (!temporaryId) return;
+  const captureId = projectPreparationReplacementCaptureId(temporaryId);
+  const captureDirectory = `${path}.sandking-capture-${captureId}`;
+  const captureExists = await lstat(captureDirectory).then(
+    () => true,
+    (error) => hasFileErrorCode(error, "ENOENT") ? false : Promise.reject(error),
+  );
+  if (!captureExists) return;
+  const captured = await captureProjectPreparationFile(path, {
+    captureId,
+    maximumLinks: 2,
+  });
+  if (!captured.exists) {
+    throw new ProjectPreparationFileError("harness_projection_failed");
+  }
+  const [candidate, destination] = await Promise.all([
+    readProjectPreparationTemporaryFile(path, temporaryId),
+    readProjectPreparationFile(path, { maximumLinks: 2 }),
+  ]);
+  if (
+    candidate.exists
+    && destination.exists
+    && projectPreparationFileIdentityMatches(candidate.identity, destination.identity)
+  ) {
+    await captured.remove();
+    return;
+  }
+  if (
+    destination.exists
+    && projectPreparationFileIdentityMatches(captured.identity, destination.identity)
+  ) {
+    await captured.restore();
+    return;
+  }
+  if (!destination.exists) {
+    await captured.restore();
+    return;
+  }
+  throw new ProjectPreparationFileError("harness_projection_collision");
+};
+
+/**
+ * Commit only over the file generation that was read. The old public path is
+ * durably captured before publication, so a concurrent edit causes a rebase
+ * instead of being overwritten by the candidate rename.
+ *
+ * @param {string} path
+ * @param {{exists: boolean, identity: {birthtimeNanoseconds: string, device: string, inode: string} | undefined, source: string}} expected
+ * @param {string | null} source
+ * @param {{temporaryId?: string}} [options]
+ */
+const replaceProjectPreparationFile = async (path, expected, source, options = {}) => {
   const temporaryId = options.temporaryId
     ?? `${process.pid}-${randomBytes(6).toString("hex")}`;
   /** @type {string | undefined} */
   let temporaryPath;
+  /** @type {Awaited<ReturnType<typeof captureProjectPreparationFile>> | null} */
+  let captured = null;
+  let candidatePublished = false;
   try {
     temporaryPath = await writeProjectPreparationTemporaryFile(
       path,
-      source,
+      source ?? "",
       temporaryId,
     );
-    await rename(temporaryPath, path);
-    temporaryPath = undefined;
+    captured = await captureProjectPreparationFile(path, {
+      captureId: projectPreparationReplacementCaptureId(temporaryId),
+    });
+    if (
+      captured.exists !== expected.exists
+      || captured.source !== expected.source
+      || (captured.exists && !projectPreparationFileIdentityMatches(
+        captured.identity,
+        expected.identity,
+      ))
+    ) {
+      await captured.restore();
+      captured = null;
+      await rm(temporaryPath);
+      temporaryPath = undefined;
+      return { committed: false };
+    }
+    if (source === null) {
+      await rm(temporaryPath);
+      temporaryPath = undefined;
+    } else {
+      await link(temporaryPath, path);
+      candidatePublished = true;
+    }
+    await captured.remove();
+    captured = null;
+    if (temporaryPath) {
+      await rm(temporaryPath);
+      temporaryPath = undefined;
+    }
+    return { committed: true };
   } catch (error) {
-    if (temporaryPath) await rm(temporaryPath, { force: true }).catch(() => undefined);
+    if (!candidatePublished) {
+      await captured?.restore().catch(() => undefined);
+      if (temporaryPath) await rm(temporaryPath, { force: true }).catch(() => undefined);
+    }
     if (error instanceof ProjectPreparationFileError) throw error;
+    if (hasFileErrorCode(error, "EEXIST")) {
+      throw new ProjectPreparationFileError("harness_projection_collision");
+    }
     throw new ProjectPreparationFileError("harness_projection_failed");
   }
 };
@@ -294,6 +462,7 @@ export const createProjectPreparationFile = async (path, source, options = {}) =
       finalize: async () => {
         if (!active) return;
         const captured = await captureProjectPreparationFile(ownershipPath, {
+          captureId: temporaryId,
           maximumLinks: 2,
         });
         if (
@@ -333,6 +502,7 @@ export const removeProjectPreparationTemporaryFile = async (
   await assertSafeFileParent(path);
   const temporaryPath = projectPreparationTemporaryPath(path, temporaryId);
   const captured = await captureProjectPreparationFile(temporaryPath, {
+    captureId: temporaryId,
     maximumLinks: 2,
   });
   if (!captured.exists) return { removed: false };
@@ -398,39 +568,47 @@ export const resolveProjectGitExcludePath = async (projectRoot) => {
 const removeProjectGitExcludeRulesAtPath = async (options) => {
   await assertSafeFileParent(options.path);
   if (options.temporaryId) {
+    await recoverProjectPreparationFileReplacement(
+      options.path,
+      options.temporaryId,
+    );
     await removeProjectPreparationTemporaryFile(options.path, options.temporaryId);
   }
-  const current = await readProjectPreparationFile(options.path);
-  if (!current.exists) return { changed: false };
-  const lines = current.source.split("\n");
-  if (options.ownershipMarker) {
-    const markerIndexes = lines.flatMap((line, index) =>
-      line === options.ownershipMarker ? [index] : []);
-    if (markerIndexes.length === 0) return { changed: false };
-    if (
-      markerIndexes.length !== 1
-      || options.rules.some((rule, offset) =>
-        lines[markerIndexes[0] + offset + 1] !== rule)
-    ) {
-      throw new ProjectPreparationFileError("harness_projection_collision");
+  for (let attempt = 0; attempt < MAX_PROJECT_PREPARATION_COMMIT_ATTEMPTS; attempt += 1) {
+    const current = await readProjectPreparationFile(options.path);
+    if (!current.exists) return { changed: false };
+    const lines = current.source.split("\n");
+    if (options.ownershipMarker) {
+      const markerIndexes = lines.flatMap((line, index) =>
+        line === options.ownershipMarker ? [index] : []);
+      if (markerIndexes.length === 0) return { changed: false };
+      if (
+        markerIndexes.length !== 1
+        || options.rules.some((rule, offset) =>
+          lines[markerIndexes[0] + offset + 1] !== rule)
+      ) {
+        throw new ProjectPreparationFileError("harness_projection_collision");
+      }
+      lines.splice(markerIndexes[0], options.rules.length + 1);
+    } else {
+      for (const rule of options.rules) {
+        const index = lines.indexOf(rule);
+        if (index !== -1) lines.splice(index, 1);
+      }
     }
-    lines.splice(markerIndexes[0], options.rules.length + 1);
-  } else {
-    for (const rule of options.rules) {
-      const index = lines.indexOf(rule);
-      if (index !== -1) lines.splice(index, 1);
-    }
+    const nextSource = lines.join("\n");
+    if (nextSource === current.source) return { changed: false };
+    const replacement = await replaceProjectPreparationFile(
+      options.path,
+      current,
+      options.removeFileWhenEmpty && nextSource.length === 0 ? null : nextSource,
+      {
+        temporaryId: options.temporaryId,
+      },
+    );
+    if (replacement.committed) return { changed: true };
   }
-  const nextSource = lines.join("\n");
-  if (nextSource === current.source) return { changed: false };
-  if (options.removeFileWhenEmpty && nextSource.length === 0) {
-    await rm(options.path, { force: true });
-  } else {
-    await replaceProjectPreparationFile(options.path, nextSource, {
-      temporaryId: options.temporaryId,
-    });
-  }
-  return { changed: true };
+  throw new ProjectPreparationFileError("harness_projection_collision");
 };
 
 /**
@@ -473,25 +651,39 @@ export const appendProjectGitExcludeRules = async (options) => {
   const excludePath = await resolveProjectGitExcludePath(projectRoot);
 
   await assertSafeFileParent(excludePath);
-  const original = await readProjectPreparationFile(excludePath);
-  const existingRules = new Set(original.source.split("\n"));
-  const addedRules = options.rules.filter((rule) => !existingRules.has(rule));
-  if (addedRules.length === 0) {
-    return { path: excludePath, changed: false, rollback: async () => undefined };
+  if (options.temporaryId) {
+    await recoverProjectPreparationFileReplacement(excludePath, options.temporaryId);
+    await removeProjectPreparationTemporaryFile(excludePath, options.temporaryId);
   }
-  const appendedLines = options.ownershipMarker
-    ? [options.ownershipMarker, ...addedRules]
-    : addedRules;
-  const nextSource = `${original.source}${original.source.endsWith("\n")
-    || original.source.length === 0 ? "" : "\n"}${appendedLines.join("\n")}\n`;
-  try {
-    await mkdir(dirname(excludePath), { recursive: true, mode: 0o700 });
-    await replaceProjectPreparationFile(excludePath, nextSource, {
-      temporaryId: options.temporaryId,
-    });
-  } catch (error) {
-    if (error instanceof ProjectPreparationFileError) throw error;
-    throw new ProjectPreparationFileError("harness_projection_failed");
+  await mkdir(dirname(excludePath), { recursive: true, mode: 0o700 });
+  let original;
+  let addedRules;
+  let replacementCommitted = false;
+  for (let attempt = 0; attempt < MAX_PROJECT_PREPARATION_COMMIT_ATTEMPTS; attempt += 1) {
+    original = await readProjectPreparationFile(excludePath);
+    const existingRules = new Set(original.source.split("\n"));
+    addedRules = options.rules.filter((rule) => !existingRules.has(rule));
+    if (addedRules.length === 0) {
+      return { path: excludePath, changed: false, rollback: async () => undefined };
+    }
+    const appendedLines = options.ownershipMarker
+      ? [options.ownershipMarker, ...addedRules]
+      : addedRules;
+    const nextSource = `${original.source}${original.source.endsWith("\n")
+      || original.source.length === 0 ? "" : "\n"}${appendedLines.join("\n")}\n`;
+    const replacement = await replaceProjectPreparationFile(
+      excludePath,
+      original,
+      nextSource,
+      { temporaryId: options.temporaryId },
+    );
+    if (replacement.committed) {
+      replacementCommitted = true;
+      break;
+    }
+  }
+  if (!replacementCommitted || !original || !addedRules) {
+    throw new ProjectPreparationFileError("harness_projection_collision");
   }
   let active = true;
   return {
