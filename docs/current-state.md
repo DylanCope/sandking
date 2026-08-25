@@ -77,8 +77,9 @@ new public path. If a writer creates that path after the old exclude generation 
 already been captured, recovery keeps both generations durable, restores missing older
 rules ahead of the newest public generation, and replays that newest ordering so a
 concurrent ignore or unignore decision keeps its Git precedence. Only then does it
-remove the capture and temporary candidate. The append boundary compares complete
-bytes as well as filesystem identity, so same-inode concurrent edits rebase too.
+remove the capture and temporary candidate. Recovery preserves each generation as an
+ordered sequence, including duplicate rules, and uses a generation-checked atomic
+publication. Same-inode edits made after its final read therefore rebase too.
 Selector cleanup atomically captures the exact candidate under a stable
 name derived from the journaled preparation ID before checking its contents, Git
 ownership, and recorded filesystem identity. Startup resumes that capture and restores

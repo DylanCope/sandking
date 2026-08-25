@@ -132,16 +132,17 @@ test("installed launch retries selector cleanup after preparation rollback is de
   }
 });
 
-test("installed launch rebases concurrent Git exclude ordering throughout collision recovery", async () => {
+test("installed launch preserves duplicate Git rules and post-read edits during collision recovery", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-exclude-collision-recovery-"));
   const endpoint = join(root, "controller.sock");
   const retryDirectory = join(root, "controller-private");
   const userHome = join(root, "user-home");
-  const exposedTarget = "concurrently-exposed-target";
-  const hiddenTarget = "concurrently-hidden-target";
-  const existingRules = [`/${exposedTarget}`, `!/${hiddenTarget}`];
-  const replacementRules = [`!/${exposedTarget}`, `!/${hiddenTarget}`];
-  const latestRule = `/${hiddenTarget}`;
+  const capturedTarget = "captured-duplicate-target";
+  const editedTarget = "same-inode-post-read-target";
+  const capturedRule = `/${capturedTarget}`;
+  const existingRules = [capturedRule, `!${capturedRule}`, capturedRule];
+  const replacementRules = [`/${editedTarget}`];
+  const latestRule = `!/${editedTarget}`;
   let host;
   let pause;
   let restorePath = () => undefined;
@@ -224,25 +225,30 @@ test("installed launch rebases concurrent Git exclude ordering throughout collis
     });
     await waitForPathState(preparationStatePath, false);
 
-    const recoveredRules = new Set((await readFile(excludePath, "utf8")).split("\n"));
-    for (const rule of excludeBefore.split("\n").filter(Boolean)) {
-      assert.equal(recoveredRules.has(rule), true, `missing prior rule: ${rule}`);
+    const recoveredRules = (await readFile(excludePath, "utf8")).split("\n");
+    for (const rule of new Set(excludeBefore.split("\n").filter(Boolean))) {
+      assert.equal(recoveredRules.includes(rule), true, `missing prior rule: ${rule}`);
     }
     for (const rule of [...replacementRules, latestRule]) {
-      assert.equal(recoveredRules.has(rule), true, `missing concurrent rule: ${rule}`);
+      assert.equal(recoveredRules.includes(rule), true, `missing concurrent rule: ${rule}`);
     }
+    assert.equal(
+      recoveredRules.filter((rule) => rule === capturedRule).length,
+      2,
+      "the meaningful final duplicate was discarded",
+    );
     await Promise.all([
-      writeFile(join(registration.projectPath, exposedTarget), "exposed Project file\n"),
-      writeFile(join(registration.projectPath, hiddenTarget), "hidden Project file\n"),
+      writeFile(join(registration.projectPath, capturedTarget), "ignored Project file\n"),
+      writeFile(join(registration.projectPath, editedTarget), "exposed Project file\n"),
+    ]);
+    await execFileAsync("git", [
+      "-C", registration.projectPath,
+      "check-ignore", "--no-index", "--quiet", capturedTarget,
     ]);
     await assert.rejects(execFileAsync("git", [
       "-C", registration.projectPath,
-      "check-ignore", "--no-index", "--quiet", exposedTarget,
+      "check-ignore", "--no-index", "--quiet", editedTarget,
     ]), { code: 1 });
-    await execFileAsync("git", [
-      "-C", registration.projectPath,
-      "check-ignore", "--no-index", "--quiet", hiddenTarget,
-    ]);
     await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
     assert.deepEqual(await listProjectPreparationDebris(registration.projectPath), []);
   } finally {

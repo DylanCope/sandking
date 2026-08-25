@@ -13,9 +13,11 @@ import {
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { digestHex } from "./common/digest.mjs";
 
 const execFileAsync = promisify(execFile);
 const MAX_PROJECT_PREPARATION_COMMIT_ATTEMPTS = 8;
+const MAX_PROJECT_PREPARATION_RECONCILIATION_DEPTH = 8;
 
 export class ProjectPreparationFileError extends Error {
   /** @param {"harness_projection_collision" | "harness_projection_failed"} code */
@@ -319,25 +321,52 @@ const writeProjectPreparationTemporaryFile = async (path, source, temporaryId) =
 const projectPreparationReplacementCaptureId = (temporaryId) =>
   `replace-${temporaryId}`;
 
+/** @param {string} temporaryId */
+const projectPreparationReconciliationTemporaryId = (temporaryId) =>
+  `reconcile-${digestHex(temporaryId).slice(0, 32)}`;
+
+/** @param {string} source @param {string} candidate */
+const projectGitExcludeSourceIsPreserved = (source, candidate) => {
+  if (source.length === 0) return true;
+  const requiredLines = source.split("\n");
+  const candidateLines = candidate.split("\n");
+  let requiredIndex = 0;
+  for (const line of candidateLines) {
+    if (line === requiredLines[requiredIndex]) requiredIndex += 1;
+    if (requiredIndex === requiredLines.length) return true;
+  }
+  return false;
+};
+
+/** @param {string[]} sources */
+const concatenateProjectGitExcludeSources = (sources) =>
+  sources.filter((source) => source.length > 0).reduce((result, source) =>
+    `${result}${result.length > 0 && !result.endsWith("\n") ? "\n" : ""}${source}`, "");
+
 /**
- * Preserve every line from each observed Git-exclude generation while keeping
- * the newest public generation authoritative. Git ignore rules are ordered,
- * so missing older lines are followed by the current rules again instead of
- * being allowed to reverse a concurrent ignore or unignore decision. Identity
- * and complete bytes are revalidated through the append handle because a
- * same-inode append does not change the filesystem identity.
+ * Preserve each observed Git-exclude generation as an ordered sequence,
+ * including duplicate rules, while keeping the newest public generation
+ * authoritative. Missing generations are followed by the current generation
+ * again so older rules cannot reverse a concurrent ignore or unignore choice.
+ * Publication captures and compares the generation after the final read;
+ * direct append cannot close that same-inode edit boundary.
  *
  * @param {string} path
  * @param {string} capturedPath
  * @param {string[]} observedSources
+ * @param {{recoveryDepth: number, temporaryId: string}} publication
  */
 const mergeCapturedProjectGitExcludeLines = async (
   path,
   capturedPath,
   observedSources,
+  publication,
 ) => {
-  const requiredLines = new Set(observedSources.flatMap((source) =>
-    source.split("\n").filter(Boolean)));
+  /** @type {string[]} */
+  const requiredSources = [];
+  for (const source of observedSources) {
+    if (!requiredSources.includes(source)) requiredSources.push(source);
+  }
   for (let attempt = 0; attempt < MAX_PROJECT_PREPARATION_COMMIT_ATTEMPTS; attempt += 1) {
     let current = await readProjectPreparationFile(path, { maximumLinks: 2 });
     if (!current.exists) {
@@ -349,13 +378,10 @@ const mergeCapturedProjectGitExcludeLines = async (
       }
       current = await readProjectPreparationFile(path, { maximumLinks: 2 });
     }
-    for (const line of current.source.split("\n").filter(Boolean)) {
-      requiredLines.add(line);
-    }
-    const currentSourceLines = current.source.split("\n").filter(Boolean);
-    const currentLines = new Set(currentSourceLines);
-    const missingLines = [...requiredLines].filter((line) => !currentLines.has(line));
-    if (missingLines.length === 0) return;
+    if (!requiredSources.includes(current.source)) requiredSources.push(current.source);
+    const missingSources = requiredSources.filter((source) =>
+      !projectGitExcludeSourceIsPreserved(source, current.source));
+    if (missingSources.length === 0) return;
 
     /** @type {import("node:fs/promises").FileHandle | undefined} */
     let handle;
@@ -366,25 +392,32 @@ const mergeCapturedProjectGitExcludeLines = async (
         current.identity,
         projectPreparationFileIdentity(details),
       )) continue;
-      const sourceBeforeAppend = await handle.readFile("utf8");
-      if (sourceBeforeAppend !== current.source) continue;
-      const addition = `${current.source.length > 0 && !current.source.endsWith("\n")
-        ? "\n"
-        : ""}${[...missingLines, ...currentSourceLines].join("\n")}\n`;
-      const { bytesWritten } = await handle.write(addition, null, "utf8");
-      if (bytesWritten !== Buffer.byteLength(addition)) {
-        throw new ProjectPreparationFileError("harness_projection_failed");
-      }
-      await handle.sync();
+      const sourceBeforePublication = await handle.readFile("utf8");
+      if (sourceBeforePublication !== current.source) continue;
     } catch (error) {
       if (error instanceof ProjectPreparationFileError) throw error;
       throw new ProjectPreparationFileError("harness_projection_failed");
     } finally {
       await handle?.close().catch(() => undefined);
     }
+    const nextSource = concatenateProjectGitExcludeSources([
+      current.source,
+      ...missingSources,
+      current.source,
+    ]);
+    const replacement = await replaceProjectPreparationFile(
+      path,
+      current,
+      nextSource,
+      {
+        recoveryDepth: publication.recoveryDepth,
+        temporaryId: publication.temporaryId,
+      },
+    );
+    if (!replacement.committed) continue;
     const merged = await readProjectPreparationFile(path, { maximumLinks: 2 });
-    const mergedLines = new Set(merged.source.split("\n"));
-    if ([...requiredLines].every((line) => mergedLines.has(line))) return;
+    if (requiredSources.every((source) =>
+      projectGitExcludeSourceIsPreserved(source, merged.source))) return;
   }
   throw new ProjectPreparationFileError("harness_projection_collision");
 };
@@ -397,8 +430,13 @@ const mergeCapturedProjectGitExcludeLines = async (
  *
  * @param {string} path
  * @param {string | undefined} temporaryId
+ * @param {number} [recoveryDepth]
  */
-const recoverProjectPreparationFileReplacement = async (path, temporaryId) => {
+const recoverProjectPreparationFileReplacement = async (
+  path,
+  temporaryId,
+  recoveryDepth = 0,
+) => {
   if (!temporaryId) return;
   const captureId = projectPreparationReplacementCaptureId(temporaryId);
   const captureDirectory = `${path}.sandking-capture-${captureId}`;
@@ -407,6 +445,18 @@ const recoverProjectPreparationFileReplacement = async (path, temporaryId) => {
     (error) => hasFileErrorCode(error, "ENOENT") ? false : Promise.reject(error),
   );
   if (!captureExists) return;
+  if (recoveryDepth >= MAX_PROJECT_PREPARATION_RECONCILIATION_DEPTH) {
+    throw new ProjectPreparationFileError("harness_projection_collision");
+  }
+  const reconciliationTemporaryId = projectPreparationReconciliationTemporaryId(
+    temporaryId,
+  );
+  await recoverProjectPreparationFileReplacement(
+    path,
+    reconciliationTemporaryId,
+    recoveryDepth + 1,
+  );
+  await removeProjectPreparationTemporaryFile(path, reconciliationTemporaryId);
   const captured = await captureProjectPreparationFile(path, {
     captureId,
     maximumLinks: 2,
@@ -441,6 +491,10 @@ const recoverProjectPreparationFileReplacement = async (path, temporaryId) => {
     path,
     join(captureDirectory, "captured"),
     [captured.source, destination.source],
+    {
+      recoveryDepth: recoveryDepth + 1,
+      temporaryId: reconciliationTemporaryId,
+    },
   );
   await captured.remove();
 };
@@ -453,7 +507,7 @@ const recoverProjectPreparationFileReplacement = async (path, temporaryId) => {
  * @param {string} path
  * @param {{exists: boolean, identity: {birthtimeNanoseconds: string, device: string, inode: string} | undefined, source: string}} expected
  * @param {string | null} source
- * @param {{temporaryId?: string}} [options]
+ * @param {{recoveryDepth?: number, temporaryId?: string}} [options]
  */
 const replaceProjectPreparationFile = async (path, expected, source, options = {}) => {
   const temporaryId = options.temporaryId
@@ -511,7 +565,11 @@ const replaceProjectPreparationFile = async (path, expected, source, options = {
       }
       if (recoveryRetained && temporaryPath) {
         try {
-          await recoverProjectPreparationFileReplacement(path, temporaryId);
+          await recoverProjectPreparationFileReplacement(
+            path,
+            temporaryId,
+            options.recoveryDepth,
+          );
           await removeProjectPreparationTemporaryFile(path, temporaryId);
           temporaryPath = undefined;
           recoveryRetained = false;

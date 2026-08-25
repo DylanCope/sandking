@@ -209,22 +209,33 @@ fsPromises.link = async (from, to, ...rest) => {
   return originalLink(from, to, ...rest);
 };
 fsPromises.open = async (path, flags, ...rest) => {
+  const handle = await originalOpen(path, flags, ...rest);
   if (
     mode === "exclude-reconciliation-rebase"
     && String(path) === excludePath
     && ["a", "a+"].includes(flags)
     && !reconciliationPaused
   ) {
-    reconciliationPaused = true;
-    await originalWriteFile(${JSON.stringify(reconciliationBlockedPath)}, "blocked\\n");
-    while (await originalAccess(${JSON.stringify(reconciliationReleasePath)}).then(
-      () => false,
-      () => true,
-    )) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    const originalHandleReadFile = handle.readFile.bind(handle);
+    handle.readFile = async (...readArguments) => {
+      const source = await originalHandleReadFile(...readArguments);
+      if (!reconciliationPaused) {
+        reconciliationPaused = true;
+        await originalWriteFile(
+          ${JSON.stringify(reconciliationBlockedPath)},
+          "blocked\\n",
+        );
+        while (await originalAccess(${JSON.stringify(reconciliationReleasePath)}).then(
+          () => false,
+          () => true,
+        )) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+      return source;
+    };
   }
-  return originalOpen(path, flags, ...rest);
+  return handle;
 };
 fsPromises.rename = async (from, to, ...rest) => {
   let pauseForExcludeCommit = false;
