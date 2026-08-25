@@ -267,8 +267,8 @@ export const harnessCancellationRequestSchema = z.object({
 export const retainedExecutionInputSchema = z.object({
   path: harnessExecutionInputPathSchema,
   integrity: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-  source: z.string().max(12_000).refine((value) =>
-    Buffer.byteLength(value, "utf8") <= 12_000),
+  source: z.string().max(16_384).refine((value) =>
+    Buffer.byteLength(value, "utf8") <= 16_384),
 }).strict();
 
 export const githubCredentialSchema = z.unknown().refine(isGitHubCredential);

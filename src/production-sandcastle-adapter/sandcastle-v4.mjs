@@ -143,7 +143,7 @@ const readRunStart = (execution) => {
         segment === "" || segment === "." || segment === "..")
       || !/^sha256:[a-f0-9]{64}$/.test(input.integrity ?? "")
       || typeof input.source !== "string"
-      || Buffer.byteLength(input.source, "utf8") > 12_000
+      || Buffer.byteLength(input.source, "utf8") > 16_384
       || retainedExecutionInputs.has(input.path)
       || `sha256:${createHash("sha256").update(input.source).digest("hex")}`
         !== input.integrity
