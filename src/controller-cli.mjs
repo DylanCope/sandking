@@ -80,14 +80,16 @@ const pendingLaunchStateFile = "harness-launch-retries.json";
 const pendingCancellationStateFile = "harness-cancellation-retries.json";
 const pendingRecoveryStateFile = "harness-recovery-retries.json";
 
-class ControllerCliAcknowledgedFailure extends Error {
+export class ControllerCliAcknowledgedFailure extends Error {
   /** @param {string} code @param {unknown} [configurationOptions] */
   constructor(code, configurationOptions) {
     const credentialFailure = isGitHubCredentialFailureCode(code)
       ? new GitHubCredentialUnavailableError(code, configurationOptions)
       : null;
     super(credentialFailure?.message ?? code);
+    this.name = "ControllerCliAcknowledgedFailure";
     this.code = code;
+    this.configurationOptions = credentialFailure?.configurationOptions;
   }
 }
 

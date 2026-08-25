@@ -404,9 +404,39 @@ test("the installed ordinary CLI discovers production parameters and launches th
       env: launchEnvironment,
     }), (error) => {
       assert.equal(error.code, 1);
+      assert.equal(error.stderr, "");
+      const failure = JSON.parse(error.stdout);
+      assert.equal(failure.ok, false);
+      assert.equal(failure.failure.code, "github_credential_unconfigured");
+      assert.deepEqual(failure.failure.configurationOptions.map(({ mode }) => mode), [
+        "project-pat",
+        "host-gh-session",
+      ]);
+      assert.match(
+        failure.failure.configurationOptions[0].guidance,
+        /fine-grained Project PAT/i,
+      );
+      assert.match(
+        failure.failure.configurationOptions[1].guidance,
+        /Host.*GitHub access/i,
+      );
+      assert.doesNotMatch(error.stdout, /installed_qualification_secret_261/);
+      return true;
+    });
+    await assert.rejects(execFileAsync(
+      installed.command,
+      githubAccessLaunchArguments.filter((argument) => argument !== "--json"),
+      {
+        cwd: root,
+        env: launchEnvironment,
+      },
+    ), (error) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stdout, "");
       assert.match(error.stderr, /github_credential_unconfigured/);
       assert.match(error.stderr, /fine-grained Project PAT/i);
       assert.match(error.stderr, /Host.*gh CLI session/i);
+      assert.doesNotMatch(error.stderr, /installed_qualification_secret_261/);
       return true;
     });
     assert.equal(fixture.audits.filter(
@@ -447,11 +477,13 @@ test("the installed ordinary CLI discovers production parameters and launches th
       "harness-run.launch",
       "describe",
       "harness-run.launch",
+      "describe",
+      "harness-run.launch",
     ]);
     assert.equal(requests[0].projectId, projectId);
-    assert.equal(requests[5].controllerSessionId, controllerSessionId);
-    assert.equal("plugin" in requests[5], false);
-    assert.equal("expectedRevision" in requests[5], false);
+    assert.equal(requests[7].controllerSessionId, controllerSessionId);
+    assert.equal("plugin" in requests[7], false);
+    assert.equal("expectedRevision" in requests[7], false);
   } finally {
     await fixture?.manager.waitForIdle().catch(() => undefined);
     await new Promise((resolve) => server?.close(resolve) ?? resolve());

@@ -2,6 +2,7 @@
 
 import { openBrowser } from "./browser-launch.mjs";
 import {
+  ControllerCliAcknowledgedFailure,
   requestControllerDescription,
   requestControllerCancel,
   requestControllerLaunch,
@@ -271,6 +272,21 @@ main().catch((error) => {
         + `Retry: ${error.diagnosis.retryGuidance}\n`,
       );
     }
+    process.exitCode = 1;
+    return;
+  }
+  if (
+    error instanceof ControllerCliAcknowledgedFailure
+    && error.configurationOptions
+    && process.argv.slice(2).includes("--json")
+  ) {
+    process.stdout.write(`${JSON.stringify({
+      ok: false,
+      failure: {
+        code: error.code,
+        configurationOptions: error.configurationOptions,
+      },
+    })}\n`);
     process.exitCode = 1;
     return;
   }
