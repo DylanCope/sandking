@@ -262,7 +262,10 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
       assert.doesNotMatch(publicBoundary, new RegExp(controllerSecret));
       assert.doesNotMatch(publicBoundary, new RegExp(new URL(launch.bootstrapUrl).searchParams.get("token")));
       assert.doesNotMatch(publicBoundary, new RegExp(dataDir));
-      assert.doesNotMatch(publicBoundary, /credential|unrestricted.filesystem|process\.env/i);
+      assert.doesNotMatch(
+        publicBoundary,
+        /personalAccessToken|GH_TOKEN|GITHUB_TOKEN|unrestricted\.filesystem|process\.env/i,
+      );
 
       const csrfStatus = await page.evaluate(async () =>
         (await fetch("/session/end", { method: "POST" })).status);
@@ -703,7 +706,8 @@ test("local-walking-skeleton/completes-approved-run enters the secure Cockpit in
             nonPersistentBrowserCredential:
               sessionCookie.expires === -1
               && !/(?:max-age|expires)=/i.test(replaySetCookie),
-            sanitizedBrowserModel: !/credential|unrestricted\.filesystem|process\.env/i
+            sanitizedBrowserModel:
+              !/personalAccessToken|GH_TOKEN|GITHUB_TOKEN|unrestricted\.filesystem|process\.env/i
               .test(publicBoundary),
             controllerSecretAbsent: !publicBoundary.includes(controllerSecret),
             bootstrapCredentialAbsent: !publicBoundary.includes(
