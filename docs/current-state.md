@@ -90,7 +90,13 @@ name derived from the journaled preparation ID before checking its contents, Git
 ownership, and recorded filesystem identity. Startup resumes that capture and restores
 a Project-owned replacement when Host loss occurred while its public name was absent.
 A post-inspection byte revalidation likewise restores a captured selector changed
-through an already-open descriptor rather than unlinking the new Project content.
+through an already-open descriptor rather than unlinking the new Project content. The
+shared capture primitive retains a private release link across the final unlink, proves
+that pre-capture descriptors have closed through the platform ownership boundary, and
+then re-reads that retained inode. Writes in the former revalidation-to-unlink window are
+therefore restored for selectors and rebased for Git exclusions. Release itself moves
+through a restartable private directory, so process loss cannot discard the last name or
+mistake a newer public candidate for the captured generation.
 A failed preparation retains the durably recorded selector identity through cleanup, so
 a transient rollback failure is retried without releasing the preparation journal or
 leaving a false readiness selector. A concurrent replacement is restored or left at the

@@ -4,299 +4,36 @@ import {
   link,
   lstat,
   mkdir,
-  mkdtemp,
   open,
-  readdir,
-  rename,
   rm,
-  rmdir,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { digestHex } from "./common/digest.mjs";
+import {
+  assertSafeFileParent,
+  captureProjectPreparationFile,
+  finishReleasedProjectPreparationCaptureIfPresent,
+  hasFileErrorCode,
+  projectPreparationFileIdentity,
+  projectPreparationFileIdentityMatches,
+  projectPreparationTemporaryPath,
+  ProjectPreparationFileError,
+  readProjectPreparationFile,
+  readProjectPreparationTemporaryFile,
+} from "./project-preparation-file.mjs";
+
+export {
+  captureProjectPreparationFile,
+  projectPreparationFileIdentityMatches,
+  ProjectPreparationFileError,
+  readProjectPreparationFile,
+  readProjectPreparationTemporaryFile,
+} from "./project-preparation-file.mjs";
 
 const execFileAsync = promisify(execFile);
 const MAX_PROJECT_PREPARATION_COMMIT_ATTEMPTS = 8;
 const MAX_PROJECT_PREPARATION_RECONCILIATION_DEPTH = 8;
-
-export class ProjectPreparationFileError extends Error {
-  /** @param {"harness_projection_collision" | "harness_projection_failed"} code */
-  constructor(code) {
-    super(code);
-    this.name = "ProjectPreparationFileError";
-    this.code = code;
-  }
-}
-
-/** @param {import("node:fs").BigIntStats} details */
-const projectPreparationFileIdentity = (details) => ({
-  birthtimeNanoseconds: details.birthtimeNs.toString(),
-  device: details.dev.toString(),
-  inode: details.ino.toString(),
-});
-
-/**
- * @param {{birthtimeNanoseconds: string, device: string, inode: string} | undefined} left
- * @param {{birthtimeNanoseconds: string, device: string, inode: string} | undefined} right
- */
-export const projectPreparationFileIdentityMatches = (left, right) =>
-  Boolean(
-    left
-    && right
-    && left.birthtimeNanoseconds === right.birthtimeNanoseconds
-    && left.device === right.device
-    && left.inode === right.inode,
-  );
-
-/** @param {string} path @param {{maximumLinks?: number}} [options] */
-export const readProjectPreparationFile = async (path, options = {}) => {
-  /** @type {import("node:fs/promises").FileHandle | undefined} */
-  let handle;
-  try {
-    const pathDetails = await lstat(path, { bigint: true });
-    if (!pathDetails.isFile() || pathDetails.isSymbolicLink()) {
-      throw new ProjectPreparationFileError("harness_projection_collision");
-    }
-    handle = await open(path, "r");
-    const details = await handle.stat({ bigint: true });
-    const maximumLinks = BigInt(options.maximumLinks ?? 1);
-    if (
-      !details.isFile()
-      || details.nlink < 1n
-      || details.nlink > maximumLinks
-      || !projectPreparationFileIdentityMatches(
-        projectPreparationFileIdentity(pathDetails),
-        projectPreparationFileIdentity(details),
-      )
-    ) {
-      throw new ProjectPreparationFileError("harness_projection_collision");
-    }
-    const source = await handle.readFile("utf8");
-    const currentPathDetails = await lstat(path, { bigint: true });
-    if (
-      currentPathDetails.isSymbolicLink()
-      || !projectPreparationFileIdentityMatches(
-        projectPreparationFileIdentity(currentPathDetails),
-        projectPreparationFileIdentity(details),
-      )
-    ) {
-      throw new ProjectPreparationFileError("harness_projection_collision");
-    }
-    return {
-      exists: true,
-      identity: projectPreparationFileIdentity(details),
-      source,
-    };
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return { exists: false, identity: undefined, source: "" };
-    }
-    if (error instanceof ProjectPreparationFileError) throw error;
-    throw new ProjectPreparationFileError("harness_projection_failed");
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
-};
-
-/** @param {string} path @param {string} temporaryId */
-const projectPreparationTemporaryPath = (path, temporaryId) => {
-  if (!/^[a-z0-9-]{1,128}$/.test(temporaryId)) {
-    throw new ProjectPreparationFileError("harness_projection_failed");
-  }
-  return `${path}.sandking-${temporaryId}.tmp`;
-};
-
-/** @param {string} path @param {string} temporaryId */
-export const readProjectPreparationTemporaryFile = (path, temporaryId) =>
-  readProjectPreparationFile(projectPreparationTemporaryPath(path, temporaryId), {
-    maximumLinks: 2,
-  });
-
-/** @param {string} path */
-const assertSafeFileParent = async (path) => {
-  const parent = dirname(path);
-  try {
-    const details = await lstat(parent);
-    if (!details.isDirectory() || details.isSymbolicLink()) {
-      throw new ProjectPreparationFileError("harness_projection_collision");
-    }
-  } catch (error) {
-    if (error instanceof ProjectPreparationFileError) throw error;
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      try {
-        const parentDetails = await lstat(dirname(parent));
-        if (!parentDetails.isDirectory() || parentDetails.isSymbolicLink()) {
-          throw new ProjectPreparationFileError("harness_projection_collision");
-        }
-        return;
-      } catch (parentError) {
-        if (parentError instanceof ProjectPreparationFileError) throw parentError;
-      }
-    }
-    throw new ProjectPreparationFileError("harness_projection_failed");
-  }
-};
-
-/** @param {unknown} error @param {string} code */
-const hasFileErrorCode = (error, code) =>
-  Boolean(error && typeof error === "object" && "code" in error && error.code === code);
-
-/** @param {string} captureId */
-const assertProjectPreparationCaptureId = (captureId) => {
-  if (!/^[a-z0-9-]{1,192}$/.test(captureId)) {
-    throw new ProjectPreparationFileError("harness_projection_failed");
-  }
-};
-
-/**
- * @param {string} path
- * @param {{captureId?: string, directory?: string}} options
- */
-const openProjectPreparationCaptureDirectory = async (path, options) => {
-  const prefix = options.directory
-    ? join(options.directory, ".sandking-capture-")
-    : `${path}.sandking-capture-`;
-  if (!options.captureId) {
-    try {
-      return { path: await mkdtemp(prefix), recovered: false };
-    } catch {
-      throw new ProjectPreparationFileError("harness_projection_failed");
-    }
-  }
-  assertProjectPreparationCaptureId(options.captureId);
-  const capturePath = `${prefix}${options.captureId}`;
-  try {
-    await mkdir(capturePath, { mode: 0o700 });
-    return { path: capturePath, recovered: false };
-  } catch (error) {
-    if (!hasFileErrorCode(error, "EEXIST")) {
-      throw new ProjectPreparationFileError("harness_projection_failed");
-    }
-    try {
-      const details = await lstat(capturePath);
-      const entries = await readdir(capturePath);
-      if (
-        !details.isDirectory()
-        || details.isSymbolicLink()
-        || entries.some((entry) => entry !== "captured")
-      ) {
-        throw new ProjectPreparationFileError("harness_projection_collision");
-      }
-      return { path: capturePath, recovered: true };
-    } catch (recoveryError) {
-      if (recoveryError instanceof ProjectPreparationFileError) throw recoveryError;
-      throw new ProjectPreparationFileError("harness_projection_failed");
-    }
-  }
-};
-
-/**
- * Atomically move the current path into a private capture directory before
- * inspecting or removing it. A file created at the public path after this
- * claim is a distinct Project mutation and is never overwritten or deleted.
- *
- * @param {string} path
- * A caller with durable cleanup ownership supplies a stable capture ID. A
- * restart then resumes the same capture instead of treating the missing public
- * path as a completed removal.
- *
- * @param {{captureId?: string, directory?: string, maximumLinks?: number}} [options]
- */
-export const captureProjectPreparationFile = async (path, options = {}) => {
-  await assertSafeFileParent(path);
-  const capture = await openProjectPreparationCaptureDirectory(path, options);
-  const captureDirectory = capture.path;
-  const capturedPath = join(captureDirectory, "captured");
-  if (!capture.recovered || !(await lstat(capturedPath).then(
-    () => true,
-    (error) => hasFileErrorCode(error, "ENOENT") ? false : Promise.reject(error),
-  ))) {
-    try {
-      await rename(path, capturedPath);
-    } catch (error) {
-      await rmdir(captureDirectory).catch(() => undefined);
-      if (hasFileErrorCode(error, "ENOENT")) {
-        return {
-          exists: false,
-          identity: undefined,
-          source: "",
-          refresh: async () => ({ exists: false, identity: undefined, source: "" }),
-          remove: async () => undefined,
-          restore: async () => undefined,
-        };
-      }
-      throw new ProjectPreparationFileError("harness_projection_failed");
-    }
-  }
-
-  let current;
-  const closeCaptureDirectory = () => rmdir(captureDirectory)
-    .catch((error) => {
-      throw new ProjectPreparationFileError("harness_projection_failed");
-    });
-  const restoreCapturedPath = async () => {
-    try {
-      await link(capturedPath, path);
-      await rm(capturedPath);
-    } catch (error) {
-      if (hasFileErrorCode(error, "EEXIST")) {
-        const [captured, destination] = await Promise.all([
-          readProjectPreparationFile(capturedPath, { maximumLinks: 2 }),
-          readProjectPreparationFile(path, { maximumLinks: 2 }),
-        ]);
-        if (!projectPreparationFileIdentityMatches(
-          captured.identity,
-          destination.identity,
-        )) {
-          throw new ProjectPreparationFileError("harness_projection_collision");
-        }
-        await rm(capturedPath);
-        await closeCaptureDirectory();
-        return;
-      }
-      const destinationExists = await lstat(path).then(
-        () => true,
-        (candidate) => hasFileErrorCode(candidate, "ENOENT") ? false : Promise.reject(candidate),
-      );
-      if (destinationExists) {
-        throw new ProjectPreparationFileError("harness_projection_collision");
-      }
-      try {
-        await rename(capturedPath, path);
-      } catch {
-        throw new ProjectPreparationFileError("harness_projection_collision");
-      }
-    }
-    await closeCaptureDirectory();
-  };
-  try {
-    current = await readProjectPreparationFile(capturedPath, {
-      maximumLinks: options.maximumLinks,
-    });
-  } catch (error) {
-    await restoreCapturedPath().catch(() => undefined);
-    if (error instanceof ProjectPreparationFileError) throw error;
-    throw new ProjectPreparationFileError("harness_projection_failed");
-  }
-  let active = true;
-  return {
-    ...current,
-    refresh: () => readProjectPreparationFile(capturedPath, {
-      maximumLinks: options.maximumLinks,
-    }),
-    remove: async () => {
-      if (!active) return;
-      await rm(capturedPath);
-      active = false;
-      await closeCaptureDirectory();
-    },
-    restore: async () => {
-      if (!active) return;
-      await restoreCapturedPath();
-      active = false;
-    },
-  };
-};
 
 /** @param {string} path @param {string} source @param {string} temporaryId */
 const writeProjectPreparationTemporaryFile = async (path, source, temporaryId) => {
@@ -431,6 +168,41 @@ const mergeCapturedProjectGitExcludeLines = async (
 };
 
 /**
+ * Release a captured Git-exclude generation only after every descriptor write
+ * has either ceased or been merged into the current public generation.
+ *
+ * @param {string} path
+ * @param {string} captureDirectory
+ * @param {Awaited<ReturnType<typeof captureProjectPreparationFile>>} captured
+ * @param {string[]} observedSources
+ * @param {{recoveryDepth: number, temporaryId: string}} publication
+ */
+const releaseCapturedProjectGitExclude = async (
+  path,
+  captureDirectory,
+  captured,
+  observedSources,
+  publication,
+) => {
+  const requiredSources = [...observedSources];
+  for (let attempt = 0; attempt < MAX_PROJECT_PREPARATION_COMMIT_ATTEMPTS; attempt += 1) {
+    if (await captured.remove()) return;
+    const changed = await captured.refresh();
+    if (!changed.exists) {
+      throw new ProjectPreparationFileError("harness_projection_failed");
+    }
+    requiredSources.push(changed.source);
+    await mergeCapturedProjectGitExcludeLines(
+      path,
+      join(captureDirectory, "captured"),
+      requiredSources,
+      publication,
+    );
+  }
+  throw new ProjectPreparationFileError("harness_projection_collision");
+};
+
+/**
  * Finish rolling an already-published Host candidate back after the captured
  * generation changed through an older file descriptor. Both inodes remain in
  * named captures until the changed generation is public again, so restart can
@@ -442,6 +214,7 @@ const mergeCapturedProjectGitExcludeLines = async (
 const recoverProjectPreparationFileRollback = async (path, temporaryId) => {
   const rollbackCaptureId = projectPreparationRollbackCaptureId(temporaryId);
   const rollbackDirectory = `${path}.sandking-capture-${rollbackCaptureId}`;
+  if (await finishReleasedProjectPreparationCaptureIfPresent(rollbackDirectory)) return;
   const rollbackExists = await lstat(rollbackDirectory).then(
     () => true,
     (error) => hasFileErrorCode(error, "ENOENT") ? false : Promise.reject(error),
@@ -494,7 +267,16 @@ const recoverProjectPreparationFileRollback = async (path, temporaryId) => {
   )) {
     await rollback.restore();
   } else {
-    await rollback.remove();
+    await releaseCapturedProjectGitExclude(
+      path,
+      rollbackDirectory,
+      rollback,
+      [rollback.source, destination.source],
+      {
+        recoveryDepth: 1,
+        temporaryId: projectPreparationReconciliationTemporaryId(temporaryId),
+      },
+    );
   }
 };
 
@@ -517,6 +299,7 @@ const recoverProjectPreparationFileReplacement = async (
   await recoverProjectPreparationFileRollback(path, temporaryId);
   const captureId = projectPreparationReplacementCaptureId(temporaryId);
   const captureDirectory = `${path}.sandking-capture-${captureId}`;
+  if (await finishReleasedProjectPreparationCaptureIfPresent(captureDirectory)) return;
   const captureExists = await lstat(captureDirectory).then(
     () => true,
     (error) => hasFileErrorCode(error, "ENOENT") ? false : Promise.reject(error),
@@ -550,7 +333,16 @@ const recoverProjectPreparationFileReplacement = async (
     && destination.exists
     && projectPreparationFileIdentityMatches(candidate.identity, destination.identity)
   ) {
-    await captured.remove();
+    await releaseCapturedProjectGitExclude(
+      path,
+      captureDirectory,
+      captured,
+      [captured.source, destination.source],
+      {
+        recoveryDepth: recoveryDepth + 1,
+        temporaryId: reconciliationTemporaryId,
+      },
+    );
     return;
   }
   if (
@@ -573,7 +365,16 @@ const recoverProjectPreparationFileReplacement = async (
       temporaryId: reconciliationTemporaryId,
     },
   );
-  await captured.remove();
+  await releaseCapturedProjectGitExclude(
+    path,
+    captureDirectory,
+    captured,
+    [captured.source, destination.source],
+    {
+      recoveryDepth: recoveryDepth + 1,
+      temporaryId: reconciliationTemporaryId,
+    },
+  );
 };
 
 /**
@@ -658,14 +459,66 @@ const replaceProjectPreparationFile = async (path, expected, source, options = {
       }
       await captured.restore();
       captured = null;
-      await rollback.remove();
+      await releaseCapturedProjectGitExclude(
+        path,
+        `${path}.sandking-capture-${projectPreparationRollbackCaptureId(temporaryId)}`,
+        rollback,
+        [rollback.source, capturedAfterPublication.source],
+        {
+          recoveryDepth: (options.recoveryDepth ?? 0) + 1,
+          temporaryId: projectPreparationReconciliationTemporaryId(temporaryId),
+        },
+      );
       rollback = null;
       candidatePublished = false;
       await rm(temporaryPath);
       temporaryPath = undefined;
       return { committed: false };
     }
-    await captured.remove();
+    const capturedRemoved = await captured.remove();
+    if (!capturedRemoved) {
+      const changed = await captured.refresh();
+      if (source === null) {
+        await captured.restore();
+        captured = null;
+        return { committed: false };
+      }
+      if (!temporaryPath) {
+        throw new ProjectPreparationFileError("harness_projection_failed");
+      }
+      const temporary = await readProjectPreparationTemporaryFile(path, temporaryId);
+      rollback = await captureProjectPreparationFile(path, {
+        captureId: projectPreparationRollbackCaptureId(temporaryId),
+        maximumLinks: 2,
+      });
+      if (
+        !changed.exists
+        || !temporary.exists
+        || !rollback.exists
+        || !projectPreparationFileIdentityMatches(temporary.identity, rollback.identity)
+      ) {
+        await rollback.restore();
+        rollback = null;
+        throw new ProjectPreparationFileError("harness_projection_collision");
+      }
+      await captured.restore();
+      captured = null;
+      await releaseCapturedProjectGitExclude(
+        path,
+        `${path}.sandking-capture-${projectPreparationRollbackCaptureId(temporaryId)}`,
+        rollback,
+        [rollback.source, changed.source],
+        {
+          recoveryDepth: (options.recoveryDepth ?? 0) + 1,
+          temporaryId: projectPreparationReconciliationTemporaryId(temporaryId),
+        },
+      );
+      rollback = null;
+      candidatePublished = false;
+      await rm(temporaryPath);
+      temporaryPath = undefined;
+      return { committed: false };
+    }
     captured = null;
     if (temporaryPath) {
       await rm(temporaryPath);
@@ -748,7 +601,10 @@ export const createProjectPreparationFile = async (path, source, options = {}) =
           await captured.restore();
           throw new ProjectPreparationFileError("harness_projection_collision");
         }
-        await captured.remove();
+        if (!await captured.remove()) {
+          await captured.restore();
+          throw new ProjectPreparationFileError("harness_projection_collision");
+        }
         active = false;
       },
     };
@@ -786,7 +642,10 @@ export const removeProjectPreparationTemporaryFile = async (
     await captured.restore();
     return { removed: false };
   }
-  await captured.remove();
+  if (!await captured.remove()) {
+    await captured.restore();
+    return { removed: false };
+  }
   return { removed: true };
 };
 

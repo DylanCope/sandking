@@ -181,6 +181,9 @@ import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 const manifestPath = ${JSON.stringify(manifestPath)};
 const excludePath = ${JSON.stringify(excludePath)};
+const selectorCapturePrefix = ${JSON.stringify(excludePath
+    ? join(dirname(excludePath), ".sandking-capture-")
+    : "")};
 const mode = ${JSON.stringify(mode)};
 const originalAccess = fsPromises.access.bind(fsPromises);
 const originalLink = fsPromises.link.bind(fsPromises);
@@ -289,7 +292,14 @@ fsPromises.rename = async (from, to, ...rest) => {
       && String(from) === manifestPath
       && await originalAccess(manifestPath).then(() => true, () => false)
     )
-    || (mode === "selector-open-descriptor" && String(from) === manifestPath)
+    || (
+      [
+        "selector-open-descriptor",
+        "selector-post-refresh-descriptor",
+        "selector-release-guard-crash",
+      ].includes(mode)
+      && String(from) === manifestPath
+    )
   ) await pause();
   if (
     mode === "rollback-retry"
@@ -328,7 +338,31 @@ fsPromises.rename = async (from, to, ...rest) => {
 };
 fsPromises.rm = async (path, ...rest) => {
   if (mode === "cleanup" && String(path) === manifestPath) await pause();
-  return originalRm(path, ...rest);
+  if (
+    mode === "exclude-post-refresh-descriptor"
+    && String(path).startsWith(\`\${excludePath}.sandking-capture-replace-\`)
+    && String(path).endsWith("/captured")
+  ) await pause();
+  if (
+    mode === "selector-post-refresh-descriptor"
+    && String(path).startsWith(selectorCapturePrefix)
+    && String(path).endsWith("/captured")
+  ) await pauseReconciliation();
+  const result = await originalRm(path, ...rest);
+  if (
+    mode === "selector-release-guard-crash"
+    && String(path).startsWith(selectorCapturePrefix)
+    && String(path).endsWith("/captured")
+  ) {
+    await originalWriteFile(${JSON.stringify(capturedPath)}, "captured\\n");
+    while (await originalAccess(${JSON.stringify(capturedReleasePath)}).then(
+      () => false,
+      () => true,
+    )) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  return result;
 };
 syncBuiltinESMExports();
 `);

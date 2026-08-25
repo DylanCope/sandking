@@ -109,7 +109,11 @@ export const removeStaleProductionProviderManifest = async (options) => {
       captured = null;
       return { removed: false };
     }
-    await captured.remove();
+    if (!await captured.remove()) {
+      await captured.restore();
+      captured = null;
+      return { removed: false };
+    }
     captured = null;
     return { removed: true };
   } catch (error) {

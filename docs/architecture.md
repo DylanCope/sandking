@@ -218,7 +218,14 @@ re-reads the captured inode after the candidate becomes public. If a descriptor 
 before capture wrote to that older inode, the Host durably captures its own candidate,
 restores the changed inode to the public path, and retries from those newer bytes.
 Selector cleanup performs the same post-inspection byte revalidation; a changed captured
-selector is restored as Project-owned content instead of being unlinked. Startup resolves
+selector is restored as Project-owned content instead of being unlinked. Ownership release
+also retains a second private hard link while removing the capture's first name. The Host
+then proves that descriptors opened before capture have closed (with a Linux file lease,
+Darwin open-file inventory, or a Windows exclusive open) and re-reads the retained inode.
+A write at the former final-unlink boundary therefore restores the selector or joins the
+Git-exclude rebase instead of disappearing. The retained release link is moved through a
+restartable release directory before deletion, so Host loss cannot discard the only name
+of a changed generation or recapture the newer public candidate. Startup resolves
 the journaled Project registration without re-entering production projection, allowing an
 interrupted exclusion rollback to restore its temporarily absent public path first.
 Before changing the Project, the Host
