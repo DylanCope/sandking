@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { createDestinationWorkerEnvironment } from "./destination-worker-environment.mjs";
-import { isGitHubCredential } from "./github-credential-contract.mjs";
+import {
+  GITHUB_CREDENTIAL_CAPABILITIES,
+  isGitHubCredential,
+} from "./github-credential-contract.mjs";
 import {
   CONFORMANCE_HARNESS_ADAPTER_ID,
   SANDCASTLE_HARNESS_ADAPTER_ID,
@@ -149,12 +152,22 @@ if (conformanceHarnessLaunchParametersDeclaration.kind !== "fields") {
 export const sandcastleHarnessLaunchParametersDeclaration =
   harnessLaunchParametersDeclarationSchema.parse({
     kind: "fields",
-    fields: conformanceHarnessLaunchParametersDeclaration.fields.map((field) => ({
-      ...field,
-      description: field.name === "issueNumber"
-        ? "Optional GitHub issue identifier for Sandcastle delivery."
-        : "Optional canonical sandcastle branch for the issue.",
-    })),
+    fields: [
+      ...conformanceHarnessLaunchParametersDeclaration.fields.map((field) => ({
+        ...field,
+        description: field.name === "issueNumber"
+          ? "Optional GitHub issue identifier retained for launch compatibility."
+          : "Optional canonical sandcastle branch retained for launch compatibility.",
+      })),
+      {
+        name: "verifyGitHubAccess",
+        label: "Verify GitHub access",
+        description: "Run an authenticated GitHub API check inside the sandbox before delegation.",
+        cliFlag: "--verify-github-access",
+        valueType: "boolean",
+        required: false,
+      },
+    ],
   });
 
 // Adapter protocol 1.0.0 originally required this conformance-only shape in
@@ -201,7 +214,7 @@ export const harnessPreparedEnvelopeSchema = z.object({
   adapterId: harnessAdapterIdSchema,
   negotiatedCapabilities: z.array(z.literal("harness.launch.prepare.v1")).length(1),
   suppliedCapabilities: z.array(z.enum([
-    "github.issues.read",
+    ...GITHUB_CREDENTIAL_CAPABILITIES,
     "project.git.read",
   ])).min(1).max(8),
   retainedExecutionInputs: retainedExecutionInputPathsSchema.default([]),

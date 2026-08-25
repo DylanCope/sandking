@@ -8,7 +8,10 @@ import { pathToFileURL } from "node:url";
 const githubCredentialContractUrl = import.meta.url.endsWith("/[eval1]")
   ? pathToFileURL(join(process.cwd(), "github-credential-contract.mjs")).href
   : new URL("../github-credential-contract.mjs", import.meta.url).href;
-const { parseGitHubCredential } = await import(githubCredentialContractUrl);
+const {
+  GITHUB_AUTHENTICATION_VERIFICATION_CAPABILITY,
+  parseGitHubCredential,
+} = await import(githubCredentialContractUrl);
 
 const adapterProtocol = "1.0.0";
 const adapterId = "sandcastle-harness-adapter-v1";
@@ -61,6 +64,14 @@ const launchParameters = {
       required: false,
       minLength: 1,
       maxLength: 128,
+    },
+    {
+      name: "verifyGitHubAccess",
+      label: "Verify GitHub access",
+      description: "Run an authenticated GitHub API check inside the sandbox before delegation.",
+      cliFlag: "--verify-github-access",
+      valueType: "boolean",
+      required: false,
     },
   ],
 };
@@ -160,7 +171,11 @@ const parseParameters = (encoded) => {
     throw new Error("bounded_configuration_invalid");
   }
   const keys = Object.keys(value);
-  if (keys.some((key) => key !== "issueNumber" && key !== "targetBranch")) {
+  if (keys.some((key) => ![
+    "issueNumber",
+    "targetBranch",
+    "verifyGitHubAccess",
+  ].includes(key))) {
     throw new Error("bounded_configuration_invalid");
   }
   if (value.issueNumber !== undefined && (
@@ -175,6 +190,12 @@ const parseParameters = (encoded) => {
     || value.targetBranch.length < 1
     || value.targetBranch.length > 128
   )) {
+    throw new Error("bounded_configuration_invalid");
+  }
+  if (
+    value.verifyGitHubAccess !== undefined
+    && typeof value.verifyGitHubAccess !== "boolean"
+  ) {
     throw new Error("bounded_configuration_invalid");
   }
   return value;
@@ -760,15 +781,17 @@ if (!invokedAsAdapter) {
       adapterId,
       negotiatedCapabilities: ["harness.launch.prepare.v1"],
       suppliedCapabilities: [
-        ...(parameters.issueNumber === undefined ? [] : ["github.issues.read"]),
+        ...(parameters.verifyGitHubAccess === true
+          ? [GITHUB_AUTHENTICATION_VERIFICATION_CAPABILITY]
+          : []),
         "project.git.read",
       ],
       retainedExecutionInputs: [readiness.workerPath],
       sanitizedPreview: {
-        summary: readiness.realProvider
-          ? "Delegate one real Project commit through the pinned Sandcastle Harness."
-          : parameters.issueNumber
-            ? `Delegate GitHub issue #${parameters.issueNumber} through the pinned Sandcastle Harness.`
+        summary: parameters.verifyGitHubAccess === true
+          ? "Verify authenticated GitHub API access, then delegate through the pinned Sandcastle Harness."
+          : readiness.realProvider
+            ? "Delegate one real Project commit through the pinned Sandcastle Harness."
             : "Delegate work through the pinned Sandcastle Harness.",
         secretFree: true,
       },

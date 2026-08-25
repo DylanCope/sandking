@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { identifierSchemas } from "../common/identifiers.mjs";
+import { GITHUB_CREDENTIAL_CAPABILITIES } from "../github-credential-contract.mjs";
 import { harnessAdapterEntryPointSchema } from "../harness-adapter-protocol.mjs";
 import { harnessAdapterIdSchema } from "../harness-adapter-identity.mjs";
 import { launchParametersSchema } from "../harness-launch.mjs";
@@ -31,7 +32,7 @@ const runStatusSchema = z.enum([
   "cancelled",
 ]);
 const credentialCapabilityReferenceSchema = z.enum([
-  "github.issues.read",
+  ...GITHUB_CREDENTIAL_CAPABILITIES,
   "project.git.read",
 ]);
 // Cancellation and uncertain recovery can add two universal transitions to

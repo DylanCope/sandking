@@ -357,10 +357,15 @@ test("the installed ordinary CLI discovers production parameters and launches th
       mkdir(retryDirectory, { recursive: true }),
       mkdir(userHome, { recursive: true }),
     ]);
-    const launchArguments = [
+    const legacyIssueLaunchArguments = [
       "launch", projectId,
       "--issue", "173",
       "--target-branch", "sandcastle/issue-173",
+      "--json",
+    ];
+    const githubAccessLaunchArguments = [
+      "launch", projectId,
+      "--verify-github-access", "true",
       "--json",
     ];
     const launchEnvironment = {
@@ -371,7 +376,30 @@ test("the installed ordinary CLI discovers production parameters and launches th
       SANDKING_CONTROLLER_RETRY_DIRECTORY: retryDirectory,
       SANDKING_WORK_CONTEXT_ID: projectId,
     };
-    await assert.rejects(execFileAsync(installed.command, launchArguments, {
+    const { stdout: legacyIssueStdout } = await execFileAsync(
+      installed.command,
+      legacyIssueLaunchArguments,
+      {
+        cwd: root,
+        env: launchEnvironment,
+      },
+    );
+    const legacyIssueLaunch = JSON.parse(legacyIssueStdout);
+    assert.equal(
+      legacyIssueLaunch.type,
+      "harness.run.launch.result",
+      JSON.stringify(legacyIssueLaunch),
+    );
+    assert.deepEqual(legacyIssueLaunch.run.parameters, {
+      issueNumber: 173,
+      targetBranch: "sandcastle/issue-173",
+    });
+    await observeProductionTerminal(fixture.manager, legacyIssueLaunch.run.harnessRunId);
+    const adapterStartsBeforeCredentialFailure = fixture.audits.filter(
+      ({ action }) => action === "harness.adapter.start",
+    ).length;
+
+    await assert.rejects(execFileAsync(installed.command, githubAccessLaunchArguments, {
       cwd: root,
       env: launchEnvironment,
     }), (error) => {
@@ -381,7 +409,9 @@ test("the installed ordinary CLI discovers production parameters and launches th
       assert.match(error.stderr, /Host.*gh CLI session/i);
       return true;
     });
-    assert.equal(fixture.audits.some(({ action }) => action === "harness.adapter.start"), false);
+    assert.equal(fixture.audits.filter(
+      ({ action }) => action === "harness.adapter.start",
+    ).length, adapterStartsBeforeCredentialFailure);
 
     const configured = await credentials.configureProject({
       requestId: "configure-installed-qualification-project-pat",
@@ -394,16 +424,13 @@ test("the installed ordinary CLI discovers production parameters and launches th
     });
     assert.equal(configured.type, "github.credentials.configure.result");
 
-    const { stdout } = await execFileAsync(installed.command, launchArguments, {
+    const { stdout } = await execFileAsync(installed.command, githubAccessLaunchArguments, {
       cwd: root,
       env: launchEnvironment,
     });
     const launched = JSON.parse(stdout);
     assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
-    assert.deepEqual(launched.run.parameters, {
-      issueNumber: 173,
-      targetBranch: "sandcastle/issue-173",
-    });
+    assert.deepEqual(launched.run.parameters, { verifyGitHubAccess: true });
     const observed = await observeProductionTerminal(
       fixture.manager,
       launched.run.harnessRunId,
@@ -418,11 +445,13 @@ test("the installed ordinary CLI discovers production parameters and launches th
       "harness-run.launch",
       "describe",
       "harness-run.launch",
+      "describe",
+      "harness-run.launch",
     ]);
     assert.equal(requests[0].projectId, projectId);
-    assert.equal(requests[3].controllerSessionId, controllerSessionId);
-    assert.equal("plugin" in requests[3], false);
-    assert.equal("expectedRevision" in requests[3], false);
+    assert.equal(requests[5].controllerSessionId, controllerSessionId);
+    assert.equal("plugin" in requests[5], false);
+    assert.equal("expectedRevision" in requests[5], false);
   } finally {
     await fixture?.manager.waitForIdle().catch(() => undefined);
     await new Promise((resolve) => server?.close(resolve) ?? resolve());

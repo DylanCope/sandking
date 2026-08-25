@@ -3,9 +3,13 @@ import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "../../harness-adapter-identity.mjs";
 import {
+  GITHUB_CREDENTIAL_FAILURE_CODES,
+  GITHUB_CREDENTIAL_UNCONFIGURED_CODE,
   GitHubCredentialUnavailableError,
   githubCredentialConfigurationOptions as configurationOptionsForGitHubCredentialFailure,
-} from "../../github-credentials.mjs";
+  isGitHubCredentialCapability,
+  isGitHubCredentialFailureCode,
+} from "../../github-credential-contract.mjs";
 import {
   launchParametersSchema,
   validateHarnessLaunch,
@@ -295,29 +299,20 @@ export const createLaunchOperation = (runtime) => {
         const productionHarness = !code
           && context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID;
         const githubAccessRequired = productionHarness
-          && prepared.suppliedCapabilities.includes("github.issues.read");
-        if (productionHarness && options.resolveGitHubCredential) {
-          try {
-            githubCredential = await options.resolveGitHubCredential(
-              context.project.projectId,
-            );
-          } catch (error) {
-            const optionalCredentialFailure = new Set([
-              "github_credential_unconfigured",
-              "github_host_gh_session_unavailable",
-            ]).has(typedErrorCode(error));
-            if (githubAccessRequired || !optionalCredentialFailure) throw error;
-          }
+          && prepared.suppliedCapabilities.some(isGitHubCredentialCapability);
+        if (githubAccessRequired && options.resolveGitHubCredential) {
+          githubCredential = await options.resolveGitHubCredential(
+            context.project.projectId,
+          );
         }
         if (githubAccessRequired && !githubCredential) {
-          throw new GitHubCredentialUnavailableError("github_credential_unconfigured");
+          throw new GitHubCredentialUnavailableError(
+            GITHUB_CREDENTIAL_UNCONFIGURED_CODE,
+          );
         }
       } catch (error) {
         const typedCode = typedErrorCode(error);
-        if (typedCode === "github_credential_unconfigured") {
-          githubCredentialConfigurationOptions =
-            configurationOptionsForGitHubCredentialFailure(typedCode);
-        } else if (typedCode === "github_host_gh_session_unavailable") {
+        if (isGitHubCredentialFailureCode(typedCode)) {
           githubCredentialConfigurationOptions =
             configurationOptionsForGitHubCredentialFailure(typedCode);
         }
@@ -342,8 +337,7 @@ export const createLaunchOperation = (runtime) => {
           "harness_capability_unsupported",
           "harness_adapter_protocol_invalid",
           "harness_preparation_side_effect_detected",
-          "github_credential_unconfigured",
-          "github_host_gh_session_unavailable",
+          ...GITHUB_CREDENTIAL_FAILURE_CODES,
         ]).has(typedCode) ? typedCode : "harness_workspace_invalid";
       }
     }
@@ -401,8 +395,7 @@ export const createLaunchOperation = (runtime) => {
         "harness_projection_failed",
         "harness_execution_runtime_unavailable",
         "harness_worker_provider_unavailable",
-        "github_credential_unconfigured",
-        "github_host_gh_session_unavailable",
+        ...GITHUB_CREDENTIAL_FAILURE_CODES,
       ]);
       const auditId = await options.recordAudit("harness.run.launch", "rejected", {
         code: failureCode,

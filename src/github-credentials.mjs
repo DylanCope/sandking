@@ -9,6 +9,8 @@ import { projectIdPattern } from "./common/identifiers.mjs";
 import { createDestinationWorkerEnvironment } from "./destination-worker-environment.mjs";
 import {
   GITHUB_CREDENTIAL_AUTHORIZATION_CLASS,
+  GITHUB_CREDENTIAL_UNCONFIGURED_CODE,
+  GITHUB_HOST_GH_SESSION_UNAVAILABLE_CODE,
   GitHubCredentialUnavailableError,
   HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
   githubCredentialConfigurationOptions,
@@ -47,7 +49,7 @@ export {
 };
 
 const configurationOptions = githubCredentialConfigurationOptions(
-  "github_credential_unconfigured",
+  GITHUB_CREDENTIAL_UNCONFIGURED_CODE,
 );
 
 const initialState = () => ({
@@ -89,7 +91,7 @@ const readDestinationHostGhToken = async () => {
     const token = stdout.trim();
     return tokenSchema.parse(token);
   } catch {
-    throw new GitHubCredentialUnavailableError("github_host_gh_session_unavailable");
+    throw new GitHubCredentialUnavailableError(GITHUB_HOST_GH_SESSION_UNAVAILABLE_CODE);
   }
 };
 
@@ -342,7 +344,7 @@ export const createGitHubCredentialManager = async (options) => {
       } catch (error) {
         if (error instanceof GitHubCredentialUnavailableError) throw error;
         throw new GitHubCredentialUnavailableError(
-          "github_host_gh_session_unavailable",
+          GITHUB_HOST_GH_SESSION_UNAVAILABLE_CODE,
         );
       }
     }
@@ -353,7 +355,7 @@ export const createGitHubCredentialManager = async (options) => {
   const requireForProject = async (projectId) => {
     const credential = await resolveForProject(projectId);
     if (!credential) {
-      throw new GitHubCredentialUnavailableError("github_credential_unconfigured");
+      throw new GitHubCredentialUnavailableError(GITHUB_CREDENTIAL_UNCONFIGURED_CODE);
     }
     return credential;
   };

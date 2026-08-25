@@ -563,9 +563,18 @@ export const createProjectPreparation = ({
     state.pendingHarnessLaunchRequestId = null;
     sessionStorage.removeItem(state.storageKeys.pendingHarnessLaunch);
     updateProjectActionAvailability();
-    harnessLaunchFeedback.textContent = message.outcome.type === "harness.run.launch.result"
-      ? `Harness run ${message.outcome.run.harnessRunId} launched.`
-      : `Harness was not launched: ${message.outcome.code}.`;
+    if (message.outcome.type === "harness.run.launch.result") {
+      harnessLaunchFeedback.textContent =
+        `Harness run ${message.outcome.run.harnessRunId} launched.`;
+    } else {
+      const guidance = message.outcome.configurationOptions
+        ?.map(({ guidance: optionGuidance }) => optionGuidance)
+        .join(" ");
+      harnessLaunchFeedback.textContent = [
+        `Harness was not launched: ${message.outcome.code}.`,
+        guidance,
+      ].filter(Boolean).join(" ");
+    }
     return true;
   };
 

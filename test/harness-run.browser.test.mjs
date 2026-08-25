@@ -109,9 +109,14 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
         return result;
       }), { kind: "none", count: "0", inputs: 0 });
       const moduleBoundaries = await page.evaluate(async () => {
-        const [{ createHarnessRunObservation }, { createCockpitSocket }] = await Promise.all([
+        const [
+          { createHarnessRunObservation },
+          { createCockpitSocket },
+          { createProjectPreparation },
+        ] = await Promise.all([
           import("/cockpit/harness-run.mjs"),
           import("/cockpit/socket.mjs"),
+          import("/cockpit/project-preparation.mjs"),
         ]);
         const reconnects = [];
         const harnessRun = createHarnessRunObservation({
@@ -223,9 +228,64 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
           }),
         }));
         document.documentElement.dataset.hostConnectionStatus = hostConnectionStatus;
-        return { reconnects, hostStateDispatches };
+
+        const credentialGuidanceState = {
+          hostConnectionStatus: "connected",
+          hostFreshness: "current",
+          pendingHarnessLaunchRequestId: null,
+          storageKeys: {
+            launchConfirmation: "credential-guidance-confirmation",
+            pendingHarnessLaunch: "credential-guidance-pending-launch",
+          },
+        };
+        const projectPreparation = createProjectPreparation({
+          state: credentialGuidanceState,
+          socket: { readyState: WebSocket.OPEN, send() {} },
+          attachTerminalSurface() {},
+          updateWorkbenchChrome() {},
+        });
+        const renderedPreparation = projectPreparation.renderProjectPreparation({
+          selection: { directoryScanning: false },
+          current: null,
+          defaultHarnessAdapterId: "sandcastle-harness-adapter-v1",
+          productionHarness: {
+            adapterId: "sandcastle-harness-adapter-v1",
+            name: "Bundled Sandcastle Harness",
+          },
+          conformanceHarness: {
+            adapterId: "conformance-harness-adapter-v1",
+            name: "Sand-King Conformance Harness",
+          },
+        }, { csrfToken: "credential-guidance-csrf" }, [], null);
+        document.body.append(renderedPreparation);
+        credentialGuidanceState.pendingHarnessLaunchRequestId = "credential-guidance-request";
+        projectPreparation.applyHarnessLaunchResult({
+          requestId: "credential-guidance-request",
+          outcome: {
+            type: "harness.run.launch.failure",
+            code: "github_credential_unconfigured",
+            configurationOptions: [
+              {
+                mode: "project-pat",
+                guidance: "Configure a fine-grained Project PAT for this repository.",
+              },
+              {
+                mode: "host-gh-session",
+                guidance: "Explicitly enable reuse of the full Host gh CLI session.",
+              },
+            ],
+          },
+        });
+        const credentialFailureGuidance = renderedPreparation.querySelector(
+          "#harness-launch-feedback",
+        ).textContent;
+        renderedPreparation.remove();
+        return { reconnects, hostStateDispatches, credentialFailureGuidance };
       });
-      assert.deepEqual(moduleBoundaries, {
+      assert.deepEqual({
+        reconnects: moduleBoundaries.reconnects,
+        hostStateDispatches: moduleBoundaries.hostStateDispatches,
+      }, {
         reconnects: [{
           projectId: `project-${"2".repeat(24)}`,
           parameters: {},
@@ -234,6 +294,8 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
         }],
         hostStateDispatches: ["chrome", "project-preparation", "harness-run"],
       });
+      assert.match(moduleBoundaries.credentialFailureGuidance, /fine-grained Project PAT/i);
+      assert.match(moduleBoundaries.credentialFailureGuidance, /full Host gh CLI session/i);
       await page.locator("#harness-launch-parameter-issueNumber").fill("152");
       await page.locator("#harness-launch-parameter-targetBranch")
         .fill("sandcastle/issue-152");

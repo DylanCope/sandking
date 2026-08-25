@@ -3,8 +3,10 @@ import { z } from "zod";
 import { identifierSchemas } from "./common/identifiers.mjs";
 import {
   GITHUB_CREDENTIAL_AUTHORIZATION_CLASS,
+  GITHUB_CREDENTIAL_FAILURE_CODES,
   GITHUB_CREDENTIAL_MODES,
   HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT,
+  isGitHubCredentialFailureCode,
   isGitHubCredentialToken,
 } from "./github-credential-contract.mjs";
 import {
@@ -627,8 +629,7 @@ export const harnessRunLaunchFailureSchema = z.object({
     "harness_projection_failed",
     "harness_execution_runtime_unavailable",
     "harness_worker_provider_unavailable",
-    "github_credential_unconfigured",
-    "github_host_gh_session_unavailable",
+    ...GITHUB_CREDENTIAL_FAILURE_CODES,
     "harness_capability_unsupported",
     "harness_adapter_protocol_invalid",
     "harness_preparation_side_effect_detected",
@@ -647,10 +648,7 @@ export const harnessRunLaunchFailureSchema = z.object({
   configurationOptions: z.array(githubCredentialConfigurationOptionSchema)
     .length(2).optional(),
 }).strip().superRefine((failure, context) => {
-  const credentialFailure = [
-    "github_credential_unconfigured",
-    "github_host_gh_session_unavailable",
-  ].includes(failure.code);
+  const credentialFailure = isGitHubCredentialFailureCode(failure.code);
   if (credentialFailure !== (failure.configurationOptions !== undefined)) {
     context.addIssue({
       code: "custom",

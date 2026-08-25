@@ -9,10 +9,22 @@ export const GITHUB_CREDENTIAL_AUTHORIZATION_CLASS =
 export const HOST_GH_SESSION_RISK_ACKNOWLEDGEMENT =
   "I understand this grants every unscoped Project my full Host GitHub access.";
 
+export const GITHUB_AUTHENTICATION_VERIFICATION_CAPABILITY =
+  "github.authentication.verify";
+export const GITHUB_CREDENTIAL_CAPABILITIES = Object.freeze([
+  GITHUB_AUTHENTICATION_VERIFICATION_CAPABILITY,
+  "github.issues.read",
+]);
+
+export const GITHUB_CREDENTIAL_UNCONFIGURED_CODE =
+  "github_credential_unconfigured";
+export const GITHUB_HOST_GH_SESSION_UNAVAILABLE_CODE =
+  "github_host_gh_session_unavailable";
+
 /** @type {readonly ("github_credential_unconfigured" | "github_host_gh_session_unavailable")[]} */
 export const GITHUB_CREDENTIAL_FAILURE_CODES = Object.freeze([
-  "github_credential_unconfigured",
-  "github_host_gh_session_unavailable",
+  GITHUB_CREDENTIAL_UNCONFIGURED_CODE,
+  GITHUB_HOST_GH_SESSION_UNAVAILABLE_CODE,
 ]);
 
 const configurationOptions = Object.freeze([
@@ -28,7 +40,7 @@ const configurationOptions = Object.freeze([
 
 /** @param {"github_credential_unconfigured" | "github_host_gh_session_unavailable"} code */
 export const githubCredentialConfigurationOptions = (code) =>
-  code === "github_credential_unconfigured"
+  code === GITHUB_CREDENTIAL_UNCONFIGURED_CODE
     ? structuredClone(configurationOptions)
     : [
         structuredClone(configurationOptions[0]),
@@ -59,6 +71,10 @@ export const isGitHubCredentialConfigurationOptions = (value) => Array.isArray(v
 export const isGitHubCredentialFailureCode = (value) =>
   GITHUB_CREDENTIAL_FAILURE_CODES.includes(/** @type {any} */ (value));
 
+/** @param {unknown} value */
+export const isGitHubCredentialCapability = (value) =>
+  GITHUB_CREDENTIAL_CAPABILITIES.includes(/** @type {any} */ (value));
+
 /**
  * One typed error crosses credential resolution, Host launch, Controller, and
  * CLI boundaries without copying the actionable configuration contract.
@@ -74,7 +90,7 @@ export class GitHubCredentialUnavailableError extends Error {
           structuredClone(providedOptions)
         )
       : githubCredentialConfigurationOptions(code);
-    const summary = code === "github_credential_unconfigured"
+    const summary = code === GITHUB_CREDENTIAL_UNCONFIGURED_CODE
       ? "GitHub authentication is not configured."
       : "The explicitly enabled Host gh CLI session did not provide a GitHub token.";
     super([

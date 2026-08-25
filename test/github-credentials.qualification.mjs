@@ -335,20 +335,50 @@ exit 93
     transport = createLocalHostTransport(runtime);
     await transport.launchHost(`runtime-${"7".repeat(24)}`);
 
+    const legacyIssueLaunch = await transport.requestHostOperation({
+      type: "harness.run.launch",
+      ...productionLaunchRequest(fixture.project.project.projectId, {
+        requestId: "launch-legacy-issue-without-github-credential",
+        parameters: {
+          issueNumber: 261,
+          targetBranch: "sandcastle/issue-261",
+        },
+        idempotencyKeyHash: `sha256:${"8".repeat(64)}`,
+      }),
+    });
+    assert.equal(
+      legacyIssueLaunch.type,
+      "harness.run.launch.result",
+      JSON.stringify(legacyIssueLaunch),
+    );
+    await assert.rejects(readFile(ghInvokedPath, "utf8"), { code: "ENOENT" });
+    await waitForTransportTerminalCleanup(
+      transport,
+      legacyIssueLaunch.run.harnessRunId,
+      fixture.projectPath,
+    );
+
     const unconfigured = await transport.requestHostOperation({
       type: "harness.run.launch",
       ...productionLaunchRequest(fixture.project.project.projectId, {
         requestId: "reject-unconfigured-shipped-host-launch",
-        idempotencyKeyHash: `sha256:${"8".repeat(64)}`,
+        parameters: { verifyGitHubAccess: true },
+        idempotencyKeyHash: `sha256:${"9".repeat(64)}`,
       }),
     });
-    assert.equal(unconfigured.type, "harness.run.launch.result", JSON.stringify(unconfigured));
-    await assert.rejects(readFile(ghInvokedPath, "utf8"), { code: "ENOENT" });
-    await waitForTransportTerminalCleanup(
-      transport,
-      unconfigured.run.harnessRunId,
-      fixture.projectPath,
+    assert.equal(
+      unconfigured.type,
+      "harness.run.launch.failure",
+      JSON.stringify(unconfigured),
     );
+    assert.equal(unconfigured.code, "github_credential_unconfigured");
+    assert.deepEqual(unconfigured.configurationOptions.map(({ mode }) => mode), [
+      "project-pat",
+      "host-gh-session",
+    ]);
+    assert.match(unconfigured.configurationOptions[0].guidance, /fine-grained Project PAT/i);
+    assert.match(unconfigured.configurationOptions[1].guidance, /full Host GitHub access/i);
+    await assert.rejects(readFile(ghInvokedPath, "utf8"), { code: "ENOENT" });
 
     const enabled = await transport.requestHostOperation({
       type: "github.credentials.host.configure",
@@ -365,6 +395,8 @@ exit 93
       type: "harness.run.launch",
       ...productionLaunchRequest(fixture.project.project.projectId, {
         requestId: "launch-with-host-path-session",
+        parameters: { verifyGitHubAccess: true },
+        idempotencyKeyHash: `sha256:${"a".repeat(64)}`,
       }),
     });
     assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
@@ -377,7 +409,7 @@ exit 93
   }
 });
 
-test("both credential modes authenticate to GitHub through the real Host and Docker boundary without disclosure", {
+test("both credential modes and Project-PAT precedence authenticate through the real Host and Docker boundary without disclosure", {
   skip: process.env.SANDKING_REAL_GITHUB_CREDENTIAL_QUALIFICATION === "1"
     && process.platform !== "win32"
     ? false
@@ -408,20 +440,43 @@ test("both credential modes authenticate to GitHub through the real Host and Doc
   const realTokens = {
     "project-pat": projectTokenOutput.trim(),
     "host-gh-session": hostTokenOutput.trim(),
+    "project-pat-precedence": projectTokenOutput.trim(),
   };
 
-  for (const [index, mode] of ["project-pat", "host-gh-session"].entries()) {
+  for (const [index, mode] of [
+    "project-pat",
+    "host-gh-session",
+    "project-pat-precedence",
+  ].entries()) {
     await t.test(mode, async () => {
       const root = await mkdtemp(join(tmpdir(), `sandking-real-github-${mode}-`));
       const token = realTokens[mode];
+      const runtimeMarker = ["8", "9", "a"][index];
+      const controllerMarker = ["3", "4", "5"][index];
+      const hostFallbackInvokedPath = join(root, "host-fallback-invoked");
+      const originalPath = process.env.PATH;
       const existingContainers = new Set((await execFileAsync("docker", [
         "ps", "--filter", "ancestor=sandcastle:sandking-real-worker", "--format", "{{.ID}}",
       ], { env: cleanHostEnvironment })).stdout.trim().split("\n").filter(Boolean));
       let transport;
       let observedContainerId = null;
       try {
+        if (mode === "project-pat-precedence") {
+          const binPath = join(root, "bin");
+          await mkdir(binPath);
+          await writeExecutable(join(binPath, "gh"), `#!/bin/sh
+set -eu
+if [ "$1 $2 $3 $4" = "auth token --hostname github.com" ]; then
+  printf '%s\n' 'invoked' > '${hostFallbackInvokedPath}'
+  printf '%s\n' 'gho_deliberately_unusable_host_fallback_261'
+  exit 0
+fi
+exit 94
+`);
+          process.env.PATH = `${binPath}${delimiter}${originalPath ?? ""}`;
+        }
         const fixture = await createProductionRegistration(root);
-        const hostId = `host-${String(index + 8).repeat(24)}`;
+        const hostId = `host-${runtimeMarker.repeat(24)}`;
         const runtime = createTransportRuntime({
           dataDir: fixture.dataDir,
           hostId,
@@ -429,7 +484,7 @@ test("both credential modes authenticate to GitHub through the real Host and Doc
           startupId: `real-github-${mode}`,
         });
         transport = createLocalHostTransport(runtime);
-        await transport.launchHost(`runtime-${String(index + 8).repeat(24)}`);
+        await transport.launchHost(`runtime-${runtimeMarker.repeat(24)}`);
 
         const configured = mode === "project-pat"
           ? await transport.requestHostOperation({
@@ -452,15 +507,33 @@ test("both credential modes authenticate to GitHub through the real Host and Doc
               expectedRevision: 0,
             });
         assert.equal(configured.type, "github.credentials.configure.result");
+        if (mode === "project-pat-precedence") {
+          const configuredProjectPat = await transport.requestHostOperation({
+            type: "github.credentials.project.configure",
+            requestId: "configure-real-project-pat-precedence",
+            projectId: fixture.project.project.projectId,
+            action: "set",
+            personalAccessToken: token,
+            authorizationClass: "host_local_github_credentials",
+            idempotencyKey: "configure-real-project-pat-precedence",
+            expectedRevision: 1,
+          });
+          assert.equal(
+            configuredProjectPat.type,
+            "github.credentials.configure.result",
+          );
+          assert.equal(configuredProjectPat.effectiveMode, "project-pat");
+        }
 
-        const controllerId = `runtime-${String(index + 3).repeat(24)}`;
-        const controllerSessionId = `controller-session-${String(index + 3).repeat(24)}`;
+        const controllerId = `runtime-${controllerMarker.repeat(24)}`;
+        const controllerSessionId = `controller-session-${controllerMarker.repeat(24)}`;
         const launched = await transport.requestHostOperation({
           type: "harness.run.launch",
           ...productionLaunchRequest(fixture.project.project.projectId, {
             requestId: `launch-real-${mode}`,
             controllerId,
             controllerSessionId,
+            parameters: { verifyGitHubAccess: true },
             idempotencyKeyHash: `sha256:${String(index + 6).repeat(64)}`,
           }),
         });
@@ -493,6 +566,9 @@ test("both credential modes authenticate to GitHub through the real Host and Doc
         })).stdout.trim();
         assert.match(authenticatedLogin, /\S/,
           "the configured credential authenticates an explicit gh API command inside Docker");
+        if (mode === "project-pat-precedence") {
+          await assert.rejects(readFile(hostFallbackInvokedPath, "utf8"), { code: "ENOENT" });
+        }
 
         const [hostArguments, containerEnvironment] = await Promise.all([
           execFileAsync("ps", ["-ww", "-axo", "command="], {
@@ -552,6 +628,8 @@ test("both credential modes authenticate to GitHub through the real Host and Doc
             env: cleanHostEnvironment,
           }).catch(() => undefined);
         }
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
         await rm(root, { recursive: true, force: true });
       }
     });
