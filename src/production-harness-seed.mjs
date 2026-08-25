@@ -158,6 +158,12 @@ const productionSeedFileContract = Object.freeze([
     executable: false,
   },
   {
+    path: "real-delegation-protocol.mjs",
+    sourcePath: "src/real-delegation-protocol.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
     path: ".sandcastle/real-delegation-prompt.md",
     sourcePath: ".sandcastle/real-delegation-prompt.md",
     source: "sandking-package",

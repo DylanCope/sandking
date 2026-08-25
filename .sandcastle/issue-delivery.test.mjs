@@ -646,6 +646,35 @@ test("a delivery releases its claim even when the review budget is exhausted", a
   assert.equal(await getActiveIssueClaim({ issue: { id: "172" }, github }), null);
 });
 
+test("a cancelled delivery releases its claim before the Harness run stops", async () => {
+  const repository = createFakeRepository("main-cancelled-claim-base");
+  const github = createFakeGitHub();
+  const cancellation = new Error("delivery_cancelled");
+
+  await assert.rejects(deliverIssueThroughPullRequest({
+    issue: { id: "262", title: "Cancel scoped delivery" },
+    repository,
+    github,
+    instance: { id: "devbox", host: "devbox", pid: 111 },
+    worker: {
+      async implement() {
+        throw cancellation;
+      },
+    },
+    reviewer: {
+      async evaluatePullRequest() {
+        assert.fail("cancelled work must not reach review");
+      },
+    },
+  }), cancellation);
+
+  assert.deepEqual(
+    github.inspectClaimLedger("262").map(({ action }) => action),
+    ["claim", "release"],
+  );
+  assert.equal(await getActiveIssueClaim({ issue: { id: "262" }, github }), null);
+});
+
 test("a second instance skips an issue already claimed and never invokes the worker", async () => {
   const repository = createFakeRepository("main-skip-base");
   const github = createFakeGitHub();

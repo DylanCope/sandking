@@ -236,6 +236,7 @@ export const harnessPreparationFailureEnvelopeSchema = z.object({
   code: z.enum([
     "harness_execution_runtime_unavailable",
     "harness_worker_provider_unavailable",
+    "real_delegation_issue_required",
   ]),
   retryable: z.literal(true),
   sanitizedExplanation: z.string().min(1).max(512),

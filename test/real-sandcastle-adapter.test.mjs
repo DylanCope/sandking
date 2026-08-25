@@ -158,6 +158,9 @@ test("real-provider preparation fails closed unless its exact gate and credentia
     ]) {
       const invocation = await invoke({
         command: "prepare",
+        encoded: encode(expectedType === "harness.launch.prepared"
+          ? { issueNumber: 262 }
+          : {}),
         executionPath: fixture.executionPath,
         environment: fixture.environment,
       });
@@ -172,7 +175,10 @@ test("real-provider preparation fails closed unless its exact gate and credentia
         });
       } else {
         assert.deepEqual(frame.retainedExecutionInputs, [workerPath]);
-        assert.deepEqual(frame.suppliedCapabilities, ["project.git.read"]);
+        assert.deepEqual(frame.suppliedCapabilities, [
+          "github.issues.read",
+          "project.git.read",
+        ]);
       }
       assert.deepEqual(await waitForExit(invocation.child), { code: 0, signal: null });
     }
@@ -184,18 +190,22 @@ test("real-provider preparation fails closed unless its exact gate and credentia
     });
     const issueFrame = await readHarnessAdapterFrame(issueInvocation.channel);
     assert.equal(issueFrame.type, "harness.launch.prepared");
-    assert.deepEqual(issueFrame.suppliedCapabilities, ["project.git.read"]);
+    assert.deepEqual(issueFrame.suppliedCapabilities, [
+      "github.issues.read",
+      "project.git.read",
+    ]);
     assert.deepEqual(await waitForExit(issueInvocation.child), { code: 0, signal: null });
 
     const githubAccessInvocation = await invoke({
       command: "prepare",
-      encoded: encode({ verifyGitHubAccess: true }),
+      encoded: encode({ issueNumber: 261, verifyGitHubAccess: true }),
       executionPath: readyOnStderr.executionPath,
       environment: readyOnStderr.environment,
     });
     const githubAccessFrame = await readHarnessAdapterFrame(githubAccessInvocation.channel);
     assert.equal(githubAccessFrame.type, "harness.launch.prepared");
     assert.deepEqual(githubAccessFrame.suppliedCapabilities, [
+      "github.issues.read",
       "github.authentication.verify",
       "project.git.read",
     ]);
@@ -212,6 +222,32 @@ test("real-provider preparation fails closed unless its exact gate and credentia
       readyOnStdout,
     ].map((fixture) =>
       rm(fixture.root, { recursive: true, force: true })));
+  }
+});
+
+test("real-provider preparation requires an issue before delegated work starts", {
+  skip: process.platform === "win32" ? "POSIX command fixture" : false,
+}, async () => {
+  const fixture = await createFixture();
+  try {
+    const invocation = await invoke({
+      command: "prepare",
+      executionPath: fixture.executionPath,
+      environment: fixture.environment,
+    });
+    const frame = await readHarnessAdapterFrame(invocation.channel);
+
+    assert.equal(frame.type, "harness.launch.failure");
+    assert.equal(frame.code, "real_delegation_issue_required");
+    assert.match(frame.sanitizedExplanation, /--issue <number>/);
+    assert.deepEqual(frame.sideEffects, {
+      delegatedWorkStarted: false,
+      projectWrite: false,
+      harnessWorkspaceWrite: false,
+    });
+    assert.deepEqual(await waitForExit(invocation.child), { code: 0, signal: null });
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
@@ -267,7 +303,7 @@ writeSync(3, JSON.stringify({
     try {
       const invocation = await invoke({
         command: "run",
-        encoded: encode({ harnessRunId: runId, parameters: {} }),
+        encoded: encode({ harnessRunId: runId, parameters: { issueNumber: 262 } }),
         executionPath: fixture.executionPath,
         environment: fixture.environment,
       });

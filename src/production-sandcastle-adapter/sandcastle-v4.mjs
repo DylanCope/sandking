@@ -20,6 +20,7 @@ const controlledManifestName = "sandcastle.worker-fixture.json";
 const realManifestName = "sandcastle.real-provider.json";
 const controlledProviderKind = "controlled-worker-fixture";
 const realProviderKind = "openai-codex";
+const realDelegationIssueRequiredCode = "real_delegation_issue_required";
 const controlledWorkerRuntimePath = ".sandcastle/controlled-worker-fixture.mjs";
 const realWorkerRuntimePath = ".sandcastle/real-worker-v2.mjs";
 export const REAL_PROVIDER_CODEX_VERSION = "0.146.0";
@@ -58,7 +59,7 @@ const launchParameters = {
     {
       name: "targetBranch",
       label: "Target branch",
-      description: "Optional canonical sandcastle branch for the issue.",
+      description: "Legacy optional metadata; main.mts derives the canonical issue branch.",
       cliFlag: "--target-branch",
       valueType: "string",
       required: false,
@@ -450,6 +451,14 @@ const writePreparationFailure = (failure) => writeFrame({
   },
 });
 
+const delegationParameterFailure = (parameters, readiness) =>
+  readiness.realProvider && parameters.issueNumber === undefined
+    ? {
+        code: realDelegationIssueRequiredCode,
+        explanation: "Real delegation requires a scoped GitHub issue. Retry with --issue <number>; target branches are derived by the Harness.",
+      }
+    : null;
+
 const stableId = (prefix, ...parts) => `${prefix}-${createHash("sha256")
   .update(parts.join("\0"))
   .digest("hex")
@@ -587,7 +596,12 @@ const runWorker = async (execution, readiness, githubCredential) => {
       const workerPath = join(process.cwd(), ...readiness.workerPath.split("/"));
       const workerDirectory = dirname(workerPath);
       const workerArguments = readiness.realProvider
-        ? [workerPath, process.cwd(), readiness.root]
+        ? [
+            workerPath,
+            process.cwd(),
+            Buffer.from(JSON.stringify(execution.parameters), "utf8").toString("base64url"),
+            readiness.root,
+          ]
         : [
             workerPath,
             Buffer.from(JSON.stringify(execution.parameters), "utf8").toString("base64url"),
@@ -772,8 +786,11 @@ if (!invokedAsAdapter) {
 } else if (command === "prepare") {
   const parameters = parseParameters(encodedParameters);
   const readiness = inspectRuntime();
-  if (!readiness.ready) {
-    writePreparationFailure(readiness);
+  const parameterFailure = readiness.ready
+    ? delegationParameterFailure(parameters, readiness)
+    : null;
+  if (!readiness.ready || parameterFailure) {
+    writePreparationFailure(parameterFailure ?? readiness);
   } else {
     writeFrame({
       type: "harness.launch.prepared",
@@ -781,6 +798,7 @@ if (!invokedAsAdapter) {
       adapterId,
       negotiatedCapabilities: ["harness.launch.prepare.v1"],
       suppliedCapabilities: [
+        ...(parameters.issueNumber === undefined ? [] : ["github.issues.read"]),
         ...(parameters.verifyGitHubAccess === true
           ? [GITHUB_AUTHENTICATION_VERIFICATION_CAPABILITY]
           : []),
@@ -788,10 +806,10 @@ if (!invokedAsAdapter) {
       ],
       retainedExecutionInputs: [readiness.workerPath],
       sanitizedPreview: {
-        summary: parameters.verifyGitHubAccess === true
-          ? "Verify authenticated GitHub API access, then delegate through the pinned Sandcastle Harness."
-          : readiness.realProvider
-            ? "Delegate one real Project commit through the pinned Sandcastle Harness."
+        summary: readiness.realProvider
+          ? `Deliver GitHub issue #${parameters.issueNumber} through the pinned main.mts workflow; the Harness derives its branch.`
+          : parameters.verifyGitHubAccess === true
+            ? "Verify authenticated GitHub API access, then delegate through the pinned Sandcastle Harness."
             : "Delegate work through the pinned Sandcastle Harness.",
         secretFree: true,
       },
@@ -806,7 +824,10 @@ if (!invokedAsAdapter) {
   const execution = parseExecution(encodedParameters);
   const runStart = readRunStart(execution);
   const readiness = inspectRuntime(runStart.retainedExecutionInputs);
-  if (!readiness.ready) {
+  const parameterFailure = readiness.ready
+    ? delegationParameterFailure(execution.parameters, readiness)
+    : null;
+  if (!readiness.ready || parameterFailure) {
     const completedAt = new Date().toISOString();
     writeFrame({
       type: "harness.run.ready",
@@ -827,7 +848,7 @@ if (!invokedAsAdapter) {
       result: {
         schemaVersion: 1,
         kind: "sandcastle.delegation",
-        code: readiness.code,
+        code: parameterFailure?.code ?? readiness.code,
       },
     });
   } else {

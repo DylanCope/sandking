@@ -33,7 +33,9 @@
 import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { execFileSync } from "node:child_process";
+import { readFileSync, writeSync } from "node:fs";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   createGitHubDelivery,
@@ -59,6 +61,17 @@ import {
   parseRunScope,
   selectScopedIssues,
 } from "./run-scope.mjs";
+
+const delegationProtocolUrl = new URL("../real-delegation-protocol.mjs", import.meta.url);
+const sourceDelegationProtocolUrl = new URL(
+  "../src/real-delegation-protocol.mjs",
+  import.meta.url,
+);
+const {
+  createRealDelegationProgress,
+  createRealDelegationResult,
+} = await import(delegationProtocolUrl.href).catch(() =>
+  import(sourceDelegationProtocolUrl.href));
 
 // The planner emits its plan as JSON inside <plan> tags; Output.object extracts
 // and validates it against this schema. We use Zod here, but any Standard
@@ -109,11 +122,31 @@ const reviewSchema = z.object({
 const MAX_ITERATIONS = 10;
 const PHASE_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 5_000;
+const protocolEnabled = process.env.SANDKING_REAL_DELEGATION_PROTOCOL === "1";
+const githubCredentialPath = process.env.SANDKING_GITHUB_CREDENTIAL_PATH;
+if (protocolEnabled) {
+  if (!githubCredentialPath) throw new Error("github_credential_path_missing");
+  const githubToken = readFileSync(githubCredentialPath, "utf8").trim();
+  if (!githubToken || /\s/.test(githubToken)) {
+    throw new Error("github_credential_invalid");
+  }
+  process.env.GH_TOKEN = githubToken;
+  delete process.env.GITHUB_TOKEN;
+  delete process.env.GH_ENTERPRISE_TOKEN;
+  delete process.env.GITHUB_ENTERPRISE_TOKEN;
+}
+const controller = new AbortController();
+const handleTermination = () => controller.abort(new Error("delivery_cancelled"));
+process.once("SIGTERM", handleTermination);
+const harnessDirectory = fileURLToPath(new URL("./", import.meta.url));
+const harnessFile = (name: string) => `${harnessDirectory}${name}`;
+const codexAuthPath = process.env.SANDCASTLE_CODEX_AUTH_PATH
+  ?? "~/.codex/auth.json";
 
 // Hooks run inside the sandbox before the agent starts each iteration.
 // npm install ensures the sandbox always has fresh dependencies.
-const sandboxSettings = createCodexSandboxSettings();
-const runSettings = createRunSettings();
+const sandboxSettings = createCodexSandboxSettings(codexAuthPath);
+const runSettings = { ...createRunSettings(), signal: controller.signal };
 const hooks = sandboxSettings.hooks;
 const codexDocker = () => docker(sandboxSettings.docker);
 
@@ -146,6 +179,28 @@ const runScope = scopeOptions
         github,
       })
   : null;
+const scopedIssueNumber = scopeOptions && "issueId" in scopeOptions
+  ? Number(scopeOptions.issueId)
+  : null;
+const publishDelegationMessage = (message: unknown) => {
+  if (protocolEnabled) writeSync(3, `${JSON.stringify(message)}\n`);
+};
+const reportProgress = (value: {
+  phase: "planning" | "implementation" | "review" | "completion";
+  label: string;
+  summary: string;
+  status: "running" | "succeeded";
+}) => {
+  if (!scopedIssueNumber) return;
+  publishDelegationMessage(createRealDelegationProgress({
+    issueNumber: scopedIssueNumber,
+    ...value,
+  }));
+};
+const completedDeliveries: Array<{
+  issueId: string;
+  pullRequest: { number: number; url: string; state: string };
+}> = [];
 
 if (runScope && scopeOptions) {
   console.log(
@@ -172,8 +227,21 @@ const runIssueWorker = async (
     label: `Issue #${issue.id} implementer`,
     attempts: PHASE_ATTEMPTS,
     initialDelayMs: RETRY_DELAY_MS,
+    signal: controller.signal,
     operation: async () => {
-      const workerSandboxSettings = createWorkerSandboxSettings(issue.id);
+      reportProgress({
+        phase: "implementation",
+        label: `Implement issue #${issue.id}`,
+        summary: findings.length > 0
+          ? `The implementation Worker is addressing review findings for issue #${issue.id}.`
+          : `The implementation Worker is delivering issue #${issue.id}.`,
+        status: "running",
+      });
+      const workerSandboxSettings = createWorkerSandboxSettings(
+        issue.id,
+        process.env,
+        { codexAuthPath },
+      );
       // A retry gets a fresh container while retaining the named worktree.
       // This preserves commits and uncommitted edits from an interrupted agent.
       const sandbox = await sandcastle.createSandbox({
@@ -189,7 +257,7 @@ const runIssueWorker = async (
           name: "implementer",
           maxIterations: 100,
           agent: sandcastle.codex("gpt-5.6-sol", { effort: "xhigh" }),
-          promptFile: "./.sandcastle/implement-prompt.md",
+          promptFile: harnessFile("implement-prompt.md"),
           promptArgs: {
             TASK_ID: issue.id,
             ISSUE_TITLE: issue.title,
@@ -226,7 +294,15 @@ const runPullRequestReviewer = async (
     label: `Pull request #${pullRequest.number} reviewer`,
     attempts: PHASE_ATTEMPTS,
     initialDelayMs: RETRY_DELAY_MS,
-    operation: () => runPullRequestReview({
+    signal: controller.signal,
+    operation: () => {
+      reportProgress({
+        phase: "review",
+        label: `Review pull request #${pullRequest.number}`,
+        summary: `An independent review round is evaluating the delivery for issue #${issue.id}.`,
+        status: "running",
+      });
+      return runPullRequestReview({
       issue,
       pullRequest,
       reviewLedger,
@@ -241,10 +317,11 @@ const runPullRequestReviewer = async (
         name: `pr-${pullRequest.number}-reviewer`,
         maxIterations: 1,
         agent: sandcastle.codex("gpt-5.6-sol", { effort: "xhigh" }),
-        promptFile: "./.sandcastle/pr-review-prompt.md",
+        promptFile: harnessFile("pr-review-prompt.md"),
       },
       parseReview: (value: unknown) => reviewSchema.parse(value),
-    }),
+      });
+    },
   });
 
 // ---------------------------------------------------------------------------
@@ -273,10 +350,17 @@ const main = async () => {
   //
   // It outputs a <plan> JSON block — Output.object parses and validates it.
   // -------------------------------------------------------------------------
+  reportProgress({
+    phase: "planning",
+    label: `Plan issue #${scopedIssueNumber}`,
+    summary: `The scoped planner is selecting issue #${scopedIssueNumber} for delivery.`,
+    status: "running",
+  });
   const plan = await retryOperation({
     label: "Planner",
     attempts: PHASE_ATTEMPTS,
     initialDelayMs: RETRY_DELAY_MS,
+    signal: controller.signal,
     operation: () => sandcastle.run({
       ...runSettings,
       hooks,
@@ -286,7 +370,7 @@ const main = async () => {
       // not write code. (Structured output requires maxIterations: 1.)
       maxIterations: 1,
       agent: sandcastle.codex("gpt-5.6-sol", { effort: "xhigh" }),
-      promptFile: "./.sandcastle/plan-prompt.md",
+      promptFile: harnessFile("plan-prompt.md"),
       output: sandcastle.Output.object({ tag: "plan", schema: planSchema }),
     }),
   });
@@ -295,6 +379,12 @@ const main = async () => {
     plan.output.issues,
     runScope,
   );
+  reportProgress({
+    phase: "planning",
+    label: `Plan issue #${scopedIssueNumber}`,
+    summary: `Planning selected ${issues.length} scoped issue(s) for this delivery round.`,
+    status: "succeeded",
+  });
 
   if (issues.length === 0) {
     console.log(
@@ -366,6 +456,16 @@ const main = async () => {
       console.log(
         `  ✓ Issue #${issue.id} merged through ${result.pullRequest.url}`,
       );
+      completedDeliveries.push({
+        issueId: issue.id,
+        pullRequest: result.pullRequest,
+      });
+      reportProgress({
+        phase: "completion",
+        label: `Complete issue #${issue.id}`,
+        summary: `Issue #${issue.id} was closed through merged pull request #${result.pullRequest.number}.`,
+        status: "succeeded",
+      });
     } catch (error) {
       deliveryFailed = true;
       console.error(`  ✗ Issue #${issue.id} delivery failed:`, error);
@@ -382,12 +482,52 @@ const main = async () => {
   console.log("\nAll done.");
 };
 
+let executionFailed = false;
 try {
   await main();
 } catch (error) {
+  executionFailed = true;
   console.error("\nSandcastle stopped after all retries:", error);
   console.error(
     "Branch worktrees were preserved. Restore connectivity, then rerun the same npm command to resume.",
   );
   process.exitCode = 1;
 }
+
+if (protocolEnabled && scopedIssueNumber && runScope) {
+  let issueComplete = false;
+  try {
+    issueComplete = await runScope.isComplete();
+  } catch (error) {
+    executionFailed = true;
+    console.error("Unable to attest scoped issue completion:", error);
+  }
+  const delivery = completedDeliveries.find(({ issueId }) =>
+    Number(issueId) === scopedIssueNumber);
+  const succeeded = !executionFailed && process.exitCode !== 1 && issueComplete;
+  publishDelegationMessage(createRealDelegationResult(succeeded
+    ? {
+        issueNumber: scopedIssueNumber,
+        status: "succeeded",
+        code: "scoped_issue_completed",
+        completion: delivery
+          ? {
+              kind: "merged-pull-request",
+              pullRequestNumber: delivery.pullRequest.number,
+              pullRequestUrl: delivery.pullRequest.url,
+            }
+          : { kind: "issue-already-closed" },
+      }
+    : {
+        issueNumber: scopedIssueNumber,
+        status: "failed",
+        code: controller.signal.aborted
+          ? "delivery_cancelled"
+          : executionFailed
+            ? "delivery_execution_failed"
+            : "scoped_issue_incomplete",
+        completion: null,
+      }));
+  if (!succeeded) process.exitCode = 1;
+}
+process.removeListener("SIGTERM", handleTermination);
