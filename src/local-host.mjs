@@ -3,7 +3,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import { runtimeIdPattern } from "./common/identifiers.mjs";
 import {
   HOST_SCHEMA_DIGEST,
@@ -21,6 +20,7 @@ import {
 } from "./protocol.mjs";
 import { acceptHostIdentity, readHostIdentity } from "./host-identity.mjs";
 import { createGitHubCredentialManager } from "./github-credentials.mjs";
+import { createHostOperationAuditRecorder } from "./host-audit.mjs";
 import { appendPrivateJsonLine } from "./private-state.mjs";
 import { createProjectRegistry } from "./project-registration.mjs";
 import { createHarnessRunManager, HarnessRunStateError } from "./harness-runs.mjs";
@@ -59,66 +59,7 @@ const recordHostIdentityAudit = async (outcome, details, auditId) => {
   return resolvedAuditId;
 };
 
-const recordedProjectAudits = new Map();
-let recordedProjectAuditIdsLoaded = false;
-let projectAuditQueue = Promise.resolve();
-
-const loadRecordedProjectAuditIds = async () => {
-  if (recordedProjectAuditIdsLoaded) return;
-  const source = await readFile(hostAuditPath, "utf8").catch((error) => {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return "";
-    }
-    throw error;
-  });
-  for (const line of source.split("\n")) {
-    if (!line) continue;
-    try {
-      const audit = JSON.parse(line);
-      if (typeof audit?.auditId === "string") recordedProjectAudits.set(audit.auditId, audit);
-    } catch {
-      // A malformed historical line is not a match for a reserved audit ID.
-    }
-  }
-  recordedProjectAuditIdsLoaded = true;
-};
-
-/** @param {string} action @param {"accepted" | "rejected" | "observed"} outcome @param {Record<string, unknown>} details @param {string} [auditId] */
-const recordProjectAudit = (action, outcome, details = {}, auditId) => {
-  const operation = projectAuditQueue.catch(() => undefined).then(async () => {
-    if (auditId) {
-      await loadRecordedProjectAuditIds();
-      const existing = recordedProjectAudits.get(auditId);
-      if (existing) {
-        if (!isDeepStrictEqual({
-          action: existing.action,
-          outcome: existing.outcome,
-          details: existing.details,
-        }, { action, outcome, details })) {
-          throw new Error("audit_id_conflict");
-        }
-        return auditId;
-      }
-    }
-    const resolvedAuditId = auditId ?? `audit-${randomBytes(12).toString("hex")}`;
-    await appendPrivateJsonLine(hostAuditPath, {
-      auditId: resolvedAuditId,
-      action,
-      outcome,
-      details,
-      recordedAt: new Date().toISOString(),
-    });
-    recordedProjectAudits.set(resolvedAuditId, {
-      auditId: resolvedAuditId,
-      action,
-      outcome,
-      details,
-    });
-    return resolvedAuditId;
-  });
-  projectAuditQueue = operation.then(() => undefined, () => undefined);
-  return operation;
-};
+const recordProjectAudit = createHostOperationAuditRecorder(dataDir);
 
 /**
  * @param {
@@ -363,7 +304,7 @@ const main = async () => {
     hostId: negotiatedHostId,
     recordAudit: recordProjectAudit,
     loadLaunchContext: projectRegistry.loadLaunchContext,
-    resolveGitHubCredential: githubCredentials.requireForProject,
+    resolveGitHubCredential: githubCredentials.resolveForProject,
   });
   // The Host is a durable process boundary. It remains available after
   // negotiation and keeps control and opaque bulk frames structurally distinct.

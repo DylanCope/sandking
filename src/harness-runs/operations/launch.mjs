@@ -292,19 +292,25 @@ export const createLaunchOperation = (runtime) => {
         ) {
           code = "harness_pin_invalid";
         }
-        const githubAccessRequired = !code
-          && context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+        const productionHarness = !code
+          && context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID;
+        const githubAccessRequired = productionHarness
           && prepared.suppliedCapabilities.includes("github.issues.read");
-        if (githubAccessRequired) {
-          if (!options.resolveGitHubCredential) {
-            throw new GitHubCredentialUnavailableError("github_credential_unconfigured");
+        if (productionHarness && options.resolveGitHubCredential) {
+          try {
+            githubCredential = await options.resolveGitHubCredential(
+              context.project.projectId,
+            );
+          } catch (error) {
+            const optionalCredentialFailure = new Set([
+              "github_credential_unconfigured",
+              "github_host_gh_session_unavailable",
+            ]).has(typedErrorCode(error));
+            if (githubAccessRequired || !optionalCredentialFailure) throw error;
           }
-          githubCredential = await options.resolveGitHubCredential(
-            context.project.projectId,
-          );
-          if (!githubCredential) {
-            throw new GitHubCredentialUnavailableError("github_credential_unconfigured");
-          }
+        }
+        if (githubAccessRequired && !githubCredential) {
+          throw new GitHubCredentialUnavailableError("github_credential_unconfigured");
         }
       } catch (error) {
         const typedCode = typedErrorCode(error);

@@ -7,6 +7,10 @@ import {
   requestControllerLaunch,
   requestControllerRecover,
 } from "./controller-cli.mjs";
+import {
+  githubCredentialsHelp,
+  runGitHubCredentialsCli,
+} from "./github-credentials-cli.mjs";
 import { validateDeclaredLaunchParameters } from "./harness-launch.mjs";
 import { RuntimeStartupError, launchRuntime, stopRuntime } from "./runtime.mjs";
 
@@ -14,6 +18,7 @@ const harnessLaunchHelp = `Usage:
   sandking launch [<project-id>] [--parameters <json-object>] [<harness-declared-flags>] [--json]
   sandking cancel <harness-run-id> [--json]
   sandking recover <harness-run-id> <recheck|terminate_confirmed_tree|finalize> [--json]
+  sandking github-credentials <action> [options]
 
 Launches one Harness run immediately. Inside a Controller session, <project-id>
 defaults to the focused Controller Project.
@@ -112,7 +117,17 @@ const parseArgs = (argv) => {
 };
 
 const main = async () => {
-  const options = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  if (argv[0] === "github-credentials") {
+    const result = await runGitHubCredentialsCli(argv.slice(1));
+    process.stdout.write(`${"help" in result ? result.help : result.output}\n`);
+    return;
+  }
+  if (argv[0] === "help" && argv[1] === "github-credentials" && argv.length === 2) {
+    process.stdout.write(`${githubCredentialsHelp}\n`);
+    return;
+  }
+  const options = parseArgs(argv);
   if (options.help || options.command === "help" || options.command === "--help") {
     if (process.env.SANDKING_CONTROLLER_ENDPOINT) {
       await requestControllerDescription();

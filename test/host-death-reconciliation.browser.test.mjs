@@ -19,7 +19,6 @@ import {
   installCurrentPackage,
   pauseInstalledHostAtHarnessRunFault,
 } from "./installed-package.mjs";
-import { configureInstalledProductionProjectCredential } from "./installed-production-host.mjs";
 import { installReadyProbeCommands } from "./production-sandcastle-host-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -245,12 +244,6 @@ test("packaged Cockpit removes pre-commit production preparation after real Host
         + "[data-harness-adapter-id='sandcastle-harness-adapter-v1']",
       { timeout: 90_000 },
     );
-    const credentialConfiguration = await configureInstalledProductionProjectCredential({
-      dataDir,
-      installed,
-      projectPath,
-    });
-    assert.equal(credentialConfiguration.type, "github.credentials.configure.result");
     const excludeBeforeLaunch = await readFile(excludePath, "utf8");
     const statusBeforeLaunch = (await execFileAsync("git", [
       "-C", projectPath, "status", "--porcelain=v1", "--untracked-files=all",

@@ -195,9 +195,10 @@ test("GitHub credentials are explicitly configured in Host-private state with Pr
   }
 });
 
-test("a GitHub-dependent launch fails with typed sanitized guidance for both configuration paths", async () => {
+test("the credential-free production canary ignores absent or unavailable optional GitHub credentials", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-github-credential-launch-"));
   let restorePath = () => undefined;
+  let manager;
   try {
     restorePath = await installReadyProbeCommands(root);
     const fixture = await createProductionRegistration(root);
@@ -208,24 +209,17 @@ test("a GitHub-dependent launch fails with typed sanitized guidance for both con
         throw new Error(hostToken);
       },
     });
-    const manager = await createHarnessRunManager({
+    manager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
       hostId: `host-${"1".repeat(24)}`,
       recordAudit: fixture.recordAudit,
       loadLaunchContext: fixture.registry.loadLaunchContext,
-      resolveGitHubCredential: credentials.requireForProject,
+      resolveGitHubCredential: credentials.resolveForProject,
     });
     const projectId = fixture.project.project.projectId;
 
     const unconfigured = await manager.launch(productionLaunchRequest(projectId));
-    assert.equal(unconfigured.type, "harness.run.launch.failure");
-    assert.equal(unconfigured.code, "github_credential_unconfigured");
-    assert.deepEqual(unconfigured.configurationOptions.map(({ mode }) => mode), [
-      "project-pat",
-      "host-gh-session",
-    ]);
-    assert.match(unconfigured.configurationOptions[0].guidance, /fine-grained/i);
-    assert.match(unconfigured.configurationOptions[1].guidance, /full.*Host/i);
+    assert.equal(unconfigured.type, "harness.run.launch.result", JSON.stringify(unconfigured));
 
     await credentials.configureHost({
       requestId: "enable-unavailable-host-session",
@@ -239,10 +233,17 @@ test("a GitHub-dependent launch fails with typed sanitized guidance for both con
       requestId: "launch-with-unavailable-host-session",
       idempotencyKeyHash: `sha256:${"5".repeat(64)}`,
     }));
-    assert.equal(unavailable.type, "harness.run.launch.failure");
-    assert.equal(unavailable.code, "github_host_gh_session_unavailable");
-    assert.match(unavailable.configurationOptions[0].guidance, /Project PAT/i);
-    assert.match(unavailable.configurationOptions[1].guidance, /gh auth login/i);
+    assert.equal(unavailable.type, "harness.run.launch.result", JSON.stringify(unavailable));
+    await assert.rejects(
+      credentials.requireForProject(projectId),
+      (error) => {
+        assert.ok(error instanceof GitHubCredentialUnavailableError);
+        assert.equal(error.code, "github_host_gh_session_unavailable");
+        assert.match(error.configurationOptions[0].guidance, /Project PAT/i);
+        assert.match(error.configurationOptions[1].guidance, /gh auth login/i);
+        return true;
+      },
+    );
 
     const retained = [
       await readFile(join(fixture.dataDir, "harness-runs.json"), "utf8"),
@@ -253,6 +254,7 @@ test("a GitHub-dependent launch fails with typed sanitized guidance for both con
       "-C", fixture.projectPath, "status", "--porcelain=v1", "--untracked-files=all",
     ])).stdout, "");
   } finally {
+    await manager?.waitForIdle().catch(() => undefined);
     restorePath();
     await rm(root, { recursive: true, force: true });
   }
@@ -317,12 +319,8 @@ exit 93
         idempotencyKeyHash: `sha256:${"8".repeat(64)}`,
       }),
     });
-    assert.equal(unconfigured.type, "harness.run.launch.failure");
-    assert.equal(unconfigured.code, "github_credential_unconfigured");
-    assert.deepEqual(unconfigured.configurationOptions.map(({ mode }) => mode), [
-      "project-pat",
-      "host-gh-session",
-    ]);
+    assert.equal(unconfigured.type, "harness.run.launch.result", JSON.stringify(unconfigured));
+    await assert.rejects(readFile(ghInvokedPath, "utf8"), { code: "ENOENT" });
 
     const enabled = await transport.requestHostOperation({
       type: "github.credentials.host.configure",

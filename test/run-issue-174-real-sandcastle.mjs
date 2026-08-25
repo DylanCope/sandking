@@ -228,7 +228,7 @@ const runInstalledCliDelegation = async ({ installed, root, sandboxImageId }) =>
     hostId: `host-${"7".repeat(24)}`,
     recordAudit,
     loadLaunchContext: registry.loadLaunchContext,
-    resolveGitHubCredential: githubCredentials.requireForProject,
+    resolveGitHubCredential: githubCredentials.resolveForProject,
   });
   const controllerSessionId = `controller-session-${"8".repeat(24)}`;
   const requests = [];

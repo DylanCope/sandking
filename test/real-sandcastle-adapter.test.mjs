@@ -172,6 +172,7 @@ test("real-provider preparation fails closed unless its exact gate and credentia
         });
       } else {
         assert.deepEqual(frame.retainedExecutionInputs, [workerPath]);
+        assert.deepEqual(frame.suppliedCapabilities, ["project.git.read"]);
       }
       assert.deepEqual(await waitForExit(invocation.child), { code: 0, signal: null });
     }
