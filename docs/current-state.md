@@ -74,8 +74,10 @@ no retained run. The temporary exclude block has a unique ownership marker, so c
 preserves concurrent edits to `.git/info/exclude`. Both exclude append and cleanup rebase
 when the exact file generation changes before commit and publish without clobbering a
 new public path. If a writer creates that path after the old exclude generation has
-already been captured, recovery keeps both generations durable until every observed
-rule is effective at the public path, then removes the capture and temporary candidate.
+already been captured, recovery keeps both generations durable, restores missing older
+rules ahead of the newest public generation, and replays that newest ordering so a
+concurrent ignore or unignore decision keeps its Git precedence. Only then does it
+remove the capture and temporary candidate.
 Selector cleanup atomically captures the exact candidate under a stable
 name derived from the journaled preparation ID before checking its contents, Git
 ownership, and recorded filesystem identity. Startup resumes that capture and restores

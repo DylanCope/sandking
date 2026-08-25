@@ -132,13 +132,14 @@ test("installed launch retries selector cleanup after preparation rollback is de
   }
 });
 
-test("installed launch recovers both Git exclude generations after publication collides", async () => {
+test("installed launch preserves concurrent Git exclude ordering after publication collides", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-exclude-collision-recovery-"));
   const endpoint = join(root, "controller.sock");
   const retryDirectory = join(root, "controller-private");
   const userHome = join(root, "user-home");
-  const existingRule = "/user-existing-before-exclude-capture";
-  const userRule = "/user-created-after-exclude-capture";
+  const orderedTarget = "ordered-target";
+  const existingRule = `/${orderedTarget}`;
+  const userRule = `!/${orderedTarget}`;
   let host;
   let pause;
   let restorePath = () => undefined;
@@ -223,10 +224,14 @@ test("installed launch recovers both Git exclude generations after publication c
       assert.equal(recoveredRules.has(rule), true, `missing prior rule: ${rule}`);
     }
     assert.equal(recoveredRules.has(userRule), true);
-    await assertProjectRulesEffective(
-      registration.projectPath,
-      [existingRule, userRule],
+    await writeFile(
+      join(registration.projectPath, orderedTarget),
+      "concurrently exposed Project file\n",
     );
+    await assert.rejects(execFileAsync("git", [
+      "-C", registration.projectPath,
+      "check-ignore", "--no-index", "--quiet", orderedTarget,
+    ]), { code: 1 });
     await assert.rejects(readFile(manifestPath, "utf8"), { code: "ENOENT" });
     assert.deepEqual(await listProjectPreparationDebris(registration.projectPath), []);
   } finally {

@@ -320,9 +320,10 @@ const projectPreparationReplacementCaptureId = (temporaryId) =>
   `replace-${temporaryId}`;
 
 /**
- * Make every line from each observed Git-exclude generation effective at the
- * public path. The retained capture stays durable until the merged public
- * generation has been verified, so restart can repeat an interrupted merge.
+ * Preserve every line from each observed Git-exclude generation while keeping
+ * the newest public generation authoritative. Git ignore rules are ordered,
+ * so missing older lines are followed by the current rules again instead of
+ * being allowed to reverse a concurrent ignore or unignore decision.
  *
  * @param {string} path
  * @param {string} capturedPath
@@ -349,7 +350,8 @@ const mergeCapturedProjectGitExcludeLines = async (
     for (const line of current.source.split("\n").filter(Boolean)) {
       requiredLines.add(line);
     }
-    const currentLines = new Set(current.source.split("\n"));
+    const currentSourceLines = current.source.split("\n").filter(Boolean);
+    const currentLines = new Set(currentSourceLines);
     const missingLines = [...requiredLines].filter((line) => !currentLines.has(line));
     if (missingLines.length === 0) return;
 
@@ -364,7 +366,7 @@ const mergeCapturedProjectGitExcludeLines = async (
       )) continue;
       const addition = `${current.source.length > 0 && !current.source.endsWith("\n")
         ? "\n"
-        : ""}${missingLines.join("\n")}\n`;
+        : ""}${[...missingLines, ...currentSourceLines].join("\n")}\n`;
       const { bytesWritten } = await handle.write(addition, null, "utf8");
       if (bytesWritten !== Buffer.byteLength(addition)) {
         throw new ProjectPreparationFileError("harness_projection_failed");
