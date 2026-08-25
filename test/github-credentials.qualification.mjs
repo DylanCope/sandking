@@ -139,7 +139,7 @@ test("GitHub credentials are explicitly configured in Host-private state with Pr
       "-C", fixture.projectPath, "status", "--porcelain=v1", "--untracked-files=all",
     ])).stdout, "");
 
-    assert.deepEqual(await manager.resolveForProject(projectId, { required: true }), {
+    assert.deepEqual(await manager.requireForProject(projectId), {
       mode: "project-pat",
       token: projectToken,
     });
@@ -154,7 +154,7 @@ test("GitHub credentials are explicitly configured in Host-private state with Pr
       expectedRevision: 2,
     });
     assert.equal(cleared.projectPat, "not-configured");
-    assert.deepEqual(await manager.resolveForProject(projectId, { required: true }), {
+    assert.deepEqual(await manager.requireForProject(projectId), {
       mode: "host-gh-session",
       token: hostToken,
     });
@@ -170,7 +170,7 @@ test("GitHub credentials are explicitly configured in Host-private state with Pr
     assert.equal(disabled.hostGhSessionReuse, "disabled");
     assert.equal(await manager.resolveForProject(projectId), null);
     await assert.rejects(
-      manager.resolveForProject(projectId, { required: true }),
+      manager.requireForProject(projectId),
       (error) => {
         assert.ok(error instanceof GitHubCredentialUnavailableError);
         assert.equal(error.code, "github_credential_unconfigured");
@@ -213,7 +213,7 @@ test("a GitHub-dependent launch fails with typed sanitized guidance for both con
       hostId: `host-${"1".repeat(24)}`,
       recordAudit: fixture.recordAudit,
       loadLaunchContext: fixture.registry.loadLaunchContext,
-      resolveGitHubCredential: credentials.resolveForProject,
+      resolveGitHubCredential: credentials.requireForProject,
     });
     const projectId = fixture.project.project.projectId;
 
@@ -457,6 +457,16 @@ test("both credential modes authenticate to GitHub through the real Host and Doc
         }
         assert.match(containerArguments, /\bcodex\b/,
           "the Codex process starts only after the real gh api authentication hook succeeds");
+        const authenticatedLogin = (await execFileAsync("docker", [
+          "exec", observedContainerId,
+          "gh", "api", "user", "--hostname", "github.com", "--jq", ".login",
+        ], {
+          env: cleanHostEnvironment,
+          timeout: 10_000,
+          maxBuffer: 16_384,
+        })).stdout.trim();
+        assert.match(authenticatedLogin, /\S/,
+          "the configured credential authenticates an explicit gh API command inside Docker");
 
         const [hostArguments, containerEnvironment] = await Promise.all([
           execFileAsync("ps", ["-ww", "-axo", "command="], {

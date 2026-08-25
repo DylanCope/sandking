@@ -301,7 +301,6 @@ export const createLaunchOperation = (runtime) => {
           }
           githubCredential = await options.resolveGitHubCredential(
             context.project.projectId,
-            { required: true },
           );
           if (!githubCredential) {
             throw new GitHubCredentialUnavailableError("github_credential_unconfigured");

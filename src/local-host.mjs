@@ -363,7 +363,7 @@ const main = async () => {
     hostId: negotiatedHostId,
     recordAudit: recordProjectAudit,
     loadLaunchContext: projectRegistry.loadLaunchContext,
-    resolveGitHubCredential: githubCredentials.resolveForProject,
+    resolveGitHubCredential: githubCredentials.requireForProject,
   });
   // The Host is a durable process boundary. It remains available after
   // negotiation and keeps control and opaque bulk frames structurally distinct.

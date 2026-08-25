@@ -60,6 +60,16 @@ export const startInstalledProductionHost = async ({
   preloadPath,
   registration,
 }) => {
+  const credentialConfiguration = await configureInstalledProductionProjectCredential({
+    dataDir: registration.dataDir,
+    installed,
+    projectPath: registration.projectPath,
+  });
+  if (credentialConfiguration.type !== "github.credentials.configure.result") {
+    throw new Error(`installed_production_credential_configuration_failed:${
+      credentialConfiguration.code
+    }`);
+  }
   const harnessRunsUrl = pathToFileURL(join(
     installed.packageDirectory,
     "src",
@@ -70,10 +80,16 @@ export const startInstalledProductionHost = async ({
     "src",
     "project-registration.mjs",
   )).href;
+  const githubCredentialsUrl = pathToFileURL(join(
+    installed.packageDirectory,
+    "src",
+    "github-credentials.mjs",
+  )).href;
   const source = `
 import { createServer } from "node:net";
 import { createHarnessRunManager } from ${JSON.stringify(harnessRunsUrl)};
 import { createProjectRegistry } from ${JSON.stringify(projectRegistrationUrl)};
+import { createGitHubCredentialManager } from ${JSON.stringify(githubCredentialsUrl)};
 const dataDir = ${JSON.stringify(registration.dataDir)};
 const endpoint = ${JSON.stringify(endpoint)};
 const projectId = ${JSON.stringify(registration.project.project.projectId)};
@@ -81,15 +97,13 @@ let auditSequence = 0;
 const recordAudit = async (_action, _outcome, _details, requestedAuditId) =>
   requestedAuditId ?? \`audit-\${String(++auditSequence).padStart(24, "0")}\`;
 const registry = await createProjectRegistry({ dataDir, recordAudit });
+const githubCredentials = await createGitHubCredentialManager({ dataDir, recordAudit });
 const manager = await createHarnessRunManager({
   dataDir,
   hostId: \`host-\${"7".repeat(24)}\`,
   recordAudit,
   loadLaunchContext: registry.loadLaunchContext,
-  resolveGitHubCredential: async () => ({
-    mode: "project-pat",
-    token: "github_pat_installed_production_fixture_261",
-  }),
+  resolveGitHubCredential: githubCredentials.requireForProject,
 });
 const server = createServer((socket) => {
   socket.setEncoding("utf8");

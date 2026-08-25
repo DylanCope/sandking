@@ -345,11 +345,8 @@ export const createGitHubCredentialManager = async (options) => {
   /** @param {any} request */
   const configureHost = (request) => configure(request, "host");
 
-  /**
-   * @param {string} projectId
-   * @param {{required?: boolean}} [resolutionOptions]
-   */
-  const resolveForProject = async (projectId, resolutionOptions = {}) => {
+  /** @param {string} projectId */
+  const resolveForProject = async (projectId) => {
     const state = await readState(options.dataDir);
     const projectToken = state.projectPersonalAccessTokens[projectId];
     if (projectToken) return { mode: "project-pat", token: projectToken };
@@ -366,11 +363,23 @@ export const createGitHubCredentialManager = async (options) => {
         );
       }
     }
-    if (resolutionOptions.required) {
-      throw new GitHubCredentialUnavailableError("github_credential_unconfigured");
-    }
     return null;
   };
 
-  return { configureHost, configureProject, inspect, resolveForProject };
+  /** @param {string} projectId */
+  const requireForProject = async (projectId) => {
+    const credential = await resolveForProject(projectId);
+    if (!credential) {
+      throw new GitHubCredentialUnavailableError("github_credential_unconfigured");
+    }
+    return credential;
+  };
+
+  return {
+    configureHost,
+    configureProject,
+    inspect,
+    requireForProject,
+    resolveForProject,
+  };
 };
