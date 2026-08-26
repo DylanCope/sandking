@@ -30,9 +30,9 @@ const sourceUrlSchema = z.url().refine((value) => {
 });
 
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
-const SAND_KING_SEED_REVISION = "1eadc34ed72ee36c2d5518f3461bfc2737e44077";
+const SAND_KING_SEED_REVISION = "4e8d45268c41b8373c8fd33d08ab4f0e260f6b93";
 const SAND_KING_SEED_SOURCE_INTEGRITY =
-  "sha256:e0339c50186d0d7cbb4b092904dc01335088df9a5501d294e02632d22768edfe";
+  "sha256:8d3156295912a94999256fe6e81eef2a94d80cf060f34189bc8e759332398e3c";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
