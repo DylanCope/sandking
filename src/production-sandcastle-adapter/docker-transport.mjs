@@ -363,6 +363,7 @@ export const createMainContainerConfiguration = ({
   projectPath,
   authPath,
   githubCredentialPath,
+  claimInstanceId,
   sandboxImage,
   dockerRelay,
 }) => {
@@ -371,6 +372,7 @@ export const createMainContainerConfiguration = ({
     LANG: "C.UTF-8",
     SANDCASTLE_CODEX_AUTH_PATH: MAIN_CONTAINER_PATHS.codexAuth,
     SANDKING_GITHUB_CREDENTIAL_PATH: MAIN_CONTAINER_PATHS.githubCredential,
+    SANDKING_REAL_DELEGATION_CLAIM_INSTANCE_ID: claimInstanceId,
     SANDKING_REAL_DELEGATION_CONTAINER: "1",
     SANDKING_REAL_DELEGATION_PROTOCOL: "1",
     SANDKING_REAL_DELEGATION_PROTOCOL_FD: "1",

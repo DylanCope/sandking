@@ -184,6 +184,12 @@ export const createSandbox = async ({ branch }) => ({
     if (!options.promptFile.endsWith("pr-review-prompt.md")) {
       throw new Error("fixture_prompt_unexpected");
     }
+    if (scenario() === "crash-after-pull-request") {
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      state.reviewStarted = true;
+      writeFileSync(statePath, JSON.stringify(state) + "\\n");
+      process.kill(process.pid, "SIGKILL");
+    }
     if (scenario() === "cancellable") {
       const state = JSON.parse(readFileSync(statePath, "utf8"));
       state.reviewStarted = true;
@@ -250,6 +256,7 @@ cpSync(${JSON.stringify(fakeSandcastlePath)}, join(modules, "@ai-hero", "sandcas
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 const statePath = ${JSON.stringify(statePath)};
+const scenarioPath = ${JSON.stringify(scenarioPath)};
 const args = process.argv.slice(2);
 const load = () => JSON.parse(readFileSync(statePath, "utf8"));
 const save = (state) => writeFileSync(statePath, JSON.stringify(state) + "\\n");
@@ -264,6 +271,16 @@ if (args[0] === "auth" && args[1] === "token") {
 if (!process.env.GH_TOKEN) process.exit(90);
 const state = load();
 state.authenticatedCalls += 1;
+const activeScenario = readFileSync(scenarioPath, "utf8").trim();
+if (
+  state.authenticatedCalls >= 7
+  && ["credential-expired", "rate-limited"].includes(activeScenario)
+) {
+  process.stderr.write(activeScenario === "credential-expired"
+    ? "HTTP 401: Bad credentials (https://api.github.com/)\\n"
+    : "HTTP 403: API rate limit exceeded (https://api.github.com/)\\n");
+  process.exit(activeScenario === "credential-expired" ? 4 : 22);
+}
 if (args[0] === "api" && args[1] === "user") {
   process.stdout.write("fixture-user\\n");
 } else if (args[0] === "repo" && args[1] === "view") {

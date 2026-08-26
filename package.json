@@ -36,6 +36,7 @@
     "acceptance:issue-146:real": "node test/run-issue-146-real-claude.mjs",
     "acceptance:issue-152:real": "node test/run-installed-claude-acceptance.mjs --issue 152",
     "acceptance:issue-174:real": "node test/run-issue-174-real-sandcastle.mjs",
+    "acceptance:real-github-delegation": "node --test test/real-github-delegation.qualification.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.sandcastle.json && tsc --noEmit -p tsconfig.json",
     "test": "node --test .sandcastle/*.test.mjs test/*.test.mjs",
     "test:unit": "node --test .sandcastle/*.test.mjs $(ls test/*.test.mjs | grep -v '\\.browser\\.' | grep -Ev \"${SANDKING_UNIT_TEST_EXCLUDE:-^$}\")",

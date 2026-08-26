@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
@@ -51,6 +52,8 @@ const MAIN_WORKFLOW_SKILL_IDENTITIES = Object.freeze(
 const DELEGATION_FAILURE_CODES = new Set([
   "delivery_cancelled",
   "delivery_execution_failed",
+  "github_credential_expired",
+  "github_rate_limited",
   "real_delegation_github_credential_required",
   "real_delegation_interrupted",
   "real_delegation_main_result_invalid",
@@ -123,6 +126,7 @@ export const runPinnedMain = async ({
   issueNumber,
   authPath,
   githubCredentialPath,
+  claimInstanceId = hostname(),
   dockerEndpoint,
   sandboxImage = REAL_SANDBOX_IMAGE,
   signal,
@@ -162,6 +166,7 @@ export const runPinnedMain = async ({
     projectPath,
     authPath,
     githubCredentialPath,
+    claimInstanceId,
     sandboxImage,
     dockerRelay,
   });

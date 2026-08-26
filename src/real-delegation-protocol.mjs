@@ -12,6 +12,8 @@ const progressStatuses = new Set(["running", "succeeded"]);
 const failureCodes = new Set([
   "delivery_cancelled",
   "delivery_execution_failed",
+  "github_credential_expired",
+  "github_rate_limited",
   "scoped_issue_incomplete",
 ]);
 

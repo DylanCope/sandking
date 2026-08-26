@@ -10,6 +10,10 @@ import {
   inspectRealSandcastleRunState,
   serializeSanitizedRealProviderResult,
 } from "./real-sandcastle-acceptance.mjs";
+import {
+  realGitHubDelegationScenario,
+  validateRealGitHubDelegationResult,
+} from "./real-github-delegation.mjs";
 
 // Real-provider acceptance runners invoke paid models against a real
 // destination. Each must refuse to run unless its environment gate is set
@@ -77,6 +81,29 @@ test("issue 174 real-Sandcastle acceptance fails closed without the explicit gat
   });
 });
 
+test("real GitHub delegation qualification fails closed without explicit opt-in", async () => {
+  const qualificationArguments = [
+    "--test",
+    fileURLToPath(new URL("./real-github-delegation.qualification.mjs", import.meta.url)),
+  ];
+  await assert.rejects(execFileAsync(process.execPath, qualificationArguments, {
+    cwd: repositoryRoot,
+    env: closedEnvironment,
+  }), (error) => {
+    assert.match(error.stdout, /real_github_delegation_gate_disabled/);
+    assert.doesNotMatch(error.stdout, /productionEvidence.*true/);
+    return true;
+  });
+  await assert.rejects(execFileAsync(process.execPath, qualificationArguments, {
+    cwd: repositoryRoot,
+    env: { ...closedEnvironment, SANDKING_REAL_GITHUB_DELEGATION: "1" },
+  }), (error) => {
+    assert.match(error.stdout, /real_github_provisioning_token_missing/);
+    assert.doesNotMatch(error.stdout, /productionEvidence.*true/);
+    return true;
+  });
+});
+
 test("real-provider result serialization rejects secrets, session material, and machine paths", () => {
   for (const result of [
     { credentialValue: "secret" },
@@ -120,6 +147,7 @@ test("real-provider result serialization rejects secrets, session material, and 
   for (const secret of [
     "sk-1234567890abcdef",
     "ghp_1234567890abcdef",
+    "github_pat_1234567890abcdef",
     "Bearer abcdefghijklmnop",
     "https://127.0.0.1/bootstrap?token=reusable",
     "sandking_session=reusable",
@@ -160,6 +188,98 @@ test("the real-Sandcastle runner recognizes a rejected launch before model invoc
     code: "harness_worker_provider_unavailable",
     modelInvocationMayHaveOccurred: false,
   });
+});
+
+test("real GitHub delegation evidence requires scoped, canonical, merged behavior", () => {
+  const result = {
+    schemaVersion: 1,
+    scenario: realGitHubDelegationScenario.id,
+    qualification: {
+      status: "passed",
+      productionEvidence: true,
+      fixtureSubstitution: false,
+    },
+    installedSandKing: {
+      command: "sandking",
+      installed: true,
+      launchedOutsideCheckout: true,
+      tarballIntegrity: `sha256:${"1".repeat(64)}`,
+    },
+    harness: {
+      identity: "sandcastle-harness-adapter-v1",
+      pinnedRevision: "2".repeat(40),
+    },
+    authentication: {
+      primaryMode: "project-pat",
+      passthroughMode: "host-gh-session",
+      projectScopeEnforced: true,
+    },
+    github: {
+      repository: {
+        nameWithOwner: "fixture-owner/sandking-a",
+        url: "https://github.com/fixture-owner/sandking-a",
+      },
+      deniedRepository: {
+        nameWithOwner: "fixture-owner/sandking-b",
+        url: "https://github.com/fixture-owner/sandking-b",
+        access: "denied",
+      },
+      issue: {
+        number: 1,
+        url: "https://github.com/fixture-owner/sandking-a/issues/1",
+        state: "CLOSED",
+      },
+      pullRequest: {
+        number: 2,
+        url: "https://github.com/fixture-owner/sandking-a/pull/2",
+        state: "MERGED",
+        baseRefName: "main",
+        headRefName: "sandcastle/issue-1",
+      },
+    },
+    structuredOutcome: {
+      harnessRunId: `harness-run-${"3".repeat(24)}`,
+      status: "succeeded",
+      code: "issue_delivery_completed",
+      completion: {
+        kind: "merged-pull-request",
+        pullRequestNumber: 2,
+        pullRequestUrl: "https://github.com/fixture-owner/sandking-a/pull/2",
+      },
+    },
+    idempotency: {
+      launchAttempts: 2,
+      canonicalRunCount: 1,
+      pullRequestCount: 1,
+      claimActions: ["claim", "release"],
+    },
+    hostGhPassthrough: {
+      harnessRunId: `harness-run-${"4".repeat(24)}`,
+      status: "succeeded",
+      completion: "issue-already-closed",
+    },
+    diagnostics: {
+      contentRetained: false,
+      references: [{
+        streamId: `harness-log-${"5".repeat(24)}`,
+        producer: "stderr",
+        explicitRetrievalRequired: true,
+      }],
+    },
+  };
+
+  assert.equal(validateRealGitHubDelegationResult(result), result);
+  for (const invalid of [
+    { authentication: { ...result.authentication, projectScopeEnforced: false } },
+    { github: { ...result.github, issue: { ...result.github.issue, state: "OPEN" } } },
+    { idempotency: { ...result.idempotency, pullRequestCount: 2 } },
+    { diagnostics: { ...result.diagnostics, providerTranscript: "not allowed" } },
+  ]) {
+    assert.throws(
+      () => validateRealGitHubDelegationResult({ ...result, ...invalid }),
+      /real_github_delegation_result_invalid/,
+    );
+  }
 });
 
 test("production Host and Cockpit protocols exclude fault-injection controls", async () => {

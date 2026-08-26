@@ -207,7 +207,12 @@ const scopeOptions = parseRunScope(process.argv.slice(2));
 const maxReviewAttempts =
   parseMaxReviewAttempts(process.argv.slice(2)) ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
 const overrideClaimIssueIds = parseOverrideClaimIssueIds(process.argv.slice(2));
-const instance = { id: os.hostname(), host: os.hostname(), pid: process.pid };
+const claimInstanceId = process.env.SANDKING_REAL_DELEGATION_CLAIM_INSTANCE_ID
+  ?? os.hostname();
+if (!/^[A-Za-z0-9._-]{1,253}$/.test(claimInstanceId)) {
+  throw new Error("real_delegation_claim_instance_invalid");
+}
+const instance = { id: claimInstanceId, host: claimInstanceId, pid: process.pid };
 const runScope = scopeOptions
   ? "issueId" in scopeOptions
     ? await createIssueScope({ issueId: scopeOptions.issueId, github })
@@ -369,7 +374,25 @@ const runPullRequestReviewer = async (
 // Main loop
 // ---------------------------------------------------------------------------
 
+const githubFailureCode = (error: unknown) => {
+  const candidate = error && typeof error === "object"
+    ? error as { message?: unknown; stderr?: unknown; stdout?: unknown }
+    : {};
+  const diagnostic = [candidate.message, candidate.stderr, candidate.stdout]
+    .map((value) => Buffer.isBuffer(value) ? value.toString("utf8") : String(value ?? ""))
+    .join("\n");
+  if (/(?:rate limit|secondary rate|HTTP 429)/i.test(diagnostic)) {
+    return "github_rate_limited";
+  }
+  if (/(?:bad credentials|HTTP 401|token[^\n]*(?:expired|revoked)|authentication failed)/i
+    .test(diagnostic)) {
+    return "github_credential_expired";
+  }
+  return "delivery_execution_failed";
+};
+
 let executionFailed = false;
+let executionFailureCode = "delivery_execution_failed";
 const main = async () => {
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     if (runScope && scopeOptions && await runScope.isComplete()) {
@@ -510,6 +533,7 @@ const main = async () => {
       });
     } catch (error) {
       deliveryFailed = true;
+      executionFailureCode = githubFailureCode(error);
       console.error(`  ✗ Issue #${issue.id} delivery failed:`, error);
       break;
     }
@@ -529,6 +553,7 @@ try {
   await main();
 } catch (error) {
   executionFailed = true;
+  executionFailureCode = githubFailureCode(error);
   console.error("\nSandcastle stopped after all retries:", error);
   console.error(
     "Branch worktrees were preserved. Restore connectivity, then rerun the same npm command to resume.",
@@ -566,7 +591,7 @@ if (protocolEnabled && scopedIssueNumber && runScope) {
         code: controller.signal.aborted
           ? "delivery_cancelled"
           : executionFailed
-            ? "delivery_execution_failed"
+            ? executionFailureCode
             : "scoped_issue_incomplete",
         completion: null,
       }));

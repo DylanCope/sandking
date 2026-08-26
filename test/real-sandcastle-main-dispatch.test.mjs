@@ -90,6 +90,7 @@ writeFileSync(join(process.cwd(), "main-invocation.json"), JSON.stringify({
   protocol: process.env.SANDKING_REAL_DELEGATION_PROTOCOL,
   protocolFd: process.env.SANDKING_REAL_DELEGATION_PROTOCOL_FD,
   sandboxed: process.env.SANDKING_REAL_DELEGATION_CONTAINER,
+  claimInstanceId: process.env.SANDKING_REAL_DELEGATION_CLAIM_INSTANCE_ID,
   leakedToken: process.env.GH_TOKEN ?? null,
 }));
 writeSync(protocolFd, JSON.stringify({
@@ -121,6 +122,7 @@ writeSync(protocolFd, JSON.stringify({
       issueNumber: 262,
       authPath,
       githubCredentialPath,
+      claimInstanceId: "qualification-host",
       dockerEndpoint: "unix:///run/user/1000/docker.sock",
       signal: AbortSignal.timeout(5_000),
       timeoutMs: 4_000,
@@ -144,6 +146,7 @@ writeSync(protocolFd, JSON.stringify({
       protocol: "1",
       protocolFd: "1",
       sandboxed: "1",
+      claimInstanceId: "qualification-host",
       leakedToken: null,
     });
     assert.equal(invocations.length, 1);
