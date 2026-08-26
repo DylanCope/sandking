@@ -145,6 +145,7 @@ const readRunStart = (execution) => {
       "adapterProtocol",
       "adapterId",
       "harnessRunId",
+      "recoverClaimInstanceId",
       "retainedExecutionInputs",
       "githubCredential",
       "productionProviderRuntime",
@@ -153,6 +154,8 @@ const readRunStart = (execution) => {
     || message.adapterProtocol !== adapterProtocol
     || message.adapterId !== adapterId
     || message.harnessRunId !== execution.harnessRunId
+    || (message.recoverClaimInstanceId !== undefined
+      && !/^harness-run-[a-f0-9]{24}$/.test(message.recoverClaimInstanceId))
     || !Array.isArray(message.retainedExecutionInputs)
     || message.retainedExecutionInputs.length > maximumRetainedExecutionInputs
   ) {
@@ -190,6 +193,7 @@ const readRunStart = (execution) => {
       );
   return {
     retainedExecutionInputs,
+    recoverClaimInstanceId: message.recoverClaimInstanceId ?? null,
     productionProviderRuntime,
     githubCredential: githubCredential === null
       ? null
@@ -621,6 +625,7 @@ const runWorker = async (
   readiness,
   githubCredential,
   productionProviderRuntime,
+  recoverClaimInstanceId,
 ) => {
   const now = () => new Date().toISOString();
   writeFrame({
@@ -731,6 +736,8 @@ const runWorker = async (
             process.cwd(),
             Buffer.from(JSON.stringify({
               issueNumber: execution.parameters.issueNumber,
+              claimInstanceId: execution.harnessRunId,
+              ...(recoverClaimInstanceId ? { recoverClaimInstanceId } : {}),
               productionProviderRuntime,
             }), "utf8").toString("base64url"),
             readiness.root,
@@ -998,6 +1005,7 @@ if (!invokedAsAdapter) {
       readiness,
       runStart.githubCredential,
       runStart.productionProviderRuntime,
+      runStart.recoverClaimInstanceId,
     );
   }
 } else {

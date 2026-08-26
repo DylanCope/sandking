@@ -127,6 +127,8 @@ for (const mode of ["project-pat", "host-gh-session"]) {
       const progress = [];
       const result = await runRealDelegation({
         ...fixture,
+        claimInstanceId: `harness-run-${"1".repeat(24)}`,
+        recoverClaimInstanceId: `harness-run-${"2".repeat(24)}`,
         issueNumber: 262,
         productionProviderRuntime,
         githubCredential: { mode, token },
@@ -139,6 +141,8 @@ for (const mode of ["project-pat", "host-gh-session"]) {
           assert.equal(options.issueNumber, 262);
           assert.equal(options.sandboxImage, `sha256:${"c".repeat(64)}`);
           assert.equal(options.dockerEndpoint, productionProviderRuntime.dockerEndpoint);
+          assert.equal(options.claimInstanceId, `harness-run-${"1".repeat(24)}`);
+          assert.equal(options.recoverClaimInstanceId, `harness-run-${"2".repeat(24)}`);
           options.onProgress({ phase: "review" });
           return successfulAttestation();
         },

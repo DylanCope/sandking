@@ -15,6 +15,7 @@ import {
   observeProductionRunning,
   observeProductionTerminal,
   productionLaunchRequest,
+  readBundledIssueClaimActions,
   readBundledMainState,
   setBundledMainScenario,
   setProductionSandboxImage,
@@ -83,11 +84,6 @@ const waitForBundledMainReview = async (root) => {
   }
   throw new Error("bundled_main_review_timeout");
 };
-
-const issueClaimActions = (state, issueNumber) => state.issues[issueNumber].comments
-  .flatMap((body) => [...body.matchAll(/<!-- sandcastle-claim:([A-Za-z0-9_-]+) -->/g)])
-  .map(([, encoded]) => JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")))
-  .map(({ action }) => action);
 
 test("the ordinary launch seam delegates once through the pinned production adapter", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-adapter-"));
@@ -158,6 +154,7 @@ test("the ordinary launch seam delegates once through the pinned production adap
     assert.equal(mainState.pullRequests.length, 1);
     assert.equal(mainState.pullRequests[0].state, "MERGED");
     assert.equal(mainState.pullRequests[0].headRefName, "sandcastle/issue-173");
+    assert.deepEqual(readBundledIssueClaimActions(mainState, 173), ["claim", "release"]);
     assert.match(await readFile(join(fixture.projectPath, "issue-173-delivered.txt"), "utf8"),
       /implemented issue 173/);
     await assert.rejects(
@@ -225,7 +222,7 @@ test("the bundled main reports review-budget exhaustion as a truthful typed fail
     assert.equal(state.pullRequests.length, 1);
     assert.equal(state.pullRequests[0].state, "OPEN");
     assert.equal(state.pullRequests[0].comments.length, 15);
-    assert.deepEqual(issueClaimActions(state, 173), ["claim", "release"]);
+    assert.deepEqual(readBundledIssueClaimActions(state, 173), ["claim", "release"]);
   } finally {
     await fixture?.manager.waitForIdle().catch(() => undefined);
     restorePath();
@@ -703,7 +700,7 @@ test("production cancellation and reconnection converge on the same canonical ru
     assert.equal(activeState.issues[173].state, "open");
     assert.equal(activeState.pullRequests.length, 1);
     assert.equal(activeState.pullRequests[0].state, "OPEN");
-    assert.deepEqual(issueClaimActions(activeState, 173), ["claim"]);
+    assert.deepEqual(readBundledIssueClaimActions(activeState, 173), ["claim"]);
 
     const cancellation = await fixture.manager.cancel({
       requestId: "cancel-production-work",
@@ -743,7 +740,7 @@ test("production cancellation and reconnection converge on the same canonical ru
     assert.equal(cancelledState.issues[173].state, "open");
     assert.equal(cancelledState.pullRequests.length, 1);
     assert.equal(cancelledState.pullRequests[0].state, "OPEN");
-    assert.deepEqual(issueClaimActions(cancelledState, 173), ["claim", "release"]);
+    assert.deepEqual(readBundledIssueClaimActions(cancelledState, 173), ["claim", "release"]);
     assert.equal((await execFileAsync(
       "git",
       ["-C", fixture.projectPath, "branch", "--show-current"],
@@ -810,7 +807,7 @@ test("production cancellation and reconnection converge on the same canonical ru
     assert.equal(recoveredState.issues[173].state, "closed");
     assert.equal(recoveredState.pullRequests.length, 1);
     assert.equal(recoveredState.pullRequests[0].state, "MERGED");
-    assert.deepEqual(issueClaimActions(recoveredState, 173), [
+    assert.deepEqual(readBundledIssueClaimActions(recoveredState, 173), [
       "claim",
       "release",
       "claim",

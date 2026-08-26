@@ -10,7 +10,7 @@ const prohibitedKeyPattern = new RegExp([
   "raw[A-Z_]|machineSpecificSecretPath",
 ].join("|"), "i");
 const providerSecretPattern =
-  /(?:sk-[A-Za-z0-9_-]{12,}|gh[opsu]_[A-Za-z0-9]{12,}|Bearer\s+[A-Za-z0-9._~-]+)/i;
+  /(?:sk-[A-Za-z0-9_-]{12,}|gh[opsu]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|Bearer\s+[A-Za-z0-9._~-]+)/i;
 const sessionMaterialPattern = /(?:bootstrap\?token=|sandking_session=)/i;
 const namedSecretPattern =
   /(?:ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|GITHUB_TOKEN|SANDKING_CONTROLLER_SECRET)\s*=/i;

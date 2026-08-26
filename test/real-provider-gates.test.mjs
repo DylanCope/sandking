@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -10,6 +13,14 @@ import {
   inspectRealSandcastleRunState,
   serializeSanitizedRealProviderResult,
 } from "./real-sandcastle-acceptance.mjs";
+import {
+  realGitHubDelegationScenario,
+  validateRealGitHubDelegationResult,
+} from "./real-github-delegation.mjs";
+import {
+  provisionDisposableProjectPat,
+  verifyProjectPatRepositoryScope,
+} from "./disposable-github-repository.mjs";
 
 // Real-provider acceptance runners invoke paid models against a real
 // destination. Each must refuse to run unless its environment gate is set
@@ -77,6 +88,164 @@ test("issue 174 real-Sandcastle acceptance fails closed without the explicit gat
   });
 });
 
+test("real GitHub delegation qualification fails closed without explicit opt-in", async () => {
+  const qualificationArguments = [
+    "--test",
+    fileURLToPath(new URL("./real-github-delegation.qualification.mjs", import.meta.url)),
+  ];
+  await assert.rejects(execFileAsync(process.execPath, qualificationArguments, {
+    cwd: repositoryRoot,
+    env: closedEnvironment,
+  }), (error) => {
+    assert.match(error.stdout, /real_github_delegation_gate_disabled/);
+    assert.doesNotMatch(error.stdout, /productionEvidence.*true/);
+    return true;
+  });
+  await assert.rejects(execFileAsync(process.execPath, qualificationArguments, {
+    cwd: repositoryRoot,
+    env: { ...closedEnvironment, SANDKING_REAL_GITHUB_DELEGATION: "1" },
+  }), (error) => {
+    assert.match(error.stdout, /real_github_provisioning_token_missing/);
+    assert.doesNotMatch(error.stdout, /productionEvidence.*true/);
+    return true;
+  });
+  await assert.rejects(execFileAsync(process.execPath, qualificationArguments, {
+    cwd: repositoryRoot,
+    env: {
+      ...closedEnvironment,
+      SANDKING_REAL_GITHUB_DELEGATION: "1",
+      SANDKING_REAL_GITHUB_PROVISIONING_TOKEN: "provisioning-token-present",
+    },
+  }), (error) => {
+    assert.match(error.stdout, /real_github_project_pat_provisioner_missing/);
+    assert.doesNotMatch(error.stdout, /productionEvidence.*true/);
+    return true;
+  });
+});
+
+test("the live gate provisions and revokes its Project PAT after repository selection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-project-pat-provisioner-"));
+  const provisionerPath = join(root, "provision-project-pat.mjs");
+  const observationPath = join(root, "provisioner-observations.jsonl");
+  const projectPat = `github_pat_${"p".repeat(32)}`;
+  try {
+    await writeFile(provisionerPath, `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+const [operation, primaryRepository, deniedRepository] = process.argv.slice(2);
+const observe = () => appendFileSync(${JSON.stringify(observationPath)}, JSON.stringify({
+  operation,
+  primaryRepository,
+  deniedRepository,
+}) + "\\n");
+if (operation === "issue") {
+  observe();
+  process.stdout.write(${JSON.stringify(projectPat)} + "\\n");
+} else if (operation === "revoke") {
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => { input += chunk; });
+  process.stdin.on("end", () => {
+    if (input.trim() !== ${JSON.stringify(projectPat)}) process.exit(2);
+    observe();
+  });
+} else {
+  process.exit(3);
+}
+`);
+    await chmod(provisionerPath, 0o700);
+    const lease = await provisionDisposableProjectPat({
+      provisionerPath,
+      primaryRepository: "fixture-owner/disposable-a",
+      deniedRepository: "fixture-owner/disposable-b",
+    });
+    assert.equal(lease.token, projectPat);
+    await lease.dispose();
+    await lease.dispose();
+    assert.deepEqual((await readFile(observationPath, "utf8")).trim()
+      .split("\n").map(JSON.parse), [
+      {
+        operation: "issue",
+        primaryRepository: "fixture-owner/disposable-a",
+        deniedRepository: "fixture-owner/disposable-b",
+      },
+      {
+        operation: "revoke",
+        primaryRepository: "fixture-owner/disposable-a",
+        deniedRepository: "fixture-owner/disposable-b",
+      },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the Project-PAT scope proof first verifies that the denied repository exists", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-project-pat-scope-proof-"));
+  const fakeGhPath = join(root, "gh");
+  try {
+    await writeFile(fakeGhPath, `#!/usr/bin/env node
+const repository = process.argv.at(-1);
+if (repository === "repos/fixture-owner/disposable-a") process.exit(0);
+process.stderr.write("HTTP 404: Not Found\\n");
+process.exit(1);
+`);
+    await chmod(fakeGhPath, 0o700);
+    await assert.rejects(verifyProjectPatRepositoryScope({
+      deniedRepository: "fixture-owner/disposable-b",
+      environment: {
+        ...process.env,
+        PATH: `${root}:${process.env.PATH ?? ""}`,
+      },
+      primaryRepository: "fixture-owner/disposable-a",
+      projectPat: `github_pat_${"p".repeat(32)}`,
+      provisioningToken: `github_pat_${"q".repeat(32)}`,
+    }), /real_github_denied_repository_observation_failed/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the Project-PAT scope proof observes an existing repository rejected by the PAT", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-project-pat-scope-denial-"));
+  const fakeGhPath = join(root, "gh");
+  const projectPat = `github_pat_${"p".repeat(32)}`;
+  const provisioningToken = `github_pat_${"q".repeat(32)}`;
+  try {
+    await writeFile(fakeGhPath, `#!/usr/bin/env node
+const repository = process.argv.at(-1);
+const projectPat = ${JSON.stringify(projectPat)};
+const provisioningToken = ${JSON.stringify(provisioningToken)};
+if (
+  (process.env.GH_TOKEN === provisioningToken
+    && repository === "repos/fixture-owner/disposable-b")
+  || (process.env.GH_TOKEN === projectPat
+    && repository === "repos/fixture-owner/disposable-a")
+) process.exit(0);
+if (
+  process.env.GH_TOKEN === projectPat
+  && repository === "repos/fixture-owner/disposable-b"
+) {
+  process.stderr.write("HTTP 404: Not Found\\n");
+  process.exit(1);
+}
+process.exit(2);
+`);
+    await chmod(fakeGhPath, 0o700);
+    assert.equal(await verifyProjectPatRepositoryScope({
+      deniedRepository: "fixture-owner/disposable-b",
+      environment: {
+        ...process.env,
+        PATH: `${root}:${process.env.PATH ?? ""}`,
+      },
+      primaryRepository: "fixture-owner/disposable-a",
+      projectPat,
+      provisioningToken,
+    }), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("real-provider result serialization rejects secrets, session material, and machine paths", () => {
   for (const result of [
     { credentialValue: "secret" },
@@ -120,6 +289,7 @@ test("real-provider result serialization rejects secrets, session material, and 
   for (const secret of [
     "sk-1234567890abcdef",
     "ghp_1234567890abcdef",
+    "github_pat_1234567890abcdef",
     "Bearer abcdefghijklmnop",
     "https://127.0.0.1/bootstrap?token=reusable",
     "sandking_session=reusable",
@@ -160,6 +330,112 @@ test("the real-Sandcastle runner recognizes a rejected launch before model invoc
     code: "harness_worker_provider_unavailable",
     modelInvocationMayHaveOccurred: false,
   });
+});
+
+test("real GitHub delegation evidence requires scoped, canonical, merged behavior", () => {
+  const result = {
+    schemaVersion: 1,
+    scenario: realGitHubDelegationScenario.id,
+    qualification: {
+      status: "passed",
+      productionEvidence: true,
+      fixtureSubstitution: false,
+    },
+    installedSandKing: {
+      command: "sandking",
+      installed: true,
+      launchedOutsideCheckout: true,
+      tarballIntegrity: `sha256:${"1".repeat(64)}`,
+    },
+    harness: {
+      identity: "sandcastle-harness-adapter-v1",
+      pinnedRevision: "2".repeat(40),
+    },
+    authentication: {
+      primaryMode: "project-pat",
+      passthroughMode: "host-gh-session",
+      projectScopeEnforced: true,
+    },
+    github: {
+      repository: {
+        nameWithOwner: "fixture-owner/sandking-a",
+        url: "https://github.com/fixture-owner/sandking-a",
+      },
+      deniedRepository: {
+        nameWithOwner: "fixture-owner/sandking-b",
+        url: "https://github.com/fixture-owner/sandking-b",
+        access: "denied",
+      },
+      issue: {
+        number: 1,
+        url: "https://github.com/fixture-owner/sandking-a/issues/1",
+        state: "CLOSED",
+      },
+      pullRequest: {
+        number: 2,
+        url: "https://github.com/fixture-owner/sandking-a/pull/2",
+        state: "MERGED",
+        baseRefName: "main",
+        headRefName: "sandcastle/issue-1",
+      },
+      delivery: {
+        baseCommit: "6".repeat(40),
+        mainCommit: "7".repeat(40),
+        artifact: {
+          path: "delegated-issue.txt",
+          integrity: "sha256:434b05aee5fa527f23415993037d2fa9943300c54ad892a53836fc666aa0e961",
+          bytes: 29,
+        },
+        seededTest: { command: "npm test", passed: true },
+      },
+    },
+    structuredOutcome: {
+      harnessRunId: `harness-run-${"3".repeat(24)}`,
+      status: "succeeded",
+      code: "issue_delivery_completed",
+      completion: {
+        kind: "merged-pull-request",
+        pullRequestNumber: 2,
+        pullRequestUrl: "https://github.com/fixture-owner/sandking-a/pull/2",
+      },
+    },
+    idempotency: {
+      launchAttempts: 2,
+      canonicalRunCount: 1,
+      pullRequestCount: 1,
+      claimActions: ["claim", "release"],
+    },
+    hostGhPassthrough: {
+      harnessRunId: `harness-run-${"4".repeat(24)}`,
+      status: "succeeded",
+      completion: "issue-already-closed",
+    },
+    diagnostics: {
+      contentRetained: false,
+      references: [{
+        streamId: `harness-log-${"5".repeat(24)}`,
+        producer: "stderr",
+        explicitRetrievalRequired: true,
+      }],
+    },
+  };
+
+  assert.equal(validateRealGitHubDelegationResult(result), result);
+  for (const invalid of [
+    { authentication: { ...result.authentication, projectScopeEnforced: false } },
+    { github: { ...result.github, issue: { ...result.github.issue, state: "OPEN" } } },
+    { github: { ...result.github, delivery: {
+      ...result.github.delivery,
+      seededTest: { command: "npm test", passed: false },
+    } } },
+    { idempotency: { ...result.idempotency, pullRequestCount: 2 } },
+    { diagnostics: { ...result.diagnostics, providerTranscript: "not allowed" } },
+  ]) {
+    assert.throws(
+      () => validateRealGitHubDelegationResult({ ...result, ...invalid }),
+      /real_github_delegation_result_invalid/,
+    );
+  }
 });
 
 test("production Host and Cockpit protocols exclude fault-injection controls", async () => {

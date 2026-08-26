@@ -283,6 +283,7 @@ export const harnessRunStartRequestSchema = z.object({
   adapterProtocol: adapterProtocolSchema,
   adapterId: harnessAdapterIdSchema,
   harnessRunId: harnessRunIdSchema,
+  recoverClaimInstanceId: harnessRunIdSchema.optional(),
   retainedExecutionInputs: z.array(retainedExecutionInputSchema)
     .max(MAX_RETAINED_EXECUTION_INPUTS),
   githubCredential: githubCredentialSchema.optional(),
@@ -294,6 +295,16 @@ export const harnessRunStartRequestSchema = z.object({
       code: "custom",
       message: "retained execution input paths must be unique",
       path: ["retainedExecutionInputs"],
+    });
+  }
+  if (
+    request.recoverClaimInstanceId
+    && request.adapterId !== SANDCASTLE_HARNESS_ADAPTER_ID
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "issue-claim recovery is supported only by the production Sandcastle adapter",
+      path: ["recoverClaimInstanceId"],
     });
   }
   if (

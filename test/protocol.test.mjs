@@ -160,6 +160,11 @@ test("GitHub credential configuration is a one-way capability-negotiated Host op
     sanitizedExplanation:
       "Real delegation requires a scoped GitHub issue. Retry with --issue <number>.",
   };
+  const activeIssueFailure = {
+    ...launchFailureWithoutOptions,
+    requestId: "launch-while-issue-run-is-active",
+    code: "harness_issue_run_active",
+  };
 
   for (const message of [
     projectRequest,
@@ -169,6 +174,7 @@ test("GitHub credential configuration is a one-way capability-negotiated Host op
     unconfigured,
     launchFailure,
     missingIssueFailure,
+    activeIssueFailure,
   ]) {
     writeFrame(stream, message);
     assert.deepEqual(await readFrame(stream), message);

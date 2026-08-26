@@ -51,6 +51,8 @@ const MAIN_WORKFLOW_SKILL_IDENTITIES = Object.freeze(
 const DELEGATION_FAILURE_CODES = new Set([
   "delivery_cancelled",
   "delivery_execution_failed",
+  "github_credential_expired",
+  "github_rate_limited",
   "real_delegation_github_credential_required",
   "real_delegation_interrupted",
   "real_delegation_main_result_invalid",
@@ -123,6 +125,8 @@ export const runPinnedMain = async ({
   issueNumber,
   authPath,
   githubCredentialPath,
+  claimInstanceId = randomUUID(),
+  recoverClaimInstanceId = null,
   dockerEndpoint,
   sandboxImage = REAL_SANDBOX_IMAGE,
   signal,
@@ -162,6 +166,8 @@ export const runPinnedMain = async ({
     projectPath,
     authPath,
     githubCredentialPath,
+    claimInstanceId,
+    recoverClaimInstanceId,
     sandboxImage,
     dockerRelay,
   });
@@ -276,6 +282,8 @@ export const runRealDelegation = async ({
   signal,
   authPath = destinationCodexAuthPath(),
   githubCredential = null,
+  claimInstanceId,
+  recoverClaimInstanceId = null,
   productionProviderRuntime,
   runMain = runPinnedMain,
   onProgress = () => undefined,
@@ -299,6 +307,8 @@ export const runRealDelegation = async ({
       issueNumber,
       authPath,
       githubCredentialPath: materializedGitHubCredential.path,
+      claimInstanceId,
+      recoverClaimInstanceId,
       dockerEndpoint: providerRuntime.dockerEndpoint,
       sandboxImage: providerRuntime.sandboxImageId,
       signal,
@@ -400,17 +410,28 @@ const publish = (message) => {
 export const parseRealDelegationInvocationParameters = (encoded) => {
   try {
     const value = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    const parameterKeys = [
+      "claimInstanceId",
+      "issueNumber",
+      "productionProviderRuntime",
+      ...(value?.recoverClaimInstanceId === undefined ? [] : ["recoverClaimInstanceId"]),
+    ];
     if (
       !value
       || typeof value !== "object"
       || Array.isArray(value)
-      || !hasExactKeys(value, ["issueNumber", "productionProviderRuntime"])
+      || !hasExactKeys(value, parameterKeys)
       || !isValidIssueNumber(value.issueNumber)
+      || !/^harness-run-[a-f0-9]{24}$/.test(value.claimInstanceId ?? "")
+      || (value.recoverClaimInstanceId !== undefined
+        && !/^harness-run-[a-f0-9]{24}$/.test(value.recoverClaimInstanceId))
     ) {
       throw new Error("invalid");
     }
     return {
       issueNumber: value.issueNumber,
+      claimInstanceId: value.claimInstanceId,
+      recoverClaimInstanceId: value.recoverClaimInstanceId ?? null,
       productionProviderRuntime: parseProductionProviderRuntime(
         value.productionProviderRuntime,
         "real_delegation_parameters_invalid",
@@ -448,6 +469,8 @@ if (invokedPath.endsWith("/.sandcastle/real-worker-v2.mjs")) {
     executionPath,
     projectPath,
     issueNumber: parameters.issueNumber,
+    claimInstanceId: parameters.claimInstanceId,
+    recoverClaimInstanceId: parameters.recoverClaimInstanceId,
     productionProviderRuntime: parameters.productionProviderRuntime,
     githubCredential,
     signal: controller.signal,

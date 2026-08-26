@@ -23,9 +23,10 @@
 // delivering it, and releases the claim when delivery finishes, so a second
 // Harness instance running concurrently (e.g. on another machine) with
 // overlapping scope skips issues this run already holds instead of racing
-// it. Claims are keyed by hostname, so relaunching on the same machine
-// always resumes your own claim without friction. To take over an issue
-// claimed by a different, presumed-dead instance, pass
+// it. Claims use a unique run identity; the hostname is retained only as
+// operator-facing metadata. Production Host recovery may take over the exact
+// failed Harness-run claim it reconciled. To take over any other issue claimed
+// by a different, presumed-dead instance, pass
 // --override-claim <issueId> (repeatable) — verify that instance really
 // isn't still running before doing this, since claims aren't released on a
 // crash.
@@ -34,7 +35,6 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeSync } from "node:fs";
-import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
@@ -43,6 +43,7 @@ import {
 } from "./delivery-adapters.mjs";
 import {
   completeIssueThroughPullRequest,
+  createIssueClaimInstance,
   DEFAULT_MAX_REVIEW_ATTEMPTS,
   getActiveIssueClaim,
 } from "./issue-delivery.mjs";
@@ -207,7 +208,20 @@ const scopeOptions = parseRunScope(process.argv.slice(2));
 const maxReviewAttempts =
   parseMaxReviewAttempts(process.argv.slice(2)) ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
 const overrideClaimIssueIds = parseOverrideClaimIssueIds(process.argv.slice(2));
-const instance = { id: os.hostname(), host: os.hostname(), pid: process.pid };
+const instance = createIssueClaimInstance({
+  ...(process.env.SANDKING_REAL_DELEGATION_CLAIM_INSTANCE_ID
+    ? { id: process.env.SANDKING_REAL_DELEGATION_CLAIM_INSTANCE_ID }
+    : {}),
+});
+const claimInstanceId = instance.id;
+const recoverClaimInstanceId =
+  process.env.SANDKING_REAL_DELEGATION_RECOVER_CLAIM_INSTANCE_ID ?? null;
+if (recoverClaimInstanceId && (
+  !/^harness-run-[a-f0-9]{24}$/.test(recoverClaimInstanceId)
+  || recoverClaimInstanceId === claimInstanceId
+)) {
+  throw new Error("real_delegation_recover_claim_instance_invalid");
+}
 const runScope = scopeOptions
   ? "issueId" in scopeOptions
     ? await createIssueScope({ issueId: scopeOptions.issueId, github })
@@ -369,7 +383,25 @@ const runPullRequestReviewer = async (
 // Main loop
 // ---------------------------------------------------------------------------
 
+const githubFailureCode = (error: unknown) => {
+  const candidate = error && typeof error === "object"
+    ? error as { message?: unknown; stderr?: unknown; stdout?: unknown }
+    : {};
+  const diagnostic = [candidate.message, candidate.stderr, candidate.stdout]
+    .map((value) => Buffer.isBuffer(value) ? value.toString("utf8") : String(value ?? ""))
+    .join("\n");
+  if (/(?:rate limit|secondary rate|HTTP 429)/i.test(diagnostic)) {
+    return "github_rate_limited";
+  }
+  if (/(?:bad credentials|HTTP 401|token[^\n]*(?:expired|revoked)|authentication failed)/i
+    .test(diagnostic)) {
+    return "github_credential_expired";
+  }
+  return "delivery_execution_failed";
+};
+
 let executionFailed = false;
+let executionFailureCode = "delivery_execution_failed";
 const main = async () => {
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     if (runScope && scopeOptions && await runScope.isComplete()) {
@@ -449,12 +481,19 @@ const main = async () => {
 
   let deliveryFailed = false;
   for (const issue of issues) {
-    const overrideClaim = overrideClaimIssueIds.has(issue.id);
+    const existingClaim = recoverClaimInstanceId || overrideClaimIssueIds.has(issue.id)
+      ? await getActiveIssueClaim({ issue, github })
+      : null;
+    const recoveringInterruptedClaim =
+      existingClaim?.instanceId === recoverClaimInstanceId;
+    const overrideClaim = overrideClaimIssueIds.has(issue.id)
+      || recoveringInterruptedClaim;
     if (overrideClaim) {
-      const existingClaim = await getActiveIssueClaim({ issue, github });
       if (existingClaim && existingClaim.instanceId !== instance.id) {
         console.warn(
-          `  ⚠ Overriding existing claim on issue #${issue.id}: held by ${existingClaim.host} (pid ${existingClaim.pid}, claimed ${existingClaim.at}). Verify that instance is not still running before proceeding.`,
+          recoveringInterruptedClaim
+            ? `  ⚠ Recovering failed Harness-run claim on issue #${issue.id}: held by ${existingClaim.host} (pid ${existingClaim.pid}, claimed ${existingClaim.at}).`
+            : `  ⚠ Overriding existing claim on issue #${issue.id}: held by ${existingClaim.host} (pid ${existingClaim.pid}, claimed ${existingClaim.at}). Verify that instance is not still running before proceeding.`,
         );
       }
     }
@@ -510,6 +549,7 @@ const main = async () => {
       });
     } catch (error) {
       deliveryFailed = true;
+      executionFailureCode = githubFailureCode(error);
       console.error(`  ✗ Issue #${issue.id} delivery failed:`, error);
       break;
     }
@@ -529,6 +569,7 @@ try {
   await main();
 } catch (error) {
   executionFailed = true;
+  executionFailureCode = githubFailureCode(error);
   console.error("\nSandcastle stopped after all retries:", error);
   console.error(
     "Branch worktrees were preserved. Restore connectivity, then rerun the same npm command to resume.",
@@ -566,7 +607,7 @@ if (protocolEnabled && scopedIssueNumber && runScope) {
         code: controller.signal.aborted
           ? "delivery_cancelled"
           : executionFailed
-            ? "delivery_execution_failed"
+            ? executionFailureCode
             : "scoped_issue_incomplete",
         completion: null,
       }));

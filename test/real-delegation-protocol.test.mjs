@@ -58,6 +58,15 @@ test("main delegation messages are strict structured progress and completion att
 
   assert.deepEqual(parseRealDelegationMessage(JSON.stringify(progress)), progress);
   assert.deepEqual(parseRealDelegationMessage(JSON.stringify(result)), result);
+  for (const code of ["github_credential_expired", "github_rate_limited"]) {
+    const failure = createRealDelegationResult({
+      issueNumber: 262,
+      status: "failed",
+      code,
+      completion: null,
+    });
+    assert.deepEqual(parseRealDelegationMessage(JSON.stringify(failure)), failure);
+  }
   assert.throws(
     () => parseRealDelegationMessage(JSON.stringify({
       ...result,

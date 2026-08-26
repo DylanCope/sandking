@@ -1,7 +1,18 @@
 import { spawn } from "node:child_process";
-import { access, readdir, writeFile } from "node:fs/promises";
+import { access, readFile, readdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  HOST_SCHEMA_DIGEST,
+  MAX_BULK_CHUNK_BYTES,
+  MAX_FRAME_BYTES,
+  hostCapabilities,
+  protocolVersion,
+  readFrame,
+  releaseVersion,
+  writeFrame,
+} from "../src/protocol.mjs";
 
 const configureInstalledProjectPat = (installed, registration) => new Promise(
   (resolve, reject) => {
@@ -47,141 +58,133 @@ export const startInstalledProductionHost = async ({
   // Issue-driven installed launches establish their GitHub precondition through
   // the same person-facing Host action used outside this behavioral fixture.
   await configureInstalledProjectPat(installed, registration);
-  const harnessRunsUrl = pathToFileURL(join(
-    installed.packageDirectory,
-    "src",
-    "harness-runs.mjs",
-  )).href;
-  const projectRegistrationUrl = pathToFileURL(join(
-    installed.packageDirectory,
-    "src",
-    "project-registration.mjs",
-  )).href;
-  const githubCredentialsUrl = pathToFileURL(join(
-    installed.packageDirectory,
-    "src",
-    "github-credentials.mjs",
-  )).href;
-  const source = `
-import { createServer } from "node:net";
-import { createHarnessRunManager } from ${JSON.stringify(harnessRunsUrl)};
-import { createProjectRegistry } from ${JSON.stringify(projectRegistrationUrl)};
-import { createGitHubCredentialManager } from ${JSON.stringify(githubCredentialsUrl)};
-const dataDir = ${JSON.stringify(registration.dataDir)};
-const endpoint = ${JSON.stringify(endpoint)};
-const projectId = ${JSON.stringify(registration.project.project.projectId)};
-let auditSequence = 0;
-const recordAudit = async (_action, _outcome, _details, requestedAuditId) =>
-  requestedAuditId ?? \`audit-\${String(++auditSequence).padStart(24, "0")}\`;
-const registry = await createProjectRegistry({ dataDir, recordAudit });
-const githubCredentials = await createGitHubCredentialManager({ dataDir, recordAudit });
-const manager = await createHarnessRunManager({
-  dataDir,
-  hostId: \`host-\${"7".repeat(24)}\`,
-  recordAudit,
-  loadLaunchContext: registry.loadLaunchContext,
-  resolveGitHubCredential: githubCredentials.resolveForProject,
-});
-const server = createServer((socket) => {
-  socket.setEncoding("utf8");
-  let input = "";
-  socket.on("data", async (chunk) => {
-    input += chunk;
-    if (!input.includes("\\n")) return;
-    try {
-      const request = JSON.parse(input.slice(0, input.indexOf("\\n")));
-      const outcome = request.operation === "describe"
-        ? {
-            type: "controller.cli.description",
-            protocol: "1.0.0",
-            command: "sandking launch",
-            focusedProjectId: projectId,
-            projectArgumentOptional: true,
-            pluginRequired: false,
-            launchParameters: ${JSON.stringify(registration.harness.harness.launchParameters)},
-          }
-        : await manager.launch({
-            requestId: request.requestId,
-            projectId,
-            parameters: request.parameters ?? {},
-            controllerId: \`runtime-\${"8".repeat(24)}\`,
-            controllerSessionId: request.controllerSessionId,
-            source: "controller-cli",
-            authorizationClass: "harness_run_launch",
-            idempotencyKeyHash: request.idempotencyKeyHash,
-          });
-      const succeeded = outcome.type === "controller.cli.description"
-        || outcome.type === "harness.run.launch.result";
-      socket.end(\`\${JSON.stringify({
-        type: "sandking.cli.result",
-        protocol: "1.0.0",
-        requestId: request.requestId,
-        ok: succeeded,
-        ...(succeeded ? { outcome } : { failure: { code: outcome.code } }),
-      })}\\n\`);
-    } catch (error) {
-      socket.destroy(error instanceof Error ? error : undefined);
-    }
-  });
-});
-process.once("SIGTERM", async () => {
-  await manager.waitForIdle();
-  server.close(() => process.exit(0));
-});
-server.listen(endpoint, () => process.stdout.write("ready\\n"));
-`;
+  const controllerId = `runtime-${"8".repeat(24)}`;
+  const hostIdentity = JSON.parse(await readFile(
+    join(registration.dataDir, "host-identity.json"),
+    "utf8",
+  ));
+  const localHostPath = join(installed.packageDirectory, "src", "local-host.mjs");
   const child = spawn(nodePath, [
     ...(preloadPath ? ["--import", pathToFileURL(preloadPath).href] : []),
-    "--input-type=module",
-    "--eval",
-    source,
+    localHostPath,
+    "--data-dir",
+    registration.dataDir,
   ], {
     env: process.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
   let diagnostic = "";
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => {
     diagnostic += chunk;
   });
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error(`installed_readiness_host_timeout: ${diagnostic}`));
-    }, 10_000);
-    let output = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
-      if (!output.includes("ready\n")) return;
-      clearTimeout(timeout);
-      resolve();
+  writeFrame(child.stdin, {
+    type: "hello",
+    protocol: protocolVersion,
+    release: releaseVersion,
+    identity: "controller-runtime",
+    controllerId,
+    expectedPeerIdentity: "local-host",
+    expectedHostId: hostIdentity.hostId,
+    capabilities: { required: [...hostCapabilities], optional: [] },
+    schemaDigest: HOST_SCHEMA_DIGEST,
+    framing: {
+      maxFrameBytes: MAX_FRAME_BYTES,
+      maxBulkChunkBytes: MAX_BULK_CHUNK_BYTES,
+    },
+    observationCursor: null,
+  });
+  let handshakeTimer;
+  const handshake = await Promise.race([
+    readFrame(child.stdout),
+    new Promise((_, reject) => {
+      handshakeTimer = setTimeout(() => reject(new Error(
+        `installed_readiness_host_timeout: ${diagnostic}`,
+      )), 10_000);
+    }),
+  ]).finally(() => clearTimeout(handshakeTimer));
+  if (
+    handshake.type !== "hello-ack"
+    || handshake.identity !== "local-host"
+    || handshake.hostId !== hostIdentity.hostId
+    || handshake.peerControllerId !== controllerId
+  ) {
+    child.kill("SIGKILL");
+    throw new Error(`installed_readiness_host_handshake_failed: ${diagnostic}`);
+  }
+
+  let hostOperationQueue = Promise.resolve();
+  const requestHostOperation = (message) => {
+    const operation = hostOperationQueue.then(async () => {
+      writeFrame(child.stdin, message);
+      return readFrame(child.stdout);
     });
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once("exit", (code, signal) => {
-      if (output.includes("ready\n")) return;
-      clearTimeout(timeout);
-      reject(new Error(
-        `installed_readiness_host_exited: ${code ?? signal ?? "unknown"}: ${diagnostic}`,
-      ));
+    hostOperationQueue = operation.then(() => undefined, () => undefined);
+    return operation;
+  };
+  const projectId = registration.project.project.projectId;
+  const server = createServer((socket) => {
+    socket.setEncoding("utf8");
+    let input = "";
+    socket.on("data", (chunk) => {
+      input += chunk;
+      if (!input.includes("\n")) return;
+      void (async () => {
+        const request = JSON.parse(input.slice(0, input.indexOf("\n")));
+        const outcome = request.operation === "describe"
+          ? {
+              type: "controller.cli.description",
+              protocol: "1.0.0",
+              command: "sandking launch",
+              focusedProjectId: projectId,
+              projectArgumentOptional: true,
+              pluginRequired: false,
+              launchParameters: registration.harness.harness.launchParameters,
+            }
+          : await requestHostOperation({
+              type: "harness.run.launch",
+              requestId: request.requestId,
+              projectId,
+              parameters: request.parameters ?? {},
+              controllerId,
+              controllerSessionId: request.controllerSessionId,
+              source: "controller-cli",
+              authorizationClass: "harness_run_launch",
+              idempotencyKeyHash: request.idempotencyKeyHash,
+            });
+        const succeeded = outcome.type === "controller.cli.description"
+          || outcome.type === "harness.run.launch.result";
+        socket.end(`${JSON.stringify({
+          type: "sandking.cli.result",
+          protocol: "1.0.0",
+          requestId: request.requestId,
+          ok: succeeded,
+          ...(succeeded ? { outcome } : { failure: { code: outcome.code } }),
+        })}\n`);
+      })().catch(() => socket.destroy());
     });
   });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(endpoint, resolve);
+  });
+  const closeServer = () => new Promise((resolve, reject) => server.close((error) => {
+    if (error) reject(error);
+    else resolve(undefined);
+  }));
+  const terminate = async (signal) => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise((resolve) => child.once("close", resolve));
+      child.kill(signal);
+      await exited;
+    }
+    await closeServer();
+  };
   return {
     diagnostic: () => diagnostic,
-    kill: async () => {
-      if (child.exitCode !== null || child.signalCode !== null) return;
-      const exited = new Promise((resolve) => child.once("close", resolve));
-      child.kill("SIGKILL");
-      await exited;
-    },
-    stop: async () => {
-      if (child.exitCode !== null || child.signalCode !== null) return;
-      const exited = new Promise((resolve) => child.once("close", resolve));
-      child.kill("SIGTERM");
-      await exited;
-    },
+    pid: child.pid,
+    kill: () => terminate("SIGKILL"),
+    stop: () => terminate("SIGTERM"),
   };
 };
 

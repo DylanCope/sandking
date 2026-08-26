@@ -41,6 +41,30 @@ import { logPath, retainedLaunchOutcome } from "../store.mjs";
 import { createProductionProviderPreparationId } from "../provider-preparation-store.mjs";
 
 const PRODUCTION_PROVIDER_CLEANUP_RETRY_MS = 100;
+const ACTIVE_RUN_STATUSES = new Set([
+  "starting",
+  "running",
+  "cancelling",
+  "recovery_required",
+]);
+
+/** @param {any[]} runs @param {string} projectId @param {number} issueNumber */
+const hasActiveIssueRun = (runs, projectId, issueNumber) => runs.some((run) =>
+  run.projectId === projectId
+  && run.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+  && run.parameters?.issueNumber === issueNumber
+  && ACTIVE_RUN_STATUSES.has(run.status));
+
+/** @param {any[]} runs @param {string} projectId @param {number} issueNumber */
+const recoverableClaimInstanceId = (runs, projectId, issueNumber) => {
+  const latest = runs.toReversed().find((run) =>
+    run.projectId === projectId
+    && run.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+    && run.parameters?.issueNumber === issueNumber);
+  return latest?.status === "failed"
+    ? latest.harnessRunId
+    : null;
+};
 
 /** @param {unknown} error */
 const typedErrorCode = (error) => error && typeof error === "object"
@@ -276,7 +300,17 @@ export const createLaunchOperation = (runtime) => {
     if (!code && parameters.success) {
       try {
         context = await options.loadLaunchContext(request.projectId);
-        if (
+        const activeIssueRun = context.project.harness.adapterId
+          === SANDCASTLE_HARNESS_ADAPTER_ID
+          && typeof parameters.data.issueNumber === "number"
+          && hasActiveIssueRun(
+            retained.runs,
+            context.project.projectId,
+            parameters.data.issueNumber,
+          );
+        if (activeIssueRun) {
+          code = "harness_issue_run_active";
+        } else if (
           context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
           && context.project.harness.preparation
         ) {
@@ -287,24 +321,26 @@ export const createLaunchOperation = (runtime) => {
             productionPreparation: context.project.harness.preparation,
           });
         }
-        prepared = await validateHarnessLaunch(context, parameters.data, {
-          productionProviderRuntime:
-            providerPreparation?.productionProviderRuntime,
-        });
-        if (
-          context.project.projectId !== request.projectId
-          || context.harness.harnessId !== context.project.harness.harnessId
-          || context.harness.immutableRevision !== context.project.harness.pinnedRevision
-          || prepared.adapterId !== context.harness.adapterId
-          || prepared.adapterProtocol
-            !== context.project.harness.boundedConfiguration.adapterProtocol
-        ) {
-          code = "harness_pin_invalid";
+        if (!code) {
+          prepared = await validateHarnessLaunch(context, parameters.data, {
+            productionProviderRuntime:
+              providerPreparation?.productionProviderRuntime,
+          });
+          if (
+            context.project.projectId !== request.projectId
+            || context.harness.harnessId !== context.project.harness.harnessId
+            || context.harness.immutableRevision !== context.project.harness.pinnedRevision
+            || prepared.adapterId !== context.harness.adapterId
+            || prepared.adapterProtocol
+              !== context.project.harness.boundedConfiguration.adapterProtocol
+          ) {
+            code = "harness_pin_invalid";
+          }
         }
         const productionHarness = !code
           && context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID;
         const githubAccessRequired = productionHarness
-          && prepared.suppliedCapabilities.some(isGitHubCredentialCapability);
+          && prepared?.suppliedCapabilities.some(isGitHubCredentialCapability) === true;
         if (githubAccessRequired && options.resolveGitHubCredential) {
           githubCredential = await options.resolveGitHubCredential(
             context.project.projectId,
@@ -346,6 +382,7 @@ export const createLaunchOperation = (runtime) => {
           "harness_projection_failed",
           "harness_execution_runtime_unavailable",
           "harness_worker_provider_unavailable",
+          "harness_issue_run_active",
           "real_delegation_issue_required",
           "bounded_configuration_invalid",
           "harness_capability_unsupported",
@@ -358,10 +395,21 @@ export const createLaunchOperation = (runtime) => {
 
     let harnessRunId = null;
     let harnessExecutionPath = null;
+    let recoverClaimInstanceId = null;
     /** @type {Array<{path: string, integrity: string, source: string}>} */
     let retainedHarnessExecutionInputs = [];
     if (!code && context && prepared && parameters.success && idempotencyKeyHash) {
       harnessRunId = `harness-run-${randomBytes(12).toString("hex")}`;
+      if (
+        typeof parameters.data.issueNumber === "number"
+        && Number.isSafeInteger(parameters.data.issueNumber)
+      ) {
+        recoverClaimInstanceId = recoverableClaimInstanceId(
+          retained.runs,
+          context.project.projectId,
+          parameters.data.issueNumber,
+        );
+      }
       if (
         context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
         && context.project.harness.preparation
@@ -409,6 +457,7 @@ export const createLaunchOperation = (runtime) => {
         "harness_projection_failed",
         "harness_execution_runtime_unavailable",
         "harness_worker_provider_unavailable",
+        "harness_issue_run_active",
         "real_delegation_issue_required",
         ...GITHUB_CREDENTIAL_FAILURE_CODES,
       ]);
@@ -601,6 +650,7 @@ export const createLaunchOperation = (runtime) => {
         harnessExecutionPath,
         retainedHarnessExecutionInputs,
         githubCredential,
+        recoverClaimInstanceId,
         productionProviderRuntime:
           providerPreparation?.productionProviderRuntime,
         cancellationGraceMs,
