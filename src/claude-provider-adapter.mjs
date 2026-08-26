@@ -11,7 +11,6 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { canonicalJson } from "./common/canonical-json.mjs";
 import { digestHex } from "./common/digest.mjs";
-import { isGitHubCredentialFailureCode } from "./github-credential-contract.mjs";
 
 const execFileAsync = promisify(execFile);
 const adapterProtocol = Object.freeze({
@@ -607,11 +606,6 @@ const requireSuccessfulControllerLaunch = (outcome, request) => {
     throw Object.assign(new Error(outcome.code), {
       code: outcome.code,
       sanitizedExplanation: outcome.sanitizedExplanation,
-      // The ordinary CLI owns the canonical credential guidance. Omitting
-      // provider-local wording here lets that shared contract supply it.
-      configurationOptions: isGitHubCredentialFailureCode(outcome.code)
-        ? undefined
-        : outcome.configurationOptions,
     });
   }
   throw new Error("controller_cli_protocol_invalid");
