@@ -1,19 +1,16 @@
 FROM node:22-bookworm
 
-ARG DEBIAN_SNAPSHOT_TIMESTAMP=20260825T000000Z
-ARG DOCKER_CLI_PACKAGE_VERSION=20.10.24+dfsg1-1+deb12u1+b6
-
 # Install system dependencies
 RUN sed -i \
-  -e "s|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT_TIMESTAMP}|g" \
-  -e "s|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT_TIMESTAMP}|g" \
+  -e "s|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20260825T000000Z|g" \
+  -e "s|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20260825T000000Z|g" \
   /etc/apt/sources.list.d/debian.sources \
   && apt-get -o Acquire::Check-Valid-Until=false update \
   && apt-get install -y \
   git \
   curl \
   jq \
-  docker.io="${DOCKER_CLI_PACKAGE_VERSION}" \
+  docker.io=20.10.24+dfsg1-1+deb12u1+b6 \
   && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI
