@@ -696,8 +696,14 @@ const runWorker = async (
       });
       activeChild.stdout?.on("data", diagnostic);
       activeChild.stderr?.on("data", diagnostic);
+      activeChild.stdout?.once("error", () => {
+        dependencyFailure = true;
+      });
+      activeChild.stderr?.once("error", () => {
+        dependencyFailure = true;
+      });
       const installExit = await waitForExit(activeChild);
-      dependencyFailure = !cancelled
+      dependencyFailure ||= !cancelled
         && (installExit.startFailed || installExit.code !== 0);
     }
 
@@ -739,11 +745,23 @@ const runWorker = async (
           activeChild.kill("SIGKILL");
           throw new Error("worker_credential_channel_unavailable");
         }
+        credentialStream.once("error", () => {
+          outputInvalid = true;
+        });
         credentialStream.end(JSON.stringify(githubCredential));
       }
       activeChild.stderr?.on("data", diagnostic);
+      activeChild.stderr?.once("error", () => {
+        outputInvalid = true;
+      });
+      activeChild.stdout?.once("error", () => {
+        outputInvalid = true;
+      });
       if (readiness.realProvider) activeChild.stdout?.resume();
       const protocolStream = readiness.realProvider ? activeChild.stdio[3] : activeChild.stdout;
+      protocolStream.once("error", () => {
+        outputInvalid = true;
+      });
       let outputBytes = 0;
       const lines = createInterface({ input: protocolStream, crlfDelay: Infinity });
       lines.on("line", (line) => {

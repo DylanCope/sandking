@@ -201,15 +201,19 @@ export const runPinnedMain = async ({
       env: dockerEnvironment,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    let outputInvalid = false;
+    child.stderr?.once("error", () => undefined);
     child.stderr?.pipe(process.stderr, { end: false });
 
     const messages = [];
-    let outputInvalid = false;
     const protocolStream = child.stdout;
     if (!protocolStream) {
       child.kill("SIGKILL");
       throw delegationError("real_delegation_main_result_invalid");
     }
+    protocolStream.once("error", () => {
+      outputInvalid = true;
+    });
     const lines = createInterface({ input: protocolStream, crlfDelay: Infinity });
     const linesClosed = new Promise((resolve) => lines.once("close", resolve));
     lines.on("line", (line) => {
