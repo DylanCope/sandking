@@ -32,9 +32,9 @@ const sourceUrlSchema = z.url().refine((value) => {
 });
 
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
-const SAND_KING_SEED_REVISION = "24a140a1d9781a51015a012e29f2bbc084cc571a";
+const SAND_KING_SEED_REVISION = "3afda705c3576396641e302016a01649ce2945c0";
 const SAND_KING_SEED_SOURCE_INTEGRITY =
-  "sha256:d4e9394fb3de8c7b04b6bf5e356a7dc52cb3169a1b5464f43dc5f00a6a48065c";
+  "sha256:f5e43d4b0f5d5a3eed38f7e235de3ef4e13311235ac76de56271ca31fb75329f";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -54,15 +54,17 @@ const DOCKER_CLI_INTEGRITY =
   "sha512-g2nfFf0TRYofHqQEnRCEaW5q1Tc0ResEDDfA49URb5Ns3r0Djz8zNnnzJ9Rkw0MY9uB6pNZcz9Lg/LH6DvOaAA==";
 const requiredExecutionRuntimeInputs = Object.freeze([
   Object.freeze({
-    ...REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS[0],
+    identity: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS[0].identity,
     package: "@openai/codex",
+    version: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS[0].version,
     resolved: CODEX_RESOLVED,
     integrity: CODEX_INTEGRITY,
     skillExposure: "versioned-with-runtime-package",
   }),
   Object.freeze({
-    ...REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS[1],
+    identity: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS[1].identity,
     package: "docker.io",
+    version: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS[1].version,
     resolved: DOCKER_CLI_RESOLVED,
     integrity: DOCKER_CLI_INTEGRITY,
     skillExposure: "versioned-with-runtime-package",

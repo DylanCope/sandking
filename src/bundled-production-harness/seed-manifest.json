@@ -26,7 +26,7 @@
       "path": ".sandcastle/docker-transport.mjs",
       "sourcePath": "src/production-sandcastle-adapter/docker-transport.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:c1fbdbdafde13b6244f8508c0f19b2f066a991dfae7c81c926d33fb5ec596a4c",
+      "integrity": "sha256:2674387ba1573636397d67bec9e16388fa96e7efe9529d6e1d1afb04755979c9",
       "executable": false
     },
     {
@@ -54,7 +54,7 @@
       "path": "real-delegation-protocol.mjs",
       "sourcePath": "src/real-delegation-protocol.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:658804cb20d93e2e84bf3f404170fb50af8013f3f43c0d6ce4bfeee511b75a6f",
+      "integrity": "sha256:1c2fc538a2967da1e25b116567bbe301523c3c0fced8e77aa40e9981ddb66553",
       "executable": false
     },
     {
@@ -68,14 +68,14 @@
       "path": ".sandcastle/real-worker-v2.mjs",
       "sourcePath": "src/production-sandcastle-adapter/real-worker-v2.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:5bc86dc68e0043680b7e629245ef4219bda55cf9598170b9131a61b1adebd4e5",
+      "integrity": "sha256:1e2680317b00f315896e9510fcf6257241106779d11c7ccf16b79ffa819ea975",
       "executable": false
     },
     {
       "path": "adapters/sandcastle.mjs",
       "sourcePath": "src/production-sandcastle-adapter/sandcastle-v4.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:6423891096240ff22bfe84c4463a57aad4a1798d2c3e779866e447cd33ceb341",
+      "integrity": "sha256:411b477f8980215f98cc8e9f882ea1d49baeee6733226b987148b2f3068e5fe4",
       "executable": false
     },
     {
@@ -113,13 +113,13 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:89b4cae646fb320e23703e71054dec3aaac7fd9322832cb4b15150ffcd74f77d",
+      "integrity": "sha256:2c6cff2fa7840f9445d4768d8dc87d653683c4e16c7645943f08b6f0531b5b10",
       "executable": false
     },
     {
       "path": "skills.lock.json",
       "source": "seed",
-      "integrity": "sha256:58f23cc56374db383cd221fb36367d36af9069ef8d538ac90c1970cc51b0cfe7",
+      "integrity": "sha256:c1bd4639519c52eab9e90dc9c75a579e10fbf1dc85011922df962df38ca6ab5c",
       "executable": false
     },
     {
@@ -131,7 +131,7 @@
     {
       "path": ".sandcastle/Dockerfile",
       "source": "sandking-package",
-      "integrity": "sha256:c3bf1eb38f2331aa68287cf2b6ca8a4c35479d94b1634151fdb9a59d9d2027c0",
+      "integrity": "sha256:4d82087ebde9c178c2959154e614669b98f55897643c294dfab1fc7150375550",
       "executable": false
     },
     {
