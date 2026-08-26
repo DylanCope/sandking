@@ -30,9 +30,9 @@ const sourceUrlSchema = z.url().refine((value) => {
 });
 
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
-const SAND_KING_SEED_REVISION = "4e8d45268c41b8373c8fd33d08ab4f0e260f6b93";
+const SAND_KING_SEED_REVISION = "24a140a1d9781a51015a012e29f2bbc084cc571a";
 const SAND_KING_SEED_SOURCE_INTEGRITY =
-  "sha256:8d3156295912a94999256fe6e81eef2a94d80cf060f34189bc8e759332398e3c";
+  "sha256:d4e9394fb3de8c7b04b6bf5e356a7dc52cb3169a1b5464f43dc5f00a6a48065c";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -148,6 +148,12 @@ const productionSeedFileContract = Object.freeze([
   {
     path: ".sandcastle/docker-transport.mjs",
     sourcePath: "src/production-sandcastle-adapter/docker-transport.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
+    path: "destination-worker-environment.mjs",
+    sourcePath: "src/destination-worker-environment.mjs",
     source: "sandking-package",
     executable: false,
   },

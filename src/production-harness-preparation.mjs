@@ -51,6 +51,7 @@ const productionRuntimeRootPaths = new Set([
   "package.json",
   "real-delegation-protocol.mjs",
 ]);
+/** @param {string} path */
 const isProductionRuntimePath = (path) => path.startsWith(".sandcastle/")
   || path.startsWith("common/")
   || productionRuntimeRootPaths.has(path);

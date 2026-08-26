@@ -281,22 +281,30 @@ test("the POSIX local Host reads the configured gh session for global reuse", {
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-host-gh-path-"));
   const originalPath = process.env.PATH;
+  const originalHome = process.env.HOME;
   const originalGitHubConfigDirectory = process.env.GH_CONFIG_DIR;
   let transport;
   try {
     const fixture = await createProductionRegistration(root);
     const binPath = join(root, "host-account-bin");
+    const hostHomePath = join(root, "host-account-home");
     const githubConfigDirectory = join(root, "host-account-gh-config");
     const ghInvokedPath = join(root, "host-gh-invoked");
     await Promise.all([
       mkdir(binPath),
       mkdir(githubConfigDirectory),
+      mkdir(join(hostHomePath, ".codex"), { recursive: true }),
     ]);
     const sandboxConfigurationIntegrity = sha256(await readFile(
       new URL("../.sandcastle/Dockerfile", import.meta.url),
     ));
     await writeFile(join(githubConfigDirectory, "hosts.yml"), `${hostToken}\n`);
     await Promise.all([
+      writeFile(
+        join(hostHomePath, ".codex", "auth.json"),
+        '{"auth_mode":"fixture"}\n',
+        { mode: 0o600 },
+      ),
       writeExecutable(join(binPath, "gh"), `#!/bin/sh
 set -eu
 if [ "$1 $2 $3 $4" = "auth token --hostname github.com" ]; then
@@ -354,6 +362,7 @@ exit 93
 `),
     ]);
     process.env.PATH = `${binPath}${delimiter}${originalPath ?? ""}`;
+    process.env.HOME = hostHomePath;
     process.env.GH_CONFIG_DIR = githubConfigDirectory;
 
     const hostId = `host-${"6".repeat(24)}`;
@@ -428,6 +437,8 @@ exit 93
     await transport?.stopHost().catch(() => undefined);
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
     if (originalGitHubConfigDirectory === undefined) delete process.env.GH_CONFIG_DIR;
     else process.env.GH_CONFIG_DIR = originalGitHubConfigDirectory;
     await rm(root, { recursive: true, force: true });

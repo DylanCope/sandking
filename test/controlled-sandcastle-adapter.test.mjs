@@ -37,6 +37,10 @@ const exactObjectKeysPath = new URL(
   "../src/common/exact-object-keys.mjs",
   import.meta.url,
 );
+const destinationWorkerEnvironmentPath = new URL(
+  "../src/destination-worker-environment.mjs",
+  import.meta.url,
+);
 const adapterId = "sandcastle-harness-adapter-v1";
 const adapterProtocol = "1.0.0";
 const retainedWorkerPath = ".sandcastle/controlled-worker-fixture.mjs";
@@ -44,6 +48,10 @@ const workerSource = await readFile(workerPath, "utf8");
 const githubCredentialContractSource = await readFile(githubCredentialContractPath, "utf8");
 const realDelegationProtocolSource = await readFile(realDelegationProtocolPath, "utf8");
 const exactObjectKeysSource = await readFile(exactObjectKeysPath, "utf8");
+const destinationWorkerEnvironmentSource = await readFile(
+  destinationWorkerEnvironmentPath,
+  "utf8",
+);
 const workerIntegrity = `sha256:${createHash("sha256")
   .update(workerSource)
   .digest("hex")}`;
@@ -78,6 +86,10 @@ const createFixture = async (manifest) => {
     writeFile(
       join(executionPath, "common", "exact-object-keys.mjs"),
       exactObjectKeysSource,
+    ),
+    writeFile(
+      join(executionPath, "destination-worker-environment.mjs"),
+      destinationWorkerEnvironmentSource,
     ),
     writeFile(join(executionPath, "worker-environment.json"), `${JSON.stringify({
       schemaVersion: 1,

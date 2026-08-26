@@ -30,6 +30,13 @@
       "executable": false
     },
     {
+      "path": "destination-worker-environment.mjs",
+      "sourcePath": "src/destination-worker-environment.mjs",
+      "source": "sandking-package",
+      "integrity": "sha256:ccc62d1cf0f95ecc5ce92761cd50a598197a05614fa5228e479df56d606fd9d8",
+      "executable": false
+    },
+    {
       "path": ".sandcastle/github-credential-v1.mjs",
       "sourcePath": "src/production-sandcastle-adapter/github-credential-v1.mjs",
       "source": "sandking-package",
@@ -47,7 +54,7 @@
       "path": "real-delegation-protocol.mjs",
       "sourcePath": "src/real-delegation-protocol.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:ec56ff950dfb9b1a6f1116af996f5ef32689018368f3f585748a27ef2187534d",
+      "integrity": "sha256:658804cb20d93e2e84bf3f404170fb50af8013f3f43c0d6ce4bfeee511b75a6f",
       "executable": false
     },
     {
@@ -61,14 +68,14 @@
       "path": ".sandcastle/real-worker-v2.mjs",
       "sourcePath": "src/production-sandcastle-adapter/real-worker-v2.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:3fb5c239896b9f7f19ad3f3f488acb41e29f49d83f5cda2138d1e196cc3eca02",
+      "integrity": "sha256:5bc86dc68e0043680b7e629245ef4219bda55cf9598170b9131a61b1adebd4e5",
       "executable": false
     },
     {
       "path": "adapters/sandcastle.mjs",
       "sourcePath": "src/production-sandcastle-adapter/sandcastle-v4.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:99845df14adf18330a5ef0de22ce3cd18d88f8e6828e8bd43bcf76f0acd38635",
+      "integrity": "sha256:6423891096240ff22bfe84c4463a57aad4a1798d2c3e779866e447cd33ceb341",
       "executable": false
     },
     {
@@ -106,13 +113,13 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:f78c75b4e97a7a50a7d00174475d1369a5172e5e924390aa8a71883575c0e69f",
+      "integrity": "sha256:89b4cae646fb320e23703e71054dec3aaac7fd9322832cb4b15150ffcd74f77d",
       "executable": false
     },
     {
       "path": "skills.lock.json",
       "source": "seed",
-      "integrity": "sha256:86da71bfc552c3f4478c9c35704fb06ee8797ff2b1e378292057937cfc7ec1eb",
+      "integrity": "sha256:58f23cc56374db383cd221fb36367d36af9069ef8d538ac90c1970cc51b0cfe7",
       "executable": false
     },
     {
