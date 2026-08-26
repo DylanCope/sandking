@@ -169,6 +169,46 @@ test("the ordinary launch seam delegates once through the pinned production adap
   }
 });
 
+test("the bundled main reports review-budget exhaustion as a truthful typed failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-review-budget-"));
+  let fixture;
+  let restorePath = () => undefined;
+  try {
+    restorePath = await installRunnableProviderCommands(root, {
+      mainScenario: "review-exhausted",
+    });
+    fixture = await createProductionFixture(root);
+    const launched = await fixture.manager.launch(productionLaunchRequest(
+      fixture.project.project.projectId,
+      { requestId: "launch-review-exhaustion" },
+    ));
+    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
+
+    const terminal = await observeProductionTerminal(
+      fixture.manager,
+      launched.run.harnessRunId,
+      30_000,
+    );
+    assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
+    assert.equal(terminal.outcome.code, "harness_run_failed");
+    assert.equal(terminal.outcome.result.code, "delivery_execution_failed");
+    assert.equal(terminal.terminalEnvelopeValidation.exactlyOne, true);
+    assert.equal(terminal.events.some(({ progressRecord }) =>
+      progressRecord?.label === "Review pull request #700"), true);
+
+    const state = await readBundledMainState(root);
+    assert.equal(state.issues[173].state, "open");
+    assert.equal(state.pullRequests.length, 1);
+    assert.equal(state.pullRequests[0].state, "OPEN");
+    assert.equal(state.pullRequests[0].comments.length, 15);
+    assert.deepEqual(issueClaimActions(state, 173), ["claim", "release"]);
+  } finally {
+    await fixture?.manager.waitForIdle().catch(() => undefined);
+    restorePath();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("an accepted production launch executes its immutable pinned runtime snapshot", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-immutable-runtime-"));
   let fixture;
@@ -367,6 +407,7 @@ test("the installed ordinary CLI discovers production parameters and launches th
               ? {
                   failure: {
                     code: outcome.code,
+                    sanitizedExplanation: outcome.sanitizedExplanation,
                     configurationOptions: outcome.configurationOptions,
                   },
                 }
@@ -393,6 +434,7 @@ test("the installed ordinary CLI discovers production parameters and launches th
       "--target-branch", "sandcastle/issue-173",
       "--json",
     ];
+    const missingIssueLaunchArguments = ["launch", projectId, "--json"];
     const githubAccessLaunchArguments = [
       "launch", projectId,
       "--issue", "174",
@@ -410,6 +452,22 @@ test("the installed ordinary CLI discovers production parameters and launches th
     const adapterStartsBeforeCredentialFailure = fixture.audits.filter(
       ({ action }) => action === "harness.adapter.start",
     ).length;
+
+    await assert.rejects(execFileAsync(installed.command, missingIssueLaunchArguments, {
+      cwd: root,
+      env: launchEnvironment,
+    }), (error) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stderr, "");
+      const failure = JSON.parse(error.stdout);
+      assert.equal(failure.ok, false);
+      assert.equal(failure.failure.code, "real_delegation_issue_required");
+      assert.match(failure.failure.sanitizedExplanation, /--issue <number>/);
+      return true;
+    });
+    assert.equal(fixture.audits.filter(
+      ({ action }) => action === "harness.adapter.start",
+    ).length, adapterStartsBeforeCredentialFailure);
 
     await assert.rejects(execFileAsync(installed.command, githubAccessLaunchArguments, {
       cwd: root,
@@ -514,11 +572,13 @@ test("the installed ordinary CLI discovers production parameters and launches th
       "harness-run.launch",
       "describe",
       "harness-run.launch",
+      "describe",
+      "harness-run.launch",
     ]);
     assert.equal(requests[0].projectId, projectId);
-    assert.equal(requests[7].controllerSessionId, controllerSessionId);
-    assert.equal("plugin" in requests[7], false);
-    assert.equal("expectedRevision" in requests[7], false);
+    assert.equal(requests[9].controllerSessionId, controllerSessionId);
+    assert.equal("plugin" in requests[9], false);
+    assert.equal("expectedRevision" in requests[9], false);
   } finally {
     await fixture?.manager.waitForIdle().catch(() => undefined);
     await new Promise((resolve) => server?.close(resolve) ?? resolve());

@@ -332,6 +332,7 @@ const runPullRequestReviewer = async (
 // Main loop
 // ---------------------------------------------------------------------------
 
+let executionFailed = false;
 const main = async () => {
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     if (runScope && scopeOptions && await runScope.isComplete()) {
@@ -478,6 +479,7 @@ const main = async () => {
   }
 
   if (deliveryFailed) {
+    executionFailed = true;
     process.exitCode = 1;
     return;
   }
@@ -486,7 +488,6 @@ const main = async () => {
   console.log("\nAll done.");
 };
 
-let executionFailed = false;
 try {
   await main();
 } catch (error) {
