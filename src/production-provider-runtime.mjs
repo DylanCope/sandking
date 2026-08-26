@@ -55,8 +55,47 @@ const SANDBOX_CONFIGURATION_INTEGRITY_LABEL =
 const SANDBOX_AGENT_UID_LABEL = "org.sandking.production-sandbox.agent-uid";
 const SANDBOX_AGENT_GID_LABEL = "org.sandking.production-sandbox.agent-gid";
 
-/** @type {Map<string, Promise<{ready: boolean, imageBuilt: boolean}>>} */
+/** @type {Map<string, Promise<{ready: boolean, imageBuilt: boolean, dockerEndpoint?: string, sandboxImageId?: string}>>} */
 const activeSandboxPreparations = new Map();
+
+const dockerEndpointPattern = /^(?:unix|npipe|tcp|http|https|ssh):\/\/[^\s\0]+$/;
+
+/**
+ * Resolve the endpoint selected by the same Docker CLI configuration used for
+ * readiness. Subsequent operations bind that endpoint explicitly so a later
+ * context selection cannot redirect the image verification or execution.
+ *
+ * @param {{execute: typeof execFileAsync, environment: NodeJS.ProcessEnv}} options
+ */
+const resolveDockerEndpoint = async ({ execute, environment }) => {
+  const configuredEndpoint = environment.DOCKER_HOST;
+  if (
+    typeof configuredEndpoint === "string"
+    && configuredEndpoint.length <= 2_048
+    && dockerEndpointPattern.test(configuredEndpoint)
+  ) {
+    return configuredEndpoint;
+  }
+  const context = environment.DOCKER_CONTEXT;
+  const { stdout } = await execute("docker", [
+    "context", "inspect",
+    ...(context ? [context] : []),
+    "--format={{json .Endpoints.docker.Host}}",
+  ], {
+    env: environment,
+    timeout: 10_000,
+    maxBuffer: 64_000,
+  });
+  const endpoint = JSON.parse(stdout);
+  if (
+    typeof endpoint !== "string"
+    || endpoint.length > 2_048
+    || !dockerEndpointPattern.test(endpoint)
+  ) {
+    throw new Error("production_docker_endpoint_invalid");
+  }
+  return endpoint;
+};
 
 /**
  * @param {{
@@ -68,7 +107,7 @@ const activeSandboxPreparations = new Map();
  *   agentGid: number,
  * }} options
  */
-const retainedImageMatchesConfiguration = async ({
+const inspectRetainedImage = async ({
   execute,
   environment,
   imageName,
@@ -79,20 +118,24 @@ const retainedImageMatchesConfiguration = async ({
   try {
     const { stdout } = await execute("docker", [
       "image", "inspect", imageName,
-      "--format={{json .Config}}",
+      "--format={{json .}}",
     ], {
       env: environment,
       timeout: 10_000,
       maxBuffer: 64_000,
     });
-    const configuration = JSON.parse(stdout);
-    return configuration?.Labels?.[SANDBOX_CONFIGURATION_INTEGRITY_LABEL]
+    const image = JSON.parse(stdout);
+    const configuration = image?.Config;
+    return /^sha256:[a-f0-9]{64}$/.test(image?.Id ?? "")
+      && configuration?.Labels?.[SANDBOX_CONFIGURATION_INTEGRITY_LABEL]
         === configurationIntegrity
       && configuration.Labels[SANDBOX_AGENT_UID_LABEL] === String(agentUid)
       && configuration.Labels[SANDBOX_AGENT_GID_LABEL] === String(agentGid)
-      && configuration.User === `${agentUid}:${agentGid}`;
+      && configuration.User === `${agentUid}:${agentGid}`
+      ? image.Id
+      : null;
   } catch {
-    return false;
+    return null;
   }
 };
 
@@ -120,12 +163,25 @@ export const ensureProductionProviderRuntime = async (options) => {
       contract.REAL_PROVIDER_SKILL_IDENTITIES,
     )
     || !contract.realProviderAvailable(readinessOptions)
-    || !contract.realSandboxEngineAvailable(readinessOptions)
   ) {
     return { ready: false, imageBuilt: false };
   }
 
   const execute = options.executeFile ?? execFileAsync;
+  let dockerEndpoint;
+  try {
+    dockerEndpoint = await resolveDockerEndpoint({ execute, environment });
+  } catch {
+    return { ready: false, imageBuilt: false };
+  }
+  const boundEnvironment = /** @type {NodeJS.ProcessEnv} */ ({
+    ...environment,
+    DOCKER_HOST: dockerEndpoint,
+  });
+  delete boundEnvironment.DOCKER_CONTEXT;
+  if (!contract.realSandboxEngineAvailable({ environment: boundEnvironment })) {
+    return { ready: false, imageBuilt: false };
+  }
   const agentUid = process.getuid?.() ?? 1000;
   const agentGid = process.getgid?.() ?? 1000;
   const projectionRoot = resolve(options.projectionPath);
@@ -143,17 +199,26 @@ export const ensureProductionProviderRuntime = async (options) => {
   } catch {
     return { ready: false, imageBuilt: false };
   }
-  const imageMatches = () => retainedImageMatchesConfiguration({
+  const inspectImage = () => inspectRetainedImage({
     execute,
-    environment,
+    environment: boundEnvironment,
     imageName: contract.REAL_PROVIDER_SANDBOX_IMAGE,
     configurationIntegrity,
     agentUid,
     agentGid,
   });
-  if (await imageMatches()) return { ready: true, imageBuilt: false };
+  const retainedImageId = await inspectImage();
+  if (retainedImageId) {
+    return {
+      ready: true,
+      imageBuilt: false,
+      dockerEndpoint,
+      sandboxImageId: retainedImageId,
+    };
+  }
 
   const preparationKey = [
+    dockerEndpoint,
     contract.REAL_PROVIDER_SANDBOX_IMAGE,
     configurationIntegrity,
     String(agentUid),
@@ -176,14 +241,19 @@ export const ensureProductionProviderRuntime = async (options) => {
         projectionRoot,
       ], {
         cwd: projectionRoot,
-        env: environment,
+        env: boundEnvironment,
         timeout: 20 * 60_000,
         maxBuffer: 1024 * 1024,
       });
-      return {
-        ready: await imageMatches(),
-        imageBuilt: true,
-      };
+      const sandboxImageId = await inspectImage();
+      return sandboxImageId
+        ? {
+            ready: true,
+            imageBuilt: true,
+            dockerEndpoint,
+            sandboxImageId,
+          }
+        : { ready: false, imageBuilt: true };
     } catch {
       return { ready: false, imageBuilt: false };
     }

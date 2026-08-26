@@ -189,6 +189,7 @@ export const createLaunchOperation = (runtime) => {
     return {
       providerKind: prepared.providerKind,
       manifestWritten: prepared.manifestWritten,
+      productionProviderRuntime: prepared.productionProviderRuntime,
       rollback: async () => {
         if (!released) {
           released = true;
@@ -286,7 +287,10 @@ export const createLaunchOperation = (runtime) => {
             productionPreparation: context.project.harness.preparation,
           });
         }
-        prepared = await validateHarnessLaunch(context, parameters.data);
+        prepared = await validateHarnessLaunch(context, parameters.data, {
+          productionProviderRuntime:
+            providerPreparation?.productionProviderRuntime,
+        });
         if (
           context.project.projectId !== request.projectId
           || context.harness.harnessId !== context.project.harness.harnessId
@@ -597,6 +601,8 @@ export const createLaunchOperation = (runtime) => {
         harnessExecutionPath,
         retainedHarnessExecutionInputs,
         githubCredential,
+        productionProviderRuntime:
+          providerPreparation?.productionProviderRuntime,
         cancellationGraceMs,
         hostLossTerminationEvidencePath: join(
           options.dataDir,

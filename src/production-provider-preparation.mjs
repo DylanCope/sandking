@@ -363,11 +363,18 @@ export const prepareProductionProviderLaunch = async (options) => {
     throw new ProductionProviderPreparationError("harness_worker_provider_unavailable");
   }
   await options.beforeProjectMutation?.();
-  return prepareProductionProviderManifest({
+  const manifest = await prepareProductionProviderManifest({
     projectPath: options.projectPath,
     expectedManifestIdentity: options.expectedManifestIdentity,
     preparationId: options.preparationId,
     ownershipMarker: options.ownershipMarker,
     retainManifestIdentity: options.retainManifestIdentity,
   });
+  return {
+    ...manifest,
+    productionProviderRuntime: {
+      dockerEndpoint: runtime.dockerEndpoint,
+      sandboxImageId: runtime.sandboxImageId,
+    },
+  };
 };

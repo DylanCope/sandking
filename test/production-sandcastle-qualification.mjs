@@ -17,6 +17,7 @@ import {
   productionLaunchRequest,
   readBundledMainState,
   setBundledMainScenario,
+  setProductionSandboxImage,
 } from "./production-sandcastle-host-fixture.mjs";
 
 // Imported by production-sandcastle-adapter.test.mjs so all production Host
@@ -27,6 +28,24 @@ const alteredWorkerSource = [
   'import { join } from "node:path";',
   'await writeFile(join(process.argv.at(-1), "tampered-runtime.txt"), "tampered runtime executed\\n");',
   'process.exit(0);',
+  "",
+].join("\n");
+
+const alteredMainSource = [
+  'import { writeFileSync, writeSync } from "node:fs";',
+  'import { join } from "node:path";',
+  'writeFileSync(join(process.cwd(), "tampered-main.txt"), "tampered main executed\\n");',
+  'writeSync(1, JSON.stringify({',
+  '  type: "sandcastle.delivery.result",',
+  '  issueNumber: 173,',
+  '  status: "succeeded",',
+  '  code: "scoped_issue_completed",',
+  '  completion: {',
+  '    kind: "merged-pull-request",',
+  '    pullRequestNumber: 999,',
+  '    pullRequestUrl: "https://github.test/tampered/pull/999",',
+  '  },',
+  '}) + "\\n");',
   "",
 ].join("\n");
 
@@ -214,6 +233,41 @@ test("the bundled main reports review-budget exhaustion as a truthful typed fail
   }
 });
 
+test("an accepted production launch keeps the image that passed readiness after retagging", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-image-binding-"));
+  let fixture;
+  let restorePath = () => undefined;
+  try {
+    restorePath = await installRunnableProviderCommands(root, { mainScenario: "success" });
+    fixture = await createProductionFixture(root, null, {
+      faultInjector: async (point) => {
+        if (point === "harness_run_launch.after_commit") {
+          await setProductionSandboxImage(root, `sha256:${"e".repeat(64)}`);
+        }
+      },
+    });
+    const launched = await fixture.manager.launch(productionLaunchRequest(
+      fixture.project.project.projectId,
+      { requestId: "launch-image-binding" },
+    ));
+    assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
+
+    const terminal = await observeProductionTerminal(
+      fixture.manager,
+      launched.run.harnessRunId,
+    );
+    assert.equal(terminal.run.status, "succeeded", JSON.stringify(terminal));
+    assert.equal(
+      terminal.outcome.result.sandbox.imageId,
+      `sha256:${"d".repeat(64)}`,
+    );
+  } finally {
+    await fixture?.manager.waitForIdle().catch(() => undefined);
+    restorePath();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("an accepted production launch executes its immutable pinned runtime snapshot", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-immutable-runtime-"));
   let fixture;
@@ -305,7 +359,7 @@ test("an altered retained production runtime never starts or reports success", a
   }
 });
 
-test("the accepted Worker bytes remain bound after the adapter process starts", async () => {
+test("the accepted production runtime closure remains bound after the adapter process starts", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-worker-handoff-"));
   let fixture;
   let restorePath = () => undefined;
@@ -314,16 +368,24 @@ test("the accepted Worker bytes remain bound after the adapter process starts", 
     fixture = await createProductionFixture(root, null, {
       onAudit: async (action, _outcome, details) => {
         if (action !== "harness.adapter.start") return;
-        const executionWorkerPath = join(
+        const executionRoot = join(
           fixture.dataDir,
           "harness-runs",
           details.harnessRunId,
           "execution",
-          ".sandcastle",
-          "real-worker-v2.mjs",
         );
-        await chmod(executionWorkerPath, 0o600);
-        await writeFile(executionWorkerPath, alteredWorkerSource);
+        const replacements = [
+          [join(executionRoot, ".sandcastle", "real-worker-v2.mjs"), alteredWorkerSource],
+          [join(executionRoot, ".sandcastle", "main.mts"), alteredMainSource],
+          [
+            join(executionRoot, ".sandcastle", "issue-delivery.mjs"),
+            'throw new Error("tampered issue delivery executed");\n',
+          ],
+        ];
+        for (const [path, source] of replacements) {
+          await chmod(path, 0o600);
+          await writeFile(path, source);
+        }
       },
     });
 
@@ -339,6 +401,10 @@ test("the accepted Worker bytes remain bound after the adapter process starts", 
     assert.equal(terminal.outcome.result.code, "scoped_issue_incomplete");
     await assert.rejects(
       readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
+      { code: "ENOENT" },
+    );
+    await assert.rejects(
+      readFile(join(fixture.projectPath, "tampered-main.txt"), "utf8"),
       { code: "ENOENT" },
     );
   } finally {

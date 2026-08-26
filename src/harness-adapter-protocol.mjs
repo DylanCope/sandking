@@ -13,6 +13,7 @@ import {
   SANDCASTLE_HARNESS_ADAPTER_ID,
   harnessAdapterIdSchema,
 } from "./harness-adapter-identity.mjs";
+import { isProductionProviderRuntime } from "./real-delegation-protocol.mjs";
 
 export {
   CONFORMANCE_HARNESS_ADAPTER_ID,
@@ -22,7 +23,9 @@ export {
 
 const execFileAsync = promisify(execFile);
 const FRAME_HEADER_BYTES = 4;
-export const MAX_HARNESS_ADAPTER_FRAME_BYTES = 32_768;
+export const MAX_HARNESS_ADAPTER_FRAME_BYTES = 512 * 1_024;
+export const MAX_RETAINED_EXECUTION_INPUTS = 128;
+export const MAX_RETAINED_EXECUTION_INPUT_BYTES = 64 * 1_024;
 
 const harnessRunIdSchema = z.string().regex(/^harness-run-[a-f0-9]{24}$/);
 const adapterProtocolSchema = z.literal("1.0.0");
@@ -33,7 +36,7 @@ export const harnessExecutionInputPathSchema = z.string().min(1).max(512)
     && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."));
 export const retainedExecutionInputPathsSchema = z.array(
   harnessExecutionInputPathSchema,
-).max(8).superRefine((paths, context) => {
+).max(MAX_RETAINED_EXECUTION_INPUTS).superRefine((paths, context) => {
   if (new Set(paths).size !== paths.length) {
     context.addIssue({
       code: "custom",
@@ -267,19 +270,23 @@ export const harnessCancellationRequestSchema = z.object({
 export const retainedExecutionInputSchema = z.object({
   path: harnessExecutionInputPathSchema,
   integrity: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-  source: z.string().max(16_384).refine((value) =>
-    Buffer.byteLength(value, "utf8") <= 16_384),
+  source: z.string().max(MAX_RETAINED_EXECUTION_INPUT_BYTES).refine((value) =>
+    Buffer.byteLength(value, "utf8") <= MAX_RETAINED_EXECUTION_INPUT_BYTES),
 }).strict();
 
 export const githubCredentialSchema = z.unknown().refine(isGitHubCredential);
+export const productionProviderRuntimeSchema = z.unknown()
+  .refine(isProductionProviderRuntime);
 
 export const harnessRunStartRequestSchema = z.object({
   type: z.literal("harness.run.start"),
   adapterProtocol: adapterProtocolSchema,
   adapterId: harnessAdapterIdSchema,
   harnessRunId: harnessRunIdSchema,
-  retainedExecutionInputs: z.array(retainedExecutionInputSchema).max(8),
+  retainedExecutionInputs: z.array(retainedExecutionInputSchema)
+    .max(MAX_RETAINED_EXECUTION_INPUTS),
   githubCredential: githubCredentialSchema.optional(),
+  productionProviderRuntime: productionProviderRuntimeSchema.optional(),
 }).strict().superRefine((request, context) => {
   if (new Set(request.retainedExecutionInputs.map(({ path }) => path)).size
       !== request.retainedExecutionInputs.length) {
@@ -297,6 +304,16 @@ export const harnessRunStartRequestSchema = z.object({
       code: "custom",
       message: "GitHub credentials are supported only by the production Sandcastle adapter",
       path: ["githubCredential"],
+    });
+  }
+  if (
+    request.productionProviderRuntime
+    && request.adapterId !== SANDCASTLE_HARNESS_ADAPTER_ID
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "provider runtime is supported only by the production Sandcastle adapter",
+      path: ["productionProviderRuntime"],
     });
   }
 });

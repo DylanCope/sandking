@@ -8,6 +8,7 @@ import {
   harnessLaunchParametersDeclarationSchema,
   harnessPreparationFailureEnvelopeSchema,
   harnessPreparedEnvelopeSchema,
+  productionProviderRuntimeSchema,
   retainedExecutionInputPathsSchema,
   invokePinnedHarnessAdapter,
   loadPinnedHarnessAdapter,
@@ -112,8 +113,9 @@ const harnessLaunchValidationSchema = z.object({
  * This happens inside the launch action; it creates no proposal or intermediate state.
  * @param {any} context
  * @param {unknown} parameters
+ * @param {{productionProviderRuntime?: unknown}} [options]
  */
-export const validateHarnessLaunch = async (context, parameters) => {
+export const validateHarnessLaunch = async (context, parameters, options = {}) => {
   const launchParameters = launchParametersSchema.parse(parameters);
   const workspacePath = typeof context?.harnessWorkspacePath === "string"
     ? context.harnessWorkspacePath
@@ -165,9 +167,19 @@ export const validateHarnessLaunch = async (context, parameters) => {
   );
   const encodedParameters = Buffer.from(JSON.stringify(parsedParameters), "utf8")
     .toString("base64url");
+  const productionProviderRuntime = options.productionProviderRuntime === undefined
+    ? null
+    : productionProviderRuntimeSchema.parse(options.productionProviderRuntime);
   const preparedInvocation = await invokePinnedHarnessAdapter(
     pinnedAdapter,
-    ["prepare", encodedParameters],
+    [
+      "prepare",
+      encodedParameters,
+      ...(productionProviderRuntime
+        ? [Buffer.from(JSON.stringify(productionProviderRuntime), "utf8")
+            .toString("base64url")]
+        : []),
+    ],
     typeof context.productionHarnessProjectionPath === "string"
       ? { workingDirectory: context.productionHarnessProjectionPath }
       : {},

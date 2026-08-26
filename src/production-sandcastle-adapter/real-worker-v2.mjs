@@ -8,16 +8,16 @@ import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { digest as sha256 } from "../common/digest.mjs";
 import {
+  hasExactKeys,
   isValidIssueNumber,
   parseRealDelegationMessage,
+  parseProductionProviderRuntime,
 } from "../real-delegation-protocol.mjs";
 import {
+  createDockerEndpointRelay,
   createMainContainerConfiguration,
   createMainContainerPathMappings,
-  createPosixDockerSocketRelay,
-  createWindowsDockerPipeRelay,
   MAIN_CONTAINER_PATHS,
-  WINDOWS_DOCKER_NAMED_PIPE,
 } from "./docker-transport.mjs";
 import { materializeGitHubCredential } from "./github-credential-v1.mjs";
 
@@ -115,17 +115,6 @@ const verifyCodexAuthPath = async (authPath) => {
   }
 };
 
-const inspectPinnedSandboxImage = async () => {
-  const { stdout } = await execFileAsync("docker", [
-    "image", "inspect", REAL_SANDBOX_IMAGE, "--format={{.Id}}",
-  ], { env: process.env, timeout: 10_000, maxBuffer: 64_000 });
-  const imageId = stdout.trim();
-  if (!/^sha256:[a-f0-9]{64}$/.test(imageId)) {
-    throw new Error("pinned_real_worker_sandbox_invalid");
-  }
-  return imageId;
-};
-
 const waitForChild = (child) => new Promise((resolve) => {
   child.once("error", () => resolve({ exitCode: null, signal: null, startFailed: true }));
   child.once("close", (exitCode, signal) => resolve({ exitCode, signal, startFailed: false }));
@@ -142,19 +131,21 @@ export const runPinnedMain = async ({
   issueNumber,
   authPath,
   githubCredentialPath,
+  dockerEndpoint,
   sandboxImage = REAL_SANDBOX_IMAGE,
   signal,
   timeoutMs = REAL_DELEGATION_TIMEOUT_MS,
   onProgress = () => undefined,
   spawnProcess = spawn,
   platform = process.platform,
-  createDockerPipeRelay = createWindowsDockerPipeRelay,
-  createDockerSocketRelay = createPosixDockerSocketRelay,
+  createDockerRelay = createDockerEndpointRelay,
 }) => {
   const mainPath = `${MAIN_CONTAINER_PATHS.execution}/.sandcastle/main.mts`;
   const tsxLoaderUrl =
     `file://${MAIN_CONTAINER_PATHS.execution}/node_modules/tsx/dist/loader.mjs`;
   const dockerEnvironment = { ...process.env };
+  dockerEnvironment.DOCKER_HOST = dockerEndpoint;
+  delete dockerEnvironment.DOCKER_CONTEXT;
   for (const name of [
     "GH_TOKEN",
     "GITHUB_TOKEN",
@@ -170,9 +161,10 @@ export const runPinnedMain = async ({
     authPath,
     githubCredentialPath,
   });
-  const dockerRelay = platform === "win32"
-    ? await createDockerPipeRelay(WINDOWS_DOCKER_NAMED_PIPE, { pathMappings })
-    : await createDockerSocketRelay("/var/run/docker.sock", { pathMappings });
+  const dockerRelay = await createDockerRelay(dockerEndpoint, {
+    platform,
+    pathMappings,
+  });
   const { environmentArguments, mountArguments } = createMainContainerConfiguration({
     executionPath,
     projectPath,
@@ -290,16 +282,16 @@ export const runRealDelegation = async ({
   signal,
   authPath = destinationCodexAuthPath(),
   githubCredential = null,
-  inspectSandboxImage = inspectPinnedSandboxImage,
+  productionProviderRuntime,
   runMain = runPinnedMain,
   onProgress = () => undefined,
 }) => {
   if (!isValidIssueNumber(issueNumber)) {
     throw delegationError("real_delegation_issue_required");
   }
+  const providerRuntime = parseProductionProviderRuntime(productionProviderRuntime);
   const pinned = await loadPinnedInputs(executionPath);
   await verifyCodexAuthPath(authPath);
-  const sandboxImageId = await inspectSandboxImage();
   const materializedGitHubCredential = await materializeGitHubCredential(githubCredential);
   if (!materializedGitHubCredential) {
     throw delegationError("real_delegation_github_credential_required");
@@ -311,7 +303,8 @@ export const runRealDelegation = async ({
       issueNumber,
       authPath,
       githubCredentialPath: materializedGitHubCredential.path,
-      sandboxImage: sandboxImageId,
+      dockerEndpoint: providerRuntime.dockerEndpoint,
+      sandboxImage: providerRuntime.sandboxImageId,
       signal,
       onProgress,
     });
@@ -364,7 +357,7 @@ export const runRealDelegation = async ({
       sandbox: {
         provider: "docker",
         image: REAL_SANDBOX_IMAGE,
-        imageId: sandboxImageId,
+        imageId: providerRuntime.sandboxImageId,
         configurationSource: REAL_SANDBOX_CONFIGURATION,
         configurationIntegrity: pinned.sandboxConfigurationIntegrity,
         destinationIsolation: true,
@@ -415,11 +408,18 @@ export const parseRealDelegationInvocationParameters = (encoded) => {
       !value
       || typeof value !== "object"
       || Array.isArray(value)
+      || !hasExactKeys(value, ["issueNumber", "productionProviderRuntime"])
       || !isValidIssueNumber(value.issueNumber)
     ) {
       throw new Error("invalid");
     }
-    return value;
+    return {
+      issueNumber: value.issueNumber,
+      productionProviderRuntime: parseProductionProviderRuntime(
+        value.productionProviderRuntime,
+        "real_delegation_parameters_invalid",
+      ),
+    };
   } catch {
     throw new Error("real_delegation_parameters_invalid");
   }
@@ -452,6 +452,7 @@ if (invokedPath.endsWith("/.sandcastle/real-worker-v2.mjs")) {
     executionPath,
     projectPath,
     issueNumber: parameters.issueNumber,
+    productionProviderRuntime: parameters.productionProviderRuntime,
     githubCredential,
     signal: controller.signal,
     onProgress: ({ label, summary, status }) => publish({

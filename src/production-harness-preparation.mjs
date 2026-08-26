@@ -11,6 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, posix, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { digest as sha256 } from "./common/digest.mjs";
@@ -18,6 +19,7 @@ import { identifierSchemas } from "./common/identifiers.mjs";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "./harness-adapter-identity.mjs";
 import {
   harnessCompatibilityManifestSchema,
+  MAX_RETAINED_EXECUTION_INPUTS,
   retainedExecutionInputPathsSchema,
   retainedExecutionInputSchema,
 } from "./harness-adapter-protocol.mjs";
@@ -489,7 +491,8 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
  * }} options
  */
 export const verifyProductionHarnessRetainedInputs = async (options) => {
-  const inputs = z.array(retainedExecutionInputSchema).max(8).parse(
+  const inputs = z.array(retainedExecutionInputSchema)
+    .max(MAX_RETAINED_EXECUTION_INPUTS).parse(
     options.retainedExecutionInputs,
   );
   try {
@@ -508,6 +511,43 @@ export const verifyProductionHarnessRetainedInputs = async (options) => {
       }
     }
   } catch (error) {
+    if (error instanceof ProductionHarnessPreparationError) throw error;
+    throw new ProductionHarnessPreparationError("harness_projection_failed");
+  }
+};
+
+/**
+ * Re-materialize accepted projection bytes at an unguessable Host-private
+ * location immediately before adapter creation. The adapter and every module
+ * it launches resolve only inside this bound tree, so mutations of the
+ * retained execution copy after adapter start cannot change accepted code.
+ *
+ * @param {{retainedExecutionInputs: Array<z.infer<typeof retainedExecutionInputSchema>>}} options
+ */
+export const materializeProductionHarnessRetainedInputs = async (options) => {
+  const inputs = z.array(retainedExecutionInputSchema)
+    .min(1).max(MAX_RETAINED_EXECUTION_INPUTS).parse(options.retainedExecutionInputs);
+  const root = await mkdtemp(join(tmpdir(), "sandking-bound-harness-"));
+  try {
+    for (const input of inputs) {
+      const target = join(root, ...input.path.split("/"));
+      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+      await writeFile(target, input.source, { mode: 0o400 });
+    }
+    await verifyProductionHarnessRetainedInputs({
+      executionPath: root,
+      retainedExecutionInputs: inputs,
+    });
+    return {
+      path: root,
+      close: async () => {
+        await makeExecutionTreeRemovable(root);
+        await rm(root, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    await makeExecutionTreeRemovable(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true }).catch(() => undefined);
     if (error instanceof ProductionHarnessPreparationError) throw error;
     throw new ProductionHarnessPreparationError("harness_projection_failed");
   }

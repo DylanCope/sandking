@@ -121,9 +121,19 @@ writeSync(protocolFd, JSON.stringify({
       issueNumber: 262,
       authPath,
       githubCredentialPath,
+      dockerEndpoint: "unix:///run/user/1000/docker.sock",
       signal: AbortSignal.timeout(5_000),
       timeoutMs: 4_000,
       onProgress: (message) => progress.push(message),
+      createDockerRelay: async (dockerEndpoint, { platform }) => {
+        assert.equal(dockerEndpoint, "unix:///run/user/1000/docker.sock");
+        assert.equal(platform, process.platform);
+        return {
+          environment: { DOCKER_HOST: "unix:///var/run/docker.sock" },
+          mountArguments: ["/private/rootless-relay.sock:/var/run/docker.sock:rw"],
+          close: async () => undefined,
+        };
+      },
       spawnProcess: createContainerLauncher(invocations),
     });
 
@@ -137,6 +147,10 @@ writeSync(protocolFd, JSON.stringify({
       leakedToken: null,
     });
     assert.equal(invocations.length, 1);
+    assert.equal(
+      invocations[0].options.env.DOCKER_HOST,
+      "unix:///run/user/1000/docker.sock",
+    );
     assert.equal(JSON.stringify(invocations[0].args).includes(
       "github_pat_main_dispatch_secret",
     ), false);
@@ -175,10 +189,12 @@ test("native Windows dispatch relays Docker's named pipe into Linux container pa
       issueNumber: 262,
       authPath,
       githubCredentialPath,
+      dockerEndpoint: "npipe:////./pipe/docker_engine",
       platform: "win32",
       timeoutMs: 4_000,
-      createDockerPipeRelay: async (namedPipePath) => {
-        assert.equal(namedPipePath, "\\\\.\\pipe\\docker_engine");
+      createDockerRelay: async (dockerEndpoint, { platform }) => {
+        assert.equal(dockerEndpoint, "npipe:////./pipe/docker_engine");
+        assert.equal(platform, "win32");
         return {
           port: 43_262,
           environment: {
@@ -301,6 +317,7 @@ setInterval(() => undefined, 10);
       issueNumber: 262,
       authPath,
       githubCredentialPath,
+      dockerEndpoint: "unix:///run/user/1000/docker.sock",
       signal: controller.signal,
       timeoutMs: 4_000,
       onProgress: markStarted,

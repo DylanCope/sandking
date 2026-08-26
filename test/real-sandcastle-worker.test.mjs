@@ -26,6 +26,10 @@ const skillIdentities = [
   "sandking.pull-request-review",
   "sandking.real-delegation",
 ];
+const productionProviderRuntime = {
+  dockerEndpoint: "unix:///run/user/1000/docker.sock",
+  sandboxImageId: `sha256:${"c".repeat(64)}`,
+};
 
 const createPinnedFixture = async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-real-worker-"));
@@ -123,9 +127,9 @@ for (const mode of ["project-pat", "host-gh-session"]) {
       const result = await runRealDelegation({
         ...fixture,
         issueNumber: 262,
+        productionProviderRuntime,
         githubCredential: { mode, token },
         signal: AbortSignal.timeout(5_000),
-        inspectSandboxImage: async () => `sha256:${"c".repeat(64)}`,
         onProgress: (message) => progress.push(message),
         runMain: async (options) => {
           credentialPath = options.githubCredentialPath;
@@ -133,6 +137,7 @@ for (const mode of ["project-pat", "host-gh-session"]) {
           assert.equal((await stat(credentialPath)).mode & 0o777, 0o600);
           assert.equal(options.issueNumber, 262);
           assert.equal(options.sandboxImage, `sha256:${"c".repeat(64)}`);
+          assert.equal(options.dockerEndpoint, productionProviderRuntime.dockerEndpoint);
           options.onProgress({ phase: "review" });
           return successfulAttestation();
         },
@@ -166,9 +171,9 @@ test("zero exit and diagnostic success text cannot replace main's completion att
     const outcome = await executeRealDelegation({
       ...fixture,
       issueNumber: 262,
+      productionProviderRuntime,
       githubCredential: { mode: "project-pat", token: "github_pat_missing_attestation" },
       signal: AbortSignal.timeout(5_000),
-      inspectSandboxImage: async () => `sha256:${"c".repeat(64)}`,
       runMain: async () => ({
         exitCode: 0,
         signal: null,
@@ -219,9 +224,9 @@ for (const [name, main, expectedCode] of [
       const outcome = await executeRealDelegation({
         ...fixture,
         issueNumber: 262,
+        productionProviderRuntime,
         githubCredential: { mode: "project-pat", token: "github_pat_typed_failure" },
         signal: AbortSignal.timeout(5_000),
-        inspectSandboxImage: async () => `sha256:${"c".repeat(64)}`,
         runMain: async () => main,
       });
       assert.equal(outcome.status, "failed");

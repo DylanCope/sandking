@@ -43,6 +43,8 @@ const productionPreparation = {
     version: REAL_PROVIDER_CODEX_VERSION,
   }],
 };
+const defaultDockerEndpoint = "unix:///var/run/docker.sock";
+const defaultSandboxImageId = `sha256:${"d".repeat(64)}`;
 
 test("product preparation builds and verifies a missing pinned sandbox image", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-image-"));
@@ -58,21 +60,24 @@ test("product preparation builds and verifies a missing pinned sandbox image", a
     const result = await ensureProductionProviderRuntime({
       projectionPath,
       productionPreparation,
-      environment: { PATH: "/usr/bin:/bin" },
+      environment: { PATH: "/usr/bin:/bin", DOCKER_HOST: defaultDockerEndpoint },
       executeFile: async (command, args, options) => {
         calls.push({ command, args, options });
         if (args[0] === "image") {
           if (!imageBuilt) throw new Error("image_missing");
           return { stdout: `${JSON.stringify({
-            Labels: {
-              "org.sandking.production-sandbox.configuration-integrity":
-                configurationIntegrity,
-              "org.sandking.production-sandbox.agent-uid":
-                String(process.getuid?.() ?? 1000),
-              "org.sandking.production-sandbox.agent-gid":
-                String(process.getgid?.() ?? 1000),
+            Id: defaultSandboxImageId,
+            Config: {
+              Labels: {
+                "org.sandking.production-sandbox.configuration-integrity":
+                  configurationIntegrity,
+                "org.sandking.production-sandbox.agent-uid":
+                  String(process.getuid?.() ?? 1000),
+                "org.sandking.production-sandbox.agent-gid":
+                  String(process.getgid?.() ?? 1000),
+              },
+              User: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
             },
-            User: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
           })}\n`, stderr: "" };
         }
         imageBuilt = true;
@@ -89,7 +94,12 @@ test("product preparation builds and verifies a missing pinned sandbox image", a
       },
     });
 
-    assert.deepEqual(result, { ready: true, imageBuilt: true });
+    assert.deepEqual(result, {
+      ready: true,
+      imageBuilt: true,
+      dockerEndpoint: defaultDockerEndpoint,
+      sandboxImageId: defaultSandboxImageId,
+    });
     assert.equal(calls.length, 3);
     assert.equal(calls[1].command, "docker");
     assert.deepEqual(calls[1].args, [
@@ -126,22 +136,25 @@ test("product preparation rebuilds a retained image from stale Dockerfile bytes"
     const result = await ensureProductionProviderRuntime({
       projectionPath,
       productionPreparation,
-      environment: { PATH: "/usr/bin:/bin" },
+      environment: { PATH: "/usr/bin:/bin", DOCKER_HOST: defaultDockerEndpoint },
       executeFile: async (command, args, options) => {
         calls.push({ command, args, options });
         if (args[0] === "image") {
           inspected += 1;
           return {
             stdout: `${JSON.stringify({
-              Labels: {
-                "org.sandking.production-sandbox.configuration-integrity":
-                  inspected === 1 ? `sha256:${"a".repeat(64)}` : configurationIntegrity,
-                "org.sandking.production-sandbox.agent-uid":
-                  String(process.getuid?.() ?? 1000),
-                "org.sandking.production-sandbox.agent-gid":
-                  String(process.getgid?.() ?? 1000),
+              Id: defaultSandboxImageId,
+              Config: {
+                Labels: {
+                  "org.sandking.production-sandbox.configuration-integrity":
+                    inspected === 1 ? `sha256:${"a".repeat(64)}` : configurationIntegrity,
+                  "org.sandking.production-sandbox.agent-uid":
+                    String(process.getuid?.() ?? 1000),
+                  "org.sandking.production-sandbox.agent-gid":
+                    String(process.getgid?.() ?? 1000),
+                },
+                User: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
               },
-              User: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
             })}\n`,
             stderr: "",
           };
@@ -159,11 +172,16 @@ test("product preparation rebuilds a retained image from stale Dockerfile bytes"
       },
     });
 
-    assert.deepEqual(result, { ready: true, imageBuilt: true });
+    assert.deepEqual(result, {
+      ready: true,
+      imageBuilt: true,
+      dockerEndpoint: defaultDockerEndpoint,
+      sandboxImageId: defaultSandboxImageId,
+    });
     assert.equal(calls.length, 3);
     assert.deepEqual(calls[0].args, [
       "image", "inspect", REAL_PROVIDER_SANDBOX_IMAGE,
-      "--format={{json .Config}}",
+      "--format={{json .}}",
     ]);
     assert.ok(calls[1].args.includes(
       `org.sandking.production-sandbox.configuration-integrity=${configurationIntegrity}`,
@@ -190,25 +208,28 @@ test("product preparation rebuilds a retained image with another Host user's ide
     const result = await ensureProductionProviderRuntime({
       projectionPath,
       productionPreparation,
-      environment: { PATH: "/usr/bin:/bin" },
+      environment: { PATH: "/usr/bin:/bin", DOCKER_HOST: defaultDockerEndpoint },
       executeFile: async (command, args, options) => {
         calls.push({ command, args, options });
         if (args[0] === "image") {
           return {
             stdout: `${JSON.stringify({
-              Labels: {
-                "org.sandking.production-sandbox.configuration-integrity":
-                  configurationIntegrity,
-                "org.sandking.production-sandbox.agent-uid": String(
-                  imageBuilt ? expectedUid : expectedUid + 1,
-                ),
-                "org.sandking.production-sandbox.agent-gid": String(
-                  imageBuilt ? expectedGid : expectedGid + 1,
-                ),
+              Id: defaultSandboxImageId,
+              Config: {
+                Labels: {
+                  "org.sandking.production-sandbox.configuration-integrity":
+                    configurationIntegrity,
+                  "org.sandking.production-sandbox.agent-uid": String(
+                    imageBuilt ? expectedUid : expectedUid + 1,
+                  ),
+                  "org.sandking.production-sandbox.agent-gid": String(
+                    imageBuilt ? expectedGid : expectedGid + 1,
+                  ),
+                },
+                User: imageBuilt
+                  ? `${expectedUid}:${expectedGid}`
+                  : `${expectedUid + 1}:${expectedGid + 1}`,
               },
-              User: imageBuilt
-                ? `${expectedUid}:${expectedGid}`
-                : `${expectedUid + 1}:${expectedGid + 1}`,
             })}\n`,
             stderr: "",
           };
@@ -227,7 +248,12 @@ test("product preparation rebuilds a retained image with another Host user's ide
       },
     });
 
-    assert.deepEqual(result, { ready: true, imageBuilt: true });
+    assert.deepEqual(result, {
+      ready: true,
+      imageBuilt: true,
+      dockerEndpoint: defaultDockerEndpoint,
+      sandboxImageId: defaultSandboxImageId,
+    });
     assert.equal(calls.filter(({ args }) => args[0] === "build").length, 1);
     assert.ok(calls.some(({ args }) => args.includes(
       `org.sandking.production-sandbox.agent-uid=${expectedUid}`,
@@ -235,6 +261,79 @@ test("product preparation rebuilds a retained image with another Host user's ide
     assert.ok(calls.some(({ args }) => args.includes(
       `org.sandking.production-sandbox.agent-gid=${expectedGid}`,
     )));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("provider readiness binds the selected Docker endpoint to its validated image ID", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-binding-"));
+  try {
+    const projectionPath = join(root, "projection");
+    const dockerfilePath = join(projectionPath, ".sandcastle", "Dockerfile");
+    const dockerfile = "FROM node:22-bookworm\n";
+    const configurationIntegrity = sha256(dockerfile);
+    const sandboxImageId = `sha256:${"e".repeat(64)}`;
+    const dockerEndpoint = "unix:///run/user/1000/docker.sock";
+    await mkdir(join(projectionPath, ".sandcastle"), { recursive: true });
+    await writeFile(dockerfilePath, dockerfile);
+    const calls = [];
+
+    const result = await ensureProductionProviderRuntime({
+      projectionPath,
+      productionPreparation,
+      environment: { PATH: "/usr/bin:/bin" },
+      executeFile: async (command, args, options) => {
+        calls.push({ command, args, options });
+        if (args[0] === "context") {
+          return { stdout: `${JSON.stringify(dockerEndpoint)}\n`, stderr: "" };
+        }
+        if (args[0] === "image") {
+          return {
+            stdout: `${JSON.stringify({
+              Id: sandboxImageId,
+              Config: {
+                Labels: {
+                  "org.sandking.production-sandbox.configuration-integrity":
+                    configurationIntegrity,
+                  "org.sandking.production-sandbox.agent-uid":
+                    String(process.getuid?.() ?? 1000),
+                  "org.sandking.production-sandbox.agent-gid":
+                    String(process.getgid?.() ?? 1000),
+                },
+                User: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+              },
+            })}\n`,
+            stderr: "",
+          };
+        }
+        throw new Error("unexpected_provider_runtime_command");
+      },
+      realProviderContract: {
+        REAL_PROVIDER_CODEX_VERSION,
+        REAL_PROVIDER_SANDBOX_CONFIGURATION: ".sandcastle/Dockerfile",
+        REAL_PROVIDER_SANDBOX_IMAGE,
+        REAL_PROVIDER_SKILL_IDENTITIES: requiredSkills,
+        realProviderAvailable: () => true,
+        realSandboxEngineAvailable: () => true,
+        realSandboxImageAvailable: () => true,
+      },
+    });
+
+    assert.deepEqual(result, {
+      ready: true,
+      imageBuilt: false,
+      dockerEndpoint,
+      sandboxImageId,
+    });
+    assert.deepEqual(calls.map(({ args }) => args), [
+      ["context", "inspect", "--format={{json .Endpoints.docker.Host}}"],
+      [
+        "image", "inspect", REAL_PROVIDER_SANDBOX_IMAGE,
+        "--format={{json .}}",
+      ],
+    ]);
+    assert.equal(calls[1].options.env.DOCKER_HOST, dockerEndpoint);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

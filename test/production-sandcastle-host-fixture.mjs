@@ -36,10 +36,16 @@ export const writeExecutable = async (path, source) => {
 
 const bundledMainScenarioPath = (root) => join(root, "bundled-main-scenario.txt");
 const bundledMainStatePath = (root) => join(root, "bundled-main-state.json");
+const sandboxImageStatePath = (root) => join(root, "sandbox-image-id.txt");
 
 export const setBundledMainScenario = (root, scenario) => writeFile(
   bundledMainScenarioPath(root),
   `${scenario}\n`,
+);
+
+export const setProductionSandboxImage = (root, imageId) => writeFile(
+  sandboxImageStatePath(root),
+  `${imageId}\n`,
 );
 
 export const readBundledMainState = async (root) => JSON.parse(await readFile(
@@ -56,6 +62,7 @@ export const installReadyProbeCommands = async (
   const containerHomePath = join(root, "container-home");
   const scenarioPath = bundledMainScenarioPath(root);
   const statePath = bundledMainStatePath(root);
+  const imageStatePath = sandboxImageStatePath(root);
   const originalPath = process.env.PATH;
   const dependencyRoot = join(new URL("../node_modules", import.meta.url).pathname);
   const sandboxConfigurationIntegrity = sha256(await readFile(
@@ -66,6 +73,7 @@ export const installReadyProbeCommands = async (
     mkdir(containerHomePath, { recursive: true }),
     mkdir(join(fakeSandcastlePath, "sandboxes"), { recursive: true }),
     setBundledMainScenario(root, mainScenario),
+    setProductionSandboxImage(root, `sha256:${"d".repeat(64)}`),
     writeFile(statePath, `${JSON.stringify({
       authenticatedCalls: 0,
       agentConfigurations: [],
@@ -321,28 +329,45 @@ save(state);
 `),
     writeExecutable(join(binPath, "docker"), `#!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 const args = process.argv.slice(2);
 if (args[0] === "version" && args[1] === "--format") {
   process.stdout.write("27.5.1\\n");
   process.exit(0);
 }
+if (args[0] === "context" && args[1] === "inspect") {
+  process.stdout.write(JSON.stringify("unix:///controlled/docker-engine.sock") + "\\n");
+  process.exit(0);
+}
 if (
   args[0] === "image"
   && args[1] === "inspect"
-  && args[2] === "sandcastle:sandking-real-worker"
+  && (
+    args[2] === "sandcastle:sandking-real-worker"
+    || /^sha256:[a-f0-9]{64}$/.test(args[2])
+  )
 ) {
-    process.stdout.write(args[3]?.includes("json .Config")
-      ? JSON.stringify({
+    const imageId = args[2] === "sandcastle:sandking-real-worker"
+      ? readFileSync(${JSON.stringify(imageStatePath)}, "utf8").trim()
+      : args[2];
+    const expectedImage = imageId === "sha256:${"d".repeat(64)}";
+    const configuration = {
           Labels: {
             "org.sandking.production-sandbox.configuration-integrity":
-              ${JSON.stringify(sandboxConfigurationIntegrity)},
+              expectedImage
+                ? ${JSON.stringify(sandboxConfigurationIntegrity)}
+                : "sha256:${"f".repeat(64)}",
             "org.sandking.production-sandbox.agent-uid": String(process.getuid?.() ?? 1000),
             "org.sandking.production-sandbox.agent-gid": String(process.getgid?.() ?? 1000),
           },
           User: String(process.getuid?.() ?? 1000) + ":" + String(process.getgid?.() ?? 1000),
-        }) + "\\n"
-      : "sha256:${"d".repeat(64)}\\n");
+        };
+    process.stdout.write(args[3]?.includes("json .Config")
+      ? JSON.stringify(configuration) + "\\n"
+      : args[3]?.includes("json .")
+        ? JSON.stringify({ Id: imageId, Config: configuration }) + "\\n"
+        : imageId + "\\n");
   process.exit(0);
 }
 if (args[0] !== "run" || args[1] !== "--rm") process.exit(93);
