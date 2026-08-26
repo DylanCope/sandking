@@ -1,3 +1,7 @@
+import { hasExactKeys } from "./common/exact-object-keys.mjs";
+
+export { hasExactKeys };
+
 const progressPhases = new Set([
   "planning",
   "implementation",
@@ -10,12 +14,6 @@ const failureCodes = new Set([
   "delivery_execution_failed",
   "scoped_issue_incomplete",
 ]);
-
-/** @param {any} value @param {readonly string[]} keys */
-export const hasExactKeys = (value, keys) => value
-  && typeof value === "object"
-  && !Array.isArray(value)
-  && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
 
 /** @param {any} value */
 const validIssueNumber = (value) => Number.isSafeInteger(value)

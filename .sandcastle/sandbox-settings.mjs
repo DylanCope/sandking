@@ -85,6 +85,7 @@ export const createWorkerSandboxSettings = (
   const codexAuthPath = paths.codexAuthPath ?? "~/.codex/auth.json";
   const settings = createCodexSandboxSettings(codexAuthPath, {
     githubCredentialPath: paths.githubCredentialPath,
+    ...(paths.imageName ? { imageName: paths.imageName } : {}),
   });
   const allowedIssues = new Set(
     (environment.SANDCASTLE_REAL_CLAUDE_ISSUES ?? "")

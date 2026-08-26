@@ -146,6 +146,12 @@ const productionSeedFileContract = Object.freeze([
     executable: false,
   },
   {
+    path: ".sandcastle/docker-transport.mjs",
+    sourcePath: "src/production-sandcastle-adapter/docker-transport.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
     path: ".sandcastle/github-credential-v1.mjs",
     sourcePath: "src/production-sandcastle-adapter/github-credential-v1.mjs",
     source: "sandking-package",
@@ -184,6 +190,12 @@ const productionSeedFileContract = Object.freeze([
   {
     path: "common/digest.mjs",
     sourcePath: "src/common/digest.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
+    path: "common/exact-object-keys.mjs",
+    sourcePath: "src/common/exact-object-keys.mjs",
     source: "sandking-package",
     executable: false,
   },

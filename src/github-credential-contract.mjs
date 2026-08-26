@@ -1,3 +1,5 @@
+import { hasExactKeys } from "./common/exact-object-keys.mjs";
+
 export const GITHUB_CREDENTIAL_MODES = Object.freeze([
   "project-pat",
   "host-gh-session",
@@ -113,10 +115,7 @@ export const isGitHubCredentialToken = (value) => typeof value === "string"
 
 /** @param {unknown} value */
 export const isGitHubCredential = (value) => Boolean(
-  value
-  && typeof value === "object"
-  && !Array.isArray(value)
-  && JSON.stringify(Object.keys(value).sort()) === JSON.stringify(["mode", "token"])
+  hasExactKeys(value, ["mode", "token"])
   && "mode" in value
   && GITHUB_CREDENTIAL_MODES.includes(/** @type {any} */ (value.mode))
   && "token" in value

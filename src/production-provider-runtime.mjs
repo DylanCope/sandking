@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
-import { lstat } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { digest as sha256 } from "./common/digest.mjs";
 import { createDestinationWorkerEnvironment } from "./destination-worker-environment.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -49,8 +50,40 @@ export const pinnedRealProviderInputsReady = (
     )) === JSON.stringify(skillIdentities);
 };
 
-/** @type {Promise<{ready: boolean, imageBuilt: boolean}> | null} */
-let activeSandboxPreparation = null;
+const SANDBOX_CONFIGURATION_INTEGRITY_LABEL =
+  "org.sandking.production-sandbox.configuration-integrity";
+
+/** @type {Map<string, Promise<{ready: boolean, imageBuilt: boolean}>>} */
+const activeSandboxPreparations = new Map();
+
+/**
+ * @param {{
+ *   execute: typeof execFileAsync,
+ *   environment: NodeJS.ProcessEnv,
+ *   imageName: string,
+ *   configurationIntegrity: string,
+ * }} options
+ */
+const retainedImageMatchesConfiguration = async ({
+  execute,
+  environment,
+  imageName,
+  configurationIntegrity,
+}) => {
+  try {
+    const { stdout } = await execute("docker", [
+      "image", "inspect", imageName,
+      `--format={{ index .Config.Labels "${SANDBOX_CONFIGURATION_INTEGRITY_LABEL}" }}`,
+    ], {
+      env: environment,
+      timeout: 10_000,
+      maxBuffer: 64_000,
+    });
+    return stdout.trim() === configurationIntegrity;
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Establish the pinned Docker image required by the production adapter. The
@@ -80,10 +113,6 @@ export const ensureProductionProviderRuntime = async (options) => {
   ) {
     return { ready: false, imageBuilt: false };
   }
-  if (contract.realSandboxImageAvailable(readinessOptions)) {
-    return { ready: true, imageBuilt: false };
-  }
-  if (activeSandboxPreparation) return activeSandboxPreparation;
 
   const execute = options.executeFile ?? execFileAsync;
   const projectionRoot = resolve(options.projectionPath);
@@ -91,19 +120,38 @@ export const ensureProductionProviderRuntime = async (options) => {
     projectionRoot,
     ...contract.REAL_PROVIDER_SANDBOX_CONFIGURATION.split("/"),
   );
-  activeSandboxPreparation = (async () => {
+  let configurationIntegrity;
+  try {
+    const configuration = await lstat(configurationPath);
+    if (!configuration.isFile() || configuration.isSymbolicLink()) {
+      return { ready: false, imageBuilt: false };
+    }
+    configurationIntegrity = sha256(await readFile(configurationPath));
+  } catch {
+    return { ready: false, imageBuilt: false };
+  }
+  const imageMatches = () => retainedImageMatchesConfiguration({
+    execute,
+    environment,
+    imageName: contract.REAL_PROVIDER_SANDBOX_IMAGE,
+    configurationIntegrity,
+  });
+  if (await imageMatches()) return { ready: true, imageBuilt: false };
+
+  const preparationKey = [
+    contract.REAL_PROVIDER_SANDBOX_IMAGE,
+    configurationIntegrity,
+  ].join("\0");
+  const activePreparation = activeSandboxPreparations.get(preparationKey);
+  if (activePreparation) return activePreparation;
+
+  const preparation = (async () => {
     try {
-      if (contract.realSandboxImageAvailable(readinessOptions)) {
-        return { ready: true, imageBuilt: false };
-      }
-      const configuration = await lstat(configurationPath);
-      if (!configuration.isFile() || configuration.isSymbolicLink()) {
-        return { ready: false, imageBuilt: false };
-      }
       await execute("docker", [
         "build",
         "--build-arg", `AGENT_UID=${process.getuid?.() ?? 1000}`,
         "--build-arg", `AGENT_GID=${process.getgid?.() ?? 1000}`,
+        "--label", `${SANDBOX_CONFIGURATION_INTEGRITY_LABEL}=${configurationIntegrity}`,
         "--tag", contract.REAL_PROVIDER_SANDBOX_IMAGE,
         "--file", configurationPath,
         projectionRoot,
@@ -114,16 +162,19 @@ export const ensureProductionProviderRuntime = async (options) => {
         maxBuffer: 1024 * 1024,
       });
       return {
-        ready: contract.realSandboxImageAvailable(readinessOptions),
+        ready: await imageMatches(),
         imageBuilt: true,
       };
     } catch {
       return { ready: false, imageBuilt: false };
     }
   })();
+  activeSandboxPreparations.set(preparationKey, preparation);
   try {
-    return await activeSandboxPreparation;
+    return await preparation;
   } finally {
-    activeSandboxPreparation = null;
+    if (activeSandboxPreparations.get(preparationKey) === preparation) {
+      activeSandboxPreparations.delete(preparationKey);
+    }
   }
 };

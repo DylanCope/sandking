@@ -5,10 +5,13 @@ import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { digest as sha256 } from "../common/digest.mjs";
 import { parseRealDelegationMessage } from "../real-delegation-protocol.mjs";
+import {
+  createWindowsDockerPipeRelay,
+  WINDOWS_DOCKER_NAMED_PIPE,
+} from "./docker-transport.mjs";
 import { materializeGitHubCredential } from "./github-credential-v1.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -25,6 +28,10 @@ const SANDCASTLE_RESOLVED =
 const SANDCASTLE_INTEGRITY =
   "sha512-kdQ414rM8t1QiWeqZ3Klz4KSd0PqQG4bRVuqGpRDUomWhojSZkEAc1tbcEcThVmBEaHkCt8LmYR49vqEPNIoYQ==";
 const CODEX_VERSION = "0.146.0";
+const CONTAINER_EXECUTION_PATH = "/workspace/harness";
+const CONTAINER_PROJECT_PATH = "/workspace/project";
+const CONTAINER_CODEX_AUTH_PATH = "/run/secrets/codex-auth.json";
+const CONTAINER_GITHUB_CREDENTIAL_PATH = "/run/secrets/github-token";
 const PINNED_SKILL_IDENTITIES = Object.freeze([
   "sandking.issue-implementation",
   "sandking.issue-planning",
@@ -137,11 +144,12 @@ export const runPinnedMain = async ({
   timeoutMs = REAL_DELEGATION_TIMEOUT_MS,
   onProgress = () => undefined,
   spawnProcess = spawn,
+  platform = process.platform,
+  createDockerPipeRelay = createWindowsDockerPipeRelay,
 }) => {
-  const mainPath = join(executionPath, ".sandcastle", "main.mts");
-  const tsxLoaderUrl = pathToFileURL(
-    join(executionPath, "node_modules", "tsx", "dist", "loader.mjs"),
-  ).href;
+  const mainPath = `${CONTAINER_EXECUTION_PATH}/.sandcastle/main.mts`;
+  const tsxLoaderUrl =
+    `file://${CONTAINER_EXECUTION_PATH}/node_modules/tsx/dist/loader.mjs`;
   const dockerEnvironment = { ...process.env };
   for (const name of [
     "GH_TOKEN",
@@ -153,124 +161,136 @@ export const runPinnedMain = async ({
   }
   const containerName = `sandking-real-delegation-${randomUUID()}`;
   const dockerSocketPath = "/var/run/docker.sock";
-  const dockerSocket = await lstat(dockerSocketPath).catch(() => null);
+  const dockerSocket = platform === "win32"
+    ? null
+    : await lstat(dockerSocketPath).catch(() => null);
+  const dockerPipeRelay = platform === "win32"
+    ? await createDockerPipeRelay(WINDOWS_DOCKER_NAMED_PIPE)
+    : null;
   const containerEnvironment = {
     HOME: "/home/agent",
     LANG: "C.UTF-8",
-    SANDCASTLE_CODEX_AUTH_PATH: authPath,
-    SANDKING_GITHUB_CREDENTIAL_PATH: githubCredentialPath,
+    SANDCASTLE_CODEX_AUTH_PATH: CONTAINER_CODEX_AUTH_PATH,
+    SANDKING_GITHUB_CREDENTIAL_PATH: CONTAINER_GITHUB_CREDENTIAL_PATH,
     SANDKING_REAL_DELEGATION_CONTAINER: "1",
     SANDKING_REAL_DELEGATION_PROTOCOL: "1",
     SANDKING_REAL_DELEGATION_PROTOCOL_FD: "1",
     SANDKING_REAL_DELEGATION_SANDBOX_IMAGE: sandboxImage,
+    ...(dockerPipeRelay ? {
+      DOCKER_HOST: `tcp://host.docker.internal:${dockerPipeRelay.port}`,
+    } : {}),
   };
   const environmentArguments = Object.entries(containerEnvironment).flatMap(
     ([name, value]) => ["--env", `${name}=${value}`],
   );
   const mountArguments = [
-    `${projectPath}:${projectPath}:rw`,
-    `${executionPath}:${executionPath}:ro`,
-    `${authPath}:${authPath}:ro`,
-    `${githubCredentialPath}:${githubCredentialPath}:ro`,
+    `${projectPath}:${CONTAINER_PROJECT_PATH}:rw`,
+    `${executionPath}:${CONTAINER_EXECUTION_PATH}:ro`,
+    `${authPath}:${CONTAINER_CODEX_AUTH_PATH}:ro`,
+    `${githubCredentialPath}:${CONTAINER_GITHUB_CREDENTIAL_PATH}:ro`,
     ...(dockerSocket ? [`${dockerSocketPath}:${dockerSocketPath}:rw`] : []),
   ].flatMap((mount) => ["--volume", mount]);
-  const child = spawnProcess("docker", [
-    "run",
-    "--rm",
-    "--init",
-    "--name",
-    containerName,
-    "--stop-timeout",
-    String(CANCELLATION_GRACE_MS / 1_000),
-    "--user",
-    `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
-    ...(dockerSocket ? ["--group-add", String(dockerSocket.gid)] : []),
-    "--workdir",
-    projectPath,
-    ...mountArguments,
-    ...environmentArguments,
-    "--entrypoint",
-    "/usr/local/bin/node",
-    sandboxImage,
-    "--import",
-    tsxLoaderUrl,
-    mainPath,
-    "--issue",
-    String(issueNumber),
-  ], {
-    cwd: projectPath,
-    env: dockerEnvironment,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  child.stderr?.pipe(process.stderr, { end: false });
+  try {
+    const child = spawnProcess("docker", [
+      "run",
+      "--rm",
+      "--init",
+      "--name",
+      containerName,
+      "--stop-timeout",
+      String(CANCELLATION_GRACE_MS / 1_000),
+      "--user",
+      `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+      ...(dockerSocket ? ["--group-add", String(dockerSocket.gid)] : []),
+      "--workdir",
+      CONTAINER_PROJECT_PATH,
+      ...mountArguments,
+      ...environmentArguments,
+      "--entrypoint",
+      "/usr/local/bin/node",
+      sandboxImage,
+      "--import",
+      tsxLoaderUrl,
+      mainPath,
+      "--issue",
+      String(issueNumber),
+    ], {
+      cwd: projectPath,
+      env: dockerEnvironment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stderr?.pipe(process.stderr, { end: false });
 
-  const messages = [];
-  let outputInvalid = false;
-  const protocolStream = child.stdout;
-  if (!protocolStream) {
-    child.kill("SIGKILL");
-    throw delegationError("real_delegation_main_result_invalid");
-  }
-  const lines = createInterface({ input: protocolStream, crlfDelay: Infinity });
-  const linesClosed = new Promise((resolve) => lines.once("close", resolve));
-  lines.on("line", (line) => {
-    let message;
-    try {
-      message = parseRealDelegationMessage(line);
-    } catch {
-      outputInvalid = true;
-      return;
-    }
-    if (message.issueNumber !== issueNumber || messages.some(({ type }) =>
-      type === "sandcastle.delivery.result")) {
-      outputInvalid = true;
-      return;
-    }
-    messages.push(message);
-    if (message.type === "sandcastle.delivery.progress") onProgress(message);
-  });
-
-  let requestedTermination = null;
-  let forcedTimer;
-  const signalContainer = (signalName) => execFileAsync("docker", [
-    "kill", "--signal", signalName, containerName,
-  ], {
-    env: dockerEnvironment,
-    timeout: 10_000,
-    maxBuffer: 64_000,
-  }).catch(() => undefined);
-  const requestTermination = (reason) => {
-    if (requestedTermination) return;
-    requestedTermination = reason;
-    child.kill("SIGTERM");
-    void signalContainer("SIGTERM");
-    forcedTimer = setTimeout(() => {
-      void signalContainer("SIGKILL");
+    const messages = [];
+    let outputInvalid = false;
+    const protocolStream = child.stdout;
+    if (!protocolStream) {
       child.kill("SIGKILL");
-    }, CANCELLATION_GRACE_MS);
-    forcedTimer.unref?.();
-  };
-  const handleAbort = () => requestTermination("cancelled");
-  if (signal?.aborted) handleAbort();
-  else signal?.addEventListener("abort", handleAbort, { once: true });
-  const timeout = setTimeout(() => requestTermination("timed-out"), timeoutMs);
-  timeout.unref?.();
+      throw delegationError("real_delegation_main_result_invalid");
+    }
+    const lines = createInterface({ input: protocolStream, crlfDelay: Infinity });
+    const linesClosed = new Promise((resolve) => lines.once("close", resolve));
+    lines.on("line", (line) => {
+      let message;
+      try {
+        message = parseRealDelegationMessage(line);
+      } catch {
+        outputInvalid = true;
+        return;
+      }
+      if (message.issueNumber !== issueNumber || messages.some(({ type }) =>
+        type === "sandcastle.delivery.result")) {
+        outputInvalid = true;
+        return;
+      }
+      messages.push(message);
+      if (message.type === "sandcastle.delivery.progress") onProgress(message);
+    });
 
-  const childResult = await waitForChild(child);
-  await linesClosed;
-  clearTimeout(timeout);
-  clearTimeout(forcedTimer);
-  signal?.removeEventListener("abort", handleAbort);
-  lines.close();
-  const results = messages.filter(({ type }) => type === "sandcastle.delivery.result");
-  return {
-    ...childResult,
-    termination: requestedTermination
-      ?? (childResult.signal ? "interrupted" : "completed"),
-    outputInvalid,
-    result: results.length === 1 ? results[0] : null,
-    resultCount: results.length,
-  };
+    let requestedTermination = null;
+    let forcedTimer;
+    const signalContainer = (signalName) => execFileAsync("docker", [
+      "kill", "--signal", signalName, containerName,
+    ], {
+      env: dockerEnvironment,
+      timeout: 10_000,
+      maxBuffer: 64_000,
+    }).catch(() => undefined);
+    const requestTermination = (reason) => {
+      if (requestedTermination) return;
+      requestedTermination = reason;
+      child.kill("SIGTERM");
+      void signalContainer("SIGTERM");
+      forcedTimer = setTimeout(() => {
+        void signalContainer("SIGKILL");
+        child.kill("SIGKILL");
+      }, CANCELLATION_GRACE_MS);
+      forcedTimer.unref?.();
+    };
+    const handleAbort = () => requestTermination("cancelled");
+    if (signal?.aborted) handleAbort();
+    else signal?.addEventListener("abort", handleAbort, { once: true });
+    const timeout = setTimeout(() => requestTermination("timed-out"), timeoutMs);
+    timeout.unref?.();
+
+    const childResult = await waitForChild(child);
+    await linesClosed;
+    clearTimeout(timeout);
+    clearTimeout(forcedTimer);
+    signal?.removeEventListener("abort", handleAbort);
+    lines.close();
+    const results = messages.filter(({ type }) => type === "sandcastle.delivery.result");
+    return {
+      ...childResult,
+      termination: requestedTermination
+        ?? (childResult.signal ? "interrupted" : "completed"),
+      outputInvalid,
+      result: results.length === 1 ? results[0] : null,
+      resultCount: results.length,
+    };
+  } finally {
+    await dockerPipeRelay?.close();
+  }
 };
 
 export const runRealDelegation = async ({

@@ -51,6 +51,16 @@ test("the Docker sandbox mounts the host Codex auth file read-only", () => {
   ]);
 });
 
+test("an implementation Worker retains the outer delegation's immutable image", () => {
+  const imageName = `sha256:${"d".repeat(64)}`;
+  const settings = createWorkerSandboxSettings("262", {}, {
+    codexAuthPath: "/host/.codex/auth.json",
+    imageName,
+  });
+
+  assert.equal(settings.docker.imageName, imageName);
+});
+
 test("the Docker sandbox consumes GitHub credentials only through a read-only file", () => {
   const token = "github_pat_must_not_enter_docker_configuration";
   const settings = createCodexSandboxSettings("/host/.codex/auth.json", {

@@ -7,6 +7,7 @@ import {
 } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
+import { digest as sha256 } from "../src/common/digest.mjs";
 import { createHarnessRunManager } from "../src/harness-runs.mjs";
 import { createProjectRegistry } from "../src/project-registration.mjs";
 
@@ -57,6 +58,9 @@ export const installReadyProbeCommands = async (
   const statePath = bundledMainStatePath(root);
   const originalPath = process.env.PATH;
   const dependencyRoot = join(new URL("../node_modules", import.meta.url).pathname);
+  const sandboxConfigurationIntegrity = sha256(await readFile(
+    new URL("../.sandcastle/Dockerfile", import.meta.url),
+  ));
   await Promise.all([
     mkdir(binPath, { recursive: true }),
     mkdir(containerHomePath, { recursive: true }),
@@ -81,9 +85,7 @@ export const installReadyProbeCommands = async (
     })}\n`),
     writeFile(join(fakeSandcastlePath, "sandboxes", "docker.mjs"), `
 export const docker = (settings) => {
-  if (!/^(?:sandcastle:sandking-real-worker|sha256:[a-f0-9]{64})$/.test(
-    settings?.imageName ?? "",
-  )) {
+  if (settings?.imageName !== "sha256:${"d".repeat(64)}") {
     throw new Error("fixture_pinned_image_missing");
   }
   if (
@@ -302,6 +304,7 @@ save(state);
 `),
     writeExecutable(join(binPath, "docker"), `#!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 const args = process.argv.slice(2);
 if (args[0] === "version" && args[1] === "--format") {
   process.stdout.write("27.5.1\\n");
@@ -312,7 +315,9 @@ if (
   && args[1] === "inspect"
   && args[2] === "sandcastle:sandking-real-worker"
 ) {
-  process.stdout.write("sha256:${"d".repeat(64)}\\n");
+  process.stdout.write(args[3]?.includes("Config.Labels")
+    ? ${JSON.stringify(`${sandboxConfigurationIntegrity}\n`)}
+    : "sha256:${"d".repeat(64)}\\n");
   process.exit(0);
 }
 if (args[0] !== "run" || args[1] !== "--rm") process.exit(93);
@@ -327,6 +332,32 @@ if (
   || workdirIndex < 0
   || JSON.stringify(args).includes("github_pat_production_fixture_delivery")
 ) process.exit(94);
+const mounts = new Map();
+for (let index = 0; index < imageIndex; index += 1) {
+  if (args[index] !== "--volume") continue;
+  const mount = args[index + 1].replace(/:(?:ro|rw)$/, "");
+  const targetIndex = mount.lastIndexOf(":/");
+  if (targetIndex < 0) process.exit(97);
+  mounts.set(mount.slice(targetIndex + 1), mount.slice(0, targetIndex));
+}
+const translatePath = (value) => {
+  for (const [containerPath, hostPath] of mounts) {
+    if (value === containerPath) return hostPath;
+    if (value.startsWith(containerPath + "/")) {
+      return hostPath + value.slice(containerPath.length);
+    }
+  }
+  return value;
+};
+const translateArgument = (value) => value.startsWith("file://")
+  ? (() => {
+      const containerPath = fileURLToPath(value);
+      const hostPath = translatePath(containerPath);
+      return hostPath === containerPath
+        ? value
+        : pathToFileURL(hostPath).href;
+    })()
+  : translatePath(value);
 const environment = { ...process.env };
 for (const name of [
   "GH_TOKEN",
@@ -337,12 +368,12 @@ for (const name of [
 for (let index = 0; index < imageIndex; index += 1) {
   if (args[index] !== "--env") continue;
   const [name, ...value] = args[index + 1].split("=");
-  environment[name] = value.join("=");
+  environment[name] = translatePath(value.join("="));
 }
 if (environment.HOME !== "/home/agent") process.exit(96);
 environment.HOME = ${JSON.stringify(containerHomePath)};
-const child = spawn(process.execPath, args.slice(imageIndex + 1), {
-  cwd: args[workdirIndex + 1],
+const child = spawn(process.execPath, args.slice(imageIndex + 1).map(translateArgument), {
+  cwd: translatePath(args[workdirIndex + 1]),
   env: environment,
   stdio: "inherit",
 });

@@ -277,7 +277,11 @@ const runIssueWorker = async (
       const workerSandboxSettings = createWorkerSandboxSettings(
         issue.id,
         process.env,
-        { codexAuthPath, githubCredentialPath },
+        {
+          codexAuthPath,
+          githubCredentialPath,
+          ...(sandboxImage ? { imageName: sandboxImage } : {}),
+        },
       );
       // A retry gets a fresh container while retaining the named worktree.
       // This preserves commits and uncommitted edits from an interrupted agent.

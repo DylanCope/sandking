@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
   REAL_SANDBOX_IMAGE,
@@ -37,7 +40,24 @@ const createContainerLauncher = (invocations) => (command, args, options) => {
     const [name, ...value] = args[index + 1].split("=");
     environment[name] = value.join("=");
   }
-  return spawn(process.execPath, args.slice(imageIndex + 1), {
+  const containerArgs = args.slice(imageIndex + 1).map((argument) => {
+    if (argument === "file:///workspace/harness/node_modules/tsx/dist/loader.mjs") {
+      return pathToFileURL(join(
+        options.cwd,
+        "..",
+        "execution",
+        "node_modules",
+        "tsx",
+        "dist",
+        "loader.mjs",
+      )).href;
+    }
+    if (argument === "/workspace/harness/.sandcastle/main.mts") {
+      return join(options.cwd, "..", "execution", ".sandcastle", "main.mts");
+    }
+    return argument;
+  });
+  return spawn(process.execPath, containerArgs, {
     ...options,
     env: environment,
   });
@@ -109,8 +129,8 @@ writeSync(protocolFd, JSON.stringify({
 
     assert.deepEqual(JSON.parse(await readFile(capturePath, "utf8")), {
       argv: ["--issue", "262"],
-      credentialPath: githubCredentialPath,
-      codexAuthPath: authPath,
+      credentialPath: "/run/secrets/github-token",
+      codexAuthPath: "/run/secrets/codex-auth.json",
       protocol: "1",
       protocolFd: "1",
       sandboxed: "1",
@@ -121,12 +141,100 @@ writeSync(protocolFd, JSON.stringify({
       "github_pat_main_dispatch_secret",
     ), false);
     assert.ok(invocations[0].args.some((value) =>
-      value.includes(`${githubCredentialPath}:${githubCredentialPath}`)));
+      value === `${githubCredentialPath}:/run/secrets/github-token:ro`));
     assert.equal(progress.length, 1);
     assert.equal(progress[0].phase, "planning");
     assert.equal(completed.exitCode, 0);
     assert.equal(completed.termination, "completed");
     assert.equal(completed.result.code, "scoped_issue_completed");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native Windows dispatch relays Docker's named pipe into Linux container paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-main-windows-dispatch-"));
+  const executionPath = join(root, "execution");
+  const projectPath = join(root, "project");
+  const authPath = join(root, "codex-auth.json");
+  const githubCredentialPath = join(root, "github-token");
+  let relayClosed = false;
+  try {
+    await Promise.all([
+      mkdir(executionPath, { recursive: true }),
+      mkdir(projectPath, { recursive: true }),
+      writeFile(authPath, "{}\n"),
+      writeFile(githubCredentialPath, "github_pat_windows_dispatch_secret\n"),
+    ]);
+    const invocations = [];
+    const completed = await runPinnedMain({
+      executionPath,
+      projectPath,
+      issueNumber: 262,
+      authPath,
+      githubCredentialPath,
+      platform: "win32",
+      timeoutMs: 4_000,
+      createDockerPipeRelay: async (namedPipePath) => {
+        assert.equal(namedPipePath, "\\\\.\\pipe\\docker_engine");
+        return {
+          port: 43_262,
+          close: async () => {
+            relayClosed = true;
+          },
+        };
+      },
+      spawnProcess: (command, args, options) => {
+        invocations.push({ command, args, options });
+        const workdirIndex = args.indexOf("--workdir");
+        const imageIndex = args.indexOf(REAL_SANDBOX_IMAGE);
+        assert.equal(workdirIndex >= 0 && args[workdirIndex + 1], "/workspace/project");
+        assert.notEqual(imageIndex, -1);
+        for (const mount of [
+          `${projectPath}:/workspace/project:rw`,
+          `${executionPath}:/workspace/harness:ro`,
+          `${authPath}:/run/secrets/codex-auth.json:ro`,
+          `${githubCredentialPath}:/run/secrets/github-token:ro`,
+        ]) {
+          assert.ok(args.includes(mount), JSON.stringify(args));
+        }
+        assert.equal(args.includes("/var/run/docker.sock:/var/run/docker.sock:rw"), false);
+        assert.ok(args.includes("DOCKER_HOST=tcp://host.docker.internal:43262"));
+        assert.ok(args.includes(
+          "SANDCASTLE_CODEX_AUTH_PATH=/run/secrets/codex-auth.json",
+        ));
+        assert.ok(args.includes(
+          "SANDKING_GITHUB_CREDENTIAL_PATH=/run/secrets/github-token",
+        ));
+        assert.deepEqual(args.slice(imageIndex + 1), [
+          "--import",
+          "file:///workspace/harness/node_modules/tsx/dist/loader.mjs",
+          "/workspace/harness/.sandcastle/main.mts",
+          "--issue",
+          "262",
+        ]);
+
+        const child = new EventEmitter();
+        child.stdout = new PassThrough();
+        child.stderr = new PassThrough();
+        child.kill = () => true;
+        queueMicrotask(() => {
+          child.stdout.end(`${JSON.stringify({
+            type: "sandcastle.delivery.result",
+            issueNumber: 262,
+            status: "failed",
+            code: "scoped_issue_incomplete",
+            completion: null,
+          })}\n`);
+          child.emit("close", 1, null);
+        });
+        return child;
+      },
+    });
+
+    assert.equal(completed.result.code, "scoped_issue_incomplete");
+    assert.equal(invocations.length, 1);
+    assert.equal(relayClosed, true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

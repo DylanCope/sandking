@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { digest as sha256 } from "../src/common/digest.mjs";
 import {
   REAL_PROVIDER_CODEX_VERSION,
   REAL_PROVIDER_SANDBOX_IMAGE,
@@ -48,17 +49,23 @@ test("product preparation builds and verifies a missing pinned sandbox image", a
   try {
     const projectionPath = join(root, "projection");
     const dockerfilePath = join(projectionPath, ".sandcastle", "Dockerfile");
+    const dockerfile = "FROM node:22-bookworm\n";
+    const configurationIntegrity = sha256(dockerfile);
     await mkdir(join(projectionPath, ".sandcastle"), { recursive: true });
-    await writeFile(dockerfilePath, "FROM node:22-bookworm\n");
+    await writeFile(dockerfilePath, dockerfile);
     const calls = [];
-    let imageReady = false;
+    let imageBuilt = false;
     const result = await ensureProductionProviderRuntime({
       projectionPath,
       productionPreparation,
       environment: { PATH: "/usr/bin:/bin" },
       executeFile: async (command, args, options) => {
         calls.push({ command, args, options });
-        imageReady = true;
+        if (args[0] === "image") {
+          if (!imageBuilt) throw new Error("image_missing");
+          return { stdout: `${configurationIntegrity}\n`, stderr: "" };
+        }
+        imageBuilt = true;
         return { stdout: "", stderr: "" };
       },
       realProviderContract: {
@@ -68,22 +75,78 @@ test("product preparation builds and verifies a missing pinned sandbox image", a
         REAL_PROVIDER_SKILL_IDENTITIES: requiredSkills,
         realProviderAvailable: () => true,
         realSandboxEngineAvailable: () => true,
-        realSandboxImageAvailable: () => imageReady,
+        realSandboxImageAvailable: () => imageBuilt,
       },
     });
 
     assert.deepEqual(result, { ready: true, imageBuilt: true });
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].command, "docker");
-    assert.deepEqual(calls[0].args, [
+    assert.equal(calls.length, 3);
+    assert.equal(calls[1].command, "docker");
+    assert.deepEqual(calls[1].args, [
       "build",
       "--build-arg", `AGENT_UID=${process.getuid?.() ?? 1000}`,
       "--build-arg", `AGENT_GID=${process.getgid?.() ?? 1000}`,
+      "--label",
+      `org.sandking.production-sandbox.configuration-integrity=${configurationIntegrity}`,
       "--tag", REAL_PROVIDER_SANDBOX_IMAGE,
       "--file", dockerfilePath,
       projectionPath,
     ]);
-    assert.equal(calls[0].options.env.PATH, "/usr/bin:/bin");
+    assert.equal(calls[1].options.env.PATH, "/usr/bin:/bin");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("product preparation rebuilds a retained image from stale Dockerfile bytes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-stale-image-"));
+  try {
+    const projectionPath = join(root, "projection");
+    const dockerfilePath = join(projectionPath, ".sandcastle", "Dockerfile");
+    const dockerfile = "FROM node:22-bookworm\nRUN printf current-runtime\n";
+    const configurationIntegrity = sha256(dockerfile);
+    await mkdir(join(projectionPath, ".sandcastle"), { recursive: true });
+    await writeFile(dockerfilePath, dockerfile);
+    const calls = [];
+    let inspected = 0;
+    const result = await ensureProductionProviderRuntime({
+      projectionPath,
+      productionPreparation,
+      environment: { PATH: "/usr/bin:/bin" },
+      executeFile: async (command, args, options) => {
+        calls.push({ command, args, options });
+        if (args[0] === "image") {
+          inspected += 1;
+          return {
+            stdout: inspected === 1
+              ? `sha256:${"a".repeat(64)}\n`
+              : `${configurationIntegrity}\n`,
+            stderr: "",
+          };
+        }
+        return { stdout: "", stderr: "" };
+      },
+      realProviderContract: {
+        REAL_PROVIDER_CODEX_VERSION,
+        REAL_PROVIDER_SANDBOX_CONFIGURATION: ".sandcastle/Dockerfile",
+        REAL_PROVIDER_SANDBOX_IMAGE,
+        REAL_PROVIDER_SKILL_IDENTITIES: requiredSkills,
+        realProviderAvailable: () => true,
+        realSandboxEngineAvailable: () => true,
+        realSandboxImageAvailable: () => true,
+      },
+    });
+
+    assert.deepEqual(result, { ready: true, imageBuilt: true });
+    assert.equal(calls.length, 3);
+    assert.deepEqual(calls[0].args, [
+      "image", "inspect", REAL_PROVIDER_SANDBOX_IMAGE,
+      "--format={{ index .Config.Labels \"org.sandking.production-sandbox.configuration-integrity\" }}",
+    ]);
+    assert.ok(calls[1].args.includes(
+      `org.sandking.production-sandbox.configuration-integrity=${configurationIntegrity}`,
+    ));
+    assert.deepEqual(calls[2].args, calls[0].args);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
