@@ -44,6 +44,16 @@ const relativeProjectionPathSchema = z.string().min(1).max(512).refine((value) =
   && !value.includes("\\")
   && !value.includes("\0")
   && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."));
+const productionRuntimeRootPaths = new Set([
+  "destination-worker-environment.mjs",
+  "github-credential-contract.mjs",
+  "package-lock.json",
+  "package.json",
+  "real-delegation-protocol.mjs",
+]);
+const isProductionRuntimePath = (path) => path.startsWith(".sandcastle/")
+  || path.startsWith("common/")
+  || productionRuntimeRootPaths.has(path);
 
 const productionHarnessProjectionManifestSchema = z.object({
   schemaVersion: z.literal(1),
@@ -759,20 +769,10 @@ export const prepareProductionHarness = async (options) => {
   } catch {
     throw new ProductionHarnessPreparationError("harness_pin_unreadable");
   }
-  const committedRuntimePaths = committedPaths.filter((path) =>
-    path.startsWith(".sandcastle/")
-    || path.startsWith("common/")
-    || path === "github-credential-contract.mjs"
-    || path === "real-delegation-protocol.mjs"
-    || path === "package.json"
-    || path === "package-lock.json").sort();
-  const runtimePaths = seedManifest.files.map(({ path }) => path).filter((path) =>
-    path.startsWith(".sandcastle/")
-    || path.startsWith("common/")
-    || path === "github-credential-contract.mjs"
-    || path === "real-delegation-protocol.mjs"
-    || path === "package.json"
-    || path === "package-lock.json").sort();
+  const committedRuntimePaths = committedPaths.filter(isProductionRuntimePath).sort();
+  const runtimePaths = seedManifest.files.map(({ path }) => path)
+    .filter(isProductionRuntimePath)
+    .sort();
   const lockedSkillPaths = new Set(skillLock.skills.map((skill) => skill.source.path));
   if (
     committedRuntimePaths.some((path) => !runtimePaths.includes(path))

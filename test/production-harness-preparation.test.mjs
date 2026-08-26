@@ -215,6 +215,10 @@ test("production preparation resolves the registered pin and projects only verif
       join(projectionPath, "worker-environment.json"),
       "utf8",
     ));
+    assert.equal(
+      (await readdir(projectionPath)).includes("destination-worker-environment.mjs"),
+      true,
+    );
     assert.deepEqual(workerEnvironment.skillDiscovery, {
       ambient: "disabled",
       roots: ["worker-skills"],
