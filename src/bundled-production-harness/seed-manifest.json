@@ -54,7 +54,7 @@
       "path": "real-delegation-protocol.mjs",
       "sourcePath": "src/real-delegation-protocol.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:1c2fc538a2967da1e25b116567bbe301523c3c0fced8e77aa40e9981ddb66553",
+      "integrity": "sha256:790c317c5a510e7512ff98eace8d73d7bd9bcdd9da6f56f9056e57474c87ddab",
       "executable": false
     },
     {
@@ -113,13 +113,13 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:2c6cff2fa7840f9445d4768d8dc87d653683c4e16c7645943f08b6f0531b5b10",
+      "integrity": "sha256:67a198c00a624a2f96418c23d8708eddd5813d4da81bba30bcadcb400f02934f",
       "executable": false
     },
     {
       "path": "skills.lock.json",
       "source": "seed",
-      "integrity": "sha256:c1bd4639519c52eab9e90dc9c75a579e10fbf1dc85011922df962df38ca6ab5c",
+      "integrity": "sha256:25622b3a0ba186329932f5e6aa57cae4ba445e47483885a453ae1b336ecb0ac3",
       "executable": false
     },
     {
