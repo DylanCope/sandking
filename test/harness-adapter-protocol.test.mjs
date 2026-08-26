@@ -260,6 +260,25 @@ test("preparation can retain inputs without describing Worker topology", () => {
   }
 });
 
+test("only the production Sandcastle adapter may recover an interrupted issue claim", () => {
+  const request = {
+    type: "harness.run.start",
+    adapterProtocol: "1.0.0",
+    adapterId: SANDCASTLE_HARNESS_ADAPTER_ID,
+    harnessRunId: `harness-run-${"1".repeat(24)}`,
+    recoverClaimInstanceId: `harness-run-${"2".repeat(24)}`,
+    retainedExecutionInputs: [],
+  };
+  assert.equal(
+    harnessRunStartRequestSchema.parse(request).recoverClaimInstanceId,
+    request.recoverClaimInstanceId,
+  );
+  assert.equal(harnessRunStartRequestSchema.safeParse({
+    ...request,
+    adapterId: CONFORMANCE_HARNESS_ADAPTER_ID,
+  }).success, false);
+});
+
 test("a legacy conformance probe retains its required historical parameter declaration", () => {
   const probe = harnessAdapterProbeSchema.parse({
     type: "harness.adapter.probe",

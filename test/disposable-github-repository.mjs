@@ -1,8 +1,12 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
+import { digest as sha256 } from "../src/common/digest.mjs";
 
 const execFileAsync = promisify(execFile);
+const projectArtifact = "Delivered through Sand-King.\n";
 
 const tokenEnvironment = (token) => {
   const environment = { ...process.env, GH_TOKEN: token };
@@ -35,6 +39,84 @@ const putFile = async (token, repository, path, source) => {
     "-f", `message=Seed ${path}`,
     "-f", `content=${Buffer.from(source, "utf8").toString("base64")}`,
   ], "real_github_repository_seed_failed");
+};
+
+const runPatProvisioner = ({ input = "", operation, path, repositories }) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(path, [operation, ...repositories], {
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const stdout = [];
+    let outputBytes = 0;
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error(`real_github_project_pat_${operation}_timed_out`));
+    }, 5 * 60_000);
+    timeout.unref?.();
+    child.stdout.on("data", (chunk) => {
+      outputBytes += chunk.byteLength;
+      if (outputBytes > 16_384) {
+        child.kill("SIGKILL");
+        finish(new Error(`real_github_project_pat_${operation}_output_invalid`));
+        return;
+      }
+      stdout.push(chunk);
+    });
+    child.stderr.resume();
+    child.once("error", () => {
+      finish(new Error(`real_github_project_pat_${operation}_failed`));
+    });
+    child.once("close", (code) => {
+      finish(
+        code === 0 ? null : new Error(`real_github_project_pat_${operation}_failed`),
+        Buffer.concat(stdout).toString("utf8").trim(),
+      );
+    });
+    child.stdin.end(input);
+  });
+
+/**
+ * Issue the fine-grained Project PAT only after both disposable repositories
+ * exist. The external provisioner must select the first repository alone and
+ * revoke the returned token when this lease closes.
+ */
+export const provisionDisposableProjectPat = async ({
+  deniedRepository,
+  primaryRepository,
+  provisionerPath,
+}) => {
+  const repositories = [primaryRepository, deniedRepository];
+  const token = await runPatProvisioner({
+    operation: "issue",
+    path: provisionerPath,
+    repositories,
+  });
+  if (!/^github_pat_[A-Za-z0-9_]{20,}$/.test(token)) {
+    throw new Error("real_github_project_pat_issue_output_invalid");
+  }
+  let disposed = false;
+  return {
+    token,
+    async dispose() {
+      if (disposed) return;
+      await runPatProvisioner({
+        input: `${token}\n`,
+        operation: "revoke",
+        path: provisionerPath,
+        repositories,
+      });
+      disposed = true;
+    },
+  };
 };
 
 /**
@@ -116,8 +198,15 @@ test("delegated issue marker is complete", async () => {
         "Do not change the existing test. Run `npm test` before delivery.",
       ].join(" "),
     ], "real_github_issue_seed_failed")).stdout);
+    const baseCommit = (await gh(provisioningToken, [
+      "api", `repos/${primary.full_name}/commits/main`, "--jq", ".sha",
+    ], "real_github_base_commit_observation_failed")).stdout.trim();
+    if (!/^[a-f0-9]{40}$/.test(baseCommit)) {
+      throw new Error("real_github_base_commit_observation_failed");
+    }
 
     return {
+      baseCommit,
       primary: repositoryReference(primary),
       denied: repositoryReference(repositories[1]),
       issue: {
@@ -128,6 +217,42 @@ test("delegated issue marker is complete", async () => {
         await gh(provisioningToken, [
           "repo", "clone", primary.full_name, destination,
         ], "real_github_repository_clone_failed");
+      },
+      verifyMergedProject: async (destination) => {
+        await gh(provisioningToken, [
+          "repo", "clone", primary.full_name, destination,
+        ], "real_github_merged_repository_clone_failed");
+        await execFileAsync("npm", ["test"], {
+          cwd: destination,
+          env: process.env,
+          timeout: 60_000,
+          maxBuffer: 1024 * 1024,
+        }).catch(() => {
+          throw new Error("real_github_seeded_test_failed");
+        });
+        const [artifact, { stdout: mainCommitSource }] = await Promise.all([
+          readFile(join(destination, "delegated-issue.txt")),
+          execFileAsync("git", ["-C", destination, "rev-parse", "HEAD"], {
+            timeout: 10_000,
+          }),
+        ]);
+        if (artifact.toString("utf8") !== projectArtifact) {
+          throw new Error("real_github_delivered_artifact_invalid");
+        }
+        const mainCommit = mainCommitSource.trim();
+        if (!/^[a-f0-9]{40}$/.test(mainCommit) || mainCommit === baseCommit) {
+          throw new Error("real_github_merged_main_invalid");
+        }
+        return {
+          baseCommit,
+          mainCommit,
+          artifact: {
+            path: "delegated-issue.txt",
+            integrity: sha256(artifact),
+            bytes: artifact.byteLength,
+          },
+          seededTest: { command: "npm test", passed: true },
+        };
       },
       dispose,
     };

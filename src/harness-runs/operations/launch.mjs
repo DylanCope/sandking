@@ -42,6 +42,17 @@ import { createProductionProviderPreparationId } from "../provider-preparation-s
 
 const PRODUCTION_PROVIDER_CLEANUP_RETRY_MS = 100;
 
+/** @param {any[]} runs @param {string} projectId @param {number} issueNumber */
+const recoverableClaimInstanceId = (runs, projectId, issueNumber) => {
+  const latest = runs.toReversed().find((run) =>
+    run.projectId === projectId
+    && run.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
+    && run.parameters?.issueNumber === issueNumber);
+  return latest?.status === "failed"
+    ? latest.harnessRunId
+    : null;
+};
+
 /** @param {unknown} error */
 const typedErrorCode = (error) => error && typeof error === "object"
   && "code" in error && typeof error.code === "string"
@@ -358,10 +369,21 @@ export const createLaunchOperation = (runtime) => {
 
     let harnessRunId = null;
     let harnessExecutionPath = null;
+    let recoverClaimInstanceId = null;
     /** @type {Array<{path: string, integrity: string, source: string}>} */
     let retainedHarnessExecutionInputs = [];
     if (!code && context && prepared && parameters.success && idempotencyKeyHash) {
       harnessRunId = `harness-run-${randomBytes(12).toString("hex")}`;
+      if (
+        typeof parameters.data.issueNumber === "number"
+        && Number.isSafeInteger(parameters.data.issueNumber)
+      ) {
+        recoverClaimInstanceId = recoverableClaimInstanceId(
+          retained.runs,
+          context.project.projectId,
+          parameters.data.issueNumber,
+        );
+      }
       if (
         context.project.harness.adapterId === SANDCASTLE_HARNESS_ADAPTER_ID
         && context.project.harness.preparation
@@ -601,6 +623,7 @@ export const createLaunchOperation = (runtime) => {
         harnessExecutionPath,
         retainedHarnessExecutionInputs,
         githubCredential,
+        recoverClaimInstanceId,
         productionProviderRuntime:
           providerPreparation?.productionProviderRuntime,
         cancellationGraceMs,

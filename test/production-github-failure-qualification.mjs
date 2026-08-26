@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
 import {
+  createProductionRegistration,
   createProductionFixture,
   installReadyProbeCommands,
   observeProductionTerminal,
@@ -12,48 +15,121 @@ import {
   readBundledMainState,
   setBundledMainScenario,
 } from "./production-sandcastle-host-fixture.mjs";
+import { installCurrentPackage } from "./installed-package.mjs";
+import {
+  installedProductionLaunchEnvironment,
+  startInstalledProductionHost,
+} from "./installed-production-host.mjs";
 
-test("a crashed bundled main resumes its Host claim and existing pull request", async () => {
-  const root = await mkdtemp(join(tmpdir(), "sandking-production-main-crash-"));
-  let fixture;
+const execFileAsync = promisify(execFile);
+const readJson = (path) => readFile(path, "utf8").then(JSON.parse);
+
+const waitFor = async (read, predicate, code, timeoutMs = 30_000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await read().catch(() => null);
+    if (value !== null && predicate(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(code);
+};
+
+const installedLaunch = async ({ endpoint, installed, registration, retryDirectory }) => {
+  const { stdout } = await execFileAsync(installed.command, [
+    "launch",
+    registration.project.project.projectId,
+    "--issue", "173",
+    "--json",
+  ], {
+    cwd: registration.projectPath,
+    env: installedProductionLaunchEnvironment({
+      endpoint,
+      projectId: registration.project.project.projectId,
+      retryDirectory,
+      userHome: join(retryDirectory, "home"),
+    }),
+  });
+  return JSON.parse(stdout);
+};
+
+test("a real Host process loss recovers its issue claim and existing pull request", {
+  skip: process.platform !== "linux"
+    ? "the real Host-loss qualification requires Linux process supervision"
+    : false,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-host-loss-"));
+  const endpoint = join(root, "controller.sock");
+  const firstRetryDirectory = join(root, "first-controller-private");
+  const secondRetryDirectory = join(root, "second-controller-private");
+  let host;
   let restorePath = () => undefined;
   try {
+    const installed = await installCurrentPackage(root);
     restorePath = await installReadyProbeCommands(root, {
-      mainScenario: "crash-after-pull-request",
+      mainScenario: "pause-first-review",
     });
-    fixture = await createProductionFixture(root);
-    const crashed = await fixture.manager.launch(productionLaunchRequest(
-      fixture.project.project.projectId,
-      { requestId: "launch-crashing-main" },
-    ));
+    const registration = await createProductionRegistration(root);
+    await Promise.all([
+      mkdir(join(firstRetryDirectory, "home"), { recursive: true }),
+      mkdir(join(secondRetryDirectory, "home"), { recursive: true }),
+    ]);
+    host = await startInstalledProductionHost({
+      endpoint,
+      installed,
+      nodePath: process.execPath,
+      registration,
+    });
+    const crashed = await installedLaunch({
+      endpoint,
+      installed,
+      registration,
+      retryDirectory: firstRetryDirectory,
+    });
     assert.equal(crashed.type, "harness.run.launch.result", JSON.stringify(crashed));
-    const interrupted = await observeProductionTerminal(
-      fixture.manager,
-      crashed.run.harnessRunId,
-      30_000,
+    await waitFor(
+      () => readBundledMainState(root),
+      (state) => state.reviewStarted === true && state.pullRequests.length === 1,
+      "host_loss_review_start_timeout",
     );
-    assert.equal(interrupted.run.status, "failed", JSON.stringify(interrupted));
-    assert.equal(interrupted.outcome.result.code, "real_delegation_interrupted");
+    await host.kill();
+    host = undefined;
+    await rm(endpoint, { force: true });
+
     const crashedState = await readBundledMainState(root);
     assert.equal(crashedState.issues[173].state, "open");
     assert.equal(crashedState.pullRequests.length, 1);
     assert.deepEqual(readBundledIssueClaimActions(crashedState, 173), ["claim"]);
 
     await setBundledMainScenario(root, "success");
-    const resumed = await fixture.manager.launch(productionLaunchRequest(
-      fixture.project.project.projectId,
-      {
-        requestId: "resume-crashed-main",
-        idempotencyKeyHash: `sha256:${"9".repeat(64)}`,
-      },
-    ));
-    assert.equal(resumed.type, "harness.run.launch.result", JSON.stringify(resumed));
-    const recovered = await observeProductionTerminal(
-      fixture.manager,
-      resumed.run.harnessRunId,
-      30_000,
+    host = await startInstalledProductionHost({
+      endpoint,
+      installed,
+      nodePath: process.execPath,
+      registration,
+    });
+    const reconciled = await waitFor(
+      () => readJson(join(registration.dataDir, "harness-runs.json")),
+      (state) => state.runs[0]?.outcome?.code === "host_daemon_interrupted",
+      "host_loss_reconciliation_timeout",
     );
-    assert.equal(recovered.run.status, "succeeded", JSON.stringify(recovered));
+    assert.equal(reconciled.runs[0].harnessRunId, crashed.run.harnessRunId);
+    assert.equal(reconciled.runs[0].status, "failed");
+
+    const resumed = await installedLaunch({
+      endpoint,
+      installed,
+      registration,
+      retryDirectory: secondRetryDirectory,
+    });
+    assert.equal(resumed.type, "harness.run.launch.result", JSON.stringify(resumed));
+    const retained = await waitFor(
+      () => readJson(join(registration.dataDir, "harness-runs.json")),
+      (state) => state.runs.find(({ harnessRunId }) =>
+        harnessRunId === resumed.run.harnessRunId)?.status === "succeeded",
+      "host_loss_recovery_timeout",
+    );
+    const recovered = retained.runs.find(({ harnessRunId }) =>
+      harnessRunId === resumed.run.harnessRunId);
     assert.equal(recovered.outcome.result.code, "issue_delivery_completed");
     const recoveredState = await readBundledMainState(root);
     assert.equal(recoveredState.issues[173].state, "closed");
@@ -61,10 +137,65 @@ test("a crashed bundled main resumes its Host claim and existing pull request", 
     assert.equal(recoveredState.pullRequests[0].state, "MERGED");
     assert.deepEqual(readBundledIssueClaimActions(recoveredState, 173), [
       "claim",
+      "override",
       "claim",
       "release",
     ]);
+    assert.match((await execFileAsync("git", [
+      "-C", registration.projectPath,
+      "show", "main:issue-173-delivered.txt",
+    ])).stdout, /^implemented issue 173 /);
   } finally {
+    await host?.stop().catch(() => undefined);
+    restorePath();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("simultaneous same-issue runs cannot share a Host claim", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-claim-race-"));
+  let fixture;
+  let restorePath = () => undefined;
+  try {
+    restorePath = await installReadyProbeCommands(root, {
+      mainScenario: "pause-first-review",
+    });
+    fixture = await createProductionFixture(root);
+    const first = await fixture.manager.launch(productionLaunchRequest(
+      fixture.project.project.projectId,
+      { requestId: "launch-first-claim-holder" },
+    ));
+    await waitFor(
+      () => readBundledMainState(root),
+      (state) => state.reviewStarted === true,
+      "first_claim_holder_timeout",
+    );
+
+    const second = await fixture.manager.launch(productionLaunchRequest(
+      fixture.project.project.projectId,
+      {
+        requestId: "launch-overlapping-claim-contender",
+        idempotencyKeyHash: `sha256:${"9".repeat(64)}`,
+      },
+    ));
+    assert.notEqual(second.run.harnessRunId, first.run.harnessRunId);
+    const contender = await waitFor(
+      () => fixture.manager.observe({
+        requestId: "observe-overlapping-claim-contender",
+        harnessRunId: second.run.harnessRunId,
+        afterSequence: 0,
+      }),
+      (observation) => ["succeeded", "failed", "cancelled"]
+        .includes(observation.run.status),
+      "overlapping_claim_contender_timeout",
+    );
+    assert.equal(contender.run.status, "failed", JSON.stringify(contender));
+    assert.equal(contender.outcome.result.code, "scoped_issue_incomplete");
+    const state = await readBundledMainState(root);
+    assert.equal(state.pullRequests.length, 1);
+    assert.deepEqual(readBundledIssueClaimActions(state, 173), ["claim"]);
+  } finally {
+    await setBundledMainScenario(root, "success").catch(() => undefined);
     await fixture?.manager.waitForIdle().catch(() => undefined);
     restorePath();
     await rm(root, { recursive: true, force: true });
@@ -121,6 +252,7 @@ for (const [scenario, expectedCode] of [
         assert.equal(recoveredState.pullRequests.length, 1);
         assert.deepEqual(readBundledIssueClaimActions(recoveredState, 173), [
           "claim",
+          "override",
           "claim",
           "release",
         ]);

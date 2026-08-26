@@ -359,6 +359,9 @@ const superviseBoundHarnessAdapter = async (run, context, observer) => {
         adapterProtocol: run.adapterProtocol,
         adapterId: run.adapterId,
         harnessRunId: run.harnessRunId,
+        ...(context.recoverClaimInstanceId
+          ? { recoverClaimInstanceId: context.recoverClaimInstanceId }
+          : {}),
         retainedExecutionInputs: retainedHarnessExecutionInputs,
         ...(context.githubCredential
           ? { githubCredential: context.githubCredential }

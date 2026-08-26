@@ -10,6 +10,7 @@ import test from "node:test";
 import { createDestinationWorkerEnvironment } from "../src/destination-worker-environment.mjs";
 import {
   createDisposableGitHubRepositories,
+  provisionDisposableProjectPat,
   readGitHubDelegationState,
   verifyProjectPatRepositoryScope,
 } from "./disposable-github-repository.mjs";
@@ -28,15 +29,15 @@ const requireGate = () => {
     throw new Error("real_github_delegation_gate_disabled");
   }
   const provisioningToken = process.env.SANDKING_REAL_GITHUB_PROVISIONING_TOKEN;
-  const projectPat = process.env.SANDKING_REAL_GITHUB_PROJECT_PAT;
+  const projectPatProvisioner =
+    process.env.SANDKING_REAL_GITHUB_PROJECT_PAT_PROVISIONER;
   if (!provisioningToken) throw new Error("real_github_provisioning_token_missing");
-  if (!projectPat) throw new Error("real_github_project_pat_missing");
-  if (provisioningToken === projectPat) {
-    throw new Error("real_github_credential_roles_not_isolated");
+  if (!projectPatProvisioner) {
+    throw new Error("real_github_project_pat_provisioner_missing");
   }
   return {
     owner: process.env.SANDKING_REAL_GITHUB_OWNER,
-    projectPat,
+    projectPatProvisioner,
     provisioningToken,
   };
 };
@@ -213,8 +214,10 @@ test("Production GitHub issue delegation uses a disposable repository", {
   const endpoint = join(root, "controller.sock");
   const retryDirectory = join(root, "controller-private");
   const userHome = join(root, "controller-home");
+  const verificationPath = join(root, "merged-project");
   let disposable;
   let manager;
+  let projectPatLease;
   let server;
   let activeHarnessRunId;
   let cleanupFailure;
@@ -228,11 +231,19 @@ test("Production GitHub issue delegation uses a disposable repository", {
       owner: credentials.owner,
       provisioningToken: credentials.provisioningToken,
     });
+    projectPatLease = await provisionDisposableProjectPat({
+      deniedRepository: disposable.denied.nameWithOwner,
+      primaryRepository: disposable.primary.nameWithOwner,
+      provisionerPath: credentials.projectPatProvisioner,
+    });
+    if (credentials.provisioningToken === projectPatLease.token) {
+      throw new Error("real_github_credential_roles_not_isolated");
+    }
     await disposable.clone(projectPath);
     const projectScopeEnforced = await verifyProjectPatRepositoryScope({
       deniedRepository: disposable.denied.nameWithOwner,
       primaryRepository: disposable.primary.nameWithOwner,
-      projectPat: credentials.projectPat,
+      projectPat: projectPatLease.token,
     });
 
     const installed = await installCurrentPackage(root);
@@ -262,7 +273,7 @@ test("Production GitHub issue delegation uses a disposable repository", {
       requestId: "configure-real-github-project-pat",
       projectId: registration.project.project.projectId,
       action: "set",
-      personalAccessToken: credentials.projectPat,
+      personalAccessToken: projectPatLease.token,
       authorizationClass: "host_local_github_credentials",
       idempotencyKey: "configure-real-github-project-pat",
       expectedRevision: 0,
@@ -326,6 +337,7 @@ test("Production GitHub issue delegation uses a disposable repository", {
     });
     assert.equal(primaryState.pullRequests.length, 1);
     const pullRequest = primaryState.pullRequests[0];
+    const delivery = await disposable.verifyMergedProject(verificationPath);
     const retainedAfterPrimary = await readJson(join(dataDir, "harness-runs.json"));
     assert.equal(retainedAfterPrimary.runs.length, 1);
 
@@ -404,6 +416,7 @@ test("Production GitHub issue delegation uses a disposable repository", {
           state: finalState.issue.state,
         },
         pullRequest,
+        delivery,
       },
       structuredOutcome: {
         harnessRunId: primary.run.harnessRunId,
@@ -435,7 +448,7 @@ test("Production GitHub issue delegation uses a disposable repository", {
     const serialized = serializeSanitizedRealProviderResult({
       result,
       prohibitedValues: [
-        credentials.projectPat,
+        projectPatLease.token,
         credentials.provisioningToken,
         hostGhToken,
         root,
@@ -451,9 +464,14 @@ test("Production GitHub issue delegation uses a disposable repository", {
     await cancelActiveRun(manager, activeHarnessRunId);
     await manager?.waitForIdle().catch(() => undefined);
     await closeServer(server);
+    if (projectPatLease) {
+      await projectPatLease.dispose().catch((error) => {
+        cleanupFailure ??= error;
+      });
+    }
     if (disposable) {
       await disposable.dispose().catch((error) => {
-        cleanupFailure = error;
+        cleanupFailure ??= error;
       });
     }
     await rm(root, { recursive: true, force: true });

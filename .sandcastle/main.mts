@@ -212,6 +212,14 @@ const claimInstanceId = process.env.SANDKING_REAL_DELEGATION_CLAIM_INSTANCE_ID
 if (!/^[A-Za-z0-9._-]{1,253}$/.test(claimInstanceId)) {
   throw new Error("real_delegation_claim_instance_invalid");
 }
+const recoverClaimInstanceId =
+  process.env.SANDKING_REAL_DELEGATION_RECOVER_CLAIM_INSTANCE_ID ?? null;
+if (recoverClaimInstanceId && (
+  !/^harness-run-[a-f0-9]{24}$/.test(recoverClaimInstanceId)
+  || recoverClaimInstanceId === claimInstanceId
+)) {
+  throw new Error("real_delegation_recover_claim_instance_invalid");
+}
 const instance = { id: claimInstanceId, host: claimInstanceId, pid: process.pid };
 const runScope = scopeOptions
   ? "issueId" in scopeOptions
@@ -472,12 +480,19 @@ const main = async () => {
 
   let deliveryFailed = false;
   for (const issue of issues) {
-    const overrideClaim = overrideClaimIssueIds.has(issue.id);
+    const existingClaim = recoverClaimInstanceId || overrideClaimIssueIds.has(issue.id)
+      ? await getActiveIssueClaim({ issue, github })
+      : null;
+    const recoveringInterruptedClaim =
+      existingClaim?.instanceId === recoverClaimInstanceId;
+    const overrideClaim = overrideClaimIssueIds.has(issue.id)
+      || recoveringInterruptedClaim;
     if (overrideClaim) {
-      const existingClaim = await getActiveIssueClaim({ issue, github });
       if (existingClaim && existingClaim.instanceId !== instance.id) {
         console.warn(
-          `  ⚠ Overriding existing claim on issue #${issue.id}: held by ${existingClaim.host} (pid ${existingClaim.pid}, claimed ${existingClaim.at}). Verify that instance is not still running before proceeding.`,
+          recoveringInterruptedClaim
+            ? `  ⚠ Recovering failed Harness-run claim on issue #${issue.id}: held by ${existingClaim.host} (pid ${existingClaim.pid}, claimed ${existingClaim.at}).`
+            : `  ⚠ Overriding existing claim on issue #${issue.id}: held by ${existingClaim.host} (pid ${existingClaim.pid}, claimed ${existingClaim.at}). Verify that instance is not still running before proceeding.`,
         );
       }
     }

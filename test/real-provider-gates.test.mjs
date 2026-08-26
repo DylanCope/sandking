@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -14,6 +17,7 @@ import {
   realGitHubDelegationScenario,
   validateRealGitHubDelegationResult,
 } from "./real-github-delegation.mjs";
+import { provisionDisposableProjectPat } from "./disposable-github-repository.mjs";
 
 // Real-provider acceptance runners invoke paid models against a real
 // destination. Each must refuse to run unless its environment gate is set
@@ -102,6 +106,74 @@ test("real GitHub delegation qualification fails closed without explicit opt-in"
     assert.doesNotMatch(error.stdout, /productionEvidence.*true/);
     return true;
   });
+  await assert.rejects(execFileAsync(process.execPath, qualificationArguments, {
+    cwd: repositoryRoot,
+    env: {
+      ...closedEnvironment,
+      SANDKING_REAL_GITHUB_DELEGATION: "1",
+      SANDKING_REAL_GITHUB_PROVISIONING_TOKEN: "provisioning-token-present",
+    },
+  }), (error) => {
+    assert.match(error.stdout, /real_github_project_pat_provisioner_missing/);
+    assert.doesNotMatch(error.stdout, /productionEvidence.*true/);
+    return true;
+  });
+});
+
+test("the live gate provisions and revokes its Project PAT after repository selection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-project-pat-provisioner-"));
+  const provisionerPath = join(root, "provision-project-pat.mjs");
+  const observationPath = join(root, "provisioner-observations.jsonl");
+  const projectPat = `github_pat_${"p".repeat(32)}`;
+  try {
+    await writeFile(provisionerPath, `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+const [operation, primaryRepository, deniedRepository] = process.argv.slice(2);
+const observe = () => appendFileSync(${JSON.stringify(observationPath)}, JSON.stringify({
+  operation,
+  primaryRepository,
+  deniedRepository,
+}) + "\\n");
+if (operation === "issue") {
+  observe();
+  process.stdout.write(${JSON.stringify(projectPat)} + "\\n");
+} else if (operation === "revoke") {
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => { input += chunk; });
+  process.stdin.on("end", () => {
+    if (input.trim() !== ${JSON.stringify(projectPat)}) process.exit(2);
+    observe();
+  });
+} else {
+  process.exit(3);
+}
+`);
+    await chmod(provisionerPath, 0o700);
+    const lease = await provisionDisposableProjectPat({
+      provisionerPath,
+      primaryRepository: "fixture-owner/disposable-a",
+      deniedRepository: "fixture-owner/disposable-b",
+    });
+    assert.equal(lease.token, projectPat);
+    await lease.dispose();
+    await lease.dispose();
+    assert.deepEqual((await readFile(observationPath, "utf8")).trim()
+      .split("\n").map(JSON.parse), [
+      {
+        operation: "issue",
+        primaryRepository: "fixture-owner/disposable-a",
+        deniedRepository: "fixture-owner/disposable-b",
+      },
+      {
+        operation: "revoke",
+        primaryRepository: "fixture-owner/disposable-a",
+        deniedRepository: "fixture-owner/disposable-b",
+      },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("real-provider result serialization rejects secrets, session material, and machine paths", () => {
@@ -236,6 +308,16 @@ test("real GitHub delegation evidence requires scoped, canonical, merged behavio
         baseRefName: "main",
         headRefName: "sandcastle/issue-1",
       },
+      delivery: {
+        baseCommit: "6".repeat(40),
+        mainCommit: "7".repeat(40),
+        artifact: {
+          path: "delegated-issue.txt",
+          integrity: "sha256:434b05aee5fa527f23415993037d2fa9943300c54ad892a53836fc666aa0e961",
+          bytes: 29,
+        },
+        seededTest: { command: "npm test", passed: true },
+      },
     },
     structuredOutcome: {
       harnessRunId: `harness-run-${"3".repeat(24)}`,
@@ -272,6 +354,10 @@ test("real GitHub delegation evidence requires scoped, canonical, merged behavio
   for (const invalid of [
     { authentication: { ...result.authentication, projectScopeEnforced: false } },
     { github: { ...result.github, issue: { ...result.github.issue, state: "OPEN" } } },
+    { github: { ...result.github, delivery: {
+      ...result.github.delivery,
+      seededTest: { command: "npm test", passed: false },
+    } } },
     { idempotency: { ...result.idempotency, pullRequestCount: 2 } },
     { diagnostics: { ...result.diagnostics, providerTranscript: "not allowed" } },
   ]) {

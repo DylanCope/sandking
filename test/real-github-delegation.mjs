@@ -44,6 +44,7 @@ export const validateRealGitHubDelegationResult = (result) => {
   const deniedRepository = result?.github?.deniedRepository;
   const issue = result?.github?.issue;
   const pullRequest = result?.github?.pullRequest;
+  const delivery = result?.github?.delivery;
   const outcome = result?.structuredOutcome;
   const diagnostics = result?.diagnostics;
   if (
@@ -93,6 +94,7 @@ export const validateRealGitHubDelegationResult = (result) => {
     || result.authentication.projectScopeEnforced !== true
     || !hasExactKeys(result.github, [
       "deniedRepository",
+      "delivery",
       "issue",
       "pullRequest",
       "repository",
@@ -126,6 +128,23 @@ export const validateRealGitHubDelegationResult = (result) => {
       pullRequest.url,
       `/${repository.nameWithOwner}/pull/${pullRequest.number}`,
     )
+    || !hasExactKeys(delivery, [
+      "artifact",
+      "baseCommit",
+      "mainCommit",
+      "seededTest",
+    ])
+    || !commitPattern.test(delivery.baseCommit ?? "")
+    || !commitPattern.test(delivery.mainCommit ?? "")
+    || delivery.mainCommit === delivery.baseCommit
+    || !hasExactKeys(delivery.artifact, ["bytes", "integrity", "path"])
+    || delivery.artifact.path !== "delegated-issue.txt"
+    || delivery.artifact.integrity
+      !== "sha256:434b05aee5fa527f23415993037d2fa9943300c54ad892a53836fc666aa0e961"
+    || delivery.artifact.bytes !== 29
+    || !hasExactKeys(delivery.seededTest, ["command", "passed"])
+    || delivery.seededTest.command !== "npm test"
+    || delivery.seededTest.passed !== true
     || !hasExactKeys(outcome, [
       "code",
       "completion",

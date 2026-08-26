@@ -88,6 +88,7 @@ export const installReadyProbeCommands = async (
       agentConfigurations: [],
       issues: {},
       pullRequests: [],
+      reviewCalls: 0,
       reviewStarted: false,
     })}\n`),
   ]);
@@ -190,11 +191,16 @@ export const createSandbox = async ({ branch }) => ({
     if (!options.promptFile.endsWith("pr-review-prompt.md")) {
       throw new Error("fixture_prompt_unexpected");
     }
-    if (scenario() === "crash-after-pull-request") {
+    if (scenario() === "pause-first-review") {
       const state = JSON.parse(readFileSync(statePath, "utf8"));
+      state.reviewCalls += 1;
       state.reviewStarted = true;
       writeFileSync(statePath, JSON.stringify(state) + "\\n");
-      process.kill(process.pid, "SIGKILL");
+      if (state.reviewCalls === 1) {
+        while (scenario() === "pause-first-review") {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
     }
     if (scenario() === "cancellable") {
       const state = JSON.parse(readFileSync(statePath, "utf8"));
