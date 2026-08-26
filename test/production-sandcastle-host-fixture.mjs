@@ -55,11 +55,11 @@ export const readBundledMainState = async (root) => JSON.parse(await readFile(
 
 export const installReadyProbeCommands = async (
   root,
-  { mainScenario = "incomplete" } = {},
+  { homeDirectory = join(root, "host-home"), mainScenario = "incomplete" } = {},
 ) => {
   const binPath = join(root, "bin");
   const fakeSandcastlePath = join(root, "fake-sandcastle");
-  const hostHomePath = join(root, "host-home");
+  const hostHomePath = homeDirectory;
   const containerHomePath = join(root, "container-home");
   const scenarioPath = bundledMainScenarioPath(root);
   const statePath = bundledMainStatePath(root);

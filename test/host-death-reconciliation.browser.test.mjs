@@ -208,7 +208,7 @@ test("packaged Cockpit removes pre-commit production preparation after real Host
     "commit", "--quiet", "-m", "Project fixture",
   ]);
   const installed = await installCurrentPackage(root);
-  restorePath = await installReadyProbeCommands(root);
+  restorePath = await installReadyProbeCommands(root, { homeDirectory: userHome });
   const installedHostPath = join(installed.packageDirectory, "src", "local-host.mjs");
   const installedHostSource = await readFile(installedHostPath, "utf8");
   await writeFile(installedHostPath, installedHostSource.replace(
