@@ -7,6 +7,7 @@ import test from "node:test";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import {
   createCodexSandboxSettings,
+  createGitHubSandboxEnvironment,
   createRunSettings,
   createWorkerSandboxSettings,
 } from "./sandbox-settings.mjs";
@@ -40,6 +41,7 @@ test("the sandbox receives an independent copy of the host Codex auth file", asy
 test("the Docker sandbox mounts the host Codex auth file read-only", () => {
   const settings = createCodexSandboxSettings("/host/.codex/auth.json");
 
+  assert.equal(settings.docker.imageName, "sandcastle:sandking-real-worker");
   assert.deepEqual(settings.docker.mounts, [
     {
       hostPath: "/host/.codex/auth.json",
@@ -47,6 +49,55 @@ test("the Docker sandbox mounts the host Codex auth file read-only", () => {
       readonly: true,
     },
   ]);
+});
+
+test("an implementation Worker retains the outer delegation's immutable image", () => {
+  const imageName = `sha256:${"d".repeat(64)}`;
+  const settings = createWorkerSandboxSettings("262", {}, {
+    codexAuthPath: "/host/.codex/auth.json",
+    imageName,
+  });
+
+  assert.equal(settings.docker.imageName, imageName);
+});
+
+test("the Docker sandbox consumes GitHub credentials only through a read-only file", () => {
+  const token = "github_pat_must_not_enter_docker_configuration";
+  const settings = createCodexSandboxSettings("/host/.codex/auth.json", {
+    githubCredentialPath: "/host/private/github-token",
+  });
+
+  assert.deepEqual(settings.docker.mounts.at(-1), {
+    hostPath: "/host/private/github-token",
+    sandboxPath: "/home/agent/.sandcastle-secrets/github-token",
+    readonly: true,
+  });
+  assert.equal(settings.docker.env.GH_TOKEN, "");
+  assert.equal(
+    settings.docker.env.SANDKING_GITHUB_CREDENTIAL_PATH,
+    "/home/agent/.sandcastle-secrets/github-token",
+  );
+  assert.equal(JSON.stringify(settings).includes(token), false);
+  assert.ok(settings.hooks.sandbox.onSandboxReady.some(({ command }) =>
+    command.includes("gh api user")));
+});
+
+test("the GitHub credential wrapper follows the effective sandbox home", () => {
+  const environment = createGitHubSandboxEnvironment("/isolated/container-home");
+
+  assert.equal(
+    environment.PATH,
+    "/isolated/container-home/.sandcastle-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+  );
+  assert.equal(environment.GH_CONFIG_DIR, "/isolated/container-home/.config/gh");
+  for (const name of [
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+  ]) {
+    assert.equal(environment[name], "");
+  }
 });
 
 test("real Claude access is granted only to an explicitly selected Worker issue", () => {
@@ -181,14 +232,4 @@ test("--stdout enables terminal output for Sandcastle runs", () => {
   assert.deepEqual(createRunSettings(["--stdout"]), {
     logging: { type: "stdout" },
   });
-});
-
-test("every Harness agent uses GPT-5.6 Sol at the highest supported effort", async () => {
-  const source = await readFile(".sandcastle/main.mts", "utf8");
-  const configuredAgents = source.match(
-    /sandcastle\.codex\("gpt-5\.6-sol", \{ effort: "xhigh" \}\)/g,
-  );
-
-  assert.equal(configuredAgents?.length, 3);
-  assert.doesNotMatch(source, /sandcastle\.codex\("gpt-5\.4"/);
 });

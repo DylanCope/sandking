@@ -11,6 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, posix, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { digest as sha256 } from "./common/digest.mjs";
@@ -18,6 +19,7 @@ import { identifierSchemas } from "./common/identifiers.mjs";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "./harness-adapter-identity.mjs";
 import {
   harnessCompatibilityManifestSchema,
+  MAX_RETAINED_EXECUTION_INPUTS,
   retainedExecutionInputPathsSchema,
   retainedExecutionInputSchema,
 } from "./harness-adapter-protocol.mjs";
@@ -42,6 +44,17 @@ const relativeProjectionPathSchema = z.string().min(1).max(512).refine((value) =
   && !value.includes("\\")
   && !value.includes("\0")
   && value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."));
+const productionRuntimeRootPaths = new Set([
+  "destination-worker-environment.mjs",
+  "github-credential-contract.mjs",
+  "package-lock.json",
+  "package.json",
+  "real-delegation-protocol.mjs",
+]);
+/** @param {string} path */
+const isProductionRuntimePath = (path) => path.startsWith(".sandcastle/")
+  || path.startsWith("common/")
+  || productionRuntimeRootPaths.has(path);
 
 const productionHarnessProjectionManifestSchema = z.object({
   schemaVersion: z.literal(1),
@@ -308,12 +321,42 @@ const makeExecutionTreeRemovable = async (root) => {
       const path = join(directory, entry.name);
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
         await visit(path);
-      } else {
+      } else if (!entry.isSymbolicLink()) {
         await chmod(path, 0o600).catch(() => undefined);
       }
     }
   };
   await visit(root);
+};
+
+/** @param {string} executionPath @param {string} projectPath */
+const writeExecutionGitPointer = async (executionPath, projectPath) => {
+  const executionGitDirectory = join(executionPath, ".git");
+  await Promise.all([
+    mkdir(join(executionGitDirectory, "objects"), { recursive: true, mode: 0o700 }),
+    mkdir(join(executionGitDirectory, "refs", "heads"), {
+      recursive: true,
+      mode: 0o700,
+    }),
+  ]);
+  await Promise.all([
+    writeFile(
+      join(executionGitDirectory, "HEAD"),
+      "ref: refs/heads/sandking-execution\n",
+      { mode: 0o600 },
+    ),
+    writeFile(
+      join(executionGitDirectory, "config"),
+      [
+        "[core]",
+        "\trepositoryformatversion = 0",
+        "\tbare = false",
+        `\tworktree = ${JSON.stringify(resolve(projectPath))}`,
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    ),
+  ]);
 };
 
 /**
@@ -388,6 +431,7 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
   if (projectionDigest !== preparation.projection.digest) {
     throw new ProductionHarnessPreparationError("harness_projection_collision");
   }
+  snapshotFiles.set("projection-manifest.json", manifestSource);
   const retainedExecutionInputs = retainedInputPaths.map((path) => {
     const source = snapshotFiles.get(path);
     if (typeof source !== "string") {
@@ -395,7 +439,6 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
     }
     return retainedExecutionInputSchema.parse({ path, source, integrity: sha256(source) });
   });
-  snapshotFiles.set("projection-manifest.json", manifestSource);
 
   const destinationPath = resolve(options.destinationPath);
   const destinationParent = dirname(destinationPath);
@@ -429,32 +472,7 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
     if (!await verifyExistingProjection(stagingPath, snapshotFiles)) {
       throw new ProductionHarnessPreparationError("harness_projection_failed");
     }
-    const executionGitDirectory = join(stagingPath, ".git");
-    await Promise.all([
-      mkdir(join(executionGitDirectory, "objects"), { recursive: true, mode: 0o700 }),
-      mkdir(join(executionGitDirectory, "refs", "heads"), {
-        recursive: true,
-        mode: 0o700,
-      }),
-    ]);
-    await Promise.all([
-      writeFile(
-        join(executionGitDirectory, "HEAD"),
-        "ref: refs/heads/sandking-execution\n",
-        { mode: 0o600 },
-      ),
-      writeFile(
-        join(executionGitDirectory, "config"),
-        [
-          "[core]",
-          "\trepositoryformatversion = 0",
-          "\tbare = false",
-          `\tworktree = ${JSON.stringify(resolve(options.projectPath))}`,
-          "",
-        ].join("\n"),
-        { mode: 0o600 },
-      ),
-    ]);
+    await writeExecutionGitPointer(stagingPath, options.projectPath);
     await rename(stagingPath, destinationPath);
     stagingPath = null;
     published = true;
@@ -489,7 +507,8 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
  * }} options
  */
 export const verifyProductionHarnessRetainedInputs = async (options) => {
-  const inputs = z.array(retainedExecutionInputSchema).max(8).parse(
+  const inputs = z.array(retainedExecutionInputSchema)
+    .max(MAX_RETAINED_EXECUTION_INPUTS).parse(
     options.retainedExecutionInputs,
   );
   try {
@@ -508,6 +527,47 @@ export const verifyProductionHarnessRetainedInputs = async (options) => {
       }
     }
   } catch (error) {
+    if (error instanceof ProductionHarnessPreparationError) throw error;
+    throw new ProductionHarnessPreparationError("harness_projection_failed");
+  }
+};
+
+/**
+ * Re-materialize accepted projection bytes at an unguessable Host-private
+ * location immediately before adapter creation. The adapter and every module
+ * it launches resolve only inside this bound tree, so mutations of the
+ * retained execution copy after adapter start cannot change accepted code.
+ *
+ * @param {{
+ *   retainedExecutionInputs: Array<z.infer<typeof retainedExecutionInputSchema>>,
+ *   projectPath: string,
+ * }} options
+ */
+export const materializeProductionHarnessRetainedInputs = async (options) => {
+  const inputs = z.array(retainedExecutionInputSchema)
+    .min(1).max(MAX_RETAINED_EXECUTION_INPUTS).parse(options.retainedExecutionInputs);
+  const root = await mkdtemp(join(tmpdir(), "sandking-bound-harness-"));
+  try {
+    for (const input of inputs) {
+      const target = join(root, ...input.path.split("/"));
+      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+      await writeFile(target, input.source, { mode: 0o400 });
+    }
+    await verifyProductionHarnessRetainedInputs({
+      executionPath: root,
+      retainedExecutionInputs: inputs,
+    });
+    await writeExecutionGitPointer(root, options.projectPath);
+    return {
+      path: root,
+      close: async () => {
+        await makeExecutionTreeRemovable(root);
+        await rm(root, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    await makeExecutionTreeRemovable(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true }).catch(() => undefined);
     if (error instanceof ProductionHarnessPreparationError) throw error;
     throw new ProductionHarnessPreparationError("harness_projection_failed");
   }
@@ -710,18 +770,10 @@ export const prepareProductionHarness = async (options) => {
   } catch {
     throw new ProductionHarnessPreparationError("harness_pin_unreadable");
   }
-  const committedRuntimePaths = committedPaths.filter((path) =>
-    path.startsWith(".sandcastle/")
-    || path.startsWith("common/")
-    || path === "github-credential-contract.mjs"
-    || path === "package.json"
-    || path === "package-lock.json").sort();
-  const runtimePaths = seedManifest.files.map(({ path }) => path).filter((path) =>
-    path.startsWith(".sandcastle/")
-    || path.startsWith("common/")
-    || path === "github-credential-contract.mjs"
-    || path === "package.json"
-    || path === "package-lock.json").sort();
+  const committedRuntimePaths = committedPaths.filter(isProductionRuntimePath).sort();
+  const runtimePaths = seedManifest.files.map(({ path }) => path)
+    .filter(isProductionRuntimePath)
+    .sort();
   const lockedSkillPaths = new Set(skillLock.skills.map((skill) => skill.source.path));
   if (
     committedRuntimePaths.some((path) => !runtimePaths.includes(path))
@@ -755,13 +807,15 @@ export const prepareProductionHarness = async (options) => {
     if (!/^\.sandcastle\/.*\.m[jt]s$/.test(path)) continue;
     const promptProperties = [...source.matchAll(/\bpromptFile\s*:/g)];
     const staticPromptFiles = [...source.matchAll(
-      /\bpromptFile\s*:\s*(["'])(\.\/[^"']+)\1/g,
+      /\bpromptFile\s*:\s*(?:(["'])(\.\/[^"']+)\1|harnessFile\((["'])([^"']+)\3\))/g,
     )];
     if (promptProperties.length !== staticPromptFiles.length) {
       throw new ProductionHarnessPreparationError("harness_skill_lock_invalid");
     }
     for (const match of staticPromptFiles) {
-      const promptPath = posix.normalize(match[2].slice(2));
+      const promptPath = posix.normalize(
+        match[2]?.slice(2) ?? `.sandcastle/${match[4]}`,
+      );
       if (!lockedSkillPaths.has(promptPath)) {
         throw new ProductionHarnessPreparationError("harness_skill_lock_invalid");
       }

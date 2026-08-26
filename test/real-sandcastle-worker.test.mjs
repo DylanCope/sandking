@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  chmod,
-  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -13,18 +10,16 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import test from "node:test";
+import { REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS } from "../src/real-delegation-protocol.mjs";
 import {
-  REAL_DELEGATION_ARTIFACT,
-  REAL_DELEGATION_CONTENT,
+  REAL_DELEGATION_TIMEOUT_MS,
   REAL_SANDBOX_IMAGE,
   executeRealDelegation,
+  parseRealDelegationInvocationParameters,
   runRealDelegation,
-  verifyRealDelegationCommit,
 } from "../src/production-sandcastle-adapter/real-worker-v2.mjs";
 
-const execFileAsync = promisify(execFile);
 const sha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const skillIdentities = [
   "sandking.issue-implementation",
@@ -32,300 +27,225 @@ const skillIdentities = [
   "sandking.pull-request-review",
   "sandking.real-delegation",
 ];
+const productionProviderRuntime = {
+  dockerEndpoint: "unix:///run/user/1000/docker.sock",
+  sandboxImageId: `sha256:${"c".repeat(64)}`,
+};
 
-const commit = (projectPath, message) => execFileAsync("git", [
-  "-C", projectPath,
-  "-c", "user.name=Real Worker Test",
-  "-c", "user.email=real-worker-test@sandking.invalid",
-  "-c", "commit.gpgSign=false",
-  "commit", "--quiet", "-m", message,
-]);
-
-test("the real Worker accepts only one clean exact artifact commit", async () => {
-  const projectPath = await mkdtemp(join(tmpdir(), "sandking-real-worker-commit-"));
-  try {
-    await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
-    await writeFile(join(projectPath, "README.md"), "unrelated tracked content\n");
-    await execFileAsync("git", ["-C", projectPath, "add", "README.md"]);
-    await commit(projectPath, "Initialize disposable Project");
-    const beforeCommit = (await execFileAsync(
-      "git",
-      ["-C", projectPath, "rev-parse", "HEAD"],
-    )).stdout.trim();
-
-    await writeFile(join(projectPath, REAL_DELEGATION_ARTIFACT), REAL_DELEGATION_CONTENT);
-    await execFileAsync("git", ["-C", projectPath, "add", REAL_DELEGATION_ARTIFACT]);
-    await commit(projectPath, "Prove pinned Sandcastle delegation");
-
-    const afterCommit = await verifyRealDelegationCommit({ projectPath, beforeCommit });
-    assert.match(afterCommit, /^[a-f0-9]{40}$/);
-    assert.equal(
-      await readFile(join(projectPath, REAL_DELEGATION_ARTIFACT), "utf8"),
-      REAL_DELEGATION_CONTENT,
-    );
-  } finally {
-    await rm(projectPath, { recursive: true, force: true });
+const createPinnedFixture = async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-real-worker-"));
+  const executionPath = join(root, "execution");
+  const projectPath = join(root, "project");
+  const authPath = join(root, "codex-auth.json");
+  await Promise.all([
+    mkdir(join(executionPath, ".sandcastle"), { recursive: true }),
+    mkdir(projectPath, { recursive: true }),
+    writeFile(authPath, "{}\n", { mode: 0o600 }),
+  ]);
+  const skills = [];
+  for (const identity of skillIdentities) {
+    const source = `Pinned instructions for ${identity}.\n`;
+    const path = `worker-skills/${identity}/SKILL.md`;
+    await mkdir(join(executionPath, "worker-skills", identity), { recursive: true });
+    await writeFile(join(executionPath, ...path.split("/")), source);
+    skills.push({
+      identity,
+      revision: "a".repeat(40),
+      contentIntegrity: sha256(source),
+      path,
+    });
   }
+  await Promise.all([
+    writeFile(join(executionPath, "worker-environment.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      skillSetLockDigest: `sha256:${"b".repeat(64)}`,
+      skillDiscovery: {
+        ambient: "disabled",
+        roots: ["worker-skills"],
+        unlisted: "reject",
+      },
+      skills,
+      executionRuntimeInputs: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS,
+    })}\n`),
+    writeFile(join(executionPath, "package-lock.json"), `${JSON.stringify({
+      packages: {
+        "node_modules/@ai-hero/sandcastle": {
+          version: "0.12.0",
+          resolved: "https://registry.npmjs.org/@ai-hero/sandcastle/-/sandcastle-0.12.0.tgz",
+          integrity: "sha512-kdQ414rM8t1QiWeqZ3Klz4KSd0PqQG4bRVuqGpRDUomWhojSZkEAc1tbcEcThVmBEaHkCt8LmYR49vqEPNIoYQ==",
+        },
+      },
+    })}\n`),
+    writeFile(join(executionPath, ".sandcastle", "Dockerfile"), "FROM node:22-bookworm\n"),
+  ]);
+  return {
+    root,
+    executionPath,
+    projectPath,
+    authPath,
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
+};
+
+const successfulAttestation = (issueNumber = 262) => ({
+  exitCode: 0,
+  signal: null,
+  startFailed: false,
+  termination: "completed",
+  outputInvalid: false,
+  resultCount: 1,
+  result: {
+    type: "sandcastle.delivery.result",
+    issueNumber,
+    status: "succeeded",
+    code: "scoped_issue_completed",
+    completion: {
+      kind: "merged-pull-request",
+      pullRequestNumber: 266,
+      pullRequestUrl: "https://github.com/DylanCope/sandking/pull/266",
+    },
+  },
 });
 
-test("the real Worker rejects extra tracked changes in the delegated commit", async () => {
-  const projectPath = await mkdtemp(join(tmpdir(), "sandking-real-worker-extra-"));
-  try {
-    await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
-    await writeFile(join(projectPath, "README.md"), "original\n");
-    await execFileAsync("git", ["-C", projectPath, "add", "README.md"]);
-    await commit(projectPath, "Initialize disposable Project");
-    const beforeCommit = (await execFileAsync(
-      "git",
-      ["-C", projectPath, "rev-parse", "HEAD"],
-    )).stdout.trim();
-
-    await Promise.all([
-      writeFile(join(projectPath, REAL_DELEGATION_ARTIFACT), REAL_DELEGATION_CONTENT),
-      writeFile(join(projectPath, "README.md"), "changed\n"),
-    ]);
-    await execFileAsync("git", ["-C", projectPath, "add", "--all"]);
-    await commit(projectPath, "Invalid broad delegation");
-
-    await assert.rejects(
-      verifyRealDelegationCommit({ projectPath, beforeCommit }),
-      /real_delegation_commit_invalid/,
-    );
-  } finally {
-    await rm(projectPath, { recursive: true, force: true });
-  }
+test("the standalone Worker rejects an out-of-range issue before credential decoding", () => {
+  const encoded = Buffer.from(JSON.stringify({ issueNumber: 1_000_000_000 }), "utf8")
+    .toString("base64url");
+  assert.throws(
+    () => parseRealDelegationInvocationParameters(encoded),
+    /real_delegation_parameters_invalid/,
+  );
 });
 
-for (const mode of [null, "project-pat", "host-gh-session"]) {
-  test(`the real Worker isolates gh in its Docker sandbox with ${mode ?? "no configured credential"}`, async () => {
-    const root = await mkdtemp(join(tmpdir(), "sandking-real-worker-pinned-"));
-    const projectPath = join(root, "project");
-    const executionPath = join(projectPath, ".sandking", "projection");
-    const authPath = join(root, "destination-auth.json");
-    const githubToken = mode === "project-pat"
-      ? "github_pat_sandbox_authentication_secret_261"
-      : "gho_sandbox_authentication_secret_261";
-    const captured = {};
+for (const mode of ["project-pat", "host-gh-session"]) {
+  test(`the real Worker delegates issue delivery with an isolated ${mode} credential`, async () => {
+    const fixture = await createPinnedFixture();
+    const token = mode === "project-pat"
+      ? "github_pat_scoped_delivery_secret"
+      : "gho_scoped_delivery_secret";
+    let credentialPath;
     try {
-      await mkdir(executionPath, { recursive: true });
-      await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
-      await writeFile(join(projectPath, ".git", "info", "exclude"), ".sandking/\n");
-      await writeFile(join(projectPath, "README.md"), "unrelated tracked content\n");
-      await execFileAsync("git", ["-C", projectPath, "add", "README.md"]);
-      await commit(projectPath, "Initialize disposable Project");
-      await writeFile(authPath, "{}\n", { mode: 0o600 });
-      const fakeBin = join(root, "bin");
-      await mkdir(fakeBin);
-      const fakeGhPath = join(fakeBin, "gh");
-      await writeFile(fakeGhPath, `#!/bin/sh
-set -eu
-if [ "$1 $2 $3 $4 $5 $6" = "api user --hostname github.com --jq .login" ]; then
-  [ "$GH_TOKEN" = "${githubToken}" ]
-  [ ! -e "$GH_CONFIG_DIR/hosts.yml" ]
-  exit 0
-fi
-exit 97
-`);
-      await chmod(fakeGhPath, 0o700);
-
-      const skills = [];
-      for (const identity of skillIdentities) {
-        const source = `Pinned instructions for ${identity}.\n`;
-        const path = `worker-skills/${identity}/SKILL.md`;
-        await mkdir(join(executionPath, "worker-skills", identity), { recursive: true });
-        await writeFile(join(executionPath, ...path.split("/")), source);
-        skills.push({
-          identity,
-          revision: "a".repeat(40),
-          contentIntegrity: sha256(source),
-          path,
-        });
-      }
-      await writeFile(join(executionPath, "worker-environment.json"), `${JSON.stringify({
-        schemaVersion: 1,
-        skillSetLockDigest: `sha256:${"b".repeat(64)}`,
-        skillDiscovery: {
-          ambient: "disabled",
-          roots: ["worker-skills"],
-          unlisted: "reject",
-        },
-        skills,
-        executionRuntimeInputs: [{ identity: "openai.codex-cli", version: "0.146.0" }],
-      })}\n`);
-      await writeFile(join(executionPath, "package-lock.json"), `${JSON.stringify({
-        packages: {
-          "node_modules/@ai-hero/sandcastle": {
-            version: "0.12.0",
-            resolved: "https://registry.npmjs.org/@ai-hero/sandcastle/-/sandcastle-0.12.0.tgz",
-            integrity: "sha512-kdQ414rM8t1QiWeqZ3Klz4KSd0PqQG4bRVuqGpRDUomWhojSZkEAc1tbcEcThVmBEaHkCt8LmYR49vqEPNIoYQ==",
-          },
-        },
-      })}\n`);
-      await mkdir(join(executionPath, ".sandcastle"), { recursive: true });
-      await writeFile(
-        join(executionPath, ".sandcastle", "Dockerfile"),
-        "FROM node:22-bookworm\n",
-      );
-
+      const progress = [];
       const result = await runRealDelegation({
-        executionPath,
-        projectPath,
-        authPath,
-        githubCredential: mode ? { mode, token: githubToken } : null,
-        signal: AbortSignal.timeout(10_000),
-        inspectSandboxImage: async () => `sha256:${"c".repeat(64)}`,
-        loadSandcastle: async () => [{
-          codex: (model, options) => {
-            captured.agent = { model, options };
-            return { name: "codex" };
-          },
-          run: async (options) => {
-            captured.run = options;
-            const githubMount = captured.docker.mounts.find(({ sandboxPath }) =>
-              sandboxPath.endsWith("/github-token"));
-            const sandboxHome = join(root, "sandbox-home");
-            await Promise.all([
-              mkdir(join(sandboxHome, ".sandcastle-secrets"), { recursive: true }),
-              mkdir(join(sandboxHome, ".config", "gh"), { recursive: true }),
-            ]);
-            await writeFile(
-              join(sandboxHome, ".config", "gh", "hosts.yml"),
-              "ambient-image-credential-must-not-survive\n",
-            );
-            await copyFile(
-              authPath,
-              join(sandboxHome, ".sandcastle-secrets", "codex-auth.json"),
-            );
-            if (mode) {
-              assert.equal(await readFile(githubMount.hostPath, "utf8"), `${githubToken}\n`);
-              assert.equal((await stat(githubMount.hostPath)).mode & 0o777, 0o600);
-              await copyFile(
-                githubMount.hostPath,
-                join(sandboxHome, ".sandcastle-secrets", "github-token"),
-              );
-            } else {
-              assert.equal(githubMount, undefined);
-            }
-            await execFileAsync("sh", [
-              "-c",
-              options.hooks.sandbox.onSandboxReady[0].command,
-            ], {
-              env: {
-                ...captured.docker.env,
-                HOME: sandboxHome,
-                PATH: `${sandboxHome}/.sandcastle-bin:${fakeBin}:/usr/bin:/bin`,
-                GH_CONFIG_DIR: join(sandboxHome, ".config", "gh"),
-              },
-            });
-            if (!mode) {
-              await assert.rejects(
-                readFile(join(sandboxHome, ".config", "gh", "hosts.yml"), "utf8"),
-                { code: "ENOENT" },
-              );
-            }
-            await writeFile(join(projectPath, REAL_DELEGATION_ARTIFACT), REAL_DELEGATION_CONTENT);
-            await execFileAsync("git", ["-C", projectPath, "add", REAL_DELEGATION_ARTIFACT]);
-            await execFileAsync("git", [
-              "-C", projectPath,
-              "-c", "user.name=Sandcastle Real Worker",
-              "-c", "user.email=real-worker@sandking.invalid",
-              "-c", "commit.gpgSign=false",
-              "commit", "--quiet", "-m", "Prove pinned Sandcastle delegation",
-            ]);
-            return {
-              completionSignal: "<promise>COMPLETE</promise>",
-              commits: [{
-                sha: (await execFileAsync("git", ["-C", projectPath, "rev-parse", "HEAD"]))
-                  .stdout.trim(),
-              }],
-            };
-          },
-        }, {
-          docker: (options) => {
-            captured.docker = options;
-            return { name: "docker", options };
-          },
-        }],
+        ...fixture,
+        issueNumber: 262,
+        productionProviderRuntime,
+        githubCredential: { mode, token },
+        signal: AbortSignal.timeout(5_000),
+        onProgress: (message) => progress.push(message),
+        runMain: async (options) => {
+          credentialPath = options.githubCredentialPath;
+          assert.equal(await readFile(credentialPath, "utf8"), `${token}\n`);
+          assert.equal((await stat(credentialPath)).mode & 0o777, 0o600);
+          assert.equal(options.issueNumber, 262);
+          assert.equal(options.sandboxImage, `sha256:${"c".repeat(64)}`);
+          assert.equal(options.dockerEndpoint, productionProviderRuntime.dockerEndpoint);
+          options.onProgress({ phase: "review" });
+          return successfulAttestation();
+        },
       });
 
-      assert.deepEqual(captured.agent, {
-        model: "gpt-5.6-sol",
-        options: { effort: "medium", captureSessions: false },
-      });
-      assert.equal(captured.run.sandbox.name, "docker");
-      assert.equal(captured.docker.imageName, REAL_SANDBOX_IMAGE);
-      assert.deepEqual(captured.docker.mounts.map(({ sandboxPath, readonly }) => ({
-        sandboxPath,
-        readonly,
-      })), [
-        {
-          sandboxPath: "/home/agent/.sandcastle-secrets/codex-auth.json",
-          readonly: true,
-        },
-        ...(mode ? [{
-          sandboxPath: "/home/agent/.sandcastle-secrets/github-token",
-          readonly: true,
-        }] : []),
-      ]);
-      assert.deepEqual(captured.docker.env, {
-        PATH: "/home/agent/.sandcastle-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        GH_CONFIG_DIR: "/home/agent/.config/gh",
-        GH_PROMPT_DISABLED: "1",
-        GH_TOKEN: "",
-        GITHUB_TOKEN: "",
-        GH_ENTERPRISE_TOKEN: "",
-        GITHUB_ENTERPRISE_TOKEN: "",
-      });
-      assert.match(captured.run.hooks.sandbox.onSandboxReady[0].command,
-        /rm -rf "\$\{HOME\}\/\.codex"/);
-      if (mode) {
-        assert.match(captured.run.hooks.sandbox.onSandboxReady[0].command,
-          /gh api user --hostname github\.com --jq \.login/);
-      } else {
-        assert.doesNotMatch(captured.run.hooks.sandbox.onSandboxReady[0].command,
-          /gh (?:api|auth)/);
-      }
-      assert.doesNotMatch(captured.run.hooks.sandbox.onSandboxReady[0].command,
-        /sandbox_authentication_secret_261/);
-      if (mode) {
-        await assert.rejects(
-          readFile(captured.docker.mounts[1].hostPath, "utf8"),
-          { code: "ENOENT" },
-        );
-      }
-      assert.equal(captured.run.logging.type, "stdout");
-      assert.equal(captured.run.branchStrategy.type, "head");
-      for (const identity of skillIdentities) {
-        assert.match(captured.run.prompt, new RegExp(`<skill identity="${identity}"`));
-        assert.match(captured.run.prompt, new RegExp(`Pinned instructions for ${identity}`));
-      }
-      assert.equal(result.resolvedSkillCount, 4);
+      assert.equal(progress.length, 1);
+      assert.equal(result.code, "issue_delivery_completed");
+      assert.equal(result.issueNumber, 262);
+      assert.equal("artifact" in result, false);
+      assert.equal("commit" in result, false);
       assert.deepEqual(result.skillDelivery, {
         ambient: "disabled",
-        method: "complete-pinned-inventory-in-worker-prompt",
-        deliveredIdentities: skillIdentities,
+        method: "pinned-main-orchestration-files",
+        deliveredIdentities: skillIdentities.slice(0, 3),
       });
-      assert.deepEqual(result.sandbox, {
-        provider: "docker",
-        image: REAL_SANDBOX_IMAGE,
-        imageId: `sha256:${"c".repeat(64)}`,
-        configurationSource: ".sandcastle/Dockerfile",
-        configurationIntegrity: sha256("FROM node:22-bookworm\n"),
-        destinationIsolation: true,
+      assert.equal(result.sandbox.image, REAL_SANDBOX_IMAGE);
+      assert.deepEqual(result.completionContract, {
+        kind: "structured-main-attestation",
+        timeoutSeconds: REAL_DELEGATION_TIMEOUT_MS / 1_000,
       });
+      await assert.rejects(readFile(credentialPath, "utf8"), { code: "ENOENT" });
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await fixture.cleanup();
     }
   });
 }
 
-test("failed real work publishes one truthful failure and preserves partial Project state", async () => {
+test("zero exit and diagnostic success text cannot replace main's completion attestation", async () => {
+  const fixture = await createPinnedFixture();
+  try {
+    const outcome = await executeRealDelegation({
+      ...fixture,
+      issueNumber: 262,
+      productionProviderRuntime,
+      githubCredential: { mode: "project-pat", token: "github_pat_missing_attestation" },
+      signal: AbortSignal.timeout(5_000),
+      runMain: async () => ({
+        exitCode: 0,
+        signal: null,
+        startFailed: false,
+        termination: "completed",
+        outputInvalid: false,
+        resultCount: 0,
+        result: null,
+        diagnostic: "SUCCESS: merged and complete",
+      }),
+    });
+
+    assert.equal(outcome.status, "failed");
+    assert.equal(outcome.result.code, "real_delegation_main_result_missing");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+for (const [name, main, expectedCode] of [
+  ["review budget exhaustion", {
+    ...successfulAttestation(),
+    result: {
+      type: "sandcastle.delivery.result",
+      issueNumber: 262,
+      status: "failed",
+      code: "scoped_issue_incomplete",
+      completion: null,
+    },
+  }, "scoped_issue_incomplete"],
+  ["wall timeout", {
+    ...successfulAttestation(),
+    termination: "timed-out",
+    result: null,
+    resultCount: 0,
+  }, "real_delegation_timed_out"],
+  ["process interruption", {
+    ...successfulAttestation(),
+    termination: "interrupted",
+    signal: "SIGKILL",
+    result: null,
+    resultCount: 0,
+  }, "real_delegation_interrupted"],
+]) {
+  test(`${name} produces a typed failure`, async () => {
+    const fixture = await createPinnedFixture();
+    try {
+      const outcome = await executeRealDelegation({
+        ...fixture,
+        issueNumber: 262,
+        productionProviderRuntime,
+        githubCredential: { mode: "project-pat", token: "github_pat_typed_failure" },
+        signal: AbortSignal.timeout(5_000),
+        runMain: async () => main,
+      });
+      assert.equal(outcome.status, "failed");
+      assert.equal(outcome.result.code, expectedCode);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+}
+
+test("failed real work preserves partial Project state", async () => {
   const projectPath = await mkdtemp(join(tmpdir(), "sandking-real-worker-partial-"));
   try {
     const partialPath = join(projectPath, "partial-real-worker-change.txt");
     const outcome = await executeRealDelegation({
       executionPath: projectPath,
       projectPath,
+      issueNumber: 262,
       signal: AbortSignal.timeout(1_000),
       runDelegation: async () => {
         await writeFile(partialPath, "partial state remains inspectable\n");
@@ -333,16 +253,8 @@ test("failed real work publishes one truthful failure and preserves partial Proj
       },
     });
 
-    assert.deepEqual(outcome, {
-      type: "sandcastle.worker.result",
-      status: "failed",
-      result: {
-        schemaVersion: 1,
-        kind: "sandcastle.delegation",
-        code: "real_provider_execution_failed",
-        provider: { kind: "openai-codex" },
-      },
-    });
+    assert.equal(outcome.status, "failed");
+    assert.equal(outcome.result.code, "real_provider_execution_failed");
     assert.equal(await readFile(partialPath, "utf8"), "partial state remains inspectable\n");
     assert.doesNotMatch(JSON.stringify(outcome), /provider transcript/i);
   } finally {

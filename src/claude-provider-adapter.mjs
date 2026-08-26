@@ -603,7 +603,10 @@ const requireSuccessfulControllerLaunch = (outcome, request) => {
     outcome?.type === "harness.run.launch.failure"
     && /^[a-z0-9_]{1,128}$/.test(outcome.code ?? "")
   ) {
-    throw new Error(outcome.code);
+    throw Object.assign(new Error(outcome.code), {
+      code: outcome.code,
+      sanitizedExplanation: outcome.sanitizedExplanation,
+    });
   }
   throw new Error("controller_cli_protocol_invalid");
 };
@@ -880,9 +883,22 @@ const openControllerCliServer = async ({
           requestId: request.requestId,
           ok: false,
           failure: {
-            code: error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
-              ? error.message
+            code: error && typeof error === "object" && "code" in error
+              && typeof error.code === "string" && /^[a-z0-9_]+$/.test(error.code)
+              ? error.code
+              : error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
+                ? error.message
               : "controller_cli_operation_failed",
+            ...(error && typeof error === "object"
+              && "sanitizedExplanation" in error
+              && typeof error.sanitizedExplanation === "string"
+              ? { sanitizedExplanation: error.sanitizedExplanation }
+              : {}),
+            ...(error && typeof error === "object"
+              && "configurationOptions" in error
+              && Array.isArray(error.configurationOptions)
+              ? { configurationOptions: error.configurationOptions }
+              : {}),
           },
         })}\n`),
       );

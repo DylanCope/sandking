@@ -408,14 +408,14 @@ test("invalid production seed inputs fail truthfully without retaining a ready H
           const mainPath = join(sourceRoot, ".sandcastle/main.mts");
           const main = await readFile(mainPath, "utf8");
           const altered = main.replace(
-            'promptFile: "./.sandcastle/pr-review-prompt.md",',
+            'promptFile: harnessFile("pr-review-prompt.md"),',
             'promptFile: ["./.sandcastle", "CODING_STANDARDS.md"].join("/"),',
           );
           assert.notEqual(altered, main);
           await rewriteLockedSeedFile(
             sourceRoot,
             ".sandcastle/main.mts",
-            `${altered}\nvoid { promptFile: "./.sandcastle/pr-review-prompt.md" };\n`,
+            `${altered}\nvoid { promptFile: harnessFile("pr-review-prompt.md") };\n`,
           );
         },
       },

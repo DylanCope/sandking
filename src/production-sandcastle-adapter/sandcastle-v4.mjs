@@ -8,10 +8,27 @@ import { pathToFileURL } from "node:url";
 const githubCredentialContractUrl = import.meta.url.endsWith("/[eval1]")
   ? pathToFileURL(join(process.cwd(), "github-credential-contract.mjs")).href
   : new URL("../github-credential-contract.mjs", import.meta.url).href;
+const realDelegationProtocolUrl = import.meta.url.endsWith("/[eval1]")
+  ? pathToFileURL(join(process.cwd(), "real-delegation-protocol.mjs")).href
+  : new URL("../real-delegation-protocol.mjs", import.meta.url).href;
+const destinationWorkerEnvironmentUrl = import.meta.url.endsWith("/[eval1]")
+  ? pathToFileURL(join(process.cwd(), "destination-worker-environment.mjs")).href
+  : new URL("../destination-worker-environment.mjs", import.meta.url).href;
 const {
   GITHUB_AUTHENTICATION_VERIFICATION_CAPABILITY,
   parseGitHubCredential,
 } = await import(githubCredentialContractUrl);
+const {
+  hasExecutionRuntimeInputs,
+  hasExactKeys,
+  isValidIssueNumber,
+  parseProductionProviderRuntime,
+  REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS: pinnedExecutionRuntimeInputs,
+} = await import(realDelegationProtocolUrl);
+const {
+  destinationCodexAuthPath,
+  isMountableCodexAuthFile,
+} = await import(destinationWorkerEnvironmentUrl);
 
 const adapterProtocol = "1.0.0";
 const adapterId = "sandcastle-harness-adapter-v1";
@@ -20,11 +37,23 @@ const controlledManifestName = "sandcastle.worker-fixture.json";
 const realManifestName = "sandcastle.real-provider.json";
 const controlledProviderKind = "controlled-worker-fixture";
 const realProviderKind = "openai-codex";
+const realDelegationIssueRequiredCode = "real_delegation_issue_required";
 const controlledWorkerRuntimePath = ".sandcastle/controlled-worker-fixture.mjs";
 const realWorkerRuntimePath = ".sandcastle/real-worker-v2.mjs";
-export const REAL_PROVIDER_CODEX_VERSION = "0.146.0";
+const projectionManifestPath = "projection-manifest.json";
+const maximumRunStartFrameBytes = 512 * 1_024;
+const maximumRetainedExecutionInputs = 128;
+const maximumRetainedExecutionInputBytes = 64 * 1_024;
+export const REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS = pinnedExecutionRuntimeInputs;
+export const REAL_PROVIDER_CODEX_VERSION = pinnedExecutionRuntimeInputs.find(
+  ({ identity }) => identity === "openai.codex-cli",
+).version;
 export const REAL_PROVIDER_SANDBOX_IMAGE = "sandcastle:sandking-real-worker";
 export const REAL_PROVIDER_SANDBOX_CONFIGURATION = ".sandcastle/Dockerfile";
+const sandboxConfigurationIntegrityLabel =
+  "org.sandking.production-sandbox.configuration-integrity";
+const sandboxAgentUidLabel = "org.sandking.production-sandbox.agent-uid";
+const sandboxAgentGidLabel = "org.sandking.production-sandbox.agent-gid";
 export const REAL_PROVIDER_SKILL_IDENTITIES = Object.freeze([
   "sandking.issue-implementation",
   "sandking.issue-planning",
@@ -58,7 +87,7 @@ const launchParameters = {
     {
       name: "targetBranch",
       label: "Target branch",
-      description: "Optional canonical sandcastle branch for the issue.",
+      description: "Legacy optional metadata; main.mts derives the canonical issue branch.",
       cliFlag: "--target-branch",
       valueType: "string",
       required: false,
@@ -98,7 +127,7 @@ const readExact = (byteLength) => {
 const readRunStart = (execution) => {
   const header = readExact(4);
   const frameLength = header.readUInt32BE(0);
-  if (frameLength < 1 || frameLength > 32_768) {
+  if (frameLength < 1 || frameLength > maximumRunStartFrameBytes) {
     throw new Error("harness_run_start_invalid");
   }
   let message;
@@ -118,13 +147,14 @@ const readRunStart = (execution) => {
       "harnessRunId",
       "retainedExecutionInputs",
       "githubCredential",
+      "productionProviderRuntime",
     ].includes(key))
     || message.type !== "harness.run.start"
     || message.adapterProtocol !== adapterProtocol
     || message.adapterId !== adapterId
     || message.harnessRunId !== execution.harnessRunId
     || !Array.isArray(message.retainedExecutionInputs)
-    || message.retainedExecutionInputs.length > 8
+    || message.retainedExecutionInputs.length > maximumRetainedExecutionInputs
   ) {
     throw new Error("harness_run_start_invalid");
   }
@@ -142,7 +172,7 @@ const readRunStart = (execution) => {
         segment === "" || segment === "." || segment === "..")
       || !/^sha256:[a-f0-9]{64}$/.test(input.integrity ?? "")
       || typeof input.source !== "string"
-      || Buffer.byteLength(input.source, "utf8") > 12_000
+      || Buffer.byteLength(input.source, "utf8") > maximumRetainedExecutionInputBytes
       || retainedExecutionInputs.has(input.path)
       || `sha256:${createHash("sha256").update(input.source).digest("hex")}`
         !== input.integrity
@@ -152,12 +182,31 @@ const readRunStart = (execution) => {
     retainedExecutionInputs.set(input.path, input.source);
   }
   const githubCredential = message.githubCredential ?? null;
+  const productionProviderRuntime = message.productionProviderRuntime === undefined
+    ? null
+    : parseProductionProviderRuntime(
+        message.productionProviderRuntime,
+        "harness_run_start_invalid",
+      );
   return {
     retainedExecutionInputs,
+    productionProviderRuntime,
     githubCredential: githubCredential === null
       ? null
       : parseGitHubCredential(githubCredential, "harness_run_start_invalid"),
   };
+};
+
+const parseEncodedProviderRuntime = (encoded) => {
+  if (typeof encoded !== "string" || encoded.length < 1) return null;
+  try {
+    return parseProductionProviderRuntime(
+      JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")),
+      "bounded_configuration_invalid",
+    );
+  } catch {
+    throw new Error("bounded_configuration_invalid");
+  }
 };
 
 const parseParameters = (encoded) => {
@@ -178,11 +227,7 @@ const parseParameters = (encoded) => {
   ].includes(key))) {
     throw new Error("bounded_configuration_invalid");
   }
-  if (value.issueNumber !== undefined && (
-    !Number.isSafeInteger(value.issueNumber)
-    || value.issueNumber < 1
-    || value.issueNumber > 999999999
-  )) {
+  if (value.issueNumber !== undefined && !isValidIssueNumber(value.issueNumber)) {
     throw new Error("bounded_configuration_invalid");
   }
   if (value.targetBranch !== undefined && (
@@ -240,15 +285,48 @@ const readJson = (path) => {
   }
 };
 
-const hasExactKeys = (value, keys) => value
-  && typeof value === "object"
-  && !Array.isArray(value)
-  && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+const productionRuntimeInputPaths = () => {
+  const manifest = readJson(join(process.cwd(), projectionManifestPath));
+  if (
+    !hasExactKeys(manifest, [
+      "schemaVersion",
+      "harness",
+      "skillSetLockDigest",
+      "projectionDigest",
+      "files",
+    ])
+    || manifest.schemaVersion !== 1
+    || !Array.isArray(manifest.files)
+    || manifest.files.length < 1
+    || manifest.files.length >= maximumRetainedExecutionInputs
+  ) {
+    return null;
+  }
+  const paths = manifest.files.map((file) => hasExactKeys(file, ["path", "integrity"])
+    && typeof file.path === "string"
+    && /^[a-zA-Z0-9._/-]+$/.test(file.path)
+    && !file.path.startsWith("/")
+    && file.path.split("/").every((segment) =>
+      segment !== "" && segment !== "." && segment !== "..")
+    && /^sha256:[a-f0-9]{64}$/.test(file.integrity)
+    ? file.path
+    : null);
+  if (
+    paths.some((path) => path === null)
+    || new Set(paths).size !== paths.length
+    || !paths.includes(realWorkerRuntimePath)
+    || paths.includes(projectionManifestPath)
+  ) {
+    return null;
+  }
+  return [...paths, projectionManifestPath];
+};
 
 /**
  * @param {{
  *   environment?: NodeJS.ProcessEnv,
  *   execFileSync?: typeof execFileSync,
+ *   lstatSync?: typeof import("node:fs").lstatSync,
  *   platform?: NodeJS.Platform,
  *   spawnSync?: typeof spawnSync,
  * }} [options]
@@ -280,7 +358,11 @@ export const realProviderAvailable = (options = {}) => {
     return version === `codex-cli ${REAL_PROVIDER_CODEX_VERSION}`
       && authentication.error === undefined
       && authentication.status === 0
-      && /^Logged in\b/m.test(`${authentication.stdout}\n${authentication.stderr}`);
+      && /^Logged in\b/m.test(`${authentication.stdout}\n${authentication.stderr}`)
+      && isMountableCodexAuthFile(
+        destinationCodexAuthPath({ environment, platform }),
+        { lstatSync: options.lstatSync },
+      );
   } catch {
     return false;
   }
@@ -332,7 +414,43 @@ export const realSandboxAvailable = (options = {}) =>
 export const probeRealProviderReadiness = (options = {}) =>
   realProviderAvailable(options) && realSandboxAvailable(options);
 
-const inspectRuntime = (retainedExecutionInputs = null) => {
+const pinnedProviderRuntimeAvailable = (runtime) => {
+  if (!runtime) return false;
+  const environment = { ...process.env, DOCKER_HOST: runtime.dockerEndpoint };
+  delete environment.DOCKER_CONTEXT;
+  const agentUid = process.getuid?.() ?? 1000;
+  const agentGid = process.getgid?.() ?? 1000;
+  try {
+    const configurationIntegrity = `sha256:${createHash("sha256")
+      .update(readFileSync(join(
+        process.cwd(),
+        ...REAL_PROVIDER_SANDBOX_CONFIGURATION.split("/"),
+      )))
+      .digest("hex")}`;
+    const image = JSON.parse(execFileSync("docker", [
+      "image", "inspect", runtime.sandboxImageId, "--format={{json .}}",
+    ], {
+      encoding: "utf8",
+      env: environment,
+      timeout: 5_000,
+    }));
+    return image?.Id === runtime.sandboxImageId
+      && image.Config?.Labels?.[sandboxConfigurationIntegrityLabel]
+        === configurationIntegrity
+      && image.Config.Labels[sandboxAgentUidLabel] === String(agentUid)
+      && image.Config.Labels[sandboxAgentGidLabel] === String(agentGid)
+      && image.Config.User === `${agentUid}:${agentGid}`
+      && realProviderAvailable({ environment })
+      && realSandboxEngineAvailable({ environment });
+  } catch {
+    return false;
+  }
+};
+
+const inspectRuntime = (
+  retainedExecutionInputs = null,
+  productionProviderRuntime = null,
+) => {
   const workerEnvironment = readJson(join(process.cwd(), "worker-environment.json"));
   const runtimeReady = workerEnvironment?.schemaVersion === 1
     && workerEnvironment?.harness?.adapterId === adapterId
@@ -368,22 +486,25 @@ const inspectRuntime = (retainedExecutionInputs = null) => {
     };
   }
   if (real) {
-    const runtime = workerEnvironment.executionRuntimeInputs.find(({ identity }) =>
-      identity === "openai.codex-cli");
+    const retainedInputPaths = productionRuntimeInputPaths();
     const providerReady = hasExactKeys(real, ["schemaVersion", "provider", "scenario"])
       && real.schemaVersion === 1
       && hasExactKeys(real.provider, ["kind", "ready"])
       && real.provider.kind === realProviderKind
       && real.provider.ready === true
       && real.scenario === "project-commit"
-      && runtime?.version === REAL_PROVIDER_CODEX_VERSION
+      && hasExecutionRuntimeInputs(
+        workerEnvironment.executionRuntimeInputs,
+        REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS,
+      )
       && workerEnvironment.skillDiscovery?.ambient === "disabled"
       && workerEnvironment.skillDiscovery?.unlisted === "reject"
       && JSON.stringify(workerEnvironment.skills.map(({ identity }) => identity))
         === JSON.stringify(REAL_PROVIDER_SKILL_IDENTITIES)
-      && probeRealProviderReadiness()
+      && retainedInputPaths !== null
+      && pinnedProviderRuntimeAvailable(productionProviderRuntime)
       && (retainedExecutionInputs === null
-        || retainedExecutionInputs.has(realWorkerRuntimePath));
+        || retainedInputPaths.every((path) => retainedExecutionInputs.has(path)));
     return providerReady
       ? {
           ready: true,
@@ -391,6 +512,7 @@ const inspectRuntime = (retainedExecutionInputs = null) => {
           providerKind: realProviderKind,
           workerPath: realWorkerRuntimePath,
           workerSource: retainedExecutionInputs?.get(realWorkerRuntimePath) ?? null,
+          retainedInputPaths,
           realProvider: true,
         }
       : {
@@ -427,6 +549,7 @@ const inspectRuntime = (retainedExecutionInputs = null) => {
         providerKind: controlledProviderKind,
         workerPath: controlledWorkerRuntimePath,
         workerSource: retainedExecutionInputs?.get(controlledWorkerRuntimePath) ?? null,
+        retainedInputPaths: [controlledWorkerRuntimePath],
         realProvider: false,
       }
     : {
@@ -449,6 +572,14 @@ const writePreparationFailure = (failure) => writeFrame({
     harnessWorkspaceWrite: false,
   },
 });
+
+const delegationParameterFailure = (parameters, readiness) =>
+  readiness.realProvider && parameters.issueNumber === undefined
+    ? {
+        code: realDelegationIssueRequiredCode,
+        explanation: "Real delegation requires a scoped GitHub issue. Retry with --issue <number>; target branches are derived by the Harness.",
+      }
+    : null;
 
 const stableId = (prefix, ...parts) => `${prefix}-${createHash("sha256")
   .update(parts.join("\0"))
@@ -485,7 +616,12 @@ const waitForExit = (child) => new Promise((resolve) => {
   child.once("close", (code) => resolve({ code, startFailed: false }));
 });
 
-const runWorker = async (execution, readiness, githubCredential) => {
+const runWorker = async (
+  execution,
+  readiness,
+  githubCredential,
+  productionProviderRuntime,
+) => {
   const now = () => new Date().toISOString();
   writeFrame({
     type: "harness.run.ready",
@@ -521,6 +657,7 @@ const runWorker = async (execution, readiness, githubCredential) => {
     activeChild?.kill("SIGTERM");
   };
   process.on("SIGTERM", cancelWorker);
+  process.channel?.on("error", () => undefined);
   const handleCancellationMessage = (message) => {
     if (
       message?.type === "harness.run.cancel"
@@ -577,6 +714,8 @@ const runWorker = async (execution, readiness, githubCredential) => {
       });
       activeChild.stdout?.on("data", diagnostic);
       activeChild.stderr?.on("data", diagnostic);
+      activeChild.stdout?.once("error", () => undefined);
+      activeChild.stderr?.once("error", () => undefined);
       const installExit = await waitForExit(activeChild);
       dependencyFailure = !cancelled
         && (installExit.startFailed || installExit.code !== 0);
@@ -587,7 +726,15 @@ const runWorker = async (execution, readiness, githubCredential) => {
       const workerPath = join(process.cwd(), ...readiness.workerPath.split("/"));
       const workerDirectory = dirname(workerPath);
       const workerArguments = readiness.realProvider
-        ? [workerPath, process.cwd(), readiness.root]
+        ? [
+            workerPath,
+            process.cwd(),
+            Buffer.from(JSON.stringify({
+              issueNumber: execution.parameters.issueNumber,
+              productionProviderRuntime,
+            }), "utf8").toString("base64url"),
+            readiness.root,
+          ]
         : [
             workerPath,
             Buffer.from(JSON.stringify(execution.parameters), "utf8").toString("base64url"),
@@ -612,11 +759,15 @@ const runWorker = async (execution, readiness, githubCredential) => {
           activeChild.kill("SIGKILL");
           throw new Error("worker_credential_channel_unavailable");
         }
+        credentialStream.once("error", () => undefined);
         credentialStream.end(JSON.stringify(githubCredential));
       }
       activeChild.stderr?.on("data", diagnostic);
+      activeChild.stderr?.once("error", () => undefined);
+      activeChild.stdout?.once("error", () => undefined);
       if (readiness.realProvider) activeChild.stdout?.resume();
       const protocolStream = readiness.realProvider ? activeChild.stdio[3] : activeChild.stdout;
+      protocolStream.once("error", () => undefined);
       let outputBytes = 0;
       const lines = createInterface({ input: protocolStream, crlfDelay: Infinity });
       lines.on("line", (line) => {
@@ -758,7 +909,7 @@ const invokedAsAdapter = import.meta.url.endsWith("/[eval1]") || (() => {
   }
 })();
 
-const [command, encodedParameters] = process.argv.slice(2);
+const [command, encodedParameters, encodedProviderRuntime] = process.argv.slice(2);
 if (!invokedAsAdapter) {
   // The Host imports the live readiness seam from these exact adapter bytes.
 } else if (command === "probe") {
@@ -771,9 +922,13 @@ if (!invokedAsAdapter) {
   });
 } else if (command === "prepare") {
   const parameters = parseParameters(encodedParameters);
-  const readiness = inspectRuntime();
-  if (!readiness.ready) {
-    writePreparationFailure(readiness);
+  const productionProviderRuntime = parseEncodedProviderRuntime(encodedProviderRuntime);
+  const readiness = inspectRuntime(null, productionProviderRuntime);
+  const parameterFailure = readiness.ready
+    ? delegationParameterFailure(parameters, readiness)
+    : null;
+  if (!readiness.ready || parameterFailure) {
+    writePreparationFailure(parameterFailure ?? readiness);
   } else {
     writeFrame({
       type: "harness.launch.prepared",
@@ -781,17 +936,18 @@ if (!invokedAsAdapter) {
       adapterId,
       negotiatedCapabilities: ["harness.launch.prepare.v1"],
       suppliedCapabilities: [
+        ...(parameters.issueNumber === undefined ? [] : ["github.issues.read"]),
         ...(parameters.verifyGitHubAccess === true
           ? [GITHUB_AUTHENTICATION_VERIFICATION_CAPABILITY]
           : []),
         "project.git.read",
       ],
-      retainedExecutionInputs: [readiness.workerPath],
+      retainedExecutionInputs: readiness.retainedInputPaths,
       sanitizedPreview: {
-        summary: parameters.verifyGitHubAccess === true
-          ? "Verify authenticated GitHub API access, then delegate through the pinned Sandcastle Harness."
-          : readiness.realProvider
-            ? "Delegate one real Project commit through the pinned Sandcastle Harness."
+        summary: readiness.realProvider
+          ? `Deliver GitHub issue #${parameters.issueNumber} through the pinned main.mts workflow; the Harness derives its branch.`
+          : parameters.verifyGitHubAccess === true
+            ? "Verify authenticated GitHub API access, then delegate through the pinned Sandcastle Harness."
             : "Delegate work through the pinned Sandcastle Harness.",
         secretFree: true,
       },
@@ -805,8 +961,14 @@ if (!invokedAsAdapter) {
 } else if (command === "run") {
   const execution = parseExecution(encodedParameters);
   const runStart = readRunStart(execution);
-  const readiness = inspectRuntime(runStart.retainedExecutionInputs);
-  if (!readiness.ready) {
+  const readiness = inspectRuntime(
+    runStart.retainedExecutionInputs,
+    runStart.productionProviderRuntime,
+  );
+  const parameterFailure = readiness.ready
+    ? delegationParameterFailure(execution.parameters, readiness)
+    : null;
+  if (!readiness.ready || parameterFailure) {
     const completedAt = new Date().toISOString();
     writeFrame({
       type: "harness.run.ready",
@@ -827,11 +989,16 @@ if (!invokedAsAdapter) {
       result: {
         schemaVersion: 1,
         kind: "sandcastle.delegation",
-        code: readiness.code,
+        code: parameterFailure?.code ?? readiness.code,
       },
     });
   } else {
-    await runWorker(execution, readiness, runStart.githubCredential);
+    await runWorker(
+      execution,
+      readiness,
+      runStart.githubCredential,
+      runStart.productionProviderRuntime,
+    );
   }
 } else {
   throw new Error("harness_adapter_command_invalid");

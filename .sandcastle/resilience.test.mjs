@@ -51,3 +51,25 @@ test("a repeatedly failing phase stops after the configured attempt limit", asyn
   assert.equal(calls, 3);
   assert.deepEqual(delays, [1_000, 2_000]);
 });
+
+test("a cancelled phase stops before retrying so claim cleanup can run", async () => {
+  const controller = new AbortController();
+  const reason = new Error("delivery_cancelled");
+  let calls = 0;
+
+  await assert.rejects(retryOperation({
+    label: "Issue #262 implementer",
+    attempts: 3,
+    initialDelayMs: 1_000,
+    signal: controller.signal,
+    operation: async () => {
+      calls += 1;
+      controller.abort(reason);
+      throw reason;
+    },
+    sleep: async () => assert.fail("cancelled work must not enter retry delay"),
+    log: () => assert.fail("cancelled work must not be logged as retryable"),
+  }), reason);
+
+  assert.equal(calls, 1);
+});

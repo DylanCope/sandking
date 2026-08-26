@@ -10,7 +10,7 @@
       "source": {
         "kind": "git",
         "repository": "https://github.com/DylanCope/sandking.git",
-        "revision": "5227e22f427b80477f3c72a50a30d5faeb7539c7",
+        "revision": "629851cd2452709b6d975ae7c094027dee281565",
         "path": ".sandcastle/implement-prompt.md"
       },
       "contentIntegrity": "sha256:7b9283edb3b94c73c68f283ec30270cc9825c08787a17bcd78da38475fadecaf",
@@ -26,7 +26,7 @@
       "source": {
         "kind": "git",
         "repository": "https://github.com/DylanCope/sandking.git",
-        "revision": "5227e22f427b80477f3c72a50a30d5faeb7539c7",
+        "revision": "629851cd2452709b6d975ae7c094027dee281565",
         "path": ".sandcastle/plan-prompt.md"
       },
       "contentIntegrity": "sha256:6220c63e7b128296cd2e7c5b0e7fd4159f6a6dbc3351f7f5924e1d14debeac6f",
@@ -42,7 +42,7 @@
       "source": {
         "kind": "git",
         "repository": "https://github.com/DylanCope/sandking.git",
-        "revision": "5227e22f427b80477f3c72a50a30d5faeb7539c7",
+        "revision": "629851cd2452709b6d975ae7c094027dee281565",
         "path": ".sandcastle/pr-review-prompt.md"
       },
       "contentIntegrity": "sha256:06a73d4d8349a7da423065cee641090fb6ea43f93001c43b6924ab08399d410a",
@@ -58,7 +58,7 @@
       "source": {
         "kind": "git",
         "repository": "https://github.com/DylanCope/sandking.git",
-        "revision": "5227e22f427b80477f3c72a50a30d5faeb7539c7",
+        "revision": "629851cd2452709b6d975ae7c094027dee281565",
         "path": ".sandcastle/real-delegation-prompt.md"
       },
       "contentIntegrity": "sha256:74d6ed9fc2bb9dc84d8301d0a93461e25b6007003a17c16efc52d64773dddf22",
@@ -90,6 +90,14 @@
       "version": "0.146.0",
       "resolved": "https://registry.npmjs.org/@openai/codex/-/codex-0.146.0.tgz",
       "integrity": "sha512-yG3sPWNda/2YAIQIDq9MrrjoCTIQ7rxYM5IasrG3VBcuhCLTkgeg/JzqmJq1V98RE4MJ5jCxDXXQlOjrditFRw==",
+      "skillExposure": "versioned-with-runtime-package"
+    },
+    {
+      "identity": "docker.cli",
+      "package": "docker.io",
+      "version": "20.10.24+dfsg1-1+deb12u1+b6",
+      "resolved": "https://snapshot.debian.org/archive/debian/20260825T000000Z/dists/bookworm/InRelease",
+      "integrity": "sha512-g2nfFf0TRYofHqQEnRCEaW5q1Tc0ResEDDfA49URb5Ns3r0Djz8zNnnzJ9Rkw0MY9uB6pNZcz9Lg/LH6DvOaAA==",
       "skillExposure": "versioned-with-runtime-package"
     }
   ]

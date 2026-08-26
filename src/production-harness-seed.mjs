@@ -12,6 +12,7 @@ import { z } from "zod";
 import { digest as sha256 } from "./common/digest.mjs";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "./harness-adapter-identity.mjs";
 import { harnessCompatibilityManifestSchema } from "./harness-adapter-protocol.mjs";
+import { REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS } from "./real-delegation-protocol.mjs";
 
 const execFileAsync = promisify(execFile);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
@@ -19,6 +20,7 @@ const integritySchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const packageIntegritySchema = z.string().regex(/^sha512-[A-Za-z0-9+/]+={0,2}$/);
 const identitySchema = z.string().min(1).max(160).regex(/^[a-z0-9][a-z0-9.-]*$/);
 const exactVersionSchema = z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/);
+const runtimeVersionSchema = z.string().regex(/^[0-9][0-9A-Za-z.+:~_-]{0,127}$/);
 const relativeFileSchema = z.string().min(1).max(512).refine((value) =>
   !isAbsolute(value)
   && !value.includes("\\")
@@ -30,9 +32,9 @@ const sourceUrlSchema = z.url().refine((value) => {
 });
 
 const SAND_KING_REPOSITORY = "https://github.com/DylanCope/sandking.git";
-const SAND_KING_SEED_REVISION = "5227e22f427b80477f3c72a50a30d5faeb7539c7";
+const SAND_KING_SEED_REVISION = "629851cd2452709b6d975ae7c094027dee281565";
 const SAND_KING_SEED_SOURCE_INTEGRITY =
-  "sha256:685355451765224c6e5cabd23d26938ec42a7f7f9a80ebb7914f1ab7581ca654";
+  "sha256:21a224dd7644ad0c8c4a3c2fdb753c638f5b15bbf31e7f3d889f6647a94b0867";
 const SANDCASTLE_REPOSITORY = "https://github.com/mattpocock/sandcastle.git";
 const SANDCASTLE_REVISION = "e99f832f26dc9d245c019a9ddd19fa5dee792427";
 const SANDCASTLE_VERSION = "0.12.0";
@@ -42,11 +44,7 @@ const SANDCASTLE_INTEGRITY =
   "sha512-kdQ414rM8t1QiWeqZ3Klz4KSd0PqQG4bRVuqGpRDUomWhojSZkEAc1tbcEcThVmBEaHkCt8LmYR49vqEPNIoYQ==";
 const SANDCASTLE_DEPENDENCY_LOCK_INTEGRITY =
   "sha256:f23f864604dd2901d314afdb5ee819c2ca91fccd3c16807a8c5441d818e5b4c1";
-const CODEX_VERSION = "0.146.0";
-const CODEX_RESOLVED =
-  "https://registry.npmjs.org/@openai/codex/-/codex-0.146.0.tgz";
-const CODEX_INTEGRITY =
-  "sha512-yG3sPWNda/2YAIQIDq9MrrjoCTIQ7rxYM5IasrG3VBcuhCLTkgeg/JzqmJq1V98RE4MJ5jCxDXXQlOjrditFRw==";
+const requiredExecutionRuntimeInputs = REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS;
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 export const bundledProductionHarnessSeedRoot = fileURLToPath(
@@ -130,7 +128,7 @@ export const productionHarnessSkillLockSchema = z.object({
   executionRuntimeInputs: z.array(z.object({
     identity: identitySchema,
     package: z.string().min(1).max(214),
-    version: exactVersionSchema,
+    version: runtimeVersionSchema,
     resolved: sourceUrlSchema,
     integrity: packageIntegritySchema,
     skillExposure: z.literal("versioned-with-runtime-package"),
@@ -146,6 +144,18 @@ const productionSeedFileContract = Object.freeze([
     executable: false,
   },
   {
+    path: ".sandcastle/docker-transport.mjs",
+    sourcePath: "src/production-sandcastle-adapter/docker-transport.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
+    path: "destination-worker-environment.mjs",
+    sourcePath: "src/destination-worker-environment.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
     path: ".sandcastle/github-credential-v1.mjs",
     sourcePath: "src/production-sandcastle-adapter/github-credential-v1.mjs",
     source: "sandking-package",
@@ -154,6 +164,12 @@ const productionSeedFileContract = Object.freeze([
   {
     path: "github-credential-contract.mjs",
     sourcePath: "src/github-credential-contract.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
+    path: "real-delegation-protocol.mjs",
+    sourcePath: "src/real-delegation-protocol.mjs",
     source: "sandking-package",
     executable: false,
   },
@@ -178,6 +194,12 @@ const productionSeedFileContract = Object.freeze([
   {
     path: "common/digest.mjs",
     sourcePath: "src/common/digest.mjs",
+    source: "sandking-package",
+    executable: false,
+  },
+  {
+    path: "common/exact-object-keys.mjs",
+    sourcePath: "src/common/exact-object-keys.mjs",
     source: "sandking-package",
     executable: false,
   },
@@ -331,13 +353,15 @@ const findWorkerVisibleSkillPaths = (files) => {
     const text = source.toString("utf8");
     const promptFileProperties = [...text.matchAll(/\bpromptFile\s*:/g)];
     const staticPromptFiles = [...text.matchAll(
-      /\bpromptFile\s*:\s*(["'])(\.\/[^"']+)\1/g,
+      /\bpromptFile\s*:\s*(?:(["'])(\.\/[^"']+)\1|harnessFile\((["'])([^"']+)\3\))/g,
     )];
     if (promptFileProperties.length !== staticPromptFiles.length) {
       throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
     }
     for (const match of staticPromptFiles) {
-      const promptPath = posix.normalize(match[2].slice(2));
+      const promptPath = posix.normalize(
+        match[2]?.slice(2) ?? `.sandcastle/${match[4]}`,
+      );
       if (!relativeFileSchema.safeParse(promptPath).success) {
         throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
       }
@@ -429,15 +453,8 @@ const validateSkillInventory = (files, lock, provenance) => {
       throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
     }
   }
-  const codexRuntime = lock.executionRuntimeInputs.find((input) =>
-    input.identity === "openai.codex-cli");
-  if (
-    !codexRuntime
-    || codexRuntime.package !== "@openai/codex"
-    || codexRuntime.version !== CODEX_VERSION
-    || codexRuntime.resolved !== CODEX_RESOLVED
-    || codexRuntime.integrity !== CODEX_INTEGRITY
-  ) {
+  if (JSON.stringify(lock.executionRuntimeInputs)
+      !== JSON.stringify(requiredExecutionRuntimeInputs)) {
     throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
   }
 };

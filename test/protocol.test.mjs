@@ -151,6 +151,15 @@ test("GitHub credential configuration is a one-way capability-negotiated Host op
     },
     configurationOptions: unconfigured.configurationOptions,
   };
+  const { configurationOptions: _configurationOptions, ...launchFailureWithoutOptions } =
+    launchFailure;
+  const missingIssueFailure = {
+    ...launchFailureWithoutOptions,
+    requestId: "launch-without-required-issue",
+    code: "real_delegation_issue_required",
+    sanitizedExplanation:
+      "Real delegation requires a scoped GitHub issue. Retry with --issue <number>.",
+  };
 
   for (const message of [
     projectRequest,
@@ -159,6 +168,7 @@ test("GitHub credential configuration is a one-way capability-negotiated Host op
     configured,
     unconfigured,
     launchFailure,
+    missingIssueFailure,
   ]) {
     writeFrame(stream, message);
     assert.deepEqual(await readFrame(stream), message);

@@ -279,8 +279,26 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
         const credentialFailureGuidance = renderedPreparation.querySelector(
           "#harness-launch-feedback",
         ).textContent;
+        credentialGuidanceState.pendingHarnessLaunchRequestId = "missing-issue-request";
+        projectPreparation.applyHarnessLaunchResult({
+          requestId: "missing-issue-request",
+          outcome: {
+            type: "harness.run.launch.failure",
+            code: "real_delegation_issue_required",
+            sanitizedExplanation:
+              "Real delegation requires a scoped GitHub issue. Retry with --issue <number>.",
+          },
+        });
+        const missingIssueGuidance = renderedPreparation.querySelector(
+          "#harness-launch-feedback",
+        ).textContent;
         renderedPreparation.remove();
-        return { reconnects, hostStateDispatches, credentialFailureGuidance };
+        return {
+          reconnects,
+          hostStateDispatches,
+          credentialFailureGuidance,
+          missingIssueGuidance,
+        };
       });
       assert.deepEqual({
         reconnects: moduleBoundaries.reconnects,
@@ -296,6 +314,7 @@ test("Cockpit Launch uses one persistable confirmation and one Host action", asy
       });
       assert.match(moduleBoundaries.credentialFailureGuidance, /fine-grained Project PAT/i);
       assert.match(moduleBoundaries.credentialFailureGuidance, /full Host gh CLI session/i);
+      assert.match(moduleBoundaries.missingIssueGuidance, /--issue <number>/);
       await page.locator("#harness-launch-parameter-issueNumber").fill("152");
       await page.locator("#harness-launch-parameter-targetBranch")
         .fill("sandcastle/issue-152");

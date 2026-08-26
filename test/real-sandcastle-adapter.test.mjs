@@ -9,6 +9,7 @@ import {
   readHarnessAdapterFrame,
   writeHarnessAdapterFrame,
 } from "../src/harness-adapter-protocol.mjs";
+import { REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS } from "../src/real-delegation-protocol.mjs";
 
 const adapterPath = new URL(
   "../src/production-sandcastle-adapter/sandcastle-v4.mjs",
@@ -18,13 +19,36 @@ const githubCredentialContractPath = new URL(
   "../src/github-credential-contract.mjs",
   import.meta.url,
 );
+const realDelegationProtocolPath = new URL(
+  "../src/real-delegation-protocol.mjs",
+  import.meta.url,
+);
+const exactObjectKeysPath = new URL(
+  "../src/common/exact-object-keys.mjs",
+  import.meta.url,
+);
+const destinationWorkerEnvironmentPath = new URL(
+  "../src/destination-worker-environment.mjs",
+  import.meta.url,
+);
 const adapterId = "sandcastle-harness-adapter-v1";
 const adapterProtocol = "1.0.0";
 const workerPath = ".sandcastle/real-worker-v2.mjs";
+const projectionManifestPath = "projection-manifest.json";
+const sandboxImageId = `sha256:${"d".repeat(64)}`;
+const dockerEndpoint = "unix:///run/user/1000/docker.sock";
+const sandboxConfigurationSource = "FROM node:22-bookworm\n";
 const githubCredentialContractSource = await readFile(githubCredentialContractPath, "utf8");
+const realDelegationProtocolSource = await readFile(realDelegationProtocolPath, "utf8");
+const exactObjectKeysSource = await readFile(exactObjectKeysPath, "utf8");
+const destinationWorkerEnvironmentSource = await readFile(
+  destinationWorkerEnvironmentPath,
+  "utf8",
+);
 
 const encode = (value) => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 const integrity = (source) => `sha256:${createHash("sha256").update(source).digest("hex")}`;
+const sandboxConfigurationIntegrity = integrity(sandboxConfigurationSource);
 
 const writeExecutable = async (path, source) => {
   await writeFile(path, source);
@@ -42,7 +66,9 @@ const createFixture = async ({
   const executionPath = join(projectPath, ".sandking", "projection");
   const binPath = join(root, "bin");
   await Promise.all([
-    mkdir(executionPath, { recursive: true }),
+    mkdir(join(executionPath, "common"), { recursive: true }),
+    mkdir(join(executionPath, ".sandcastle"), { recursive: true }),
+    mkdir(join(root, ".codex"), { recursive: true }),
     mkdir(binPath, { recursive: true }),
   ]);
   await new Promise((resolve, reject) => {
@@ -55,6 +81,9 @@ const createFixture = async ({
     provider: { kind: "openai-codex", ready: providerReady },
     scenario: "project-commit",
   })}\n`);
+  await writeFile(join(root, ".codex", "auth.json"), '{"auth_mode":"fixture"}\n', {
+    mode: 0o600,
+  });
   await writeFile(join(executionPath, "worker-environment.json"), `${JSON.stringify({
     schemaVersion: 1,
     harness: { adapterId },
@@ -66,11 +95,36 @@ const createFixture = async ({
       { identity: "sandking.pull-request-review" },
       { identity: "sandking.real-delegation" },
     ],
-    executionRuntimeInputs: [{ identity: "openai.codex-cli", version: "0.146.0" }],
+    executionRuntimeInputs: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS,
   })}\n`);
+  await Promise.all([
+    writeFile(
+      join(executionPath, ".sandcastle", "Dockerfile"),
+      sandboxConfigurationSource,
+    ),
+    writeFile(join(executionPath, projectionManifestPath), `${JSON.stringify({
+      schemaVersion: 1,
+      harness: { adapterId, pinnedRevision: "a".repeat(40) },
+      skillSetLockDigest: `sha256:${"1".repeat(64)}`,
+      projectionDigest: `sha256:${"2".repeat(64)}`,
+      files: [{ path: workerPath, integrity: `sha256:${"3".repeat(64)}` }],
+    })}\n`),
+  ]);
   await writeFile(
     join(executionPath, "github-credential-contract.mjs"),
     githubCredentialContractSource,
+  );
+  await writeFile(
+    join(executionPath, "real-delegation-protocol.mjs"),
+    realDelegationProtocolSource,
+  );
+  await writeFile(
+    join(executionPath, "common", "exact-object-keys.mjs"),
+    exactObjectKeysSource,
+  );
+  await writeFile(
+    join(executionPath, "destination-worker-environment.mjs"),
+    destinationWorkerEnvironmentSource,
   );
   await writeExecutable(join(binPath, "codex"), `#!/bin/sh
 if [ "$1" = "--version" ]; then
@@ -100,8 +154,19 @@ if [ "$1" = "version" ] && [ "$2" = "--format" ]; then
   printf '%s\\n' '27.5.1'
   exit 0
 fi
-if [ "$1" = "image" ] && [ "$2" = "inspect" ] && [ "$3" = "sandcastle:sandking-real-worker" ]; then
-  printf '%s\\n' 'sha256:${"d".repeat(64)}'
+if [ "$1" = "image" ] && [ "$2" = "inspect" ] && [ "$3" = "${sandboxImageId}" ]; then
+  printf '%s\\n' '${JSON.stringify({
+    Id: sandboxImageId,
+    Config: {
+      Labels: {
+        "org.sandking.production-sandbox.configuration-integrity":
+          sandboxConfigurationIntegrity,
+        "org.sandking.production-sandbox.agent-uid": String(process.getuid?.() ?? 1000),
+        "org.sandking.production-sandbox.agent-gid": String(process.getgid?.() ?? 1000),
+      },
+      User: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+    },
+  })}'
   exit 0
 fi
 exit 93
@@ -116,10 +181,17 @@ exit 93
       HOME: root,
       PATH: `${binPath}${delimiter}${process.env.PATH ?? ""}`,
     },
+    productionProviderRuntime: { dockerEndpoint, sandboxImageId },
   };
 };
 
-const invoke = async ({ command, encoded = encode({}), executionPath, environment }) => {
+const invoke = async ({
+  command,
+  encoded = encode({}),
+  executionPath,
+  environment,
+  productionProviderRuntime,
+}) => {
   const source = await readFile(adapterPath, "utf8");
   const child = spawn(process.execPath, [
     "--input-type=module",
@@ -127,6 +199,7 @@ const invoke = async ({ command, encoded = encode({}), executionPath, environmen
     "adapters/sandcastle.mjs",
     command,
     encoded,
+    ...(productionProviderRuntime ? [encode(productionProviderRuntime)] : []),
   ], {
     cwd: executionPath,
     env: environment,
@@ -158,8 +231,12 @@ test("real-provider preparation fails closed unless its exact gate and credentia
     ]) {
       const invocation = await invoke({
         command: "prepare",
+        encoded: encode(expectedType === "harness.launch.prepared"
+          ? { issueNumber: 262 }
+          : {}),
         executionPath: fixture.executionPath,
         environment: fixture.environment,
+        productionProviderRuntime: fixture.productionProviderRuntime,
       });
       const frame = await readHarnessAdapterFrame(invocation.channel);
       assert.equal(frame.type, expectedType);
@@ -171,8 +248,14 @@ test("real-provider preparation fails closed unless its exact gate and credentia
           harnessWorkspaceWrite: false,
         });
       } else {
-        assert.deepEqual(frame.retainedExecutionInputs, [workerPath]);
-        assert.deepEqual(frame.suppliedCapabilities, ["project.git.read"]);
+        assert.deepEqual(frame.retainedExecutionInputs, [
+          workerPath,
+          projectionManifestPath,
+        ]);
+        assert.deepEqual(frame.suppliedCapabilities, [
+          "github.issues.read",
+          "project.git.read",
+        ]);
       }
       assert.deepEqual(await waitForExit(invocation.child), { code: 0, signal: null });
     }
@@ -181,21 +264,27 @@ test("real-provider preparation fails closed unless its exact gate and credentia
       encoded: encode({ issueNumber: 261 }),
       executionPath: readyOnStderr.executionPath,
       environment: readyOnStderr.environment,
+      productionProviderRuntime: readyOnStderr.productionProviderRuntime,
     });
     const issueFrame = await readHarnessAdapterFrame(issueInvocation.channel);
     assert.equal(issueFrame.type, "harness.launch.prepared");
-    assert.deepEqual(issueFrame.suppliedCapabilities, ["project.git.read"]);
+    assert.deepEqual(issueFrame.suppliedCapabilities, [
+      "github.issues.read",
+      "project.git.read",
+    ]);
     assert.deepEqual(await waitForExit(issueInvocation.child), { code: 0, signal: null });
 
     const githubAccessInvocation = await invoke({
       command: "prepare",
-      encoded: encode({ verifyGitHubAccess: true }),
+      encoded: encode({ issueNumber: 261, verifyGitHubAccess: true }),
       executionPath: readyOnStderr.executionPath,
       environment: readyOnStderr.environment,
+      productionProviderRuntime: readyOnStderr.productionProviderRuntime,
     });
     const githubAccessFrame = await readHarnessAdapterFrame(githubAccessInvocation.channel);
     assert.equal(githubAccessFrame.type, "harness.launch.prepared");
     assert.deepEqual(githubAccessFrame.suppliedCapabilities, [
+      "github.issues.read",
       "github.authentication.verify",
       "project.git.read",
     ]);
@@ -212,6 +301,33 @@ test("real-provider preparation fails closed unless its exact gate and credentia
       readyOnStdout,
     ].map((fixture) =>
       rm(fixture.root, { recursive: true, force: true })));
+  }
+});
+
+test("real-provider preparation requires an issue before delegated work starts", {
+  skip: process.platform === "win32" ? "POSIX command fixture" : false,
+}, async () => {
+  const fixture = await createFixture();
+  try {
+    const invocation = await invoke({
+      command: "prepare",
+      executionPath: fixture.executionPath,
+      environment: fixture.environment,
+      productionProviderRuntime: fixture.productionProviderRuntime,
+    });
+    const frame = await readHarnessAdapterFrame(invocation.channel);
+
+    assert.equal(frame.type, "harness.launch.failure");
+    assert.equal(frame.code, "real_delegation_issue_required");
+    assert.match(frame.sanitizedExplanation, /--issue <number>/);
+    assert.deepEqual(frame.sideEffects, {
+      delegatedWorkStarted: false,
+      projectWrite: false,
+      harnessWorkspaceWrite: false,
+    });
+    assert.deepEqual(await waitForExit(invocation.child), { code: 0, signal: null });
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
@@ -267,10 +383,14 @@ writeSync(3, JSON.stringify({
     try {
       const invocation = await invoke({
         command: "run",
-        encoded: encode({ harnessRunId: runId, parameters: {} }),
+        encoded: encode({ harnessRunId: runId, parameters: { issueNumber: 262 } }),
         executionPath: fixture.executionPath,
         environment: fixture.environment,
       });
+      const projectionManifestSource = await readFile(
+        join(fixture.executionPath, projectionManifestPath),
+        "utf8",
+      );
       let diagnostic = "";
       invocation.child.stderr.on("data", (chunk) => {
         diagnostic += Buffer.from(chunk).toString("utf8");
@@ -280,12 +400,20 @@ writeSync(3, JSON.stringify({
         adapterProtocol,
         adapterId,
         harnessRunId: runId,
-        retainedExecutionInputs: [{
-          path: workerPath,
-          source: fakeWorker,
-          integrity: integrity(fakeWorker),
-        }],
+        retainedExecutionInputs: [
+          {
+            path: workerPath,
+            source: fakeWorker,
+            integrity: integrity(fakeWorker),
+          },
+          {
+            path: projectionManifestPath,
+            source: projectionManifestSource,
+            integrity: integrity(projectionManifestSource),
+          },
+        ],
         githubCredential: { mode, token: githubToken },
+        productionProviderRuntime: fixture.productionProviderRuntime,
       });
 
       const frames = [];

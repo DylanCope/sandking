@@ -3,15 +3,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseGitHubCredential } from "../github-credential-contract.mjs";
 
-export const githubSandboxEnvironment = Object.freeze({
-  PATH: "/home/agent/.sandcastle-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-  GH_CONFIG_DIR: "/home/agent/.config/gh",
-  GH_PROMPT_DISABLED: "1",
-  GH_TOKEN: "",
-  GITHUB_TOKEN: "",
-  GH_ENTERPRISE_TOKEN: "",
-  GITHUB_ENTERPRISE_TOKEN: "",
-});
+const SANDBOX_SYSTEM_PATH =
+  "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+export const createGitHubSandboxEnvironment = (home = "/home/agent") => {
+  if (typeof home !== "string" || !home.startsWith("/") || home.includes(":")) {
+    throw new Error("github_sandbox_home_invalid");
+  }
+  const normalizedHome = home.replace(/\/+$/, "");
+  return Object.freeze({
+    PATH: `${normalizedHome}/.sandcastle-bin:${SANDBOX_SYSTEM_PATH}`,
+    GH_CONFIG_DIR: `${normalizedHome}/.config/gh`,
+    GH_PROMPT_DISABLED: "1",
+    GH_TOKEN: "",
+    GITHUB_TOKEN: "",
+    GH_ENTERPRISE_TOKEN: "",
+    GITHUB_ENTERPRISE_TOKEN: "",
+  });
+};
+
+export const githubSandboxEnvironment = createGitHubSandboxEnvironment();
 
 export const githubSandboxReadyCommands = (configured) => [
   'rm -rf "${HOME}/.config/gh"',
@@ -20,7 +31,7 @@ export const githubSandboxReadyCommands = (configured) => [
   ...(configured ? [
     'mkdir -p "${HOME}/.sandcastle-bin"',
     'github_executable="$(command -v gh)"',
-    'printf \'%s\\n\' \'#!/bin/sh\' \'set -eu\' \'GH_TOKEN="$(cat "${HOME}/.sandcastle-secrets/github-token")"\' \'export GH_TOKEN\' "exec \\"${github_executable}\\" \\"\\$@\\"" > "${HOME}/.sandcastle-bin/gh"',
+    'printf \'%s\\n\' \'#!/bin/sh\' \'set -eu\' \'credential_path="${SANDKING_GITHUB_CREDENTIAL_PATH:-${HOME}/.sandcastle-secrets/github-token}"\' \'GH_TOKEN="$(cat "${credential_path}")"\' \'export GH_TOKEN\' "exec \\"${github_executable}\\" \\"\\$@\\"" > "${HOME}/.sandcastle-bin/gh"',
     'chmod 700 "${HOME}/.sandcastle-bin/gh"',
     "gh api user --hostname github.com --jq .login >/dev/null",
   ] : []),

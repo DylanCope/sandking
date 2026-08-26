@@ -1,5 +1,38 @@
+import { lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
+
+/**
+ * Resolve the destination-local Codex credential that production Workers mount.
+ * The Host deliberately discards caller-supplied `CODEX_HOME`, but retaining it
+ * here keeps direct Worker invocation compatible with Codex's normal override.
+ *
+ * @param {{environment?: NodeJS.ProcessEnv, homeDirectory?: string, platform?: NodeJS.Platform}} [options]
+ */
+export const destinationCodexAuthPath = (options = {}) => {
+  const environment = options.environment ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const path = platform === "win32" ? win32 : posix;
+  const homeDirectory = options.homeDirectory
+    ?? environment.HOME
+    ?? environment.USERPROFILE
+    ?? homedir();
+  const codexHome = environment.CODEX_HOME ?? path.join(homeDirectory, ".codex");
+  return path.join(codexHome, "auth.json");
+};
+
+/**
+ * @param {string} path
+ * @param {{lstatSync?: typeof import("node:fs").lstatSync}} [options]
+ */
+export const isMountableCodexAuthFile = (path, options = {}) => {
+  try {
+    const details = (options.lstatSync ?? lstatSync)(path);
+    return details.isFile() && !details.isSymbolicLink();
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Build the narrow environment used by destination-local Harness Workers.

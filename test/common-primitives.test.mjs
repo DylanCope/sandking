@@ -3,6 +3,7 @@ import test from "node:test";
 import { z } from "zod";
 import { canonicalJson } from "../src/common/canonical-json.mjs";
 import { digest } from "../src/common/digest.mjs";
+import { hasExactKeys } from "../src/common/exact-object-keys.mjs";
 import {
   auditIdPattern,
   harnessIdPattern,
@@ -23,6 +24,9 @@ test("shared primitives preserve canonical fingerprints and Sand-King identifier
     digest("Sand-King"),
     "sha256:2c31513025b7284a7645e071b0d1bd1e65dbcae489fe17db028b826771d55add",
   );
+  assert.equal(hasExactKeys({ second: 2, first: 1 }, ["first", "second"]), true);
+  assert.equal(hasExactKeys({ first: 1, second: 2, extra: 3 }, ["first", "second"]), false);
+  assert.equal(hasExactKeys(["first", "second"], ["first", "second"]), false);
 
   const schemas = identifierSchemas(z);
   assert.strictEqual(identifierSchemas(z), schemas);

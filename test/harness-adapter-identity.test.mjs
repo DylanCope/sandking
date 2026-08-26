@@ -55,6 +55,14 @@ const productionPreparation = () => ({
     resolved: "https://registry.npmjs.org/@openai/codex/-/codex-0.146.0.tgz",
     integrity: "sha512-YWJjZA==",
     skillExposure: "versioned-with-runtime-package",
+  }, {
+    identity: "docker.cli",
+    package: "docker.io",
+    version: "20.10.24+dfsg1-1+deb12u1+b6",
+    resolved:
+      "https://snapshot.debian.org/archive/debian/20260825T000000Z/dists/bookworm/InRelease",
+    integrity: "sha512-YWJjZA==",
+    skillExposure: "versioned-with-runtime-package",
   }],
   projection: {
     path: `.sandking/harnesses/${harnessId}`,

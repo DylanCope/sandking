@@ -189,6 +189,7 @@ export const createLaunchOperation = (runtime) => {
     return {
       providerKind: prepared.providerKind,
       manifestWritten: prepared.manifestWritten,
+      productionProviderRuntime: prepared.productionProviderRuntime,
       rollback: async () => {
         if (!released) {
           released = true;
@@ -206,6 +207,7 @@ export const createLaunchOperation = (runtime) => {
     /** @type {{mode: "project-pat" | "host-gh-session", token: string} | null} */
     let githubCredential = null;
     let githubCredentialConfigurationOptions = null;
+    let sanitizedExplanation = null;
     let launchAccepted = false;
     try {
     const authorizationClass = "harness_run_launch";
@@ -285,7 +287,10 @@ export const createLaunchOperation = (runtime) => {
             productionPreparation: context.project.harness.preparation,
           });
         }
-        prepared = await validateHarnessLaunch(context, parameters.data);
+        prepared = await validateHarnessLaunch(context, parameters.data, {
+          productionProviderRuntime:
+            providerPreparation?.productionProviderRuntime,
+        });
         if (
           context.project.projectId !== request.projectId
           || context.harness.harnessId !== context.project.harness.harnessId
@@ -312,6 +317,14 @@ export const createLaunchOperation = (runtime) => {
         }
       } catch (error) {
         const typedCode = typedErrorCode(error);
+        if (
+          error
+          && typeof error === "object"
+          && "sanitizedExplanation" in error
+          && typeof error.sanitizedExplanation === "string"
+        ) {
+          sanitizedExplanation = error.sanitizedExplanation;
+        }
         if (isGitHubCredentialFailureCode(typedCode)) {
           githubCredentialConfigurationOptions =
             configurationOptionsForGitHubCredentialFailure(typedCode);
@@ -333,6 +346,7 @@ export const createLaunchOperation = (runtime) => {
           "harness_projection_failed",
           "harness_execution_runtime_unavailable",
           "harness_worker_provider_unavailable",
+          "real_delegation_issue_required",
           "bounded_configuration_invalid",
           "harness_capability_unsupported",
           "harness_adapter_protocol_invalid",
@@ -395,6 +409,7 @@ export const createLaunchOperation = (runtime) => {
         "harness_projection_failed",
         "harness_execution_runtime_unavailable",
         "harness_worker_provider_unavailable",
+        "real_delegation_issue_required",
         ...GITHUB_CREDENTIAL_FAILURE_CODES,
       ]);
       const auditId = await options.recordAudit("harness.run.launch", "rejected", {
@@ -432,6 +447,7 @@ export const createLaunchOperation = (runtime) => {
         ...(githubCredentialConfigurationOptions
           ? { configurationOptions: githubCredentialConfigurationOptions }
           : {}),
+        ...(sanitizedExplanation ? { sanitizedExplanation } : {}),
       };
       if (idempotencyKeyHash) {
         retained.launchOutcomes.push({ idempotencyKeyHash, requestFingerprint, response });
@@ -585,6 +601,8 @@ export const createLaunchOperation = (runtime) => {
         harnessExecutionPath,
         retainedHarnessExecutionInputs,
         githubCredential,
+        productionProviderRuntime:
+          providerPreparation?.productionProviderRuntime,
         cancellationGraceMs,
         hostLossTerminationEvidencePath: join(
           options.dataDir,

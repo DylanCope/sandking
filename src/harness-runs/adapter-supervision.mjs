@@ -13,7 +13,10 @@ import {
   writeHarnessAdapterFrame,
 } from "../harness-adapter-protocol.mjs";
 import { sendHarnessCancellationRequest } from "../harness-process-control.mjs";
-import { verifyProductionHarnessRetainedInputs } from "../production-harness-preparation.mjs";
+import {
+  materializeProductionHarnessRetainedInputs,
+  verifyProductionHarnessRetainedInputs,
+} from "../production-harness-preparation.mjs";
 import { spawnPosixProcessTree } from "../posix-process-tree.mjs";
 import { createDestinationWorkerEnvironment } from "../destination-worker-environment.mjs";
 import {
@@ -44,7 +47,7 @@ const publishWindowsProcessBarrierDecision = async (markerPath, decision) => {
  * @param {any} context
  * @param {{onAdapterStarted: () => Promise<void>, onReady: (readyAt: string) => Promise<void>, onProgress: (record: z.infer<typeof progressRecordSchema>) => Promise<void>, onDiagnostic: (producer: "stdout" | "stderr", data: Buffer) => Promise<void>, beforeCancellationSignal: (kind: "cooperative" | "forced") => Promise<void>, onCancellationSignalPublished: (kind: "cooperative" | "forced", sentAt: string) => Promise<void>, onCancellationTerminationConfirmed: (confirmedAt: string) => Promise<void>, onSupervisorAvailable: (supervisor: {prepareCancellation: () => Promise<boolean>, requestCancellation: (cooperativeDeadlineAt: string) => Promise<{cooperativeSignalSentAt: string | null, forcedTerminationSentAt: string | null, terminationConfirmedAt: string | null}>, interrupt: () => Promise<void>, releaseProcessTree: () => Promise<void>}) => void}} observer
  */
-export const superviseHarnessAdapter = async (run, context, observer) => {
+const superviseBoundHarnessAdapter = async (run, context, observer) => {
   const pinnedAdapter = await loadPinnedHarnessAdapter({
     workspacePath: context.harnessWorkspacePath,
     pinnedRevision: run.harnessPinnedRevision,
@@ -360,6 +363,9 @@ export const superviseHarnessAdapter = async (run, context, observer) => {
         ...(context.githubCredential
           ? { githubCredential: context.githubCredential }
           : {}),
+        ...(context.productionProviderRuntime
+          ? { productionProviderRuntime: context.productionProviderRuntime }
+          : {}),
       });
     } catch {
       terminateContainedAdapter();
@@ -523,4 +529,37 @@ export const superviseHarnessAdapter = async (run, context, observer) => {
     exit: exitResult,
     cancellation,
   };
+};
+
+/**
+ * @param {z.infer<typeof storedRunSchema>} run
+ * @param {any} context
+ * @param {Parameters<typeof superviseBoundHarnessAdapter>[2]} observer
+ */
+export const superviseHarnessAdapter = async (run, context, observer) => {
+  const retainedInputs = Array.isArray(context.retainedHarnessExecutionInputs)
+    ? context.retainedHarnessExecutionInputs
+    : [];
+  if (retainedInputs.length === 0) {
+    return superviseBoundHarnessAdapter(run, context, observer);
+  }
+  if (typeof context.harnessExecutionPath !== "string") {
+    throw new Error("harness_adapter_start_failed");
+  }
+  await verifyProductionHarnessRetainedInputs({
+    executionPath: context.harnessExecutionPath,
+    retainedExecutionInputs: retainedInputs,
+  });
+  const binding = await materializeProductionHarnessRetainedInputs({
+    retainedExecutionInputs: retainedInputs,
+    projectPath: context.project.canonicalPath,
+  });
+  try {
+    return await superviseBoundHarnessAdapter(run, {
+      ...context,
+      harnessExecutionPath: binding.path,
+    }, observer);
+  } finally {
+    await binding.close();
+  }
 };

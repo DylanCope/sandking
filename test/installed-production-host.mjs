@@ -3,6 +3,40 @@ import { access, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+const configureInstalledProjectPat = (installed, registration) => new Promise(
+  (resolve, reject) => {
+    const child = spawn(installed.command, [
+      "github-credentials",
+      "set-project-pat",
+      registration.project.project.projectId,
+      "--data-dir",
+      registration.dataDir,
+      "--json",
+    ], {
+      cwd: registration.projectPath,
+      env: process.env,
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+    let diagnostic = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      diagnostic += chunk;
+    });
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        resolve(undefined);
+        return;
+      }
+      reject(new Error(
+        `installed_github_credential_configuration_failed:${code ?? signal ?? "unknown"}`
+        + `:${diagnostic}`,
+      ));
+    });
+    child.stdin.end("github_pat_installed_production_fixture_262\n");
+  },
+);
+
 export const startInstalledProductionHost = async ({
   endpoint,
   installed,
@@ -10,6 +44,9 @@ export const startInstalledProductionHost = async ({
   preloadPath,
   registration,
 }) => {
+  // Issue-driven installed launches establish their GitHub precondition through
+  // the same person-facing Host action used outside this behavioral fixture.
+  await configureInstalledProjectPat(installed, registration);
   const harnessRunsUrl = pathToFileURL(join(
     installed.packageDirectory,
     "src",

@@ -81,15 +81,25 @@ const pendingCancellationStateFile = "harness-cancellation-retries.json";
 const pendingRecoveryStateFile = "harness-recovery-retries.json";
 
 export class ControllerCliAcknowledgedFailure extends Error {
-  /** @param {string} code @param {unknown} [configurationOptions] */
-  constructor(code, configurationOptions) {
+  /**
+   * @param {string} code
+   * @param {unknown} [configurationOptions]
+   * @param {unknown} [sanitizedExplanation]
+   */
+  constructor(code, configurationOptions, sanitizedExplanation) {
     const credentialFailure = isGitHubCredentialFailureCode(code)
       ? new GitHubCredentialUnavailableError(code, configurationOptions)
       : null;
-    super(credentialFailure?.message ?? code);
+    const explanation = typeof sanitizedExplanation === "string"
+      && sanitizedExplanation.length >= 1
+      && sanitizedExplanation.length <= 512
+      ? sanitizedExplanation
+      : undefined;
+    super(credentialFailure?.message ?? (explanation ? `${code}: ${explanation}` : code));
     this.name = "ControllerCliAcknowledgedFailure";
     this.code = code;
     this.configurationOptions = credentialFailure?.configurationOptions;
+    this.sanitizedExplanation = explanation;
   }
 }
 
@@ -292,6 +302,7 @@ const requestControllerOperation = async (request, environment) => {
           throw new ControllerCliAcknowledgedFailure(
             response?.failure?.code ?? "controller_cli_operation_failed",
             response?.failure?.configurationOptions,
+            response?.failure?.sanitizedExplanation,
           );
         }
         finish(null, response.outcome);

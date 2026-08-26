@@ -1,39 +1,81 @@
-import { execFileSync } from "node:child_process";
+const credentialHelperUrl = new URL("./github-credential-v1.mjs", import.meta.url);
+const sourceCredentialHelperUrl = new URL(
+  "../src/production-sandcastle-adapter/github-credential-v1.mjs",
+  import.meta.url,
+);
+const {
+  createGitHubSandboxEnvironment,
+  githubSandboxEnvironment,
+  githubSandboxReadyCommands,
+  materializeGitHubCredential,
+} = await import(credentialHelperUrl.href).catch(() =>
+  import(sourceCredentialHelperUrl.href));
 
+export {
+  createGitHubSandboxEnvironment,
+  githubSandboxEnvironment,
+  githubSandboxReadyCommands,
+  materializeGitHubCredential,
+};
+
+export const REAL_SANDBOX_IMAGE = "sandcastle:sandking-real-worker";
+const SANDBOX_GITHUB_CREDENTIAL_PATH =
+  "/home/agent/.sandcastle-secrets/github-token";
+
+/**
+ * @param {string} [hostAuthPath]
+ * @param {{githubCredentialPath?: string | null, imageName?: string}} [options]
+ */
 export const createCodexSandboxSettings = (
   hostAuthPath = "~/.codex/auth.json",
-  githubToken = execFileSync("gh", ["auth", "token"], { encoding: "utf8" }).trim(),
-) => ({
-  docker: {
-    mounts: [
-      {
-        hostPath: hostAuthPath,
-        sandboxPath: "/home/agent/.sandcastle-secrets/codex-auth.json",
-        readonly: true,
-      },
-    ],
-    env: {
-      GH_TOKEN: githubToken,
-    },
-  },
-  hooks: {
-    sandbox: {
-      onSandboxReady: [
+  { githubCredentialPath = null, imageName = REAL_SANDBOX_IMAGE } = {},
+) => {
+  const githubConfigured = typeof githubCredentialPath === "string"
+    && githubCredentialPath.length > 0;
+  return {
+    docker: {
+      imageName,
+      mounts: [
         {
-          command: [
-            "set -eu",
-            'codex_auth_source="${CODEX_AUTH_SOURCE:-${HOME}/.sandcastle-secrets/codex-auth.json}"',
-            'codex_home="${CODEX_HOME:-${HOME}/.codex}"',
-            'mkdir -p "${codex_home}"',
-            'cp "${codex_auth_source}" "${codex_home}/auth.json"',
-            'chmod 600 "${codex_home}/auth.json"',
-          ].join("; "),
+          hostPath: hostAuthPath,
+          sandboxPath: "/home/agent/.sandcastle-secrets/codex-auth.json",
+          readonly: true,
         },
-        { command: "npm install" },
+        ...(githubConfigured ? [{
+          hostPath: githubCredentialPath,
+          sandboxPath: SANDBOX_GITHUB_CREDENTIAL_PATH,
+          readonly: true,
+        }] : []),
       ],
+      env: {
+        ...githubSandboxEnvironment,
+        ...(githubConfigured
+          ? { SANDKING_GITHUB_CREDENTIAL_PATH: SANDBOX_GITHUB_CREDENTIAL_PATH }
+          : {}),
+      },
     },
-  },
-});
+    hooks: {
+      sandbox: {
+        onSandboxReady: [
+          {
+            command: [
+              "set -eu",
+              'codex_auth_source="${CODEX_AUTH_SOURCE:-${HOME}/.sandcastle-secrets/codex-auth.json}"',
+              'codex_home="${CODEX_HOME:-${HOME}/.codex}"',
+              'mkdir -p "${codex_home}"',
+              'cp "${codex_auth_source}" "${codex_home}/auth.json"',
+              'chmod 600 "${codex_home}/auth.json"',
+            ].join("; "),
+          },
+          {
+            command: githubSandboxReadyCommands(githubConfigured).join("; "),
+          },
+          { command: "npm install" },
+        ],
+      },
+    },
+  };
+};
 
 export const createWorkerSandboxSettings = (
   issueId,
@@ -41,7 +83,10 @@ export const createWorkerSandboxSettings = (
   paths = {},
 ) => {
   const codexAuthPath = paths.codexAuthPath ?? "~/.codex/auth.json";
-  const settings = createCodexSandboxSettings(codexAuthPath);
+  const settings = createCodexSandboxSettings(codexAuthPath, {
+    githubCredentialPath: paths.githubCredentialPath,
+    ...(paths.imageName ? { imageName: paths.imageName } : {}),
+  });
   const allowedIssues = new Set(
     (environment.SANDCASTLE_REAL_CLAUDE_ISSUES ?? "")
       .split(",")

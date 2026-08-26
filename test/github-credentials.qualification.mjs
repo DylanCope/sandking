@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
+import { digest as sha256 } from "../src/common/digest.mjs";
 import { createLocalHostTransport } from "../src/daemon/host-transport/local.mjs";
 import { createDestinationWorkerEnvironment } from "../src/destination-worker-environment.mjs";
 import {
@@ -204,7 +205,7 @@ test("GitHub credentials are explicitly configured in Host-private state with Pr
   }
 });
 
-test("the credential-free production canary ignores absent or unavailable optional GitHub credentials", async () => {
+test("unscoped production delegation fails before optional GitHub credential resolution", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-github-credential-launch-"));
   let restorePath = () => undefined;
   let manager;
@@ -227,9 +228,12 @@ test("the credential-free production canary ignores absent or unavailable option
     });
     const projectId = fixture.project.project.projectId;
 
-    const unconfigured = await manager.launch(productionLaunchRequest(projectId));
-    assert.equal(unconfigured.type, "harness.run.launch.result", JSON.stringify(unconfigured));
-    await observeProductionTerminal(manager, unconfigured.run.harnessRunId);
+    const unconfigured = await manager.launch(productionLaunchRequest(projectId, {
+      parameters: {},
+    }));
+    assert.equal(unconfigured.type, "harness.run.launch.failure");
+    assert.equal(unconfigured.code, "real_delegation_issue_required");
+    assert.match(unconfigured.sanitizedExplanation, /--issue <number>/);
 
     await credentials.configureHost({
       requestId: "enable-unavailable-host-session",
@@ -241,13 +245,15 @@ test("the credential-free production canary ignores absent or unavailable option
     });
     const unavailable = await manager.launch(productionLaunchRequest(projectId, {
       requestId: "launch-with-unavailable-host-session",
+      parameters: {},
       idempotencyKeyHash: `sha256:${"5".repeat(64)}`,
     }));
-    assert.equal(unavailable.type, "harness.run.launch.result", JSON.stringify(unavailable));
-    await observeProductionTerminal(manager, unavailable.run.harnessRunId);
+    assert.equal(unavailable.type, "harness.run.launch.failure");
+    assert.equal(unavailable.code, "real_delegation_issue_required");
+    assert.equal(unavailable.sanitizedExplanation, unconfigured.sanitizedExplanation);
     const requiredUnavailable = await manager.launch(productionLaunchRequest(projectId, {
       requestId: "reject-required-unavailable-host-session",
-      parameters: { verifyGitHubAccess: true },
+      parameters: { issueNumber: 262 },
       idempotencyKeyHash: `sha256:${"6".repeat(64)}`,
     }));
     assert.equal(requiredUnavailable.type, "harness.run.launch.failure");
@@ -275,19 +281,30 @@ test("the POSIX local Host reads the configured gh session for global reuse", {
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-host-gh-path-"));
   const originalPath = process.env.PATH;
+  const originalHome = process.env.HOME;
   const originalGitHubConfigDirectory = process.env.GH_CONFIG_DIR;
   let transport;
   try {
     const fixture = await createProductionRegistration(root);
     const binPath = join(root, "host-account-bin");
+    const hostHomePath = join(root, "host-account-home");
     const githubConfigDirectory = join(root, "host-account-gh-config");
     const ghInvokedPath = join(root, "host-gh-invoked");
     await Promise.all([
       mkdir(binPath),
       mkdir(githubConfigDirectory),
+      mkdir(join(hostHomePath, ".codex"), { recursive: true }),
     ]);
+    const sandboxConfigurationIntegrity = sha256(await readFile(
+      new URL("../.sandcastle/Dockerfile", import.meta.url),
+    ));
     await writeFile(join(githubConfigDirectory, "hosts.yml"), `${hostToken}\n`);
     await Promise.all([
+      writeFile(
+        join(hostHomePath, ".codex", "auth.json"),
+        '{"auth_mode":"fixture"}\n',
+        { mode: 0o600 },
+      ),
       writeExecutable(join(binPath, "gh"), `#!/bin/sh
 set -eu
 if [ "$1 $2 $3 $4" = "auth token --hostname github.com" ]; then
@@ -310,14 +327,42 @@ exit 92
 `),
       writeExecutable(join(binPath, "docker"), `#!/bin/sh
 if [ "$1 $2" = "version --format" ]; then printf '%s\\n' '27.5.1'; exit 0; fi
-if [ "$1 $2 $3" = "image inspect sandcastle:sandking-real-worker" ]; then
-  printf '%s\\n' 'sha256:${"d".repeat(64)}'
+if [ "$1 $2" = "context inspect" ]; then
+  printf '%s\\n' '"unix:///run/user/1000/docker.sock"'
+  exit 0
+fi
+if [ "$1 $2" = "image inspect" ] && { [ "$3" = "sandcastle:sandking-real-worker" ] || [ "$3" = "sha256:${"d".repeat(64)}" ]; }; then
+  case "$4" in
+    *"json .Config"*) printf '%s\\n' '${JSON.stringify({
+      Labels: {
+        "org.sandking.production-sandbox.configuration-integrity":
+          sandboxConfigurationIntegrity,
+        "org.sandking.production-sandbox.agent-uid": String(process.getuid?.() ?? 1000),
+        "org.sandking.production-sandbox.agent-gid": String(process.getgid?.() ?? 1000),
+      },
+      User: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+    })}' ;;
+    *"json ."*) printf '%s\\n' '${JSON.stringify({
+      Id: `sha256:${"d".repeat(64)}`,
+      Config: {
+        Labels: {
+          "org.sandking.production-sandbox.configuration-integrity":
+            sandboxConfigurationIntegrity,
+          "org.sandking.production-sandbox.agent-uid": String(process.getuid?.() ?? 1000),
+          "org.sandking.production-sandbox.agent-gid": String(process.getgid?.() ?? 1000),
+        },
+        User: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+      },
+    })}' ;;
+    *) printf '%s\\n' 'sha256:${"d".repeat(64)}' ;;
+  esac
   exit 0
 fi
 exit 93
 `),
     ]);
     process.env.PATH = `${binPath}${delimiter}${originalPath ?? ""}`;
+    process.env.HOME = hostHomePath;
     process.env.GH_CONFIG_DIR = githubConfigDirectory;
 
     const hostId = `host-${"6".repeat(24)}`;
@@ -341,23 +386,15 @@ exit 93
         idempotencyKeyHash: `sha256:${"8".repeat(64)}`,
       }),
     });
-    assert.equal(
-      legacyIssueLaunch.type,
-      "harness.run.launch.result",
-      JSON.stringify(legacyIssueLaunch),
-    );
+    assert.equal(legacyIssueLaunch.type, "harness.run.launch.failure");
+    assert.equal(legacyIssueLaunch.code, "github_credential_unconfigured");
     await assert.rejects(readFile(ghInvokedPath, "utf8"), { code: "ENOENT" });
-    await waitForTransportTerminalCleanup(
-      transport,
-      legacyIssueLaunch.run.harnessRunId,
-      fixture.projectPath,
-    );
 
     const unconfigured = await transport.requestHostOperation({
       type: "harness.run.launch",
       ...productionLaunchRequest(fixture.project.project.projectId, {
         requestId: "reject-unconfigured-shipped-host-launch",
-        parameters: { verifyGitHubAccess: true },
+        parameters: { issueNumber: 261, verifyGitHubAccess: true },
         idempotencyKeyHash: `sha256:${"9".repeat(64)}`,
       }),
     });
@@ -390,7 +427,7 @@ exit 93
       type: "harness.run.launch",
       ...productionLaunchRequest(fixture.project.project.projectId, {
         requestId: "launch-with-host-path-session",
-        parameters: { verifyGitHubAccess: true },
+        parameters: { issueNumber: 261, verifyGitHubAccess: true },
         idempotencyKeyHash: `sha256:${"a".repeat(64)}`,
       }),
     });
@@ -400,6 +437,8 @@ exit 93
     await transport?.stopHost().catch(() => undefined);
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
     if (originalGitHubConfigDirectory === undefined) delete process.env.GH_CONFIG_DIR;
     else process.env.GH_CONFIG_DIR = originalGitHubConfigDirectory;
     await rm(root, { recursive: true, force: true });
@@ -583,7 +622,7 @@ exit 94
             requestId: `launch-real-${mode}`,
             controllerId,
             controllerSessionId,
-            parameters: { verifyGitHubAccess: true },
+            parameters: { issueNumber: 262, verifyGitHubAccess: true },
             idempotencyKeyHash: `sha256:${String(index + 6).repeat(64)}`,
           }),
         });
