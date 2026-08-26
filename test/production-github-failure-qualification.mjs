@@ -79,6 +79,15 @@ test("a real Host process loss recovers its issue claim and existing pull reques
       nodePath: process.execPath,
       registration,
     });
+    const hostCommandLine = (await readFile(`/proc/${host.pid}/cmdline`, "utf8"))
+      .split("\0")
+      .filter(Boolean);
+    assert.equal(hostCommandLine.includes(join(
+      installed.packageDirectory,
+      "src",
+      "local-host.mjs",
+    )), true, JSON.stringify(hostCommandLine));
+    assert.equal(hostCommandLine.includes("--eval"), false, JSON.stringify(hostCommandLine));
     const crashed = await installedLaunch({
       endpoint,
       installed,
