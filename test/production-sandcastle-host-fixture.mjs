@@ -53,6 +53,12 @@ export const readBundledMainState = async (root) => JSON.parse(await readFile(
   "utf8",
 ));
 
+export const readBundledIssueClaimActions = (state, issueNumber) =>
+  state.issues[issueNumber].comments
+    .flatMap((body) => [...body.matchAll(/<!-- sandcastle-claim:([A-Za-z0-9_-]+) -->/g)])
+    .map(([, encoded]) => JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")))
+    .map(({ action }) => action);
+
 export const installReadyProbeCommands = async (
   root,
   { homeDirectory = join(root, "host-home"), mainScenario = "incomplete" } = {},
