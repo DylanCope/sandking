@@ -712,7 +712,7 @@ const runWorker = async (
             workerPath,
             process.cwd(),
             Buffer.from(JSON.stringify({
-              ...execution.parameters,
+              issueNumber: execution.parameters.issueNumber,
               productionProviderRuntime,
             }), "utf8").toString("base64url"),
             readiness.root,

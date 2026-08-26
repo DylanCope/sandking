@@ -613,7 +613,12 @@ test("the installed ordinary CLI discovers production parameters and launches th
       issueNumber: 173,
       targetBranch: "sandcastle/issue-173",
     });
-    await observeProductionTerminal(fixture.manager, legacyIssueLaunch.run.harnessRunId);
+    const legacyIssueTerminal = await observeProductionTerminal(
+      fixture.manager,
+      legacyIssueLaunch.run.harnessRunId,
+    );
+    assert.equal(legacyIssueTerminal.run.status, "failed", JSON.stringify(legacyIssueTerminal));
+    assert.equal(legacyIssueTerminal.outcome.result.code, "scoped_issue_incomplete");
 
     const { stdout } = await execFileAsync(installed.command, githubAccessLaunchArguments, {
       cwd: root,
@@ -643,7 +648,11 @@ test("the installed ordinary CLI discovers production parameters and launches th
       "harness_run_failed",
       observedDiagnostics.data.toString("utf8"),
     );
-    assert.equal(observed.outcome.result.code, "scoped_issue_incomplete");
+    assert.equal(
+      observed.outcome.result.code,
+      "scoped_issue_incomplete",
+      observedDiagnostics.data.toString("utf8"),
+    );
     assert.equal(observed.terminalEnvelopeValidation.exactlyOne, true);
     assert.deepEqual(requests.map(({ operation }) => operation), [
       "harness-run.launch",
