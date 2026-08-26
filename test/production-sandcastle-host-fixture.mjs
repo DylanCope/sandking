@@ -227,7 +227,9 @@ if (args[0] === "auth" && args[1] === "token") {
 if (!process.env.GH_TOKEN) process.exit(90);
 const state = load();
 state.authenticatedCalls += 1;
-if (args[0] === "repo" && args[1] === "view") {
+if (args[0] === "api" && args[1] === "user") {
+  process.stdout.write("fixture-user\\n");
+} else if (args[0] === "repo" && args[1] === "view") {
   process.stdout.write("fixture/controlled-main\\n");
 } else if (args[0] === "issue" && args[1] === "view") {
   const value = issue(state, args[2]);
