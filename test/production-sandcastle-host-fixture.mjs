@@ -134,12 +134,17 @@ export const createSandbox = async ({ branch }) => ({
       const state = JSON.parse(readFileSync(statePath, "utf8"));
       state.reviewStarted = true;
       writeFileSync(statePath, JSON.stringify(state) + "\\n");
-      await new Promise((resolve, reject) => {
-        const signal = options.signal;
-        const abort = () => reject(signal.reason ?? new Error("delivery_cancelled"));
-        if (signal?.aborted) abort();
-        else signal?.addEventListener("abort", abort, { once: true });
-      });
+      const keepAlive = setInterval(() => undefined, 50);
+      try {
+        await new Promise((resolve, reject) => {
+          const signal = options.signal;
+          const abort = () => reject(signal.reason ?? new Error("delivery_cancelled"));
+          if (signal?.aborted) abort();
+          else signal?.addEventListener("abort", abort, { once: true });
+        });
+      } finally {
+        clearInterval(keepAlive);
+      }
     }
     const approved = scenario() !== "review-exhausted";
     return { stdout: "<review>" + JSON.stringify({
@@ -315,6 +320,9 @@ export const createProductionRegistration = async (
     idempotencyKey: "register-production-harness",
     expectedRevision: 0,
   });
+  if (!("harness" in harness)) {
+    throw new Error(`production_harness_registration_failed:${JSON.stringify(harness)}`);
+  }
   const project = await registry.registerProject({
     requestId: "register-production-project",
     path: projectPath,
@@ -393,8 +401,8 @@ export const productionLaunchRequest = (projectId, overrides = {}) => ({
   ...overrides,
 });
 
-export const observeProductionTerminal = async (manager, harnessRunId) => {
-  const deadline = Date.now() + 10_000;
+export const observeProductionTerminal = async (manager, harnessRunId, timeoutMs = 10_000) => {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const observation = await manager.observe({
       requestId: "observe-production-work",

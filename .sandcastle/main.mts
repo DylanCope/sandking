@@ -137,7 +137,11 @@ if (protocolEnabled) {
 }
 const controller = new AbortController();
 const handleTermination = () => controller.abort(new Error("delivery_cancelled"));
-process.once("SIGTERM", handleTermination);
+// The Host supervises the whole process group while each parent also forwards
+// cancellation to its direct child. Keep the handler installed so duplicate
+// cooperative signals cannot restore Node's default abrupt termination before
+// claim release and completion attestation finish.
+process.on("SIGTERM", handleTermination);
 const harnessDirectory = fileURLToPath(new URL("./", import.meta.url));
 const harnessFile = (name: string) => `${harnessDirectory}${name}`;
 const codexAuthPath = process.env.SANDCASTLE_CODEX_AUTH_PATH

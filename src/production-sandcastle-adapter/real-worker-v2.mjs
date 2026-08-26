@@ -382,7 +382,8 @@ if (invokedPath.endsWith("/.sandcastle/real-worker-v2.mjs")) {
     throw new Error("github_credential_channel_invalid");
   }
   const controller = new AbortController();
-  process.once("SIGTERM", () => controller.abort(delegationError("delivery_cancelled")));
+  const handleTermination = () => controller.abort(delegationError("delivery_cancelled"));
+  process.on("SIGTERM", handleTermination);
   publish({
     type: "sandcastle.worker.progress",
     label: `Deliver GitHub issue #${parameters.issueNumber}`,
@@ -406,4 +407,5 @@ if (invokedPath.endsWith("/.sandcastle/real-worker-v2.mjs")) {
     process.stderr.write(`sandcastle_${outcome.result.code}\n`);
   }
   publish(outcome);
+  process.removeListener("SIGTERM", handleTermination);
 }

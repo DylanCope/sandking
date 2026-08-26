@@ -17,7 +17,6 @@ import {
   productionLaunchRequest,
   readBundledMainState,
   setBundledMainScenario,
-  writeExecutable,
 } from "./production-sandcastle-host-fixture.mjs";
 
 // Imported by production-sandcastle-adapter.test.mjs so all production Host
@@ -33,20 +32,8 @@ const alteredWorkerSource = [
 
 const installRunnableProviderCommands = async (
   root,
-  { blockDependencies = false, mainScenario = "incomplete" } = {},
-) => {
-  const restore = await installReadyProbeCommands(root, { mainScenario });
-  if (!blockDependencies) return restore;
-  await writeExecutable(join(root, "bin", "npm"), `#!/bin/sh
-if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
-if [ "$1" = "ci" ]; then
-  trap 'exit 0' TERM INT
-  while true; do sleep 1; done
-fi
-exit 92
-`);
-  return restore;
-};
+  { mainScenario = "incomplete" } = {},
+) => installReadyProbeCommands(root, { mainScenario });
 
 const observeProductionProgress = async (manager, harnessRunId) => {
   const deadline = Date.now() + 10_000;
@@ -64,6 +51,24 @@ const observeProductionProgress = async (manager, harnessRunId) => {
   }
   throw new Error("production_progress_timeout");
 };
+
+const waitForBundledMainReview = async (root) => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    try {
+      if ((await readBundledMainState(root)).reviewStarted) return;
+    } catch {
+      // The controlled `gh` process may be replacing its small state file.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("bundled_main_review_timeout");
+};
+
+const issueClaimActions = (state, issueNumber) => state.issues[issueNumber].comments
+  .flatMap((body) => [...body.matchAll(/<!-- sandcastle-claim:([A-Za-z0-9_-]+) -->/g)])
+  .map(([, encoded]) => JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")))
+  .map(({ action }) => action);
 
 test("the ordinary launch seam delegates once through the pinned production adapter", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-adapter-"));
@@ -197,7 +202,7 @@ test("an accepted production launch executes its immutable pinned runtime snapsh
       launched.run.harnessRunId,
     );
     assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
-    assert.equal(terminal.outcome.result.code, "delivery_execution_failed");
+    assert.equal(terminal.outcome.result.code, "scoped_issue_incomplete");
     await assert.rejects(
       readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
       { code: "ENOENT" },
@@ -239,6 +244,7 @@ test("an altered retained production runtime never starts or reports success", a
     const terminal = await observeProductionTerminal(
       fixture.manager,
       launched.run.harnessRunId,
+      20_000,
     );
     assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
     assert.equal(terminal.outcome.code, "harness_adapter_start_failed");
@@ -285,7 +291,7 @@ test("the accepted Worker bytes remain bound after the adapter process starts", 
       launched.run.harnessRunId,
     );
     assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
-    assert.equal(terminal.outcome.result.code, "delivery_execution_failed");
+    assert.equal(terminal.outcome.result.code, "scoped_issue_incomplete");
     await assert.rejects(
       readFile(join(fixture.projectPath, "tampered-runtime.txt"), "utf8"),
       { code: "ENOENT" },
@@ -497,7 +503,7 @@ test("the installed ordinary CLI discovers production parameters and launches th
     assert.equal(observed.run.status, "failed", JSON.stringify(observed));
     assert.equal(observed.run.adapterId, "sandcastle-harness-adapter-v1");
     assert.equal(observed.outcome.code, "harness_run_failed");
-    assert.equal(observed.outcome.result.code, "delivery_execution_failed");
+    assert.equal(observed.outcome.result.code, "scoped_issue_incomplete");
     assert.equal(observed.terminalEnvelopeValidation.exactlyOne, true);
     assert.deepEqual(requests.map(({ operation }) => operation), [
       "describe",
@@ -526,8 +532,12 @@ test("production cancellation and reconnection converge on the same canonical ru
   let fixture;
   let restorePath = () => undefined;
   try {
-    restorePath = await installRunnableProviderCommands(root, { blockDependencies: true });
+    restorePath = await installRunnableProviderCommands(root, { mainScenario: "cancellable" });
     fixture = await createProductionFixture(root, null, { cancellationGraceMs: 10_000 });
+    const originalMain = (await execFileAsync(
+      "git",
+      ["-C", fixture.projectPath, "rev-parse", "main"],
+    )).stdout.trim();
     const launched = await fixture.manager.launch(productionLaunchRequest(
       fixture.project.project.projectId,
       {
@@ -538,12 +548,12 @@ test("production cancellation and reconnection converge on the same canonical ru
       },
     ));
     assert.equal(launched.type, "harness.run.launch.result", JSON.stringify(launched));
-    const running = await observeProductionProgress(
-      fixture.manager,
-      launched.run.harnessRunId,
-    );
-    assert.equal(running.events.some(({ type }) =>
-      type === "harness_progress_published"), true);
+    await waitForBundledMainReview(root);
+    const activeState = await readBundledMainState(root);
+    assert.equal(activeState.issues[173].state, "open");
+    assert.equal(activeState.pullRequests.length, 1);
+    assert.equal(activeState.pullRequests[0].state, "OPEN");
+    assert.deepEqual(issueClaimActions(activeState, 173), ["claim"]);
 
     const cancellation = await fixture.manager.cancel({
       requestId: "cancel-production-work",
@@ -558,10 +568,19 @@ test("production cancellation and reconnection converge on the same canonical ru
     const terminal = await observeProductionTerminal(
       fixture.manager,
       launched.run.harnessRunId,
+      20_000,
     );
     assert.equal(terminal.run.status, "cancelled", JSON.stringify(terminal));
     assert.equal(terminal.outcome.code, "harness_run_cancelled");
-    assert.equal(terminal.outcome.incompleteResult, false);
+    const cancellationDiagnostics = await fixture.manager.readLogs({
+      requestId: "read-cancellation-diagnostics",
+      harnessRunId: launched.run.harnessRunId,
+      producer: "stderr",
+      offset: 0,
+      limit: 16_384,
+    });
+    assert.equal(terminal.outcome.incompleteResult, false,
+      cancellationDiagnostics.data.toString("utf8"));
     assert.equal(terminal.terminalEnvelopeValidation.validTerminalEnvelopeCount, 1);
     assert.equal(terminal.terminalEnvelopeValidation.exactlyOne, true);
     assert.ok(terminal.run.cancellation.terminationConfirmedAt);
@@ -569,6 +588,33 @@ test("production cancellation and reconnection converge on the same canonical ru
       type === "harness_run_cancellation_accepted").length, 1);
     assert.equal(terminal.events.filter(({ type }) =>
       type === "harness_run_cancelled").length, 1);
+
+    const cancelledState = await readBundledMainState(root);
+    assert.equal(cancelledState.issues[173].state, "open");
+    assert.equal(cancelledState.pullRequests.length, 1);
+    assert.equal(cancelledState.pullRequests[0].state, "OPEN");
+    assert.deepEqual(issueClaimActions(cancelledState, 173), ["claim", "release"]);
+    assert.equal((await execFileAsync(
+      "git",
+      ["-C", fixture.projectPath, "branch", "--show-current"],
+    )).stdout.trim(), "main");
+    assert.equal((await execFileAsync(
+      "git",
+      ["-C", fixture.projectPath, "rev-parse", "main"],
+    )).stdout.trim(), originalMain);
+    const partialBranch = (await execFileAsync(
+      "git",
+      ["-C", fixture.projectPath, "rev-parse", "sandcastle/issue-173"],
+    )).stdout.trim();
+    assert.notEqual(partialBranch, originalMain);
+    assert.equal((await execFileAsync(
+      "git",
+      ["-C", fixture.projectPath, "rev-parse", "origin/sandcastle/issue-173"],
+    )).stdout.trim(), partialBranch);
+    await assert.rejects(
+      readFile(join(fixture.projectPath, "issue-173-delivered.txt"), "utf8"),
+      { code: "ENOENT" },
+    );
 
     const reconnectedManager = await createHarnessRunManager({
       dataDir: fixture.dataDir,
@@ -588,6 +634,40 @@ test("production cancellation and reconnection converge on the same canonical ru
     assert.deepEqual(reconnected.logStreams, terminal.logStreams);
     assert.equal(fixture.audits.filter(({ action }) =>
       action === "harness.adapter.start").length, 1);
+
+    await setBundledMainScenario(root, "success");
+    const resumed = await fixture.manager.launch(productionLaunchRequest(
+      fixture.project.project.projectId,
+      {
+        requestId: "resume-cancelled-production-work",
+        idempotencyKeyHash: `sha256:${"a".repeat(64)}`,
+      },
+    ));
+    assert.equal(resumed.type, "harness.run.launch.result", JSON.stringify(resumed));
+    assert.notEqual(resumed.run.harnessRunId, launched.run.harnessRunId);
+    const recovered = await observeProductionTerminal(
+      fixture.manager,
+      resumed.run.harnessRunId,
+    );
+    assert.equal(recovered.run.status, "succeeded", JSON.stringify(recovered));
+    assert.equal(recovered.outcome.result.code, "issue_delivery_completed");
+    assert.deepEqual(recovered.outcome.result.completion, {
+      kind: "merged-pull-request",
+      pullRequestNumber: 700,
+      pullRequestUrl: "https://github.test/fixture/controlled-main/pull/700",
+    });
+    const recoveredState = await readBundledMainState(root);
+    assert.equal(recoveredState.issues[173].state, "closed");
+    assert.equal(recoveredState.pullRequests.length, 1);
+    assert.equal(recoveredState.pullRequests[0].state, "MERGED");
+    assert.deepEqual(issueClaimActions(recoveredState, 173), [
+      "claim",
+      "release",
+      "claim",
+      "release",
+    ]);
+    assert.match(await readFile(join(fixture.projectPath, "issue-173-delivered.txt"), "utf8"),
+      /implemented issue 173/);
   } finally {
     await fixture?.manager.waitForIdle().catch(() => undefined);
     restorePath();
@@ -631,7 +711,7 @@ test("terminal cleanup retry preserves a Project replacement after readiness", a
       launched.run.harnessRunId,
     );
     assert.equal(terminal.run.status, "failed", JSON.stringify(terminal));
-    assert.equal(terminal.outcome.result.code, "delivery_execution_failed");
+    assert.equal(terminal.outcome.result.code, "scoped_issue_incomplete");
     await repairManifest;
     assert.equal(await readFile(manifestPath, "utf8"), REAL_PROVIDER_MANIFEST_SOURCE);
     assert.equal(await readFile(excludePath, "utf8"), excludeBefore);
