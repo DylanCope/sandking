@@ -9,6 +9,7 @@ import {
   readHarnessAdapterFrame,
   writeHarnessAdapterFrame,
 } from "../src/harness-adapter-protocol.mjs";
+import { REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS } from "../src/real-delegation-protocol.mjs";
 
 const adapterPath = new URL(
   "../src/production-sandcastle-adapter/sandcastle-v4.mjs",
@@ -94,7 +95,7 @@ const createFixture = async ({
       { identity: "sandking.pull-request-review" },
       { identity: "sandking.real-delegation" },
     ],
-    executionRuntimeInputs: [{ identity: "openai.codex-cli", version: "0.146.0" }],
+    executionRuntimeInputs: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS,
   })}\n`);
   await Promise.all([
     writeFile(

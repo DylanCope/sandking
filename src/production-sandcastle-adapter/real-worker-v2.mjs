@@ -11,10 +11,12 @@ import {
   isMountableCodexAuthFile,
 } from "../destination-worker-environment.mjs";
 import {
+  hasExecutionRuntimeInputs,
   hasExactKeys,
   isValidIssueNumber,
   parseRealDelegationMessage,
   parseProductionProviderRuntime,
+  REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS,
 } from "../real-delegation-protocol.mjs";
 import {
   createDockerEndpointRelay,
@@ -37,7 +39,6 @@ const SANDCASTLE_RESOLVED =
   "https://registry.npmjs.org/@ai-hero/sandcastle/-/sandcastle-0.12.0.tgz";
 const SANDCASTLE_INTEGRITY =
   "sha512-kdQ414rM8t1QiWeqZ3Klz4KSd0PqQG4bRVuqGpRDUomWhojSZkEAc1tbcEcThVmBEaHkCt8LmYR49vqEPNIoYQ==";
-const CODEX_VERSION = "0.146.0";
 const PINNED_SKILL_IDENTITIES = Object.freeze([
   "sandking.issue-implementation",
   "sandking.issue-planning",
@@ -66,8 +67,6 @@ const loadPinnedInputs = async (executionPath) => {
     readFile(join(executionPath, "package-lock.json"), "utf8").then(JSON.parse),
     readFile(join(executionPath, ...REAL_SANDBOX_CONFIGURATION.split("/"))),
   ]);
-  const runtime = workerEnvironment.executionRuntimeInputs?.find(({ identity }) =>
-    identity === "openai.codex-cli");
   const sandcastle = dependencyLock.packages?.["node_modules/@ai-hero/sandcastle"];
   if (
     workerEnvironment.schemaVersion !== 1
@@ -78,7 +77,10 @@ const loadPinnedInputs = async (executionPath) => {
     || workerEnvironment.skills.length !== PINNED_SKILL_IDENTITIES.length
     || JSON.stringify(workerEnvironment.skills.map(({ identity }) => identity))
       !== JSON.stringify(PINNED_SKILL_IDENTITIES)
-    || runtime?.version !== CODEX_VERSION
+    || !hasExecutionRuntimeInputs(
+      workerEnvironment.executionRuntimeInputs,
+      REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS,
+    )
     || sandcastle?.version !== SANDCASTLE_VERSION
     || sandcastle?.resolved !== SANDCASTLE_RESOLVED
     || sandcastle?.integrity !== SANDCASTLE_INTEGRITY

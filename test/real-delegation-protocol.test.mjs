@@ -3,9 +3,28 @@ import test from "node:test";
 import {
   createRealDelegationProgress,
   createRealDelegationResult,
+  isProductionProviderRuntime,
   isValidIssueNumber,
   parseRealDelegationMessage,
 } from "../src/real-delegation-protocol.mjs";
+
+test("provider runtimes accept only Docker endpoints sharing the Host mount namespace", () => {
+  const sandboxImageId = `sha256:${"a".repeat(64)}`;
+  for (const dockerEndpoint of [
+    "unix:///var/run/docker.sock",
+    "npipe:////./pipe/docker_engine",
+  ]) {
+    assert.equal(isProductionProviderRuntime({ dockerEndpoint, sandboxImageId }), true);
+  }
+  for (const dockerEndpoint of [
+    "ssh://remote.example",
+    "tcp://remote.example:2376",
+    "http://remote.example:2375",
+    "https://remote.example:2376",
+  ]) {
+    assert.equal(isProductionProviderRuntime({ dockerEndpoint, sandboxImageId }), false);
+  }
+});
 
 test("one bounded issue-number predicate governs delegation protocol identifiers", () => {
   assert.equal(isValidIssueNumber(1), true);

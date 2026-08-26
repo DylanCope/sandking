@@ -204,7 +204,10 @@ test("production preparation resolves the registered pin and projects only verif
         identity: input.identity,
         version: input.version,
       })),
-      [{ identity: "openai.codex-cli", version: "0.146.0" }],
+      [
+        { identity: "openai.codex-cli", version: "0.146.0" },
+        { identity: "docker.cli", version: "20.10.24+dfsg1-1+deb12u1+b6" },
+      ],
     );
 
     const projectionPath = join(

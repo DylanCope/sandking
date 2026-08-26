@@ -1,10 +1,8 @@
-import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Duplex } from "node:stream";
 
 export const WINDOWS_DOCKER_NAMED_PIPE = "\\\\.\\pipe\\docker_engine";
 const DOCKER_SOCKET_PATH = "/var/run/docker.sock";
@@ -319,36 +317,6 @@ export const createWindowsDockerPipeRelay = async (
   }
 };
 
-const createDockerCliConnection = (dockerEndpoint, options = {}) => {
-  const environment = { ...process.env, DOCKER_HOST: dockerEndpoint };
-  delete environment.DOCKER_CONTEXT;
-  const child = (options.spawnDockerCli ?? spawn)("docker", [
-    "system", "dial-stdio",
-  ], {
-    env: environment,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  if (!child.stdin || !child.stdout) {
-    child.kill?.("SIGKILL");
-    throw new Error("docker_endpoint_relay_invalid");
-  }
-  child.stderr?.resume();
-  const connection = Duplex.from({
-    readable: child.stdout,
-    writable: child.stdin,
-  });
-  child.once("error", (error) => connection.destroy(error));
-  child.once("close", (code) => {
-    if (code !== 0 && !connection.destroyed) {
-      connection.destroy(new Error("docker_endpoint_relay_closed"));
-    }
-  });
-  connection.once("close", () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill?.("SIGTERM");
-  });
-  return connection;
-};
-
 const dockerNamedPipePath = (endpoint) => {
   const pathname = decodeURIComponent(new URL(endpoint).pathname);
   const pipeName = pathname.replace(/^\/{2}(?:\.\/)?pipe\//, "");
@@ -359,10 +327,9 @@ const dockerNamedPipePath = (endpoint) => {
 };
 
 /**
- * Relay the exact endpoint that passed Host readiness into the Linux outer
- * container. Local sockets and named pipes connect directly; remote context
- * transports use Docker's own endpoint dialer while retaining the same
- * capability and bind-rewrite boundaries.
+ * Relay the exact local endpoint that passed Host readiness into the Linux
+ * outer container. Remote daemons cannot resolve the outer container's Host
+ * bind sources and are rejected before this boundary.
  */
 export const createDockerEndpointRelay = async (
   dockerEndpoint,
@@ -384,20 +351,7 @@ export const createDockerEndpointRelay = async (
       connectNamedPipe: options.connectNamedPipe,
     });
   }
-  const connectDockerEndpoint = options.connectDockerEndpoint
-    ?? ((endpoint) => createDockerCliConnection(endpoint, options));
-  if (options.platform === "win32") {
-    return createWindowsDockerPipeRelay(dockerEndpoint, {
-      pathMappings,
-      createTcpServer: options.createTcpServer,
-      connectNamedPipe: connectDockerEndpoint,
-    });
-  }
-  return createPosixDockerSocketRelay(dockerEndpoint, {
-    pathMappings,
-    createSocketServer: options.createSocketServer,
-    connectDockerSocket: connectDockerEndpoint,
-  });
+  throw new Error("docker_endpoint_not_mountable");
 };
 
 /**

@@ -19,9 +19,11 @@ const {
   parseGitHubCredential,
 } = await import(githubCredentialContractUrl);
 const {
+  hasExecutionRuntimeInputs,
   hasExactKeys,
   isValidIssueNumber,
   parseProductionProviderRuntime,
+  REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS: pinnedExecutionRuntimeInputs,
 } = await import(realDelegationProtocolUrl);
 const {
   destinationCodexAuthPath,
@@ -42,7 +44,10 @@ const projectionManifestPath = "projection-manifest.json";
 const maximumRunStartFrameBytes = 512 * 1_024;
 const maximumRetainedExecutionInputs = 128;
 const maximumRetainedExecutionInputBytes = 64 * 1_024;
-export const REAL_PROVIDER_CODEX_VERSION = "0.146.0";
+export const REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS = pinnedExecutionRuntimeInputs;
+export const REAL_PROVIDER_CODEX_VERSION = pinnedExecutionRuntimeInputs.find(
+  ({ identity }) => identity === "openai.codex-cli",
+).version;
 export const REAL_PROVIDER_SANDBOX_IMAGE = "sandcastle:sandking-real-worker";
 export const REAL_PROVIDER_SANDBOX_CONFIGURATION = ".sandcastle/Dockerfile";
 const sandboxConfigurationIntegrityLabel =
@@ -482,15 +487,16 @@ const inspectRuntime = (
   }
   if (real) {
     const retainedInputPaths = productionRuntimeInputPaths();
-    const runtime = workerEnvironment.executionRuntimeInputs.find(({ identity }) =>
-      identity === "openai.codex-cli");
     const providerReady = hasExactKeys(real, ["schemaVersion", "provider", "scenario"])
       && real.schemaVersion === 1
       && hasExactKeys(real.provider, ["kind", "ready"])
       && real.provider.kind === realProviderKind
       && real.provider.ready === true
       && real.scenario === "project-commit"
-      && runtime?.version === REAL_PROVIDER_CODEX_VERSION
+      && hasExecutionRuntimeInputs(
+        workerEnvironment.executionRuntimeInputs,
+        REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS,
+      )
       && workerEnvironment.skillDiscovery?.ambient === "disabled"
       && workerEnvironment.skillDiscovery?.unlisted === "reject"
       && JSON.stringify(workerEnvironment.skills.map(({ identity }) => identity))

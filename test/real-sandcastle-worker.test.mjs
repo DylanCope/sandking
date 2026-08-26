@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS } from "../src/real-delegation-protocol.mjs";
 import {
   REAL_DELEGATION_TIMEOUT_MS,
   REAL_SANDBOX_IMAGE,
@@ -64,7 +65,7 @@ const createPinnedFixture = async () => {
         unlisted: "reject",
       },
       skills,
-      executionRuntimeInputs: [{ identity: "openai.codex-cli", version: "0.146.0" }],
+      executionRuntimeInputs: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS,
     })}\n`),
     writeFile(join(executionPath, "package-lock.json"), `${JSON.stringify({
       packages: {

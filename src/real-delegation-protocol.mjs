@@ -15,6 +15,25 @@ const failureCodes = new Set([
   "scoped_issue_incomplete",
 ]);
 
+export const REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS = Object.freeze([
+  Object.freeze({ identity: "openai.codex-cli", version: "0.146.0" }),
+  Object.freeze({
+    identity: "docker.cli",
+    version: "20.10.24+dfsg1-1+deb12u1+b6",
+  }),
+]);
+
+/**
+ * @param {unknown} value
+ * @param {readonly {identity: string, version: string}[]} expected
+ */
+export const hasExecutionRuntimeInputs = (value, expected) => Array.isArray(value)
+  && value.every((input) => input !== null
+    && typeof input === "object"
+    && !Array.isArray(input))
+  && JSON.stringify(value.map(({ identity, version }) => ({ identity, version })))
+    === JSON.stringify(expected);
+
 /** @param {any} value */
 export const isValidIssueNumber = (value) => Number.isSafeInteger(value)
   && value >= 1
@@ -23,7 +42,7 @@ export const isValidIssueNumber = (value) => Number.isSafeInteger(value)
 /** @param {unknown} value */
 export const isDockerEndpoint = (value) => typeof value === "string"
   && value.length <= 2_048
-  && /^(?:unix|npipe|tcp|http|https|ssh):\/\/[^\s\0]+$/.test(value);
+  && /^(?:unix|npipe):\/\/[^\s\0]+$/.test(value);
 
 /** @param {any} value */
 export const isProductionProviderRuntime = (value) => hasExactKeys(value, [

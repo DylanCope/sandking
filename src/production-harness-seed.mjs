@@ -12,6 +12,7 @@ import { z } from "zod";
 import { digest as sha256 } from "./common/digest.mjs";
 import { SANDCASTLE_HARNESS_ADAPTER_ID } from "./harness-adapter-identity.mjs";
 import { harnessCompatibilityManifestSchema } from "./harness-adapter-protocol.mjs";
+import { REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS } from "./real-delegation-protocol.mjs";
 
 const execFileAsync = promisify(execFile);
 const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
@@ -19,6 +20,7 @@ const integritySchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const packageIntegritySchema = z.string().regex(/^sha512-[A-Za-z0-9+/]+={0,2}$/);
 const identitySchema = z.string().min(1).max(160).regex(/^[a-z0-9][a-z0-9.-]*$/);
 const exactVersionSchema = z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/);
+const runtimeVersionSchema = z.string().regex(/^[0-9][0-9A-Za-z.+:~_-]{0,127}$/);
 const relativeFileSchema = z.string().min(1).max(512).refine((value) =>
   !isAbsolute(value)
   && !value.includes("\\")
@@ -42,11 +44,30 @@ const SANDCASTLE_INTEGRITY =
   "sha512-kdQ414rM8t1QiWeqZ3Klz4KSd0PqQG4bRVuqGpRDUomWhojSZkEAc1tbcEcThVmBEaHkCt8LmYR49vqEPNIoYQ==";
 const SANDCASTLE_DEPENDENCY_LOCK_INTEGRITY =
   "sha256:f23f864604dd2901d314afdb5ee819c2ca91fccd3c16807a8c5441d818e5b4c1";
-const CODEX_VERSION = "0.146.0";
 const CODEX_RESOLVED =
   "https://registry.npmjs.org/@openai/codex/-/codex-0.146.0.tgz";
 const CODEX_INTEGRITY =
   "sha512-yG3sPWNda/2YAIQIDq9MrrjoCTIQ7rxYM5IasrG3VBcuhCLTkgeg/JzqmJq1V98RE4MJ5jCxDXXQlOjrditFRw==";
+const DOCKER_CLI_RESOLVED =
+  "https://snapshot.debian.org/archive/debian/20260825T000000Z/dists/bookworm/InRelease";
+const DOCKER_CLI_INTEGRITY =
+  "sha512-g2nfFf0TRYofHqQEnRCEaW5q1Tc0ResEDDfA49URb5Ns3r0Djz8zNnnzJ9Rkw0MY9uB6pNZcz9Lg/LH6DvOaAA==";
+const requiredExecutionRuntimeInputs = Object.freeze([
+  Object.freeze({
+    ...REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS[0],
+    package: "@openai/codex",
+    resolved: CODEX_RESOLVED,
+    integrity: CODEX_INTEGRITY,
+    skillExposure: "versioned-with-runtime-package",
+  }),
+  Object.freeze({
+    ...REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS[1],
+    package: "docker.io",
+    resolved: DOCKER_CLI_RESOLVED,
+    integrity: DOCKER_CLI_INTEGRITY,
+    skillExposure: "versioned-with-runtime-package",
+  }),
+]);
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 export const bundledProductionHarnessSeedRoot = fileURLToPath(
@@ -130,7 +151,7 @@ export const productionHarnessSkillLockSchema = z.object({
   executionRuntimeInputs: z.array(z.object({
     identity: identitySchema,
     package: z.string().min(1).max(214),
-    version: exactVersionSchema,
+    version: runtimeVersionSchema,
     resolved: sourceUrlSchema,
     integrity: packageIntegritySchema,
     skillExposure: z.literal("versioned-with-runtime-package"),
@@ -455,15 +476,8 @@ const validateSkillInventory = (files, lock, provenance) => {
       throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
     }
   }
-  const codexRuntime = lock.executionRuntimeInputs.find((input) =>
-    input.identity === "openai.codex-cli");
-  if (
-    !codexRuntime
-    || codexRuntime.package !== "@openai/codex"
-    || codexRuntime.version !== CODEX_VERSION
-    || codexRuntime.resolved !== CODEX_RESOLVED
-    || codexRuntime.integrity !== CODEX_INTEGRITY
-  ) {
+  if (JSON.stringify(lock.executionRuntimeInputs)
+      !== JSON.stringify(requiredExecutionRuntimeInputs)) {
     throw new ProductionHarnessSeedError("harness_skill_lock_invalid");
   }
 };

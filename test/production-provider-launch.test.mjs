@@ -15,6 +15,7 @@ import test from "node:test";
 import { digest as sha256 } from "../src/common/digest.mjs";
 import {
   REAL_PROVIDER_CODEX_VERSION,
+  REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS,
   REAL_PROVIDER_SANDBOX_IMAGE,
   probeRealProviderReadiness,
 } from "../src/production-sandcastle-adapter/sandcastle-v4.mjs";
@@ -38,13 +39,84 @@ const requiredSkills = [
 
 const productionPreparation = {
   resolvedSkills: requiredSkills.map((identity) => ({ identity })),
-  executionRuntimeInputs: [{
-    identity: "openai.codex-cli",
-    version: REAL_PROVIDER_CODEX_VERSION,
-  }],
+  executionRuntimeInputs: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS,
+};
+const providerInputContract = {
+  REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS,
+  REAL_PROVIDER_SANDBOX_CONFIGURATION: ".sandcastle/Dockerfile",
+  REAL_PROVIDER_SANDBOX_IMAGE,
+  REAL_PROVIDER_SKILL_IDENTITIES: requiredSkills,
 };
 const defaultDockerEndpoint = "unix:///var/run/docker.sock";
 const defaultSandboxImageId = `sha256:${"d".repeat(64)}`;
+
+test("provider readiness requires every pinned execution-runtime input", async () => {
+  let providerProbed = false;
+  const result = await ensureProductionProviderRuntime({
+    projectionPath: "/unreachable/incomplete-runtime",
+    productionPreparation: {
+      ...productionPreparation,
+      executionRuntimeInputs: productionPreparation.executionRuntimeInputs.slice(0, 1),
+    },
+    environment: { PATH: "/usr/bin:/bin", DOCKER_HOST: defaultDockerEndpoint },
+    realProviderContract: {
+      ...providerInputContract,
+      realProviderAvailable: () => {
+        providerProbed = true;
+        return true;
+      },
+      realSandboxEngineAvailable: () => true,
+      realSandboxImageAvailable: () => true,
+    },
+  });
+
+  assert.deepEqual(result, { ready: false, imageBuilt: false });
+  assert.equal(providerProbed, false);
+});
+
+test("provider readiness rejects Docker engines that cannot mount Host inputs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-remote-"));
+  try {
+    const projectionPath = join(root, "projection");
+    const dockerfilePath = join(projectionPath, ".sandcastle", "Dockerfile");
+    await mkdir(join(projectionPath, ".sandcastle"), { recursive: true });
+    await writeFile(dockerfilePath, "FROM node:22-bookworm\n");
+
+    for (const selectedBy of ["host", "context"]) {
+      const calls = [];
+      const result = await ensureProductionProviderRuntime({
+        projectionPath,
+        productionPreparation,
+        environment: selectedBy === "host"
+          ? { PATH: "/usr/bin:/bin", DOCKER_HOST: "ssh://remote.example" }
+          : { PATH: "/usr/bin:/bin", DOCKER_CONTEXT: "remote" },
+        executeFile: async (command, args) => {
+          calls.push([command, ...args]);
+          if (args[0] === "context") {
+            return { stdout: `${JSON.stringify("ssh://remote.example")}\n`, stderr: "" };
+          }
+          throw new Error("remote_engine_must_not_be_probed");
+        },
+        realProviderContract: {
+          ...providerInputContract,
+          realProviderAvailable: () => true,
+          realSandboxEngineAvailable: () => true,
+          realSandboxImageAvailable: () => true,
+        },
+      });
+
+      assert.deepEqual(result, { ready: false, imageBuilt: false });
+      assert.deepEqual(calls, selectedBy === "host"
+        ? []
+        : [[
+            "docker", "context", "inspect", "remote",
+            "--format={{json .Endpoints.docker.Host}}",
+          ]]);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("product preparation builds and verifies a missing pinned sandbox image", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-image-"));
@@ -84,10 +156,7 @@ test("product preparation builds and verifies a missing pinned sandbox image", a
         return { stdout: "", stderr: "" };
       },
       realProviderContract: {
-        REAL_PROVIDER_CODEX_VERSION,
-        REAL_PROVIDER_SANDBOX_CONFIGURATION: ".sandcastle/Dockerfile",
-        REAL_PROVIDER_SANDBOX_IMAGE,
-        REAL_PROVIDER_SKILL_IDENTITIES: requiredSkills,
+        ...providerInputContract,
         realProviderAvailable: () => true,
         realSandboxEngineAvailable: () => true,
         realSandboxImageAvailable: () => imageBuilt,
@@ -162,10 +231,7 @@ test("product preparation rebuilds a retained image from stale Dockerfile bytes"
         return { stdout: "", stderr: "" };
       },
       realProviderContract: {
-        REAL_PROVIDER_CODEX_VERSION,
-        REAL_PROVIDER_SANDBOX_CONFIGURATION: ".sandcastle/Dockerfile",
-        REAL_PROVIDER_SANDBOX_IMAGE,
-        REAL_PROVIDER_SKILL_IDENTITIES: requiredSkills,
+        ...providerInputContract,
         realProviderAvailable: () => true,
         realSandboxEngineAvailable: () => true,
         realSandboxImageAvailable: () => true,
@@ -238,10 +304,7 @@ test("product preparation rebuilds a retained image with another Host user's ide
         return { stdout: "", stderr: "" };
       },
       realProviderContract: {
-        REAL_PROVIDER_CODEX_VERSION,
-        REAL_PROVIDER_SANDBOX_CONFIGURATION: ".sandcastle/Dockerfile",
-        REAL_PROVIDER_SANDBOX_IMAGE,
-        REAL_PROVIDER_SKILL_IDENTITIES: requiredSkills,
+        ...providerInputContract,
         realProviderAvailable: () => true,
         realSandboxEngineAvailable: () => true,
         realSandboxImageAvailable: () => true,
@@ -310,10 +373,7 @@ test("provider readiness binds the selected Docker endpoint to its validated ima
         throw new Error("unexpected_provider_runtime_command");
       },
       realProviderContract: {
-        REAL_PROVIDER_CODEX_VERSION,
-        REAL_PROVIDER_SANDBOX_CONFIGURATION: ".sandcastle/Dockerfile",
-        REAL_PROVIDER_SANDBOX_IMAGE,
-        REAL_PROVIDER_SKILL_IDENTITIES: requiredSkills,
+        ...providerInputContract,
         realProviderAvailable: () => true,
         realSandboxEngineAvailable: () => true,
         realSandboxImageAvailable: () => true,

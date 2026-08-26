@@ -4,7 +4,10 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { digest as sha256 } from "./common/digest.mjs";
 import { createDestinationWorkerEnvironment } from "./destination-worker-environment.mjs";
-import { isDockerEndpoint } from "./real-delegation-protocol.mjs";
+import {
+  hasExecutionRuntimeInputs,
+  isDockerEndpoint,
+} from "./real-delegation-protocol.mjs";
 
 const execFileAsync = promisify(execFile);
 const realProviderContractUrl = new URL(
@@ -14,7 +17,7 @@ const realProviderContractUrl = new URL(
 
 /**
  * @typedef {{
- *   REAL_PROVIDER_CODEX_VERSION: string,
+ *   REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS: readonly {identity: string, version: string}[],
  *   REAL_PROVIDER_SANDBOX_CONFIGURATION: string,
  *   REAL_PROVIDER_SANDBOX_IMAGE: string,
  *   REAL_PROVIDER_SKILL_IDENTITIES: readonly string[],
@@ -29,22 +32,17 @@ export const loadRealProviderContract = () => import(realProviderContractUrl.hre
 
 /**
  * @param {unknown} preparation
- * @param {string} codexVersion
+ * @param {readonly {identity: string, version: string}[]} executionRuntimeInputs
  * @param {readonly string[]} skillIdentities
  */
 export const pinnedRealProviderInputsReady = (
   preparation,
-  codexVersion,
+  executionRuntimeInputs,
   skillIdentities,
 ) => {
   if (!preparation || typeof preparation !== "object") return false;
   const value = /** @type {any} */ (preparation);
-  const codexRuntime = Array.isArray(value.executionRuntimeInputs)
-    ? value.executionRuntimeInputs.find(
-        (/** @type {{identity?: unknown}} */ { identity }) => identity === "openai.codex-cli",
-      )
-    : null;
-  return codexRuntime?.version === codexVersion
+  return hasExecutionRuntimeInputs(value.executionRuntimeInputs, executionRuntimeInputs)
     && Array.isArray(value.resolvedSkills)
     && JSON.stringify(value.resolvedSkills.map(
       (/** @type {{identity?: unknown}} */ { identity }) => identity,
@@ -68,7 +66,10 @@ const activeSandboxPreparations = new Map();
  */
 const resolveDockerEndpoint = async ({ execute, environment }) => {
   const configuredEndpoint = environment.DOCKER_HOST;
-  if (isDockerEndpoint(configuredEndpoint)) {
+  if (configuredEndpoint !== undefined && configuredEndpoint !== "") {
+    if (!isDockerEndpoint(configuredEndpoint)) {
+      throw new Error("production_docker_endpoint_invalid");
+    }
     return configuredEndpoint;
   }
   const context = environment.DOCKER_CONTEXT;
@@ -150,7 +151,7 @@ export const ensureProductionProviderRuntime = async (options) => {
   if (
     !pinnedRealProviderInputsReady(
       options.productionPreparation,
-      contract.REAL_PROVIDER_CODEX_VERSION,
+      contract.REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS,
       contract.REAL_PROVIDER_SKILL_IDENTITIES,
     )
     || !contract.realProviderAvailable(readinessOptions)
