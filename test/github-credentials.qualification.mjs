@@ -580,7 +580,7 @@ exit 94
             requestId: `launch-real-${mode}`,
             controllerId,
             controllerSessionId,
-            parameters: { verifyGitHubAccess: true },
+            parameters: { issueNumber: 262, verifyGitHubAccess: true },
             idempotencyKeyHash: `sha256:${String(index + 6).repeat(64)}`,
           }),
         });

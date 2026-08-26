@@ -77,8 +77,25 @@ export const installReadyProbeCommands = async (
         "./sandboxes/docker": "./sandboxes/docker.mjs",
       },
     })}\n`),
-    writeFile(join(fakeSandcastlePath, "sandboxes", "docker.mjs"),
-      "export const docker = (settings) => ({ kind: \"controlled-docker\", settings });\n"),
+    writeFile(join(fakeSandcastlePath, "sandboxes", "docker.mjs"), `
+export const docker = (settings) => {
+  if (!/^(?:sandcastle:sandking-real-worker|sha256:[a-f0-9]{64})$/.test(
+    settings?.imageName ?? "",
+  )) {
+    throw new Error("fixture_pinned_image_missing");
+  }
+  if (
+    settings.env?.GH_TOKEN !== ""
+    || settings.env?.GITHUB_TOKEN !== ""
+    || !settings.mounts?.some(({ sandboxPath, readonly }) =>
+      sandboxPath === "/home/agent/.sandcastle-secrets/github-token"
+      && readonly === true)
+  ) {
+    throw new Error("fixture_github_credential_boundary_invalid");
+  }
+  return { kind: "controlled-docker", settings };
+};
+`),
     writeFile(join(fakeSandcastlePath, "index.mjs"), `
 import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
@@ -274,13 +291,58 @@ if (args[0] === "repo" && args[1] === "view") {
 }
 save(state);
 `),
-    writeExecutable(join(binPath, "docker"), `#!/bin/sh
-if [ "$1" = "version" ] && [ "$2" = "--format" ]; then printf '%s\\n' '27.5.1'; exit 0; fi
-if [ "$1" = "image" ] && [ "$2" = "inspect" ] && [ "$3" = "sandcastle:sandking-real-worker" ]; then
-  printf '%s\\n' 'sha256:${"d".repeat(64)}'
-  exit 0
-fi
-exit 93
+    writeExecutable(join(binPath, "docker"), `#!/usr/bin/env node
+import { spawn } from "node:child_process";
+const args = process.argv.slice(2);
+if (args[0] === "version" && args[1] === "--format") {
+  process.stdout.write("27.5.1\\n");
+  process.exit(0);
+}
+if (
+  args[0] === "image"
+  && args[1] === "inspect"
+  && args[2] === "sandcastle:sandking-real-worker"
+) {
+  process.stdout.write("sha256:${"d".repeat(64)}\\n");
+  process.exit(0);
+}
+if (args[0] !== "run" || args[1] !== "--rm") process.exit(93);
+const imageIndex = args.findIndex((value) =>
+  value === "sandcastle:sandking-real-worker" || /^sha256:[a-f0-9]{64}$/.test(value));
+const entrypointIndex = args.indexOf("--entrypoint");
+const workdirIndex = args.indexOf("--workdir");
+if (
+  imageIndex < 0
+  || entrypointIndex < 0
+  || args[entrypointIndex + 1] !== "/usr/local/bin/node"
+  || workdirIndex < 0
+  || JSON.stringify(args).includes("github_pat_production_fixture_delivery")
+) process.exit(94);
+const environment = { ...process.env };
+for (const name of [
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+]) delete environment[name];
+for (let index = 0; index < imageIndex; index += 1) {
+  if (args[index] !== "--env") continue;
+  const [name, ...value] = args[index + 1].split("=");
+  environment[name] = value.join("=");
+}
+const child = spawn(process.execPath, args.slice(imageIndex + 1), {
+  cwd: args[workdirIndex + 1],
+  env: environment,
+  stdio: "inherit",
+});
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => child.kill(signal));
+}
+child.once("error", () => process.exit(95));
+child.once("exit", (code, signal) => {
+  if (signal) process.kill(process.pid, signal);
+  else process.exit(code ?? 95);
+});
 `),
   ]);
   process.env.PATH = `${binPath}${delimiter}${originalPath ?? ""}`;

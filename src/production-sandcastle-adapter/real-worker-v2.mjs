@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFileSync, writeSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -131,6 +132,7 @@ export const runPinnedMain = async ({
   issueNumber,
   authPath,
   githubCredentialPath,
+  sandboxImage = REAL_SANDBOX_IMAGE,
   signal,
   timeoutMs = REAL_DELEGATION_TIMEOUT_MS,
   onProgress = () => undefined,
@@ -140,21 +142,56 @@ export const runPinnedMain = async ({
   const tsxLoaderUrl = pathToFileURL(
     join(executionPath, "node_modules", "tsx", "dist", "loader.mjs"),
   ).href;
-  const environment = { ...process.env };
+  const dockerEnvironment = { ...process.env };
   for (const name of [
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GH_ENTERPRISE_TOKEN",
     "GITHUB_ENTERPRISE_TOKEN",
   ]) {
-    delete environment[name];
+    delete dockerEnvironment[name];
   }
-  Object.assign(environment, {
+  const containerName = `sandking-real-delegation-${randomUUID()}`;
+  const dockerSocketPath = "/var/run/docker.sock";
+  const dockerSocket = await lstat(dockerSocketPath).catch(() => null);
+  const containerEnvironment = {
+    HOME: "/home/agent",
+    LANG: "C.UTF-8",
     SANDCASTLE_CODEX_AUTH_PATH: authPath,
     SANDKING_GITHUB_CREDENTIAL_PATH: githubCredentialPath,
+    SANDKING_REAL_DELEGATION_CONTAINER: "1",
     SANDKING_REAL_DELEGATION_PROTOCOL: "1",
-  });
-  const child = spawnProcess(process.execPath, [
+    SANDKING_REAL_DELEGATION_PROTOCOL_FD: "1",
+    SANDKING_REAL_DELEGATION_SANDBOX_IMAGE: sandboxImage,
+  };
+  const environmentArguments = Object.entries(containerEnvironment).flatMap(
+    ([name, value]) => ["--env", `${name}=${value}`],
+  );
+  const mountArguments = [
+    `${projectPath}:${projectPath}:rw`,
+    `${executionPath}:${executionPath}:ro`,
+    `${authPath}:${authPath}:ro`,
+    `${githubCredentialPath}:${githubCredentialPath}:ro`,
+    ...(dockerSocket ? [`${dockerSocketPath}:${dockerSocketPath}:rw`] : []),
+  ].flatMap((mount) => ["--volume", mount]);
+  const child = spawnProcess("docker", [
+    "run",
+    "--rm",
+    "--init",
+    "--name",
+    containerName,
+    "--stop-timeout",
+    String(CANCELLATION_GRACE_MS / 1_000),
+    "--user",
+    `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+    ...(dockerSocket ? ["--group-add", String(dockerSocket.gid)] : []),
+    "--workdir",
+    projectPath,
+    ...mountArguments,
+    ...environmentArguments,
+    "--entrypoint",
+    "/usr/local/bin/node",
+    sandboxImage,
     "--import",
     tsxLoaderUrl,
     mainPath,
@@ -162,15 +199,14 @@ export const runPinnedMain = async ({
     String(issueNumber),
   ], {
     cwd: projectPath,
-    env: environment,
-    stdio: ["ignore", "pipe", "pipe", "pipe"],
+    env: dockerEnvironment,
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  child.stdout?.pipe(process.stderr, { end: false });
   child.stderr?.pipe(process.stderr, { end: false });
 
   const messages = [];
   let outputInvalid = false;
-  const protocolStream = child.stdio?.[3];
+  const protocolStream = child.stdout;
   if (!protocolStream) {
     child.kill("SIGKILL");
     throw delegationError("real_delegation_main_result_invalid");
@@ -196,11 +232,22 @@ export const runPinnedMain = async ({
 
   let requestedTermination = null;
   let forcedTimer;
+  const signalContainer = (signalName) => execFileAsync("docker", [
+    "kill", "--signal", signalName, containerName,
+  ], {
+    env: dockerEnvironment,
+    timeout: 10_000,
+    maxBuffer: 64_000,
+  }).catch(() => undefined);
   const requestTermination = (reason) => {
     if (requestedTermination) return;
     requestedTermination = reason;
     child.kill("SIGTERM");
-    forcedTimer = setTimeout(() => child.kill("SIGKILL"), CANCELLATION_GRACE_MS);
+    void signalContainer("SIGTERM");
+    forcedTimer = setTimeout(() => {
+      void signalContainer("SIGKILL");
+      child.kill("SIGKILL");
+    }, CANCELLATION_GRACE_MS);
     forcedTimer.unref?.();
   };
   const handleAbort = () => requestTermination("cancelled");
@@ -254,6 +301,7 @@ export const runRealDelegation = async ({
       issueNumber,
       authPath,
       githubCredentialPath: materializedGitHubCredential.path,
+      sandboxImage: sandboxImageId,
       signal,
       onProgress,
     });

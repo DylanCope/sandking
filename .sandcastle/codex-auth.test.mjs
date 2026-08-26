@@ -40,6 +40,7 @@ test("the sandbox receives an independent copy of the host Codex auth file", asy
 test("the Docker sandbox mounts the host Codex auth file read-only", () => {
   const settings = createCodexSandboxSettings("/host/.codex/auth.json");
 
+  assert.equal(settings.docker.imageName, "sandcastle:sandking-real-worker");
   assert.deepEqual(settings.docker.mounts, [
     {
       hostPath: "/host/.codex/auth.json",
@@ -47,6 +48,27 @@ test("the Docker sandbox mounts the host Codex auth file read-only", () => {
       readonly: true,
     },
   ]);
+});
+
+test("the Docker sandbox consumes GitHub credentials only through a read-only file", () => {
+  const token = "github_pat_must_not_enter_docker_configuration";
+  const settings = createCodexSandboxSettings("/host/.codex/auth.json", {
+    githubCredentialPath: "/host/private/github-token",
+  });
+
+  assert.deepEqual(settings.docker.mounts.at(-1), {
+    hostPath: "/host/private/github-token",
+    sandboxPath: "/home/agent/.sandcastle-secrets/github-token",
+    readonly: true,
+  });
+  assert.equal(settings.docker.env.GH_TOKEN, "");
+  assert.equal(
+    settings.docker.env.SANDKING_GITHUB_CREDENTIAL_PATH,
+    "/home/agent/.sandcastle-secrets/github-token",
+  );
+  assert.equal(JSON.stringify(settings).includes(token), false);
+  assert.ok(settings.hooks.sandbox.onSandboxReady.some(({ command }) =>
+    command.includes("gh api user")));
 });
 
 test("real Claude access is granted only to an explicitly selected Worker issue", () => {

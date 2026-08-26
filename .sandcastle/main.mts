@@ -51,6 +51,9 @@ import {
   createCodexSandboxSettings,
   createRunSettings,
   createWorkerSandboxSettings,
+  githubSandboxEnvironment,
+  githubSandboxReadyCommands,
+  materializeGitHubCredential,
 } from "./sandbox-settings.mjs";
 import { retryOperation } from "./resilience.mjs";
 import {
@@ -123,17 +126,40 @@ const MAX_ITERATIONS = 10;
 const PHASE_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 5_000;
 const protocolEnabled = process.env.SANDKING_REAL_DELEGATION_PROTOCOL === "1";
-const githubCredentialPath = process.env.SANDKING_GITHUB_CREDENTIAL_PATH;
+const delegationContainer = process.env.SANDKING_REAL_DELEGATION_CONTAINER === "1";
+const protocolFd = Number(process.env.SANDKING_REAL_DELEGATION_PROTOCOL_FD ?? 3);
+if (protocolEnabled && (!delegationContainer || protocolFd !== 1)) {
+  throw new Error("real_delegation_container_required");
+}
+if (protocolEnabled) process.stdout.write = process.stderr.write.bind(process.stderr);
+let githubCredentialPath = process.env.SANDKING_GITHUB_CREDENTIAL_PATH;
+let ownedGitHubCredential = null;
 if (protocolEnabled) {
   if (!githubCredentialPath) throw new Error("github_credential_path_missing");
   const githubToken = readFileSync(githubCredentialPath, "utf8").trim();
   if (!githubToken || /\s/.test(githubToken)) {
     throw new Error("github_credential_invalid");
   }
-  process.env.GH_TOKEN = githubToken;
-  delete process.env.GITHUB_TOKEN;
-  delete process.env.GH_ENTERPRISE_TOKEN;
-  delete process.env.GITHUB_ENTERPRISE_TOKEN;
+} else {
+  const githubToken = execFileSync("gh", ["auth", "token"], {
+    encoding: "utf8",
+  }).trim();
+  ownedGitHubCredential = await materializeGitHubCredential({
+    mode: "host-gh-session",
+    token: githubToken,
+  });
+  githubCredentialPath = ownedGitHubCredential?.path;
+}
+if (delegationContainer && githubCredentialPath) {
+  const containerPath = process.env.PATH ?? githubSandboxEnvironment.PATH;
+  Object.assign(process.env, githubSandboxEnvironment, {
+    PATH: `/home/agent/.sandcastle-bin:${containerPath}`,
+    SANDKING_GITHUB_CREDENTIAL_PATH: githubCredentialPath,
+  });
+  execFileSync("sh", ["-c", githubSandboxReadyCommands(true).join("; ")], {
+    env: process.env,
+    stdio: ["ignore", "ignore", "inherit"],
+  });
 }
 const controller = new AbortController();
 const handleTermination = () => controller.abort(new Error("delivery_cancelled"));
@@ -146,10 +172,14 @@ const harnessDirectory = fileURLToPath(new URL("./", import.meta.url));
 const harnessFile = (name: string) => `${harnessDirectory}${name}`;
 const codexAuthPath = process.env.SANDCASTLE_CODEX_AUTH_PATH
   ?? "~/.codex/auth.json";
+const sandboxImage = process.env.SANDKING_REAL_DELEGATION_SANDBOX_IMAGE;
 
 // Hooks run inside the sandbox before the agent starts each iteration.
 // npm install ensures the sandbox always has fresh dependencies.
-const sandboxSettings = createCodexSandboxSettings(codexAuthPath);
+const sandboxSettings = createCodexSandboxSettings(codexAuthPath, {
+  githubCredentialPath,
+  ...(sandboxImage ? { imageName: sandboxImage } : {}),
+});
 const runSettings = { ...createRunSettings(), signal: controller.signal };
 const hooks = sandboxSettings.hooks;
 const codexDocker = () => docker(sandboxSettings.docker);
@@ -187,7 +217,7 @@ const scopedIssueNumber = scopeOptions && "issueId" in scopeOptions
   ? Number(scopeOptions.issueId)
   : null;
 const publishDelegationMessage = (message: unknown) => {
-  if (protocolEnabled) writeSync(3, `${JSON.stringify(message)}\n`);
+  if (protocolEnabled) writeSync(protocolFd, `${JSON.stringify(message)}\n`);
 };
 const reportProgress = (value: {
   phase: "planning" | "implementation" | "review" | "completion";
@@ -244,7 +274,7 @@ const runIssueWorker = async (
       const workerSandboxSettings = createWorkerSandboxSettings(
         issue.id,
         process.env,
-        { codexAuthPath },
+        { codexAuthPath, githubCredentialPath },
       );
       // A retry gets a fresh container while retaining the named worktree.
       // This preserves commits and uncommitted edits from an interrupted agent.
@@ -535,4 +565,5 @@ if (protocolEnabled && scopedIssueNumber && runScope) {
       }));
   if (!succeeded) process.exitCode = 1;
 }
+await ownedGitHubCredential?.cleanup();
 process.removeListener("SIGTERM", handleTermination);

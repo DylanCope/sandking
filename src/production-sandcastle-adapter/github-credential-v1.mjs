@@ -20,7 +20,7 @@ export const githubSandboxReadyCommands = (configured) => [
   ...(configured ? [
     'mkdir -p "${HOME}/.sandcastle-bin"',
     'github_executable="$(command -v gh)"',
-    'printf \'%s\\n\' \'#!/bin/sh\' \'set -eu\' \'GH_TOKEN="$(cat "${HOME}/.sandcastle-secrets/github-token")"\' \'export GH_TOKEN\' "exec \\"${github_executable}\\" \\"\\$@\\"" > "${HOME}/.sandcastle-bin/gh"',
+    'printf \'%s\\n\' \'#!/bin/sh\' \'set -eu\' \'credential_path="${SANDKING_GITHUB_CREDENTIAL_PATH:-${HOME}/.sandcastle-secrets/github-token}"\' \'GH_TOKEN="$(cat "${credential_path}")"\' \'export GH_TOKEN\' "exec \\"${github_executable}\\" \\"\\$@\\"" > "${HOME}/.sandcastle-bin/gh"',
     'chmod 700 "${HOME}/.sandcastle-bin/gh"',
     "gh api user --hostname github.com --jq .login >/dev/null",
   ] : []),

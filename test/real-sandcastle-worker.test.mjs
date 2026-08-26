@@ -122,6 +122,7 @@ for (const mode of ["project-pat", "host-gh-session"]) {
           assert.equal(await readFile(credentialPath, "utf8"), `${token}\n`);
           assert.equal((await stat(credentialPath)).mode & 0o777, 0o600);
           assert.equal(options.issueNumber, 262);
+          assert.equal(options.sandboxImage, `sha256:${"c".repeat(64)}`);
           options.onProgress({ phase: "review" });
           return successfulAttestation();
         },
