@@ -282,7 +282,12 @@ if (args[0] === "api" && args[1] === "user") {
   process.stdout.write("all controlled checks passed\\n");
 } else if (args[0] === "pr" && args[1] === "merge") {
   const pullRequest = state.pullRequests.find(({ number }) => String(number) === args[2]);
-  execFileSync("git", ["merge", "--no-ff", "--no-edit", pullRequest.headRefName]);
+  execFileSync("git", [
+    "-c", "user.name=Controlled GitHub",
+    "-c", "user.email=controlled-github@sandking.invalid",
+    "-c", "commit.gpgSign=false",
+    "merge", "--no-ff", "--no-edit", pullRequest.headRefName,
+  ]);
   execFileSync("git", ["push", "origin", "main"]);
   pullRequest.state = "MERGED";
   pullRequest.mergedAt = new Date().toISOString();
