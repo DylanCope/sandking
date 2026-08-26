@@ -319,7 +319,11 @@ exit 92
 `),
       writeExecutable(join(binPath, "docker"), `#!/bin/sh
 if [ "$1 $2" = "version --format" ]; then printf '%s\\n' '27.5.1'; exit 0; fi
-if [ "$1 $2 $3" = "image inspect sandcastle:sandking-real-worker" ]; then
+if [ "$1 $2" = "context inspect" ]; then
+  printf '%s\\n' '"unix:///run/user/1000/docker.sock"'
+  exit 0
+fi
+if [ "$1 $2" = "image inspect" ] && { [ "$3" = "sandcastle:sandking-real-worker" ] || [ "$3" = "sha256:${"d".repeat(64)}" ]; }; then
   case "$4" in
     *"json .Config"*) printf '%s\\n' '${JSON.stringify({
       Labels: {
@@ -329,6 +333,18 @@ if [ "$1 $2 $3" = "image inspect sandcastle:sandking-real-worker" ]; then
         "org.sandking.production-sandbox.agent-gid": String(process.getgid?.() ?? 1000),
       },
       User: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+    })}' ;;
+    *"json ."*) printf '%s\\n' '${JSON.stringify({
+      Id: `sha256:${"d".repeat(64)}`,
+      Config: {
+        Labels: {
+          "org.sandking.production-sandbox.configuration-integrity":
+            sandboxConfigurationIntegrity,
+          "org.sandking.production-sandbox.agent-uid": String(process.getuid?.() ?? 1000),
+          "org.sandking.production-sandbox.agent-gid": String(process.getgid?.() ?? 1000),
+        },
+        User: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+      },
     })}' ;;
     *) printf '%s\\n' 'sha256:${"d".repeat(64)}' ;;
   esac
