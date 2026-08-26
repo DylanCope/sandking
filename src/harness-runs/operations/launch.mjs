@@ -206,6 +206,7 @@ export const createLaunchOperation = (runtime) => {
     /** @type {{mode: "project-pat" | "host-gh-session", token: string} | null} */
     let githubCredential = null;
     let githubCredentialConfigurationOptions = null;
+    let sanitizedExplanation = null;
     let launchAccepted = false;
     try {
     const authorizationClass = "harness_run_launch";
@@ -312,6 +313,14 @@ export const createLaunchOperation = (runtime) => {
         }
       } catch (error) {
         const typedCode = typedErrorCode(error);
+        if (
+          error
+          && typeof error === "object"
+          && "sanitizedExplanation" in error
+          && typeof error.sanitizedExplanation === "string"
+        ) {
+          sanitizedExplanation = error.sanitizedExplanation;
+        }
         if (isGitHubCredentialFailureCode(typedCode)) {
           githubCredentialConfigurationOptions =
             configurationOptionsForGitHubCredentialFailure(typedCode);
@@ -434,6 +443,7 @@ export const createLaunchOperation = (runtime) => {
         ...(githubCredentialConfigurationOptions
           ? { configurationOptions: githubCredentialConfigurationOptions }
           : {}),
+        ...(sanitizedExplanation ? { sanitizedExplanation } : {}),
       };
       if (idempotencyKeyHash) {
         retained.launchOutcomes.push({ idempotencyKeyHash, requestFingerprint, response });

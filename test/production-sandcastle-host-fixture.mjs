@@ -5,7 +5,7 @@ import {
   readFile,
   writeFile,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { createHarnessRunManager } from "../src/harness-runs.mjs";
 import { createProjectRegistry } from "../src/project-registration.mjs";
@@ -33,48 +33,241 @@ export const writeExecutable = async (path, source) => {
   await chmod(path, 0o700);
 };
 
-export const installReadyProbeCommands = async (root) => {
+const bundledMainScenarioPath = (root) => join(root, "bundled-main-scenario.txt");
+const bundledMainStatePath = (root) => join(root, "bundled-main-state.json");
+
+export const setBundledMainScenario = (root, scenario) => writeFile(
+  bundledMainScenarioPath(root),
+  `${scenario}\n`,
+);
+
+export const readBundledMainState = async (root) => JSON.parse(await readFile(
+  bundledMainStatePath(root),
+  "utf8",
+));
+
+export const installReadyProbeCommands = async (
+  root,
+  { mainScenario = "incomplete" } = {},
+) => {
   const binPath = join(root, "bin");
-  const pinnedMainFixturePath = join(root, "pinned-main-fixture.mjs");
+  const fakeSandcastlePath = join(root, "fake-sandcastle");
+  const scenarioPath = bundledMainScenarioPath(root);
+  const statePath = bundledMainStatePath(root);
   const originalPath = process.env.PATH;
-  await mkdir(binPath, { recursive: true });
-  await writeFile(pinnedMainFixturePath, `import { writeSync } from "node:fs";
-const [, mainPath, issueFlag, issueValue] = process.argv.slice(1);
-const issueNumber = Number(issueValue);
-if (!mainPath.endsWith("/.sandcastle/main.mts") || issueFlag !== "--issue"
-    || !Number.isSafeInteger(issueNumber)) process.exit(94);
-writeSync(3, JSON.stringify({
-  type: "sandcastle.delivery.progress",
-  issueNumber,
-  phase: "planning",
-  label: "Plan scoped issue",
-  summary: "The pinned main.mts qualification fixture accepted the issue.",
-  status: "running",
-}) + "\\n");
-await new Promise((resolve) => setTimeout(resolve, 500));
-writeSync(3, JSON.stringify({
-  type: "sandcastle.delivery.result",
-  issueNumber,
-  status: "failed",
-  code: "delivery_execution_failed",
-  completion: null,
-}) + "\\n");
-process.exitCode = 1;
-`);
+  const dependencyRoot = join(new URL("../node_modules", import.meta.url).pathname);
+  await Promise.all([
+    mkdir(binPath, { recursive: true }),
+    mkdir(join(fakeSandcastlePath, "sandboxes"), { recursive: true }),
+    setBundledMainScenario(root, mainScenario),
+    writeFile(statePath, `${JSON.stringify({
+      authenticatedCalls: 0,
+      issues: {},
+      pullRequests: [],
+      reviewStarted: false,
+    })}\n`),
+  ]);
+  await Promise.all([
+    writeFile(join(fakeSandcastlePath, "package.json"), `${JSON.stringify({
+      name: "@ai-hero/sandcastle",
+      version: "0.12.0",
+      type: "module",
+      exports: {
+        ".": "./index.mjs",
+        "./sandboxes/docker": "./sandboxes/docker.mjs",
+      },
+    })}\n`),
+    writeFile(join(fakeSandcastlePath, "sandboxes", "docker.mjs"),
+      "export const docker = (settings) => ({ kind: \"controlled-docker\", settings });\n"),
+    writeFile(join(fakeSandcastlePath, "index.mjs"), `
+import { execFileSync } from "node:child_process";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const scenarioPath = ${JSON.stringify(scenarioPath)};
+const statePath = ${JSON.stringify(statePath)};
+const scenario = () => readFileSync(scenarioPath, "utf8").trim();
+const issueNumber = () => {
+  const index = process.argv.indexOf("--issue");
+  const value = Number(process.argv[index + 1]);
+  if (index < 0 || !Number.isSafeInteger(value)) throw new Error("fixture_issue_missing");
+  return value;
+};
+const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
+const commitIssueChange = (issueId, branch) => {
+  git("switch", branch);
+  const artifactName = "issue-" + issueId + "-delivered.txt";
+  const artifact = join(process.cwd(), artifactName);
+  appendFileSync(artifact, "implemented issue " + issueId + " at " + Date.now() + "\\n");
+  git("add", artifactName);
+  git("-c", "user.name=Bundled Main Fixture", "-c",
+    "user.email=bundled-main@sandking.invalid", "-c", "commit.gpgSign=false",
+    "commit", "--quiet", "-m", "Implement issue " + issueId);
+  git("switch", "main");
+};
+
+export const Output = { object: (options) => options };
+export const codex = (model, options) => ({ model, options });
+export const run = async () => {
+  const id = issueNumber();
+  return {
+    output: {
+      issues: scenario() === "incomplete" ? [] : [{
+        id: String(id),
+        title: "Controlled delivery for issue " + id,
+        branch: "sandcastle/issue-" + id,
+      }],
+    },
+  };
+};
+export const createSandbox = async ({ branch }) => ({
+  async run(options) {
+    const id = String(options.promptArgs?.TASK_ID ?? issueNumber());
+    if (options.promptFile.endsWith("implement-prompt.md")) {
+      commitIssueChange(id, branch);
+      return { stdout: "implementation completed" };
+    }
+    if (!options.promptFile.endsWith("pr-review-prompt.md")) {
+      throw new Error("fixture_prompt_unexpected");
+    }
+    if (scenario() === "cancellable") {
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      state.reviewStarted = true;
+      writeFileSync(statePath, JSON.stringify(state) + "\\n");
+      await new Promise((resolve, reject) => {
+        const signal = options.signal;
+        const abort = () => reject(signal.reason ?? new Error("delivery_cancelled"));
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort, { once: true });
+      });
+    }
+    const approved = scenario() !== "review-exhausted";
+    return { stdout: "<review>" + JSON.stringify({
+      approved,
+      blockingFindings: approved ? [] : [{
+        summary: "Controlled review rejection",
+        requirement: "Exercise the real review-attempt budget",
+        evidence: "The controlled reviewer requested another implementation pass.",
+        materialImpact: "The pull request cannot merge yet.",
+        cannotDefer: "The active review loop must reach its configured terminal outcome.",
+      }],
+      followUps: [],
+      resolvedFindings: [],
+    }) + "</review>" };
+  },
+  async close() {},
+});
+`),
+  ]);
   await Promise.all([
     writeExecutable(join(binPath, "codex"), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 0.146.0'; exit 0; fi
 if [ "$1" = "login" ] && [ "$2" = "status" ]; then printf '%s\\n' 'Logged in using fixture'; exit 0; fi
 exit 91
 `),
-    writeExecutable(join(binPath, "npm"), `#!/bin/sh
-if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
-if [ "$1" = "ci" ]; then
-  mkdir -p node_modules/tsx/dist
-  cp '${pinnedMainFixturePath}' node_modules/tsx/dist/cli.mjs
-  exit 0
-fi
-exit 92
+    writeExecutable(join(binPath, "npm"), `#!/usr/bin/env node
+import { cpSync, mkdirSync, symlinkSync } from "node:fs";
+import { join } from "node:path";
+const command = process.argv[2];
+if (command === "--version") {
+  process.stdout.write("10.9.8\\n");
+  process.exit(0);
+}
+if (command !== "ci") process.exit(92);
+const modules = join(process.cwd(), "node_modules");
+mkdirSync(join(modules, "@ai-hero"), { recursive: true });
+for (const dependency of ["tsx", "esbuild", "zod"]) {
+  symlinkSync(
+    join(${JSON.stringify(dependencyRoot)}, dependency),
+    join(modules, dependency),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+}
+cpSync(${JSON.stringify(fakeSandcastlePath)}, join(modules, "@ai-hero", "sandcastle"), {
+  recursive: true,
+});
+`),
+    writeExecutable(join(binPath, "gh"), `#!/usr/bin/env node
+import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+const statePath = ${JSON.stringify(statePath)};
+const args = process.argv.slice(2);
+const load = () => JSON.parse(readFileSync(statePath, "utf8"));
+const save = (state) => writeFileSync(statePath, JSON.stringify(state) + "\\n");
+const option = (name) => args[args.indexOf(name) + 1];
+const issue = (state, number) => state.issues[number] ??= {
+  number: Number(number), title: "Controlled issue " + number, state: "open", comments: [],
+};
+if (args[0] === "auth" && args[1] === "token") {
+  process.stdout.write((process.env.GH_TOKEN ?? "") + "\\n");
+  process.exit(process.env.GH_TOKEN ? 0 : 90);
+}
+if (!process.env.GH_TOKEN) process.exit(90);
+const state = load();
+state.authenticatedCalls += 1;
+if (args[0] === "repo" && args[1] === "view") {
+  process.stdout.write("fixture/controlled-main\\n");
+} else if (args[0] === "issue" && args[1] === "view") {
+  const value = issue(state, args[2]);
+  process.stdout.write(JSON.stringify(args.includes("comments")
+    ? { comments: value.comments.map((body) => ({ body })) }
+    : { number: value.number, title: value.title, state: value.state }));
+} else if (args[0] === "issue" && args[1] === "comment") {
+  issue(state, args[2]).comments.push(option("--body"));
+} else if (args[0] === "issue" && args[1] === "close") {
+  issue(state, args[2]).state = "closed";
+} else if (args[0] === "issue" && args[1] === "list") {
+  process.stdout.write("[]");
+} else if (args[0] === "pr" && args[1] === "list") {
+  const head = option("--head");
+  process.stdout.write(JSON.stringify(state.pullRequests.filter((pullRequest) =>
+    pullRequest.state === "OPEN" && pullRequest.headRefName === head)));
+} else if (args[0] === "pr" && args[1] === "create") {
+  const head = option("--head");
+  const pullRequest = {
+    number: 700 + state.pullRequests.length,
+    url: "https://github.test/fixture/controlled-main/pull/"
+      + (700 + state.pullRequests.length),
+    baseRefName: option("--base"),
+    headRefName: head,
+    state: "OPEN",
+    mergedAt: null,
+    comments: [],
+  };
+  state.pullRequests.push(pullRequest);
+  process.stdout.write(pullRequest.url + "\\n");
+} else if (args[0] === "pr" && args[1] === "view") {
+  const selector = args[2];
+  const pullRequest = state.pullRequests.find((candidate) =>
+    String(candidate.number) === selector || candidate.headRefName === selector);
+  if (!pullRequest) process.exit(91);
+  process.stdout.write(JSON.stringify(args.includes("comments")
+    ? { comments: pullRequest.comments.map((body) => ({ body })) }
+    : pullRequest));
+} else if (args[0] === "pr" && args[1] === "comment") {
+  const pullRequest = state.pullRequests.find(({ number }) => String(number) === args[2]);
+  pullRequest.comments.push(option("--body"));
+} else if (args[0] === "pr" && args[1] === "diff") {
+  const pullRequest = state.pullRequests.find(({ number }) => String(number) === args[2]);
+  process.stdout.write("diff for " + execFileSync("git", ["rev-parse", pullRequest.headRefName], {
+    encoding: "utf8",
+  }).trim() + "\\n");
+} else if (args[0] === "pr" && args[1] === "checks") {
+  process.stdout.write("all controlled checks passed\\n");
+} else if (args[0] === "pr" && args[1] === "merge") {
+  const pullRequest = state.pullRequests.find(({ number }) => String(number) === args[2]);
+  execFileSync("git", ["merge", "--no-ff", "--no-edit", pullRequest.headRefName]);
+  execFileSync("git", ["push", "origin", "main"]);
+  pullRequest.state = "MERGED";
+  pullRequest.mergedAt = new Date().toISOString();
+} else if (args[0] === "api" && args[1].endsWith("/sub_issues")) {
+  process.stdout.write("[]");
+} else if (args[0] === "api" && args[1].endsWith("/parent")) {
+  process.exit(1);
+} else {
+  process.exit(92);
+}
+save(state);
 `),
     writeExecutable(join(binPath, "docker"), `#!/bin/sh
 if [ "$1" = "version" ] && [ "$2" = "--format" ]; then printf '%s\\n' '27.5.1'; exit 0; fi
@@ -85,7 +278,7 @@ fi
 exit 93
 `),
   ]);
-  process.env.PATH = `${binPath}:${originalPath ?? ""}`;
+  process.env.PATH = `${binPath}${delimiter}${originalPath ?? ""}`;
   return () => {
     process.env.PATH = originalPath;
   };
@@ -97,11 +290,15 @@ export const createProductionRegistration = async (
 ) => {
   const dataDir = join(root, "host-state");
   const projectPath = join(root, "project");
+  const originPath = join(root, "origin.git");
   await mkdir(projectPath, { recursive: true });
+  await execFileAsync("git", ["init", "--quiet", "--bare", originPath]);
   await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", projectPath]);
   await writeFile(join(projectPath, "README.md"), "production Project\n");
   if (controlledFixture) await writeControlledFixture(projectPath, controlledFixture);
   await commitProductionProject(projectPath, "Initialize production Project");
+  await execFileAsync("git", ["-C", projectPath, "remote", "add", "origin", originPath]);
+  await execFileAsync("git", ["-C", projectPath, "push", "--quiet", "-u", "origin", "main"]);
 
   const audits = [];
   const recordAudit = async (action, outcome, details, requestedAuditId) => {

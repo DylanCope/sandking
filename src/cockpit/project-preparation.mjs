@@ -572,6 +572,7 @@ export const createProjectPreparation = ({
         .join(" ");
       harnessLaunchFeedback.textContent = [
         `Harness was not launched: ${message.outcome.code}.`,
+        message.outcome.sanitizedExplanation,
         guidance,
       ].filter(Boolean).join(" ");
     }

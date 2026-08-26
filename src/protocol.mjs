@@ -648,6 +648,7 @@ export const harnessRunLaunchFailureSchema = z.object({
   }).strict(),
   configurationOptions: z.array(githubCredentialConfigurationOptionSchema)
     .length(2).optional(),
+  sanitizedExplanation: z.string().min(1).max(512).optional(),
 }).strip().superRefine((failure, context) => {
   const credentialFailure = isGitHubCredentialFailureCode(failure.code);
   if (credentialFailure !== (failure.configurationOptions !== undefined)) {
@@ -665,6 +666,16 @@ export const harnessRunLaunchFailureSchema = z.object({
       code: "custom",
       message: "GitHub credential launch failures must identify both configuration modes",
       path: ["configurationOptions"],
+    });
+  }
+  if (
+    failure.code === "real_delegation_issue_required"
+    && failure.sanitizedExplanation === undefined
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "missing-issue launch failures require actionable guidance",
+      path: ["sanitizedExplanation"],
     });
   }
 });

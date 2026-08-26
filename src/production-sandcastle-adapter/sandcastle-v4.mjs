@@ -8,10 +8,14 @@ import { pathToFileURL } from "node:url";
 const githubCredentialContractUrl = import.meta.url.endsWith("/[eval1]")
   ? pathToFileURL(join(process.cwd(), "github-credential-contract.mjs")).href
   : new URL("../github-credential-contract.mjs", import.meta.url).href;
+const realDelegationProtocolUrl = import.meta.url.endsWith("/[eval1]")
+  ? pathToFileURL(join(process.cwd(), "real-delegation-protocol.mjs")).href
+  : new URL("../real-delegation-protocol.mjs", import.meta.url).href;
 const {
   GITHUB_AUTHENTICATION_VERIFICATION_CAPABILITY,
   parseGitHubCredential,
 } = await import(githubCredentialContractUrl);
+const { hasExactKeys } = await import(realDelegationProtocolUrl);
 
 const adapterProtocol = "1.0.0";
 const adapterId = "sandcastle-harness-adapter-v1";
@@ -240,11 +244,6 @@ const readJson = (path) => {
     return null;
   }
 };
-
-const hasExactKeys = (value, keys) => value
-  && typeof value === "object"
-  && !Array.isArray(value)
-  && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
 
 /**
  * @param {{

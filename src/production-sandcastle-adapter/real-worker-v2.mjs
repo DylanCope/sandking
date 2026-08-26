@@ -4,6 +4,7 @@ import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { digest as sha256 } from "../common/digest.mjs";
 import { parseRealDelegationMessage } from "../real-delegation-protocol.mjs";
@@ -136,7 +137,9 @@ export const runPinnedMain = async ({
   spawnProcess = spawn,
 }) => {
   const mainPath = join(executionPath, ".sandcastle", "main.mts");
-  const tsxPath = join(executionPath, "node_modules", "tsx", "dist", "cli.mjs");
+  const tsxLoaderUrl = pathToFileURL(
+    join(executionPath, "node_modules", "tsx", "dist", "loader.mjs"),
+  ).href;
   const environment = { ...process.env };
   for (const name of [
     "GH_TOKEN",
@@ -152,7 +155,8 @@ export const runPinnedMain = async ({
     SANDKING_REAL_DELEGATION_PROTOCOL: "1",
   });
   const child = spawnProcess(process.execPath, [
-    tsxPath,
+    "--import",
+    tsxLoaderUrl,
     mainPath,
     "--issue",
     String(issueNumber),

@@ -277,14 +277,18 @@ main().catch((error) => {
   }
   if (
     error instanceof ControllerCliAcknowledgedFailure
-    && error.configurationOptions
     && process.argv.slice(2).includes("--json")
   ) {
     process.stdout.write(`${JSON.stringify({
       ok: false,
       failure: {
         code: error.code,
-        configurationOptions: error.configurationOptions,
+        ...(error.sanitizedExplanation
+          ? { sanitizedExplanation: error.sanitizedExplanation }
+          : {}),
+        ...(error.configurationOptions
+          ? { configurationOptions: error.configurationOptions }
+          : {}),
       },
     })}\n`);
     process.exitCode = 1;

@@ -12,7 +12,7 @@ const failureCodes = new Set([
 ]);
 
 /** @param {any} value @param {readonly string[]} keys */
-const hasExactKeys = (value, keys) => value
+export const hasExactKeys = (value, keys) => value
   && typeof value === "object"
   && !Array.isArray(value)
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());

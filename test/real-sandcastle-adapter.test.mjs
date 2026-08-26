@@ -18,10 +18,15 @@ const githubCredentialContractPath = new URL(
   "../src/github-credential-contract.mjs",
   import.meta.url,
 );
+const realDelegationProtocolPath = new URL(
+  "../src/real-delegation-protocol.mjs",
+  import.meta.url,
+);
 const adapterId = "sandcastle-harness-adapter-v1";
 const adapterProtocol = "1.0.0";
 const workerPath = ".sandcastle/real-worker-v2.mjs";
 const githubCredentialContractSource = await readFile(githubCredentialContractPath, "utf8");
+const realDelegationProtocolSource = await readFile(realDelegationProtocolPath, "utf8");
 
 const encode = (value) => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 const integrity = (source) => `sha256:${createHash("sha256").update(source).digest("hex")}`;
@@ -71,6 +76,10 @@ const createFixture = async ({
   await writeFile(
     join(executionPath, "github-credential-contract.mjs"),
     githubCredentialContractSource,
+  );
+  await writeFile(
+    join(executionPath, "real-delegation-protocol.mjs"),
+    realDelegationProtocolSource,
   );
   await writeExecutable(join(binPath, "codex"), `#!/bin/sh
 if [ "$1" = "--version" ]; then

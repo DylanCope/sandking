@@ -37,6 +37,16 @@ export const launchParametersSchema = z.record(launchParameterNameSchema, z.unkn
     }
   }).default({});
 
+export class HarnessLaunchPreparationError extends Error {
+  /** @param {{code: string, sanitizedExplanation: string}} failure */
+  constructor(failure) {
+    super(failure.code);
+    this.name = "HarnessLaunchPreparationError";
+    this.code = failure.code;
+    this.sanitizedExplanation = failure.sanitizedExplanation;
+  }
+}
+
 /**
  * Validate a generic launch bag from the pinned adapter's declaration.
  * Adapter-specific relationships remain the adapter prepare command's concern.
@@ -173,7 +183,7 @@ export const validateHarnessLaunch = async (context, parameters) => {
     ) {
       throw new Error("harness_adapter_protocol_invalid");
     }
-    throw new Error(failure.code);
+    throw new HarnessLaunchPreparationError(failure);
   }
   if (
     preparedInvocation.message

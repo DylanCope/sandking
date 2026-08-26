@@ -232,6 +232,7 @@ test("unscoped production delegation fails before optional GitHub credential res
     }));
     assert.equal(unconfigured.type, "harness.run.launch.failure");
     assert.equal(unconfigured.code, "real_delegation_issue_required");
+    assert.match(unconfigured.sanitizedExplanation, /--issue <number>/);
 
     await credentials.configureHost({
       requestId: "enable-unavailable-host-session",
@@ -248,6 +249,7 @@ test("unscoped production delegation fails before optional GitHub credential res
     }));
     assert.equal(unavailable.type, "harness.run.launch.failure");
     assert.equal(unavailable.code, "real_delegation_issue_required");
+    assert.equal(unavailable.sanitizedExplanation, unconfigured.sanitizedExplanation);
     const requiredUnavailable = await manager.launch(productionLaunchRequest(projectId, {
       requestId: "reject-required-unavailable-host-session",
       parameters: { issueNumber: 262 },

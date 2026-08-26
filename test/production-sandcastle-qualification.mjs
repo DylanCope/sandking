@@ -15,6 +15,8 @@ import {
   observeProductionRunning,
   observeProductionTerminal,
   productionLaunchRequest,
+  readBundledMainState,
+  setBundledMainScenario,
   writeExecutable,
 } from "./production-sandcastle-host-fixture.mjs";
 
@@ -29,8 +31,11 @@ const alteredWorkerSource = [
   "",
 ].join("\n");
 
-const installRunnableProviderCommands = async (root, { blockDependencies = false } = {}) => {
-  const restore = await installReadyProbeCommands(root);
+const installRunnableProviderCommands = async (
+  root,
+  { blockDependencies = false, mainScenario = "incomplete" } = {},
+) => {
+  const restore = await installReadyProbeCommands(root, { mainScenario });
   if (!blockDependencies) return restore;
   await writeExecutable(join(root, "bin", "npm"), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf '%s\\n' '10.9.8'; exit 0; fi
@@ -65,7 +70,7 @@ test("the ordinary launch seam delegates once through the pinned production adap
   let fixture;
   let restorePath = () => undefined;
   try {
-    restorePath = await installRunnableProviderCommands(root);
+    restorePath = await installRunnableProviderCommands(root, { mainScenario: "success" });
     fixture = await createProductionFixture(root);
     const request = productionLaunchRequest(fixture.project.project.projectId);
     const launched = await fixture.manager.launch(request);
@@ -90,8 +95,6 @@ test("the ordinary launch seam delegates once through the pinned production adap
       fixture.manager,
       launched.run.harnessRunId,
     );
-    assert.equal(observed.run.status, "failed", JSON.stringify(observed));
-    assert.equal(observed.outcome.code, "harness_run_failed");
     const diagnostics = await fixture.manager.readLogs({
       requestId: "read-production-qualification-diagnostics",
       harnessRunId: launched.run.harnessRunId,
@@ -99,16 +102,35 @@ test("the ordinary launch seam delegates once through the pinned production adap
       offset: 0,
       limit: 16_384,
     });
-    assert.equal(
-      observed.outcome.result.code,
-      "delivery_execution_failed",
-      diagnostics.data.toString("utf8"),
-    );
+    assert.equal(observed.run.status, "succeeded", diagnostics.data.toString("utf8"));
+    assert.equal(observed.outcome.code, "harness_run_succeeded");
+    assert.equal(observed.outcome.result.code, "issue_delivery_completed",
+      diagnostics.data.toString("utf8"));
+    assert.equal(observed.outcome.result.issueNumber, 173);
+    assert.deepEqual(observed.outcome.result.completion, {
+      kind: "merged-pull-request",
+      pullRequestNumber: 700,
+      pullRequestUrl: "https://github.test/fixture/controlled-main/pull/700",
+    });
     assert.equal(observed.terminalEnvelopeValidation.exactlyOne, true);
     assert.equal(observed.terminalEnvelopeValidation.validTerminalEnvelopeCount, 1);
     assert.equal(observed.events.some(({ progressRecord }) =>
       progressRecord?.type === "sandcastle.worker"
       && progressRecord.payload?.provider === "openai-codex"), true);
+    const progressLabels = observed.events.flatMap(({ progressRecord }) =>
+      progressRecord ? [progressRecord.label] : []);
+    for (const phase of ["Plan issue #173", "Implement issue #173", "Review pull request #700",
+      "Complete issue #173"]) {
+      assert.ok(progressLabels.includes(phase), JSON.stringify(progressLabels));
+    }
+    const mainState = await readBundledMainState(root);
+    assert.ok(mainState.authenticatedCalls > 0);
+    assert.equal(mainState.issues[173].state, "closed");
+    assert.equal(mainState.pullRequests.length, 1);
+    assert.equal(mainState.pullRequests[0].state, "MERGED");
+    assert.equal(mainState.pullRequests[0].headRefName, "sandcastle/issue-173");
+    assert.match(await readFile(join(fixture.projectPath, "issue-173-delivered.txt"), "utf8"),
+      /implemented issue 173/);
     await assert.rejects(
       readFile(join(fixture.projectPath, "sandcastle.real-provider.json"), "utf8"),
       { code: "ENOENT" },
