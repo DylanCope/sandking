@@ -52,6 +52,8 @@ export const pinnedRealProviderInputsReady = (
 
 const SANDBOX_CONFIGURATION_INTEGRITY_LABEL =
   "org.sandking.production-sandbox.configuration-integrity";
+const SANDBOX_AGENT_UID_LABEL = "org.sandking.production-sandbox.agent-uid";
+const SANDBOX_AGENT_GID_LABEL = "org.sandking.production-sandbox.agent-gid";
 
 /** @type {Map<string, Promise<{ready: boolean, imageBuilt: boolean}>>} */
 const activeSandboxPreparations = new Map();
@@ -62,6 +64,8 @@ const activeSandboxPreparations = new Map();
  *   environment: NodeJS.ProcessEnv,
  *   imageName: string,
  *   configurationIntegrity: string,
+ *   agentUid: number,
+ *   agentGid: number,
  * }} options
  */
 const retainedImageMatchesConfiguration = async ({
@@ -69,17 +73,24 @@ const retainedImageMatchesConfiguration = async ({
   environment,
   imageName,
   configurationIntegrity,
+  agentUid,
+  agentGid,
 }) => {
   try {
     const { stdout } = await execute("docker", [
       "image", "inspect", imageName,
-      `--format={{ index .Config.Labels "${SANDBOX_CONFIGURATION_INTEGRITY_LABEL}" }}`,
+      "--format={{json .Config}}",
     ], {
       env: environment,
       timeout: 10_000,
       maxBuffer: 64_000,
     });
-    return stdout.trim() === configurationIntegrity;
+    const configuration = JSON.parse(stdout);
+    return configuration?.Labels?.[SANDBOX_CONFIGURATION_INTEGRITY_LABEL]
+        === configurationIntegrity
+      && configuration.Labels[SANDBOX_AGENT_UID_LABEL] === String(agentUid)
+      && configuration.Labels[SANDBOX_AGENT_GID_LABEL] === String(agentGid)
+      && configuration.User === `${agentUid}:${agentGid}`;
   } catch {
     return false;
   }
@@ -115,6 +126,8 @@ export const ensureProductionProviderRuntime = async (options) => {
   }
 
   const execute = options.executeFile ?? execFileAsync;
+  const agentUid = process.getuid?.() ?? 1000;
+  const agentGid = process.getgid?.() ?? 1000;
   const projectionRoot = resolve(options.projectionPath);
   const configurationPath = join(
     projectionRoot,
@@ -135,12 +148,16 @@ export const ensureProductionProviderRuntime = async (options) => {
     environment,
     imageName: contract.REAL_PROVIDER_SANDBOX_IMAGE,
     configurationIntegrity,
+    agentUid,
+    agentGid,
   });
   if (await imageMatches()) return { ready: true, imageBuilt: false };
 
   const preparationKey = [
     contract.REAL_PROVIDER_SANDBOX_IMAGE,
     configurationIntegrity,
+    String(agentUid),
+    String(agentGid),
   ].join("\0");
   const activePreparation = activeSandboxPreparations.get(preparationKey);
   if (activePreparation) return activePreparation;
@@ -149,9 +166,11 @@ export const ensureProductionProviderRuntime = async (options) => {
     try {
       await execute("docker", [
         "build",
-        "--build-arg", `AGENT_UID=${process.getuid?.() ?? 1000}`,
-        "--build-arg", `AGENT_GID=${process.getgid?.() ?? 1000}`,
+        "--build-arg", `AGENT_UID=${agentUid}`,
+        "--build-arg", `AGENT_GID=${agentGid}`,
         "--label", `${SANDBOX_CONFIGURATION_INTEGRITY_LABEL}=${configurationIntegrity}`,
+        "--label", `${SANDBOX_AGENT_UID_LABEL}=${agentUid}`,
+        "--label", `${SANDBOX_AGENT_GID_LABEL}=${agentGid}`,
         "--tag", contract.REAL_PROVIDER_SANDBOX_IMAGE,
         "--file", configurationPath,
         projectionRoot,

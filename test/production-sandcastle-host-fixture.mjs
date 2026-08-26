@@ -68,6 +68,7 @@ export const installReadyProbeCommands = async (
     setBundledMainScenario(root, mainScenario),
     writeFile(statePath, `${JSON.stringify({
       authenticatedCalls: 0,
+      agentConfigurations: [],
       issues: {},
       pullRequests: [],
       reviewStarted: false,
@@ -129,8 +130,15 @@ const commitIssueChange = (issueId, branch) => {
 
 export const Output = { object: (options) => options };
 export const codex = (model, options) => ({ model, options });
-export const run = async () => {
+export const run = async (options) => {
   const id = issueNumber();
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  state.agentConfigurations.push({
+    phase: "planning",
+    model: options?.agent?.model,
+    effort: options?.agent?.options?.effort,
+  });
+  writeFileSync(statePath, JSON.stringify(state) + "\\n");
   return {
     output: {
       issues: scenario() === "incomplete" ? [] : [{
@@ -144,6 +152,15 @@ export const run = async () => {
 export const createSandbox = async ({ branch }) => ({
   async run(options) {
     const id = String(options.promptArgs?.TASK_ID ?? issueNumber());
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    state.agentConfigurations.push({
+      phase: options.promptFile.endsWith("implement-prompt.md")
+        ? "implementation"
+        : "review",
+      model: options.agent?.model,
+      effort: options.agent?.options?.effort,
+    });
+    writeFileSync(statePath, JSON.stringify(state) + "\\n");
     if (options.promptFile.endsWith("implement-prompt.md")) {
       commitIssueChange(id, branch);
       return { stdout: "implementation completed" };
@@ -315,9 +332,17 @@ if (
   && args[1] === "inspect"
   && args[2] === "sandcastle:sandking-real-worker"
 ) {
-  process.stdout.write(args[3]?.includes("Config.Labels")
-    ? ${JSON.stringify(`${sandboxConfigurationIntegrity}\n`)}
-    : "sha256:${"d".repeat(64)}\\n");
+    process.stdout.write(args[3]?.includes("json .Config")
+      ? JSON.stringify({
+          Labels: {
+            "org.sandking.production-sandbox.configuration-integrity":
+              ${JSON.stringify(sandboxConfigurationIntegrity)},
+            "org.sandking.production-sandbox.agent-uid": String(process.getuid?.() ?? 1000),
+            "org.sandking.production-sandbox.agent-gid": String(process.getgid?.() ?? 1000),
+          },
+          User: String(process.getuid?.() ?? 1000) + ":" + String(process.getgid?.() ?? 1000),
+        }) + "\\n"
+      : "sha256:${"d".repeat(64)}\\n");
   process.exit(0);
 }
 if (args[0] !== "run" || args[1] !== "--rm") process.exit(93);

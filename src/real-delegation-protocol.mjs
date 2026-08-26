@@ -16,7 +16,7 @@ const failureCodes = new Set([
 ]);
 
 /** @param {any} value */
-const validIssueNumber = (value) => Number.isSafeInteger(value)
+export const isValidIssueNumber = (value) => Number.isSafeInteger(value)
   && value >= 1
   && value <= 999_999_999;
 
@@ -30,7 +30,7 @@ const boundedText = (value, maximum) => typeof value === "string"
 const validCompletion = (value) => (
   hasExactKeys(value, ["kind", "pullRequestNumber", "pullRequestUrl"])
     && value.kind === "merged-pull-request"
-    && validIssueNumber(value.pullRequestNumber)
+    && isValidIssueNumber(value.pullRequestNumber)
     && boundedText(value.pullRequestUrl, 512)
     && (() => {
       try {
@@ -56,7 +56,7 @@ const validateMessage = (value) => {
     "status",
   ])) {
     return value.type === "sandcastle.delivery.progress"
-      && validIssueNumber(value.issueNumber)
+      && isValidIssueNumber(value.issueNumber)
       && progressPhases.has(value.phase)
       && boundedText(value.label, 160)
       && boundedText(value.summary, 512)
@@ -73,7 +73,7 @@ const validateMessage = (value) => {
   }
   if (
     value.type !== "sandcastle.delivery.result"
-    || !validIssueNumber(value.issueNumber)
+    || !isValidIssueNumber(value.issueNumber)
     || !["succeeded", "failed"].includes(value.status)
   ) {
     return false;

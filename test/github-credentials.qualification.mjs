@@ -321,7 +321,15 @@ exit 92
 if [ "$1 $2" = "version --format" ]; then printf '%s\\n' '27.5.1'; exit 0; fi
 if [ "$1 $2 $3" = "image inspect sandcastle:sandking-real-worker" ]; then
   case "$4" in
-    *Config.Labels*) printf '%s\\n' '${sandboxConfigurationIntegrity}' ;;
+    *"json .Config"*) printf '%s\\n' '${JSON.stringify({
+      Labels: {
+        "org.sandking.production-sandbox.configuration-integrity":
+          sandboxConfigurationIntegrity,
+        "org.sandking.production-sandbox.agent-uid": String(process.getuid?.() ?? 1000),
+        "org.sandking.production-sandbox.agent-gid": String(process.getgid?.() ?? 1000),
+      },
+      User: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+    })}' ;;
     *) printf '%s\\n' 'sha256:${"d".repeat(64)}' ;;
   esac
   exit 0

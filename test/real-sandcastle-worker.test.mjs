@@ -15,6 +15,7 @@ import {
   REAL_DELEGATION_TIMEOUT_MS,
   REAL_SANDBOX_IMAGE,
   executeRealDelegation,
+  parseRealDelegationInvocationParameters,
   runRealDelegation,
 } from "../src/production-sandcastle-adapter/real-worker-v2.mjs";
 
@@ -99,6 +100,15 @@ const successfulAttestation = (issueNumber = 262) => ({
       pullRequestUrl: "https://github.com/DylanCope/sandking/pull/266",
     },
   },
+});
+
+test("the standalone Worker rejects an out-of-range issue before credential decoding", () => {
+  const encoded = Buffer.from(JSON.stringify({ issueNumber: 1_000_000_000 }), "utf8")
+    .toString("base64url");
+  assert.throws(
+    () => parseRealDelegationInvocationParameters(encoded),
+    /real_delegation_parameters_invalid/,
+  );
 });
 
 for (const mode of ["project-pat", "host-gh-session"]) {

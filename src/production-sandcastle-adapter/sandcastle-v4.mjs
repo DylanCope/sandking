@@ -15,7 +15,7 @@ const {
   GITHUB_AUTHENTICATION_VERIFICATION_CAPABILITY,
   parseGitHubCredential,
 } = await import(githubCredentialContractUrl);
-const { hasExactKeys } = await import(realDelegationProtocolUrl);
+const { hasExactKeys, isValidIssueNumber } = await import(realDelegationProtocolUrl);
 
 const adapterProtocol = "1.0.0";
 const adapterId = "sandcastle-harness-adapter-v1";
@@ -183,11 +183,7 @@ const parseParameters = (encoded) => {
   ].includes(key))) {
     throw new Error("bounded_configuration_invalid");
   }
-  if (value.issueNumber !== undefined && (
-    !Number.isSafeInteger(value.issueNumber)
-    || value.issueNumber < 1
-    || value.issueNumber > 999999999
-  )) {
+  if (value.issueNumber !== undefined && !isValidIssueNumber(value.issueNumber)) {
     throw new Error("bounded_configuration_invalid");
   }
   if (value.targetBranch !== undefined && (

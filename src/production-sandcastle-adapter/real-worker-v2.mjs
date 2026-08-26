@@ -7,9 +7,14 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { digest as sha256 } from "../common/digest.mjs";
-import { parseRealDelegationMessage } from "../real-delegation-protocol.mjs";
+import {
+  isValidIssueNumber,
+  parseRealDelegationMessage,
+} from "../real-delegation-protocol.mjs";
 import {
   createMainContainerConfiguration,
+  createMainContainerPathMappings,
+  createPosixDockerSocketRelay,
   createWindowsDockerPipeRelay,
   MAIN_CONTAINER_PATHS,
   WINDOWS_DOCKER_NAMED_PIPE,
@@ -144,6 +149,7 @@ export const runPinnedMain = async ({
   spawnProcess = spawn,
   platform = process.platform,
   createDockerPipeRelay = createWindowsDockerPipeRelay,
+  createDockerSocketRelay = createPosixDockerSocketRelay,
 }) => {
   const mainPath = `${MAIN_CONTAINER_PATHS.execution}/.sandcastle/main.mts`;
   const tsxLoaderUrl =
@@ -158,21 +164,22 @@ export const runPinnedMain = async ({
     delete dockerEnvironment[name];
   }
   const containerName = `sandking-real-delegation-${randomUUID()}`;
-  const dockerSocketPath = "/var/run/docker.sock";
-  const dockerSocket = platform === "win32"
-    ? null
-    : await lstat(dockerSocketPath).catch(() => null);
-  const dockerPipeRelay = platform === "win32"
-    ? await createDockerPipeRelay(WINDOWS_DOCKER_NAMED_PIPE)
-    : null;
+  const pathMappings = createMainContainerPathMappings({
+    executionPath,
+    projectPath,
+    authPath,
+    githubCredentialPath,
+  });
+  const dockerRelay = platform === "win32"
+    ? await createDockerPipeRelay(WINDOWS_DOCKER_NAMED_PIPE, { pathMappings })
+    : await createDockerSocketRelay("/var/run/docker.sock", { pathMappings });
   const { environmentArguments, mountArguments } = createMainContainerConfiguration({
     executionPath,
     projectPath,
     authPath,
     githubCredentialPath,
     sandboxImage,
-    dockerSocketPath: dockerSocket ? dockerSocketPath : null,
-    dockerRelayPort: dockerPipeRelay?.port ?? null,
+    dockerRelay,
   });
   try {
     const child = spawnProcess("docker", [
@@ -185,7 +192,6 @@ export const runPinnedMain = async ({
       String(CANCELLATION_GRACE_MS / 1_000),
       "--user",
       `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
-      ...(dockerSocket ? ["--group-add", String(dockerSocket.gid)] : []),
       "--workdir",
       MAIN_CONTAINER_PATHS.project,
       ...mountArguments,
@@ -273,7 +279,7 @@ export const runPinnedMain = async ({
       resultCount: results.length,
     };
   } finally {
-    await dockerPipeRelay?.close();
+    await dockerRelay.close();
   }
 };
 
@@ -288,7 +294,7 @@ export const runRealDelegation = async ({
   runMain = runPinnedMain,
   onProgress = () => undefined,
 }) => {
-  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1 || issueNumber > 999_999_999) {
+  if (!isValidIssueNumber(issueNumber)) {
     throw delegationError("real_delegation_issue_required");
   }
   const pinned = await loadPinnedInputs(executionPath);
@@ -402,14 +408,14 @@ const publish = (message) => {
   writeSync(3, `${JSON.stringify(message)}\n`);
 };
 
-const parseInvocationParameters = (encoded) => {
+export const parseRealDelegationInvocationParameters = (encoded) => {
   try {
     const value = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
     if (
       !value
       || typeof value !== "object"
       || Array.isArray(value)
-      || !Number.isSafeInteger(value.issueNumber)
+      || !isValidIssueNumber(value.issueNumber)
     ) {
       throw new Error("invalid");
     }
@@ -426,7 +432,7 @@ if (invokedPath.endsWith("/.sandcastle/real-worker-v2.mjs")) {
     throw new Error("real_delegation_invocation_invalid");
   }
   const [executionPath, encodedParameters, projectPath] = invocationPaths;
-  const parameters = parseInvocationParameters(encodedParameters);
+  const parameters = parseRealDelegationInvocationParameters(encodedParameters);
   let githubCredential;
   try {
     githubCredential = JSON.parse(readFileSync(4, "utf8"));

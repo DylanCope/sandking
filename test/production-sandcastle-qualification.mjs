@@ -130,6 +130,11 @@ test("the ordinary launch seam delegates once through the pinned production adap
     }
     const mainState = await readBundledMainState(root);
     assert.ok(mainState.authenticatedCalls > 0);
+    assert.deepEqual(mainState.agentConfigurations, [
+      { phase: "planning", model: "gpt-5.6-sol", effort: "xhigh" },
+      { phase: "implementation", model: "gpt-5.6-sol", effort: "xhigh" },
+      { phase: "review", model: "gpt-5.6-sol", effort: "xhigh" },
+    ]);
     assert.equal(mainState.issues[173].state, "closed");
     assert.equal(mainState.pullRequests.length, 1);
     assert.equal(mainState.pullRequests[0].state, "MERGED");

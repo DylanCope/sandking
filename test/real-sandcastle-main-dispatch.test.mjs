@@ -142,6 +142,8 @@ writeSync(protocolFd, JSON.stringify({
     ), false);
     assert.ok(invocations[0].args.some((value) =>
       value === `${githubCredentialPath}:/run/secrets/github-token:ro`));
+    assert.ok(invocations[0].args.some((value) =>
+      /:\/var\/run\/docker\.sock:rw$/.test(value)));
     assert.equal(progress.length, 1);
     assert.equal(progress[0].phase, "planning");
     assert.equal(completed.exitCode, 0);
@@ -179,6 +181,13 @@ test("native Windows dispatch relays Docker's named pipe into Linux container pa
         assert.equal(namedPipePath, "\\\\.\\pipe\\docker_engine");
         return {
           port: 43_262,
+          environment: {
+            DOCKER_HOST: "tcp://host.docker.internal:43262",
+            DOCKER_CONFIG: "/run/sandking-docker-config",
+          },
+          mountArguments: [
+            "C:/private/docker-config:/run/sandking-docker-config:ro",
+          ],
           close: async () => {
             relayClosed = true;
           },
@@ -195,11 +204,13 @@ test("native Windows dispatch relays Docker's named pipe into Linux container pa
           `${executionPath}:/workspace/harness:ro`,
           `${authPath}:/run/secrets/codex-auth.json:ro`,
           `${githubCredentialPath}:/run/secrets/github-token:ro`,
+          "C:/private/docker-config:/run/sandking-docker-config:ro",
         ]) {
           assert.ok(args.includes(mount), JSON.stringify(args));
         }
         assert.equal(args.includes("/var/run/docker.sock:/var/run/docker.sock:rw"), false);
         assert.ok(args.includes("DOCKER_HOST=tcp://host.docker.internal:43262"));
+        assert.ok(args.includes("DOCKER_CONFIG=/run/sandking-docker-config"));
         assert.ok(args.includes(
           "SANDCASTLE_CODEX_AUTH_PATH=/run/secrets/codex-auth.json",
         ));

@@ -3,8 +3,17 @@ import test from "node:test";
 import {
   createRealDelegationProgress,
   createRealDelegationResult,
+  isValidIssueNumber,
   parseRealDelegationMessage,
 } from "../src/real-delegation-protocol.mjs";
+
+test("one bounded issue-number predicate governs delegation protocol identifiers", () => {
+  assert.equal(isValidIssueNumber(1), true);
+  assert.equal(isValidIssueNumber(999_999_999), true);
+  for (const value of [0, 1_000_000_000, 1.5, Number.MAX_SAFE_INTEGER, "262"]) {
+    assert.equal(isValidIssueNumber(value), false, String(value));
+  }
+});
 
 test("main delegation messages are strict structured progress and completion attestations", () => {
   const progress = createRealDelegationProgress({
