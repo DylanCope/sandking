@@ -17,7 +17,7 @@ const realProviderContractUrl = new URL(
 
 /**
  * @typedef {{
- *   REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS: readonly {identity: string, version: string}[],
+ *   REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS: readonly Readonly<Record<string, string>>[],
  *   REAL_PROVIDER_SANDBOX_CONFIGURATION: string,
  *   REAL_PROVIDER_SANDBOX_IMAGE: string,
  *   REAL_PROVIDER_SKILL_IDENTITIES: readonly string[],
@@ -32,7 +32,7 @@ export const loadRealProviderContract = () => import(realProviderContractUrl.hre
 
 /**
  * @param {unknown} preparation
- * @param {readonly {identity: string, version: string}[]} executionRuntimeInputs
+ * @param {readonly Readonly<Record<string, string>>[]} executionRuntimeInputs
  * @param {readonly string[]} skillIdentities
  */
 export const pinnedRealProviderInputsReady = (

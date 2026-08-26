@@ -16,33 +16,62 @@ const failureCodes = new Set([
 ]);
 
 export const REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS = Object.freeze([
-  Object.freeze({ identity: "openai.codex-cli", version: "0.146.0" }),
+  Object.freeze({
+    identity: "openai.codex-cli",
+    package: "@openai/codex",
+    version: "0.146.0",
+    resolved: "https://registry.npmjs.org/@openai/codex/-/codex-0.146.0.tgz",
+    integrity:
+      "sha512-yG3sPWNda/2YAIQIDq9MrrjoCTIQ7rxYM5IasrG3VBcuhCLTkgeg/JzqmJq1V98RE4MJ5jCxDXXQlOjrditFRw==",
+    skillExposure: "versioned-with-runtime-package",
+  }),
   Object.freeze({
     identity: "docker.cli",
+    package: "docker.io",
     version: "20.10.24+dfsg1-1+deb12u1+b6",
+    resolved:
+      "https://snapshot.debian.org/archive/debian/20260825T000000Z/dists/bookworm/InRelease",
+    integrity:
+      "sha512-g2nfFf0TRYofHqQEnRCEaW5q1Tc0ResEDDfA49URb5Ns3r0Djz8zNnnzJ9Rkw0MY9uB6pNZcz9Lg/LH6DvOaAA==",
+    skillExposure: "versioned-with-runtime-package",
   }),
 ]);
 
 /**
  * @param {unknown} value
- * @param {readonly {identity: string, version: string}[]} expected
+ * @param {readonly Readonly<Record<string, string>>[]} expected
  */
 export const hasExecutionRuntimeInputs = (value, expected) => Array.isArray(value)
-  && value.every((input) => input !== null
-    && typeof input === "object"
-    && !Array.isArray(input))
-  && JSON.stringify(value.map(({ identity, version }) => ({ identity, version })))
-    === JSON.stringify(expected);
+  && value.length === expected.length
+  && value.every((input, index) => hasExactKeys(input, Object.keys(expected[index]))
+    && Object.entries(expected[index]).every(([key, expectedValue]) =>
+      input[key] === expectedValue));
 
 /** @param {any} value */
 export const isValidIssueNumber = (value) => Number.isSafeInteger(value)
   && value >= 1
   && value <= 999_999_999;
 
+const localDockerEndpointPatterns = Object.freeze([
+  /^unix:\/\/\/[^?#\s\0]+$/,
+  /^npipe:\/\/\/\/\.\/pipe\/[^?#\s\0]+$/,
+]);
+
 /** @param {unknown} value */
-export const isDockerEndpoint = (value) => typeof value === "string"
-  && value.length <= 2_048
-  && /^(?:unix|npipe):\/\/[^\s\0]+$/.test(value);
+export const isDockerEndpoint = (value) => {
+  if (
+    typeof value !== "string"
+    || value.length > 2_048
+    || !localDockerEndpointPatterns.some((pattern) => pattern.test(value))
+  ) {
+    return false;
+  }
+  try {
+    return !/[\0\r\n]/.test(decodeURIComponent(new URL(value).pathname));
+  } catch {
+    return false;
+  }
+};
 
 /** @param {any} value */
 export const isProductionProviderRuntime = (value) => hasExactKeys(value, [

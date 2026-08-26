@@ -21,6 +21,9 @@ test("provider runtimes accept only Docker endpoints sharing the Host mount name
     "tcp://remote.example:2376",
     "http://remote.example:2375",
     "https://remote.example:2376",
+    "unix://remote.example/var/run/docker.sock",
+    "npipe://remote.example/pipe/docker_engine",
+    "npipe:////remote.example/pipe/docker_engine",
   ]) {
     assert.equal(isProductionProviderRuntime({ dockerEndpoint, sandboxImageId }), false);
   }

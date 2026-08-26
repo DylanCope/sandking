@@ -74,6 +74,33 @@ test("provider readiness requires every pinned execution-runtime input", async (
   assert.equal(providerProbed, false);
 });
 
+test("provider readiness rejects changed bytes behind a pinned runtime version", async () => {
+  let providerProbed = false;
+  const result = await ensureProductionProviderRuntime({
+    projectionPath: "/unreachable/changed-runtime",
+    productionPreparation: {
+      ...productionPreparation,
+      executionRuntimeInputs: productionPreparation.executionRuntimeInputs.map((input) =>
+        input.identity === "docker.cli"
+          ? { ...input, integrity: "sha512-Y2hhbmdlZA==" }
+          : input),
+    },
+    environment: { PATH: "/usr/bin:/bin", DOCKER_HOST: defaultDockerEndpoint },
+    realProviderContract: {
+      ...providerInputContract,
+      realProviderAvailable: () => {
+        providerProbed = true;
+        return true;
+      },
+      realSandboxEngineAvailable: () => true,
+      realSandboxImageAvailable: () => true,
+    },
+  });
+
+  assert.deepEqual(result, { ready: false, imageBuilt: false });
+  assert.equal(providerProbed, false);
+});
+
 test("provider readiness rejects Docker engines that cannot mount Host inputs", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-provider-remote-"));
   try {
@@ -82,36 +109,43 @@ test("provider readiness rejects Docker engines that cannot mount Host inputs", 
     await mkdir(join(projectionPath, ".sandcastle"), { recursive: true });
     await writeFile(dockerfilePath, "FROM node:22-bookworm\n");
 
-    for (const selectedBy of ["host", "context"]) {
-      const calls = [];
-      const result = await ensureProductionProviderRuntime({
-        projectionPath,
-        productionPreparation,
-        environment: selectedBy === "host"
-          ? { PATH: "/usr/bin:/bin", DOCKER_HOST: "ssh://remote.example" }
-          : { PATH: "/usr/bin:/bin", DOCKER_CONTEXT: "remote" },
-        executeFile: async (command, args) => {
-          calls.push([command, ...args]);
-          if (args[0] === "context") {
-            return { stdout: `${JSON.stringify("ssh://remote.example")}\n`, stderr: "" };
-          }
-          throw new Error("remote_engine_must_not_be_probed");
-        },
-        realProviderContract: {
-          ...providerInputContract,
-          realProviderAvailable: () => true,
-          realSandboxEngineAvailable: () => true,
-          realSandboxImageAvailable: () => true,
-        },
-      });
+    for (const dockerEndpoint of [
+      "ssh://remote.example",
+      "unix://remote.example/var/run/docker.sock",
+      "npipe://remote.example/pipe/docker_engine",
+      "npipe:////remote.example/pipe/docker_engine",
+    ]) {
+      for (const selectedBy of ["host", "context"]) {
+        const calls = [];
+        const result = await ensureProductionProviderRuntime({
+          projectionPath,
+          productionPreparation,
+          environment: selectedBy === "host"
+            ? { PATH: "/usr/bin:/bin", DOCKER_HOST: dockerEndpoint }
+            : { PATH: "/usr/bin:/bin", DOCKER_CONTEXT: "remote" },
+          executeFile: async (command, args) => {
+            calls.push([command, ...args]);
+            if (args[0] === "context") {
+              return { stdout: `${JSON.stringify(dockerEndpoint)}\n`, stderr: "" };
+            }
+            throw new Error("remote_engine_must_not_be_probed");
+          },
+          realProviderContract: {
+            ...providerInputContract,
+            realProviderAvailable: () => true,
+            realSandboxEngineAvailable: () => true,
+            realSandboxImageAvailable: () => true,
+          },
+        });
 
-      assert.deepEqual(result, { ready: false, imageBuilt: false });
-      assert.deepEqual(calls, selectedBy === "host"
-        ? []
-        : [[
-            "docker", "context", "inspect", "remote",
-            "--format={{json .Endpoints.docker.Host}}",
-          ]]);
+        assert.deepEqual(result, { ready: false, imageBuilt: false });
+        assert.deepEqual(calls, selectedBy === "host"
+          ? []
+          : [[
+              "docker", "context", "inspect", "remote",
+              "--format={{json .Endpoints.docker.Host}}",
+            ]]);
+      }
     }
   } finally {
     await rm(root, { recursive: true, force: true });

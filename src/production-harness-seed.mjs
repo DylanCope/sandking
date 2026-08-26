@@ -44,32 +44,7 @@ const SANDCASTLE_INTEGRITY =
   "sha512-kdQ414rM8t1QiWeqZ3Klz4KSd0PqQG4bRVuqGpRDUomWhojSZkEAc1tbcEcThVmBEaHkCt8LmYR49vqEPNIoYQ==";
 const SANDCASTLE_DEPENDENCY_LOCK_INTEGRITY =
   "sha256:f23f864604dd2901d314afdb5ee819c2ca91fccd3c16807a8c5441d818e5b4c1";
-const CODEX_RESOLVED =
-  "https://registry.npmjs.org/@openai/codex/-/codex-0.146.0.tgz";
-const CODEX_INTEGRITY =
-  "sha512-yG3sPWNda/2YAIQIDq9MrrjoCTIQ7rxYM5IasrG3VBcuhCLTkgeg/JzqmJq1V98RE4MJ5jCxDXXQlOjrditFRw==";
-const DOCKER_CLI_RESOLVED =
-  "https://snapshot.debian.org/archive/debian/20260825T000000Z/dists/bookworm/InRelease";
-const DOCKER_CLI_INTEGRITY =
-  "sha512-g2nfFf0TRYofHqQEnRCEaW5q1Tc0ResEDDfA49URb5Ns3r0Djz8zNnnzJ9Rkw0MY9uB6pNZcz9Lg/LH6DvOaAA==";
-const requiredExecutionRuntimeInputs = Object.freeze([
-  Object.freeze({
-    identity: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS[0].identity,
-    package: "@openai/codex",
-    version: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS[0].version,
-    resolved: CODEX_RESOLVED,
-    integrity: CODEX_INTEGRITY,
-    skillExposure: "versioned-with-runtime-package",
-  }),
-  Object.freeze({
-    identity: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS[1].identity,
-    package: "docker.io",
-    version: REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS[1].version,
-    resolved: DOCKER_CLI_RESOLVED,
-    integrity: DOCKER_CLI_INTEGRITY,
-    skillExposure: "versioned-with-runtime-package",
-  }),
-]);
+const requiredExecutionRuntimeInputs = REAL_PROVIDER_EXECUTION_RUNTIME_INPUTS;
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 export const bundledProductionHarnessSeedRoot = fileURLToPath(
