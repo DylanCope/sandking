@@ -639,6 +639,7 @@ const runWorker = async (
     activeChild?.kill("SIGTERM");
   };
   process.on("SIGTERM", cancelWorker);
+  process.channel?.on("error", () => undefined);
   const handleCancellationMessage = (message) => {
     if (
       message?.type === "harness.run.cancel"
