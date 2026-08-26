@@ -277,6 +277,7 @@ main().catch((error) => {
   }
   if (
     error instanceof ControllerCliAcknowledgedFailure
+    && (error.configurationOptions || error.sanitizedExplanation)
     && process.argv.slice(2).includes("--json")
   ) {
     process.stdout.write(`${JSON.stringify({

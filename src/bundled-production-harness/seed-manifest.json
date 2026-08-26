@@ -40,7 +40,7 @@
       "path": "real-delegation-protocol.mjs",
       "sourcePath": "src/real-delegation-protocol.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:13aa2c89a7b508f07de4d6a19ac264678168778689bd5e9e6d512f6fe9e775e8",
+      "integrity": "sha256:39097eaab8b03761fe2853abcb99dcad180c6491696fb3f5cac9400994e71ac5",
       "executable": false
     },
     {
@@ -54,14 +54,14 @@
       "path": ".sandcastle/real-worker-v2.mjs",
       "sourcePath": "src/production-sandcastle-adapter/real-worker-v2.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:b60db94120b878b82932c32b98fe6d281f9e777050fdbf0416e6288c3eb4a057",
+      "integrity": "sha256:e58e55a9ea56b840d940e53963437bff40e75ec3e2b4c25abb9047ce40f942dc",
       "executable": false
     },
     {
       "path": "adapters/sandcastle.mjs",
       "sourcePath": "src/production-sandcastle-adapter/sandcastle-v4.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:2203385f28dc315a369faf30a3b0a486467aeab3b9fe3b2fee256222e740fc1b",
+      "integrity": "sha256:5fb84aa02dbffa770f8ad3a573b9d9075ae948a5cb05f74ba1a5688ba0ab0826",
       "executable": false
     },
     {
@@ -92,13 +92,13 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:0a4a1c1959ff7174bc9c47454652149303ae05271ab56efec50b46638a2d74de",
+      "integrity": "sha256:3130d7f92e6a00afc190d23e2215ce178e375f9888b862fe6950cdb5441d93e2",
       "executable": false
     },
     {
       "path": "skills.lock.json",
       "source": "seed",
-      "integrity": "sha256:325fa3f63623d768175123baeac52ec63397c5994c591dcd6e28e9e60fd95918",
+      "integrity": "sha256:c7fcc7c8033e2af3061082f0813003d9b637485f6c025da25a2a6719d9f715df",
       "executable": false
     },
     {
@@ -146,7 +146,7 @@
     {
       "path": ".sandcastle/main.mts",
       "source": "sandking-package",
-      "integrity": "sha256:793c7c036108786ed4095407909525df7a934be3a3a3f14b93669a079a9864a6",
+      "integrity": "sha256:6bcd7d25add9072681e5adb89f851198eb362f0a694f6d40be3ef86f90a10d18",
       "executable": false
     },
     {

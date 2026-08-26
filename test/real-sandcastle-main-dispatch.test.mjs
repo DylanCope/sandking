@@ -1,9 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runPinnedMain } from "../src/production-sandcastle-adapter/real-worker-v2.mjs";
+
+const installedTsxPath = join(process.cwd(), "node_modules", "tsx");
+
+const installTsx = async (executionPath) => {
+  const modulesPath = join(executionPath, "node_modules");
+  await mkdir(modulesPath, { recursive: true });
+  await symlink(
+    installedTsxPath,
+    join(modulesPath, "tsx"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+};
 
 test("the real Worker invokes pinned main.mts for one issue and accepts its attestation", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-main-dispatch-"));
@@ -14,16 +26,16 @@ test("the real Worker invokes pinned main.mts for one issue and accepts its atte
   const githubCredentialPath = join(root, "github-token");
   try {
     await Promise.all([
-      mkdir(join(executionPath, "node_modules", "tsx", "dist"), { recursive: true }),
+      installTsx(executionPath),
       mkdir(join(executionPath, ".sandcastle"), { recursive: true }),
       mkdir(projectPath, { recursive: true }),
       writeFile(authPath, "{}\n"),
       writeFile(githubCredentialPath, "github_pat_main_dispatch_secret\n"),
     ]);
-    await writeFile(join(executionPath, ".sandcastle", "main.mts"), "// pinned main\n");
-    await writeFile(join(executionPath, "node_modules", "tsx", "dist", "cli.mjs"), `
+    await writeFile(join(executionPath, ".sandcastle", "main.mts"), `
 import { writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
+const issueNumber: number = Number(process.argv.at(-1));
 writeFileSync(join(process.cwd(), "main-invocation.json"), JSON.stringify({
   argv: process.argv.slice(2),
   credentialPath: process.env.SANDKING_GITHUB_CREDENTIAL_PATH,
@@ -33,7 +45,7 @@ writeFileSync(join(process.cwd(), "main-invocation.json"), JSON.stringify({
 }));
 writeSync(3, JSON.stringify({
   type: "sandcastle.delivery.progress",
-  issueNumber: 262,
+  issueNumber,
   phase: "planning",
   label: "Plan issue #262",
   summary: "The scoped planner is selecting issue #262.",
@@ -41,7 +53,7 @@ writeSync(3, JSON.stringify({
 }) + "\\n");
 writeSync(3, JSON.stringify({
   type: "sandcastle.delivery.result",
-  issueNumber: 262,
+  issueNumber,
   status: "succeeded",
   code: "scoped_issue_completed",
   completion: {
@@ -65,7 +77,7 @@ writeSync(3, JSON.stringify({
     });
 
     assert.deepEqual(JSON.parse(await readFile(capturePath, "utf8")), {
-      argv: [join(executionPath, ".sandcastle", "main.mts"), "--issue", "262"],
+      argv: ["--issue", "262"],
       credentialPath: githubCredentialPath,
       codexAuthPath: authPath,
       protocol: "1",
@@ -89,19 +101,19 @@ test("cancellation reaches main.mts and preserves its structured failure", async
   const githubCredentialPath = join(root, "github-token");
   try {
     await Promise.all([
-      mkdir(join(executionPath, "node_modules", "tsx", "dist"), { recursive: true }),
+      installTsx(executionPath),
       mkdir(join(executionPath, ".sandcastle"), { recursive: true }),
       mkdir(projectPath, { recursive: true }),
       writeFile(authPath, "{}\n"),
       writeFile(githubCredentialPath, "github_pat_cancellation_secret\n"),
     ]);
-    await writeFile(join(executionPath, ".sandcastle", "main.mts"), "// pinned main\n");
-    await writeFile(join(executionPath, "node_modules", "tsx", "dist", "cli.mjs"), `
+    await writeFile(join(executionPath, ".sandcastle", "main.mts"), `
 import { writeSync } from "node:fs";
-process.once("SIGTERM", () => {
+const issueNumber: number = Number(process.argv.at(-1));
+process.on("SIGTERM", () => {
   writeSync(3, JSON.stringify({
     type: "sandcastle.delivery.result",
-    issueNumber: 262,
+    issueNumber,
     status: "failed",
     code: "delivery_cancelled",
     completion: null,
@@ -110,7 +122,7 @@ process.once("SIGTERM", () => {
 });
 writeSync(3, JSON.stringify({
   type: "sandcastle.delivery.progress",
-  issueNumber: 262,
+  issueNumber,
   phase: "planning",
   label: "Plan issue #262",
   summary: "The scoped planner is ready for cancellation.",

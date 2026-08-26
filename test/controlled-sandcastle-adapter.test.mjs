@@ -29,11 +29,16 @@ const githubCredentialContractPath = new URL(
   "../src/github-credential-contract.mjs",
   import.meta.url,
 );
+const realDelegationProtocolPath = new URL(
+  "../src/real-delegation-protocol.mjs",
+  import.meta.url,
+);
 const adapterId = "sandcastle-harness-adapter-v1";
 const adapterProtocol = "1.0.0";
 const retainedWorkerPath = ".sandcastle/controlled-worker-fixture.mjs";
 const workerSource = await readFile(workerPath, "utf8");
 const githubCredentialContractSource = await readFile(githubCredentialContractPath, "utf8");
+const realDelegationProtocolSource = await readFile(realDelegationProtocolPath, "utf8");
 const workerIntegrity = `sha256:${createHash("sha256")
   .update(workerSource)
   .digest("hex")}`;
@@ -60,6 +65,10 @@ const createFixture = async (manifest) => {
     writeFile(
       join(executionPath, "github-credential-contract.mjs"),
       githubCredentialContractSource,
+    ),
+    writeFile(
+      join(executionPath, "real-delegation-protocol.mjs"),
+      realDelegationProtocolSource,
     ),
     writeFile(join(executionPath, "worker-environment.json"), `${JSON.stringify({
       schemaVersion: 1,

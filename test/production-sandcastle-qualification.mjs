@@ -564,7 +564,6 @@ test("the installed ordinary CLI discovers production parameters and launches th
     assert.equal(observed.outcome.result.code, "scoped_issue_incomplete");
     assert.equal(observed.terminalEnvelopeValidation.exactlyOne, true);
     assert.deepEqual(requests.map(({ operation }) => operation), [
-      "describe",
       "harness-run.launch",
       "describe",
       "harness-run.launch",
@@ -576,9 +575,9 @@ test("the installed ordinary CLI discovers production parameters and launches th
       "harness-run.launch",
     ]);
     assert.equal(requests[0].projectId, projectId);
-    assert.equal(requests[9].controllerSessionId, controllerSessionId);
-    assert.equal("plugin" in requests[9], false);
-    assert.equal("expectedRevision" in requests[9], false);
+    assert.equal(requests[8].controllerSessionId, controllerSessionId);
+    assert.equal("plugin" in requests[8], false);
+    assert.equal("expectedRevision" in requests[8], false);
   } finally {
     await fixture?.manager.waitForIdle().catch(() => undefined);
     await new Promise((resolve) => server?.close(resolve) ?? resolve());
