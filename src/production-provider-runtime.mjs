@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { digest as sha256 } from "./common/digest.mjs";
 import { createDestinationWorkerEnvironment } from "./destination-worker-environment.mjs";
+import { isDockerEndpoint } from "./real-delegation-protocol.mjs";
 
 const execFileAsync = promisify(execFile);
 const realProviderContractUrl = new URL(
@@ -58,8 +59,6 @@ const SANDBOX_AGENT_GID_LABEL = "org.sandking.production-sandbox.agent-gid";
 /** @type {Map<string, Promise<{ready: boolean, imageBuilt: boolean, dockerEndpoint?: string, sandboxImageId?: string}>>} */
 const activeSandboxPreparations = new Map();
 
-const dockerEndpointPattern = /^(?:unix|npipe|tcp|http|https|ssh):\/\/[^\s\0]+$/;
-
 /**
  * Resolve the endpoint selected by the same Docker CLI configuration used for
  * readiness. Subsequent operations bind that endpoint explicitly so a later
@@ -69,11 +68,7 @@ const dockerEndpointPattern = /^(?:unix|npipe|tcp|http|https|ssh):\/\/[^\s\0]+$/
  */
 const resolveDockerEndpoint = async ({ execute, environment }) => {
   const configuredEndpoint = environment.DOCKER_HOST;
-  if (
-    typeof configuredEndpoint === "string"
-    && configuredEndpoint.length <= 2_048
-    && dockerEndpointPattern.test(configuredEndpoint)
-  ) {
+  if (isDockerEndpoint(configuredEndpoint)) {
     return configuredEndpoint;
   }
   const context = environment.DOCKER_CONTEXT;
@@ -87,11 +82,7 @@ const resolveDockerEndpoint = async ({ execute, environment }) => {
     maxBuffer: 64_000,
   });
   const endpoint = JSON.parse(stdout);
-  if (
-    typeof endpoint !== "string"
-    || endpoint.length > 2_048
-    || !dockerEndpointPattern.test(endpoint)
-  ) {
+  if (!isDockerEndpoint(endpoint)) {
     throw new Error("production_docker_endpoint_invalid");
   }
   return endpoint;

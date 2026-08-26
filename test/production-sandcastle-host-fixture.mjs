@@ -59,11 +59,13 @@ export const installReadyProbeCommands = async (
 ) => {
   const binPath = join(root, "bin");
   const fakeSandcastlePath = join(root, "fake-sandcastle");
+  const hostHomePath = join(root, "host-home");
   const containerHomePath = join(root, "container-home");
   const scenarioPath = bundledMainScenarioPath(root);
   const statePath = bundledMainStatePath(root);
   const imageStatePath = sandboxImageStatePath(root);
   const originalPath = process.env.PATH;
+  const originalHome = process.env.HOME;
   const dependencyRoot = join(new URL("../node_modules", import.meta.url).pathname);
   const sandboxConfigurationIntegrity = sha256(await readFile(
     new URL("../.sandcastle/Dockerfile", import.meta.url),
@@ -71,6 +73,7 @@ export const installReadyProbeCommands = async (
   await Promise.all([
     mkdir(binPath, { recursive: true }),
     mkdir(containerHomePath, { recursive: true }),
+    mkdir(join(hostHomePath, ".codex"), { recursive: true }),
     mkdir(join(fakeSandcastlePath, "sandboxes"), { recursive: true }),
     setBundledMainScenario(root, mainScenario),
     setProductionSandboxImage(root, `sha256:${"d".repeat(64)}`),
@@ -83,6 +86,11 @@ export const installReadyProbeCommands = async (
     })}\n`),
   ]);
   await Promise.all([
+    writeFile(
+      join(hostHomePath, ".codex", "auth.json"),
+      '{"auth_mode":"fixture"}\n',
+      { mode: 0o600 },
+    ),
     writeFile(join(fakeSandcastlePath, "package.json"), `${JSON.stringify({
       name: "@ai-hero/sandcastle",
       version: "0.12.0",
@@ -438,8 +446,11 @@ child.once("exit", (code, signal) => {
 `),
   ]);
   process.env.PATH = `${binPath}${delimiter}${originalPath ?? ""}`;
+  process.env.HOME = hostHomePath;
   return () => {
     process.env.PATH = originalPath;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
   };
 };
 

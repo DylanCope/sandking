@@ -20,14 +20,17 @@ export const isValidIssueNumber = (value) => Number.isSafeInteger(value)
   && value >= 1
   && value <= 999_999_999;
 
+/** @param {unknown} value */
+export const isDockerEndpoint = (value) => typeof value === "string"
+  && value.length <= 2_048
+  && /^(?:unix|npipe|tcp|http|https|ssh):\/\/[^\s\0]+$/.test(value);
+
 /** @param {any} value */
 export const isProductionProviderRuntime = (value) => hasExactKeys(value, [
   "dockerEndpoint",
   "sandboxImageId",
 ])
-  && typeof value.dockerEndpoint === "string"
-  && value.dockerEndpoint.length <= 2_048
-  && /^(?:unix|npipe|tcp|http|https|ssh):\/\/[^\s\0]+$/.test(value.dockerEndpoint)
+  && isDockerEndpoint(value.dockerEndpoint)
   && /^sha256:[a-f0-9]{64}$/.test(value.sandboxImageId ?? "");
 
 /** @param {unknown} value @param {string} [code] */

@@ -368,7 +368,20 @@ test("the shared real-provider probe requires exact Codex, auth, npm, Docker, an
     calls.push([command, ...args]);
     return { status: 0, stdout: "Logged in using fixture\n", stderr: "" };
   };
-  const options = { environment: {}, execFileSync, platform: "linux", spawnSync };
+  const regularAuthFile = {
+    isFile: () => true,
+    isSymbolicLink: () => false,
+  };
+  const options = {
+    environment: { HOME: "/destination" },
+    execFileSync,
+    lstatSync: (path) => {
+      assert.equal(path, "/destination/.codex/auth.json");
+      return regularAuthFile;
+    },
+    platform: "linux",
+    spawnSync,
+  };
 
   assert.equal(probeRealProviderReadiness(options), true);
   assert.deepEqual(calls, [
@@ -388,6 +401,10 @@ test("the shared real-provider probe requires exact Codex, auth, npm, Docker, an
   assert.equal(probeRealProviderReadiness({
     ...options,
     spawnSync: () => ({ status: 1, stdout: "", stderr: "Not logged in\n" }),
+  }), false);
+  assert.equal(probeRealProviderReadiness({
+    ...options,
+    lstatSync: () => { throw new Error("codex_auth_missing"); },
   }), false);
   assert.equal(probeRealProviderReadiness({
     ...options,

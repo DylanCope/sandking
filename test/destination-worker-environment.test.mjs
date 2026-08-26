@@ -1,7 +1,34 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { delimiter } from "node:path";
-import { createDestinationWorkerEnvironment } from "../src/destination-worker-environment.mjs";
+import {
+  createDestinationWorkerEnvironment,
+  destinationCodexAuthPath,
+  isMountableCodexAuthFile,
+} from "../src/destination-worker-environment.mjs";
+
+test("the Worker resolves and verifies only its destination-local Codex auth file", () => {
+  assert.equal(destinationCodexAuthPath({
+    environment: { HOME: "/srv/destination-user" },
+    platform: "linux",
+  }), "/srv/destination-user/.codex/auth.json");
+  assert.equal(destinationCodexAuthPath({
+    environment: {
+      HOME: "C:\\Users\\destination",
+      CODEX_HOME: "D:\\Codex",
+    },
+    platform: "win32",
+  }), "D:\\Codex\\auth.json");
+  assert.equal(isMountableCodexAuthFile("/auth.json", {
+    lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => false }),
+  }), true);
+  assert.equal(isMountableCodexAuthFile("/auth.json", {
+    lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => true }),
+  }), false);
+  assert.equal(isMountableCodexAuthFile("/missing.json", {
+    lstatSync: () => { throw new Error("ENOENT"); },
+  }), false);
+});
 
 test("the Host derives a minimal destination-local Worker environment", () => {
   const environment = createDestinationWorkerEnvironment({

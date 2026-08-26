@@ -1,12 +1,15 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeSync } from "node:fs";
-import { lstat, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { digest as sha256 } from "../common/digest.mjs";
+import {
+  destinationCodexAuthPath,
+  isMountableCodexAuthFile,
+} from "../destination-worker-environment.mjs";
 import {
   hasExactKeys,
   isValidIssueNumber,
@@ -100,19 +103,6 @@ const loadPinnedInputs = async (executionPath) => {
     skillSetLockDigest: workerEnvironment.skillSetLockDigest,
     sandboxConfigurationIntegrity: sha256(sandboxConfiguration),
   };
-};
-
-const destinationCodexAuthPath = () => join(
-  process.env.CODEX_HOME
-    ?? join(process.env.HOME ?? process.env.USERPROFILE ?? homedir(), ".codex"),
-  "auth.json",
-);
-
-const verifyCodexAuthPath = async (authPath) => {
-  const details = await lstat(authPath);
-  if (!details.isFile() || details.isSymbolicLink()) {
-    throw new Error("pinned_real_worker_auth_invalid");
-  }
 };
 
 const waitForChild = (child) => new Promise((resolve) => {
@@ -293,7 +283,9 @@ export const runRealDelegation = async ({
   }
   const providerRuntime = parseProductionProviderRuntime(productionProviderRuntime);
   const pinned = await loadPinnedInputs(executionPath);
-  await verifyCodexAuthPath(authPath);
+  if (!isMountableCodexAuthFile(authPath)) {
+    throw new Error("pinned_real_worker_auth_invalid");
+  }
   const materializedGitHubCredential = await materializeGitHubCredential(githubCredential);
   if (!materializedGitHubCredential) {
     throw delegationError("real_delegation_github_credential_required");

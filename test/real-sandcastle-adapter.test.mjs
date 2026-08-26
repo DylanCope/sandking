@@ -26,6 +26,10 @@ const exactObjectKeysPath = new URL(
   "../src/common/exact-object-keys.mjs",
   import.meta.url,
 );
+const destinationWorkerEnvironmentPath = new URL(
+  "../src/destination-worker-environment.mjs",
+  import.meta.url,
+);
 const adapterId = "sandcastle-harness-adapter-v1";
 const adapterProtocol = "1.0.0";
 const workerPath = ".sandcastle/real-worker-v2.mjs";
@@ -36,6 +40,10 @@ const sandboxConfigurationSource = "FROM node:22-bookworm\n";
 const githubCredentialContractSource = await readFile(githubCredentialContractPath, "utf8");
 const realDelegationProtocolSource = await readFile(realDelegationProtocolPath, "utf8");
 const exactObjectKeysSource = await readFile(exactObjectKeysPath, "utf8");
+const destinationWorkerEnvironmentSource = await readFile(
+  destinationWorkerEnvironmentPath,
+  "utf8",
+);
 
 const encode = (value) => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 const integrity = (source) => `sha256:${createHash("sha256").update(source).digest("hex")}`;
@@ -59,6 +67,7 @@ const createFixture = async ({
   await Promise.all([
     mkdir(join(executionPath, "common"), { recursive: true }),
     mkdir(join(executionPath, ".sandcastle"), { recursive: true }),
+    mkdir(join(root, ".codex"), { recursive: true }),
     mkdir(binPath, { recursive: true }),
   ]);
   await new Promise((resolve, reject) => {
@@ -71,6 +80,9 @@ const createFixture = async ({
     provider: { kind: "openai-codex", ready: providerReady },
     scenario: "project-commit",
   })}\n`);
+  await writeFile(join(root, ".codex", "auth.json"), '{"auth_mode":"fixture"}\n', {
+    mode: 0o600,
+  });
   await writeFile(join(executionPath, "worker-environment.json"), `${JSON.stringify({
     schemaVersion: 1,
     harness: { adapterId },
@@ -108,6 +120,10 @@ const createFixture = async ({
   await writeFile(
     join(executionPath, "common", "exact-object-keys.mjs"),
     exactObjectKeysSource,
+  );
+  await writeFile(
+    join(executionPath, "destination-worker-environment.mjs"),
+    destinationWorkerEnvironmentSource,
   );
   await writeExecutable(join(binPath, "codex"), `#!/bin/sh
 if [ "$1" = "--version" ]; then

@@ -11,6 +11,9 @@ const githubCredentialContractUrl = import.meta.url.endsWith("/[eval1]")
 const realDelegationProtocolUrl = import.meta.url.endsWith("/[eval1]")
   ? pathToFileURL(join(process.cwd(), "real-delegation-protocol.mjs")).href
   : new URL("../real-delegation-protocol.mjs", import.meta.url).href;
+const destinationWorkerEnvironmentUrl = import.meta.url.endsWith("/[eval1]")
+  ? pathToFileURL(join(process.cwd(), "destination-worker-environment.mjs")).href
+  : new URL("../destination-worker-environment.mjs", import.meta.url).href;
 const {
   GITHUB_AUTHENTICATION_VERIFICATION_CAPABILITY,
   parseGitHubCredential,
@@ -20,6 +23,10 @@ const {
   isValidIssueNumber,
   parseProductionProviderRuntime,
 } = await import(realDelegationProtocolUrl);
+const {
+  destinationCodexAuthPath,
+  isMountableCodexAuthFile,
+} = await import(destinationWorkerEnvironmentUrl);
 
 const adapterProtocol = "1.0.0";
 const adapterId = "sandcastle-harness-adapter-v1";
@@ -314,6 +321,7 @@ const productionRuntimeInputPaths = () => {
  * @param {{
  *   environment?: NodeJS.ProcessEnv,
  *   execFileSync?: typeof execFileSync,
+ *   lstatSync?: typeof import("node:fs").lstatSync,
  *   platform?: NodeJS.Platform,
  *   spawnSync?: typeof spawnSync,
  * }} [options]
@@ -345,7 +353,11 @@ export const realProviderAvailable = (options = {}) => {
     return version === `codex-cli ${REAL_PROVIDER_CODEX_VERSION}`
       && authentication.error === undefined
       && authentication.status === 0
-      && /^Logged in\b/m.test(`${authentication.stdout}\n${authentication.stderr}`);
+      && /^Logged in\b/m.test(`${authentication.stdout}\n${authentication.stderr}`)
+      && isMountableCodexAuthFile(
+        destinationCodexAuthPath({ environment, platform }),
+        { lstatSync: options.lstatSync },
+      );
   } catch {
     return false;
   }
