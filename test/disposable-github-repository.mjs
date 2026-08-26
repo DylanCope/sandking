@@ -8,16 +8,16 @@ import { digest as sha256 } from "../src/common/digest.mjs";
 const execFileAsync = promisify(execFile);
 const projectArtifact = "Delivered through Sand-King.\n";
 
-const tokenEnvironment = (token) => {
-  const environment = { ...process.env, GH_TOKEN: token };
+const tokenEnvironment = (token, baseEnvironment = process.env) => {
+  const environment = { ...baseEnvironment, GH_TOKEN: token };
   delete environment.GITHUB_TOKEN;
   return environment;
 };
 
-const gh = async (token, arguments_, code) => {
+const gh = async (token, arguments_, code, environment = process.env) => {
   try {
     return await execFileAsync("gh", arguments_, {
-      env: tokenEnvironment(token),
+      env: tokenEnvironment(token, environment),
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
@@ -268,15 +268,20 @@ test("delegated issue marker is complete", async () => {
 
 export const verifyProjectPatRepositoryScope = async ({
   deniedRepository,
+  environment = process.env,
   primaryRepository,
   projectPat,
+  provisioningToken,
 }) => {
+  await gh(provisioningToken, [
+    "api", `repos/${deniedRepository}`,
+  ], "real_github_denied_repository_observation_failed", environment);
   await gh(projectPat, [
     "api", `repos/${primaryRepository}`,
-  ], "real_github_project_pat_primary_access_failed");
+  ], "real_github_project_pat_primary_access_failed", environment);
   try {
     await execFileAsync("gh", ["api", `repos/${deniedRepository}`], {
-      env: tokenEnvironment(projectPat),
+      env: tokenEnvironment(projectPat, environment),
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });

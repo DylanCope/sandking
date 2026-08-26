@@ -244,6 +244,7 @@ test("Production GitHub issue delegation uses a disposable repository", {
       deniedRepository: disposable.denied.nameWithOwner,
       primaryRepository: disposable.primary.nameWithOwner,
       projectPat: projectPatLease.token,
+      provisioningToken: credentials.provisioningToken,
     });
 
     const installed = await installCurrentPackage(root);

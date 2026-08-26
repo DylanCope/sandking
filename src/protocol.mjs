@@ -629,6 +629,7 @@ export const harnessRunLaunchFailureSchema = z.object({
     "harness_projection_failed",
     "harness_execution_runtime_unavailable",
     "harness_worker_provider_unavailable",
+    "harness_issue_run_active",
     "real_delegation_issue_required",
     ...GITHUB_CREDENTIAL_FAILURE_CODES,
     "harness_capability_unsupported",

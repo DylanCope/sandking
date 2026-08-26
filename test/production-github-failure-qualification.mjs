@@ -152,7 +152,7 @@ test("a real Host process loss recovers its issue claim and existing pull reques
   }
 });
 
-test("simultaneous same-issue runs cannot share a Host claim", async () => {
+test("the Host excludes overlapping same-issue runs without blocking other issues", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandking-production-claim-race-"));
   let fixture;
   let restorePath = () => undefined;
@@ -178,22 +178,47 @@ test("simultaneous same-issue runs cannot share a Host claim", async () => {
         idempotencyKeyHash: `sha256:${"9".repeat(64)}`,
       },
     ));
-    assert.notEqual(second.run.harnessRunId, first.run.harnessRunId);
-    const contender = await waitFor(
-      () => fixture.manager.observe({
-        requestId: "observe-overlapping-claim-contender",
-        harnessRunId: second.run.harnessRunId,
-        afterSequence: 0,
-      }),
-      (observation) => ["succeeded", "failed", "cancelled"]
-        .includes(observation.run.status),
-      "overlapping_claim_contender_timeout",
-    );
-    assert.equal(contender.run.status, "failed", JSON.stringify(contender));
-    assert.equal(contender.outcome.result.code, "scoped_issue_incomplete");
+    assert.equal(second.type, "harness.run.launch.failure", JSON.stringify(second));
+    assert.equal(second.code, "harness_issue_run_active");
+    assert.equal(second.retryable, true);
+    assert.deepEqual(second.prohibitedSideEffects, {
+      harnessRunCreated: false,
+      adapterStarted: false,
+      projectWrite: false,
+    });
     const state = await readBundledMainState(root);
     assert.equal(state.pullRequests.length, 1);
     assert.deepEqual(readBundledIssueClaimActions(state, 173), ["claim"]);
+    const retained = await readJson(join(fixture.dataDir, "harness-runs.json"));
+    assert.deepEqual(retained.runs.map(({ harnessRunId }) => harnessRunId), [
+      first.run.harnessRunId,
+    ]);
+
+    const independent = await fixture.manager.launch(productionLaunchRequest(
+      fixture.project.project.projectId,
+      {
+        requestId: "launch-independent-issue",
+        parameters: { issueNumber: 174 },
+        idempotencyKeyHash: `sha256:${"8".repeat(64)}`,
+      },
+    ));
+    assert.equal(independent.type, "harness.run.launch.result", JSON.stringify(independent));
+    const independentTerminal = await waitFor(
+      () => fixture.manager.observe({
+        requestId: "observe-independent-issue",
+        harnessRunId: independent.run.harnessRunId,
+        afterSequence: 0,
+      }),
+      (observation) => observation.run.status === "succeeded",
+      "independent_issue_delivery_timeout",
+    );
+    assert.equal(independentTerminal.run.status, "succeeded");
+    const independentState = await readBundledMainState(root);
+    assert.equal(independentState.issues[174].state, "closed");
+    assert.deepEqual(readBundledIssueClaimActions(independentState, 174), [
+      "claim",
+      "release",
+    ]);
   } finally {
     await setBundledMainScenario(root, "success").catch(() => undefined);
     await fixture?.manager.waitForIdle().catch(() => undefined);

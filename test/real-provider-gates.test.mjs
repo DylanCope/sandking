@@ -17,7 +17,10 @@ import {
   realGitHubDelegationScenario,
   validateRealGitHubDelegationResult,
 } from "./real-github-delegation.mjs";
-import { provisionDisposableProjectPat } from "./disposable-github-repository.mjs";
+import {
+  provisionDisposableProjectPat,
+  verifyProjectPatRepositoryScope,
+} from "./disposable-github-repository.mjs";
 
 // Real-provider acceptance runners invoke paid models against a real
 // destination. Each must refuse to run unless its environment gate is set
@@ -171,6 +174,73 @@ if (operation === "issue") {
         deniedRepository: "fixture-owner/disposable-b",
       },
     ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the Project-PAT scope proof first verifies that the denied repository exists", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-project-pat-scope-proof-"));
+  const fakeGhPath = join(root, "gh");
+  try {
+    await writeFile(fakeGhPath, `#!/usr/bin/env node
+const repository = process.argv.at(-1);
+if (repository === "repos/fixture-owner/disposable-a") process.exit(0);
+process.stderr.write("HTTP 404: Not Found\\n");
+process.exit(1);
+`);
+    await chmod(fakeGhPath, 0o700);
+    await assert.rejects(verifyProjectPatRepositoryScope({
+      deniedRepository: "fixture-owner/disposable-b",
+      environment: {
+        ...process.env,
+        PATH: `${root}:${process.env.PATH ?? ""}`,
+      },
+      primaryRepository: "fixture-owner/disposable-a",
+      projectPat: `github_pat_${"p".repeat(32)}`,
+      provisioningToken: `github_pat_${"q".repeat(32)}`,
+    }), /real_github_denied_repository_observation_failed/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the Project-PAT scope proof observes an existing repository rejected by the PAT", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandking-project-pat-scope-denial-"));
+  const fakeGhPath = join(root, "gh");
+  const projectPat = `github_pat_${"p".repeat(32)}`;
+  const provisioningToken = `github_pat_${"q".repeat(32)}`;
+  try {
+    await writeFile(fakeGhPath, `#!/usr/bin/env node
+const repository = process.argv.at(-1);
+const projectPat = ${JSON.stringify(projectPat)};
+const provisioningToken = ${JSON.stringify(provisioningToken)};
+if (
+  (process.env.GH_TOKEN === provisioningToken
+    && repository === "repos/fixture-owner/disposable-b")
+  || (process.env.GH_TOKEN === projectPat
+    && repository === "repos/fixture-owner/disposable-a")
+) process.exit(0);
+if (
+  process.env.GH_TOKEN === projectPat
+  && repository === "repos/fixture-owner/disposable-b"
+) {
+  process.stderr.write("HTTP 404: Not Found\\n");
+  process.exit(1);
+}
+process.exit(2);
+`);
+    await chmod(fakeGhPath, 0o700);
+    assert.equal(await verifyProjectPatRepositoryScope({
+      deniedRepository: "fixture-owner/disposable-b",
+      environment: {
+        ...process.env,
+        PATH: `${root}:${process.env.PATH ?? ""}`,
+      },
+      primaryRepository: "fixture-owner/disposable-a",
+      projectPat,
+      provisioningToken,
+    }), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
