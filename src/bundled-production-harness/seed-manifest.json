@@ -26,7 +26,7 @@
       "path": ".sandcastle/docker-transport.mjs",
       "sourcePath": "src/production-sandcastle-adapter/docker-transport.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:02665c6130abb4578873f740b8e611fa3e22c3b1585963f9ff308c92e36814da",
+      "integrity": "sha256:b89274681ef958975a3ac7822ed0039bbec1c06016ab86b6232d101a9cecb7c4",
       "executable": false
     },
     {
@@ -68,14 +68,14 @@
       "path": ".sandcastle/real-worker-v2.mjs",
       "sourcePath": "src/production-sandcastle-adapter/real-worker-v2.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:4f35af5e7dee5d6e4bea8d957045edf552b042e7012d7d9e0c31a7280a70b906",
+      "integrity": "sha256:0316bc7f76a8c2df1356139c80eaee571af300e5ada1a646c81c47bc2ea28133",
       "executable": false
     },
     {
       "path": "adapters/sandcastle.mjs",
       "sourcePath": "src/production-sandcastle-adapter/sandcastle-v4.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:411b477f8980215f98cc8e9f882ea1d49baeee6733226b987148b2f3068e5fe4",
+      "integrity": "sha256:1215190d432614b9e0f63c2b2dd6c7cc9cc5a294ad6600bbc2a9cffbb4112368",
       "executable": false
     },
     {
@@ -113,13 +113,13 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:501e53473920a0ab7bbe5ec8c8119ba27f5c695c8e2238c6b675868ebba76cdc",
+      "integrity": "sha256:b1d4e645f344268889dbc13315f28e4deb6058c0f93a6a3d2e5789c1f639ccae",
       "executable": false
     },
     {
       "path": "skills.lock.json",
       "source": "seed",
-      "integrity": "sha256:d2cfe5bd59e1b43978f23a529f62c8a63df207e4a998a793740c0c4e076e196d",
+      "integrity": "sha256:f6fa8d7204fb101e9da91973ee4c19543ff114cc6158ab48f716821e91ef9379",
       "executable": false
     },
     {
@@ -167,7 +167,7 @@
     {
       "path": ".sandcastle/main.mts",
       "source": "sandking-package",
-      "integrity": "sha256:d25976487ab3562022aa5ae8bcca94c814f31901ea358e3186d89fe307137a5f",
+      "integrity": "sha256:26041d8a078b106f2d82b5e92d0d813b41175e28cd9800bdf90b17660b0ed028",
       "executable": false
     },
     {
