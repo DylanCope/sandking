@@ -22,11 +22,16 @@ const realDelegationProtocolPath = new URL(
   "../src/real-delegation-protocol.mjs",
   import.meta.url,
 );
+const exactObjectKeysPath = new URL(
+  "../src/common/exact-object-keys.mjs",
+  import.meta.url,
+);
 const adapterId = "sandcastle-harness-adapter-v1";
 const adapterProtocol = "1.0.0";
 const workerPath = ".sandcastle/real-worker-v2.mjs";
 const githubCredentialContractSource = await readFile(githubCredentialContractPath, "utf8");
 const realDelegationProtocolSource = await readFile(realDelegationProtocolPath, "utf8");
+const exactObjectKeysSource = await readFile(exactObjectKeysPath, "utf8");
 
 const encode = (value) => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 const integrity = (source) => `sha256:${createHash("sha256").update(source).digest("hex")}`;
@@ -47,7 +52,7 @@ const createFixture = async ({
   const executionPath = join(projectPath, ".sandking", "projection");
   const binPath = join(root, "bin");
   await Promise.all([
-    mkdir(executionPath, { recursive: true }),
+    mkdir(join(executionPath, "common"), { recursive: true }),
     mkdir(binPath, { recursive: true }),
   ]);
   await new Promise((resolve, reject) => {
@@ -80,6 +85,10 @@ const createFixture = async ({
   await writeFile(
     join(executionPath, "real-delegation-protocol.mjs"),
     realDelegationProtocolSource,
+  );
+  await writeFile(
+    join(executionPath, "common", "exact-object-keys.mjs"),
+    exactObjectKeysSource,
   );
   await writeExecutable(join(binPath, "codex"), `#!/bin/sh
 if [ "$1" = "--version" ]; then
