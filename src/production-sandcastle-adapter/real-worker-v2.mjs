@@ -9,7 +9,9 @@ import { promisify } from "node:util";
 import { digest as sha256 } from "../common/digest.mjs";
 import { parseRealDelegationMessage } from "../real-delegation-protocol.mjs";
 import {
+  createMainContainerConfiguration,
   createWindowsDockerPipeRelay,
+  MAIN_CONTAINER_PATHS,
   WINDOWS_DOCKER_NAMED_PIPE,
 } from "./docker-transport.mjs";
 import { materializeGitHubCredential } from "./github-credential-v1.mjs";
@@ -28,10 +30,6 @@ const SANDCASTLE_RESOLVED =
 const SANDCASTLE_INTEGRITY =
   "sha512-kdQ414rM8t1QiWeqZ3Klz4KSd0PqQG4bRVuqGpRDUomWhojSZkEAc1tbcEcThVmBEaHkCt8LmYR49vqEPNIoYQ==";
 const CODEX_VERSION = "0.146.0";
-const CONTAINER_EXECUTION_PATH = "/workspace/harness";
-const CONTAINER_PROJECT_PATH = "/workspace/project";
-const CONTAINER_CODEX_AUTH_PATH = "/run/secrets/codex-auth.json";
-const CONTAINER_GITHUB_CREDENTIAL_PATH = "/run/secrets/github-token";
 const PINNED_SKILL_IDENTITIES = Object.freeze([
   "sandking.issue-implementation",
   "sandking.issue-planning",
@@ -147,9 +145,9 @@ export const runPinnedMain = async ({
   platform = process.platform,
   createDockerPipeRelay = createWindowsDockerPipeRelay,
 }) => {
-  const mainPath = `${CONTAINER_EXECUTION_PATH}/.sandcastle/main.mts`;
+  const mainPath = `${MAIN_CONTAINER_PATHS.execution}/.sandcastle/main.mts`;
   const tsxLoaderUrl =
-    `file://${CONTAINER_EXECUTION_PATH}/node_modules/tsx/dist/loader.mjs`;
+    `file://${MAIN_CONTAINER_PATHS.execution}/node_modules/tsx/dist/loader.mjs`;
   const dockerEnvironment = { ...process.env };
   for (const name of [
     "GH_TOKEN",
@@ -167,29 +165,15 @@ export const runPinnedMain = async ({
   const dockerPipeRelay = platform === "win32"
     ? await createDockerPipeRelay(WINDOWS_DOCKER_NAMED_PIPE)
     : null;
-  const containerEnvironment = {
-    HOME: "/home/agent",
-    LANG: "C.UTF-8",
-    SANDCASTLE_CODEX_AUTH_PATH: CONTAINER_CODEX_AUTH_PATH,
-    SANDKING_GITHUB_CREDENTIAL_PATH: CONTAINER_GITHUB_CREDENTIAL_PATH,
-    SANDKING_REAL_DELEGATION_CONTAINER: "1",
-    SANDKING_REAL_DELEGATION_PROTOCOL: "1",
-    SANDKING_REAL_DELEGATION_PROTOCOL_FD: "1",
-    SANDKING_REAL_DELEGATION_SANDBOX_IMAGE: sandboxImage,
-    ...(dockerPipeRelay ? {
-      DOCKER_HOST: `tcp://host.docker.internal:${dockerPipeRelay.port}`,
-    } : {}),
-  };
-  const environmentArguments = Object.entries(containerEnvironment).flatMap(
-    ([name, value]) => ["--env", `${name}=${value}`],
-  );
-  const mountArguments = [
-    `${projectPath}:${CONTAINER_PROJECT_PATH}:rw`,
-    `${executionPath}:${CONTAINER_EXECUTION_PATH}:ro`,
-    `${authPath}:${CONTAINER_CODEX_AUTH_PATH}:ro`,
-    `${githubCredentialPath}:${CONTAINER_GITHUB_CREDENTIAL_PATH}:ro`,
-    ...(dockerSocket ? [`${dockerSocketPath}:${dockerSocketPath}:rw`] : []),
-  ].flatMap((mount) => ["--volume", mount]);
+  const { environmentArguments, mountArguments } = createMainContainerConfiguration({
+    executionPath,
+    projectPath,
+    authPath,
+    githubCredentialPath,
+    sandboxImage,
+    dockerSocketPath: dockerSocket ? dockerSocketPath : null,
+    dockerRelayPort: dockerPipeRelay?.port ?? null,
+  });
   try {
     const child = spawnProcess("docker", [
       "run",
@@ -203,7 +187,7 @@ export const runPinnedMain = async ({
       `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
       ...(dockerSocket ? ["--group-add", String(dockerSocket.gid)] : []),
       "--workdir",
-      CONTAINER_PROJECT_PATH,
+      MAIN_CONTAINER_PATHS.project,
       ...mountArguments,
       ...environmentArguments,
       "--entrypoint",

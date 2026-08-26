@@ -1,6 +1,52 @@
 import { createConnection, createServer } from "node:net";
 
 export const WINDOWS_DOCKER_NAMED_PIPE = "\\\\.\\pipe\\docker_engine";
+export const MAIN_CONTAINER_PATHS = Object.freeze({
+  execution: "/workspace/harness",
+  project: "/workspace/project",
+  codexAuth: "/run/secrets/codex-auth.json",
+  githubCredential: "/run/secrets/github-token",
+});
+
+/**
+ * Builds Linux-container paths and Docker arguments without retaining this
+ * platform-neutral configuration in the size-bounded Worker source.
+ */
+export const createMainContainerConfiguration = ({
+  executionPath,
+  projectPath,
+  authPath,
+  githubCredentialPath,
+  sandboxImage,
+  dockerSocketPath = null,
+  dockerRelayPort = null,
+}) => {
+  const environment = {
+    HOME: "/home/agent",
+    LANG: "C.UTF-8",
+    SANDCASTLE_CODEX_AUTH_PATH: MAIN_CONTAINER_PATHS.codexAuth,
+    SANDKING_GITHUB_CREDENTIAL_PATH: MAIN_CONTAINER_PATHS.githubCredential,
+    SANDKING_REAL_DELEGATION_CONTAINER: "1",
+    SANDKING_REAL_DELEGATION_PROTOCOL: "1",
+    SANDKING_REAL_DELEGATION_PROTOCOL_FD: "1",
+    SANDKING_REAL_DELEGATION_SANDBOX_IMAGE: sandboxImage,
+    ...(dockerRelayPort === null ? {} : {
+      DOCKER_HOST: `tcp://host.docker.internal:${dockerRelayPort}`,
+    }),
+  };
+  return {
+    environmentArguments: Object.entries(environment).flatMap(
+      ([name, value]) => ["--env", `${name}=${value}`],
+    ),
+    mountArguments: [
+      `${projectPath}:${MAIN_CONTAINER_PATHS.project}:rw`,
+      `${executionPath}:${MAIN_CONTAINER_PATHS.execution}:ro`,
+      `${authPath}:${MAIN_CONTAINER_PATHS.codexAuth}:ro`,
+      `${githubCredentialPath}:${MAIN_CONTAINER_PATHS.githubCredential}:ro`,
+      ...(dockerSocketPath ? [`${dockerSocketPath}:${dockerSocketPath}:rw`] : []),
+    ].flatMap((mount) => ["--volume", mount]),
+  };
+};
 
 /**
  * Docker Desktop exposes its Engine through a Windows named pipe, while the
