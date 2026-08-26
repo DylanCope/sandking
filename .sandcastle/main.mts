@@ -23,9 +23,10 @@
 // delivering it, and releases the claim when delivery finishes, so a second
 // Harness instance running concurrently (e.g. on another machine) with
 // overlapping scope skips issues this run already holds instead of racing
-// it. Claims are keyed by hostname, so relaunching on the same machine
-// always resumes your own claim without friction. To take over an issue
-// claimed by a different, presumed-dead instance, pass
+// it. Claims use a unique run identity; the hostname is retained only as
+// operator-facing metadata. Production Host recovery may take over the exact
+// failed Harness-run claim it reconciled. To take over any other issue claimed
+// by a different, presumed-dead instance, pass
 // --override-claim <issueId> (repeatable) — verify that instance really
 // isn't still running before doing this, since claims aren't released on a
 // crash.
@@ -34,7 +35,6 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeSync } from "node:fs";
-import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
@@ -43,6 +43,7 @@ import {
 } from "./delivery-adapters.mjs";
 import {
   completeIssueThroughPullRequest,
+  createIssueClaimInstance,
   DEFAULT_MAX_REVIEW_ATTEMPTS,
   getActiveIssueClaim,
 } from "./issue-delivery.mjs";
@@ -207,11 +208,12 @@ const scopeOptions = parseRunScope(process.argv.slice(2));
 const maxReviewAttempts =
   parseMaxReviewAttempts(process.argv.slice(2)) ?? DEFAULT_MAX_REVIEW_ATTEMPTS;
 const overrideClaimIssueIds = parseOverrideClaimIssueIds(process.argv.slice(2));
-const claimInstanceId = process.env.SANDKING_REAL_DELEGATION_CLAIM_INSTANCE_ID
-  ?? os.hostname();
-if (!/^[A-Za-z0-9._-]{1,253}$/.test(claimInstanceId)) {
-  throw new Error("real_delegation_claim_instance_invalid");
-}
+const instance = createIssueClaimInstance({
+  ...(process.env.SANDKING_REAL_DELEGATION_CLAIM_INSTANCE_ID
+    ? { id: process.env.SANDKING_REAL_DELEGATION_CLAIM_INSTANCE_ID }
+    : {}),
+});
+const claimInstanceId = instance.id;
 const recoverClaimInstanceId =
   process.env.SANDKING_REAL_DELEGATION_RECOVER_CLAIM_INSTANCE_ID ?? null;
 if (recoverClaimInstanceId && (
@@ -220,7 +222,6 @@ if (recoverClaimInstanceId && (
 )) {
   throw new Error("real_delegation_recover_claim_instance_invalid");
 }
-const instance = { id: claimInstanceId, host: claimInstanceId, pid: process.pid };
 const runScope = scopeOptions
   ? "issueId" in scopeOptions
     ? await createIssueScope({ issueId: scopeOptions.issueId, github })

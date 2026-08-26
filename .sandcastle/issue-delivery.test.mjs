@@ -3,11 +3,31 @@ import test from "node:test";
 import {
   completeIssueThroughPullRequest,
   computeActiveClaim,
+  createIssueClaimInstance,
   DEFAULT_MAX_REVIEW_ATTEMPTS,
   deliverIssueThroughPullRequest,
   getActiveIssueClaim,
   produceIssueBranch,
 } from "./issue-delivery.mjs";
+
+test("each issue-delivery run gets a unique claim identity on the same Host", () => {
+  const first = createIssueClaimInstance({ host: "shared-host", pid: 101 });
+  const second = createIssueClaimInstance({ host: "shared-host", pid: 202 });
+
+  assert.match(first.id, /^[0-9a-f-]{36}$/);
+  assert.match(second.id, /^[0-9a-f-]{36}$/);
+  assert.notEqual(second.id, first.id);
+  assert.deepEqual(first, {
+    id: first.id,
+    host: "shared-host",
+    pid: 101,
+  });
+  assert.deepEqual(second, {
+    id: second.id,
+    host: "shared-host",
+    pid: 202,
+  });
+});
 
 test("an issue is implemented on a fresh branch from synchronized origin/main and pushed", async () => {
   const repository = createFakeRepository("main-abc123");

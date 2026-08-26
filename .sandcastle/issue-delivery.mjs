@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
+
 export const DEFAULT_MAX_REVIEW_ATTEMPTS = 15;
 const MAX_CONSECUTIVE_NO_PROGRESS_ATTEMPTS = 3;
 
@@ -48,6 +51,23 @@ function roundContextMessage(reviewAttempt, maxReviewAttempts) {
 //
 // Claiming is opt-in: a `github` adapter without `getIssueClaimLedger`, or a
 // call that omits `instance`, behaves exactly as before this feature existed.
+
+/** @param {{id?: string, host?: string, pid?: number}} [options] */
+export function createIssueClaimInstance({
+  id = randomUUID(),
+  host = hostname(),
+  pid = process.pid,
+} = {}) {
+  if (
+    !/^[A-Za-z0-9._-]{1,253}$/.test(id)
+    || !/^[A-Za-z0-9._-]{1,253}$/.test(host)
+    || !Number.isSafeInteger(pid)
+    || pid < 1
+  ) {
+    throw new Error("real_delegation_claim_instance_invalid");
+  }
+  return { id, host, pid };
+}
 
 export function computeActiveClaim(claimLedger) {
   let active = null;
