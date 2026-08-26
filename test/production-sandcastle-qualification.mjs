@@ -629,9 +629,20 @@ test("the installed ordinary CLI discovers production parameters and launches th
       fixture.manager,
       launched.run.harnessRunId,
     );
+    const observedDiagnostics = await fixture.manager.readLogs({
+      requestId: "read-installed-qualification-diagnostics",
+      harnessRunId: launched.run.harnessRunId,
+      producer: "stderr",
+      offset: 0,
+      limit: 16_384,
+    });
     assert.equal(observed.run.status, "failed", JSON.stringify(observed));
     assert.equal(observed.run.adapterId, "sandcastle-harness-adapter-v1");
-    assert.equal(observed.outcome.code, "harness_run_failed");
+    assert.equal(
+      observed.outcome.code,
+      "harness_run_failed",
+      observedDiagnostics.data.toString("utf8"),
+    );
     assert.equal(observed.outcome.result.code, "scoped_issue_incomplete");
     assert.equal(observed.terminalEnvelopeValidation.exactlyOne, true);
     assert.deepEqual(requests.map(({ operation }) => operation), [

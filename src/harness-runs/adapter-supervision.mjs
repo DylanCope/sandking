@@ -552,6 +552,7 @@ export const superviseHarnessAdapter = async (run, context, observer) => {
   });
   const binding = await materializeProductionHarnessRetainedInputs({
     retainedExecutionInputs: retainedInputs,
+    projectPath: context.project.canonicalPath,
   });
   try {
     return await superviseBoundHarnessAdapter(run, {

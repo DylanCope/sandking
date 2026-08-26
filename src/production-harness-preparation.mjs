@@ -310,12 +310,42 @@ const makeExecutionTreeRemovable = async (root) => {
       const path = join(directory, entry.name);
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
         await visit(path);
-      } else {
+      } else if (!entry.isSymbolicLink()) {
         await chmod(path, 0o600).catch(() => undefined);
       }
     }
   };
   await visit(root);
+};
+
+/** @param {string} executionPath @param {string} projectPath */
+const writeExecutionGitPointer = async (executionPath, projectPath) => {
+  const executionGitDirectory = join(executionPath, ".git");
+  await Promise.all([
+    mkdir(join(executionGitDirectory, "objects"), { recursive: true, mode: 0o700 }),
+    mkdir(join(executionGitDirectory, "refs", "heads"), {
+      recursive: true,
+      mode: 0o700,
+    }),
+  ]);
+  await Promise.all([
+    writeFile(
+      join(executionGitDirectory, "HEAD"),
+      "ref: refs/heads/sandking-execution\n",
+      { mode: 0o600 },
+    ),
+    writeFile(
+      join(executionGitDirectory, "config"),
+      [
+        "[core]",
+        "\trepositoryformatversion = 0",
+        "\tbare = false",
+        `\tworktree = ${JSON.stringify(resolve(projectPath))}`,
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    ),
+  ]);
 };
 
 /**
@@ -390,6 +420,7 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
   if (projectionDigest !== preparation.projection.digest) {
     throw new ProductionHarnessPreparationError("harness_projection_collision");
   }
+  snapshotFiles.set("projection-manifest.json", manifestSource);
   const retainedExecutionInputs = retainedInputPaths.map((path) => {
     const source = snapshotFiles.get(path);
     if (typeof source !== "string") {
@@ -397,7 +428,6 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
     }
     return retainedExecutionInputSchema.parse({ path, source, integrity: sha256(source) });
   });
-  snapshotFiles.set("projection-manifest.json", manifestSource);
 
   const destinationPath = resolve(options.destinationPath);
   const destinationParent = dirname(destinationPath);
@@ -431,32 +461,7 @@ export const materializeProductionHarnessExecutionSnapshot = async (options) => 
     if (!await verifyExistingProjection(stagingPath, snapshotFiles)) {
       throw new ProductionHarnessPreparationError("harness_projection_failed");
     }
-    const executionGitDirectory = join(stagingPath, ".git");
-    await Promise.all([
-      mkdir(join(executionGitDirectory, "objects"), { recursive: true, mode: 0o700 }),
-      mkdir(join(executionGitDirectory, "refs", "heads"), {
-        recursive: true,
-        mode: 0o700,
-      }),
-    ]);
-    await Promise.all([
-      writeFile(
-        join(executionGitDirectory, "HEAD"),
-        "ref: refs/heads/sandking-execution\n",
-        { mode: 0o600 },
-      ),
-      writeFile(
-        join(executionGitDirectory, "config"),
-        [
-          "[core]",
-          "\trepositoryformatversion = 0",
-          "\tbare = false",
-          `\tworktree = ${JSON.stringify(resolve(options.projectPath))}`,
-          "",
-        ].join("\n"),
-        { mode: 0o600 },
-      ),
-    ]);
+    await writeExecutionGitPointer(stagingPath, options.projectPath);
     await rename(stagingPath, destinationPath);
     stagingPath = null;
     published = true;
@@ -522,7 +527,10 @@ export const verifyProductionHarnessRetainedInputs = async (options) => {
  * it launches resolve only inside this bound tree, so mutations of the
  * retained execution copy after adapter start cannot change accepted code.
  *
- * @param {{retainedExecutionInputs: Array<z.infer<typeof retainedExecutionInputSchema>>}} options
+ * @param {{
+ *   retainedExecutionInputs: Array<z.infer<typeof retainedExecutionInputSchema>>,
+ *   projectPath: string,
+ * }} options
  */
 export const materializeProductionHarnessRetainedInputs = async (options) => {
   const inputs = z.array(retainedExecutionInputSchema)
@@ -538,6 +546,7 @@ export const materializeProductionHarnessRetainedInputs = async (options) => {
       executionPath: root,
       retainedExecutionInputs: inputs,
     });
+    await writeExecutionGitPointer(root, options.projectPath);
     return {
       path: root,
       close: async () => {
