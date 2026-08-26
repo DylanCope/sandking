@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
+import { digest as sha256 } from "../src/common/digest.mjs";
 import { createLocalHostTransport } from "../src/daemon/host-transport/local.mjs";
 import { createDestinationWorkerEnvironment } from "../src/destination-worker-environment.mjs";
 import {
@@ -291,6 +292,9 @@ test("the POSIX local Host reads the configured gh session for global reuse", {
       mkdir(binPath),
       mkdir(githubConfigDirectory),
     ]);
+    const sandboxConfigurationIntegrity = sha256(await readFile(
+      new URL("../.sandcastle/Dockerfile", import.meta.url),
+    ));
     await writeFile(join(githubConfigDirectory, "hosts.yml"), `${hostToken}\n`);
     await Promise.all([
       writeExecutable(join(binPath, "gh"), `#!/bin/sh
@@ -316,7 +320,10 @@ exit 92
       writeExecutable(join(binPath, "docker"), `#!/bin/sh
 if [ "$1 $2" = "version --format" ]; then printf '%s\\n' '27.5.1'; exit 0; fi
 if [ "$1 $2 $3" = "image inspect sandcastle:sandking-real-worker" ]; then
-  printf '%s\\n' 'sha256:${"d".repeat(64)}'
+  case "$4" in
+    *Config.Labels*) printf '%s\\n' '${sandboxConfigurationIntegrity}' ;;
+    *) printf '%s\\n' 'sha256:${"d".repeat(64)}' ;;
+  esac
   exit 0
 fi
 exit 93
