@@ -49,9 +49,9 @@ import {
 import { runPullRequestReview } from "./pr-review-runner.mjs";
 import {
   createCodexSandboxSettings,
+  createGitHubSandboxEnvironment,
   createRunSettings,
   createWorkerSandboxSettings,
-  githubSandboxEnvironment,
   githubSandboxReadyCommands,
   materializeGitHubCredential,
 } from "./sandbox-settings.mjs";
@@ -151,9 +151,12 @@ if (protocolEnabled) {
   githubCredentialPath = ownedGitHubCredential?.path;
 }
 if (delegationContainer && githubCredentialPath) {
-  const containerPath = process.env.PATH ?? githubSandboxEnvironment.PATH;
-  Object.assign(process.env, githubSandboxEnvironment, {
-    PATH: `/home/agent/.sandcastle-bin:${containerPath}`,
+  const sandboxEnvironment = createGitHubSandboxEnvironment(
+    process.env.HOME ?? "/home/agent",
+  );
+  const containerPath = process.env.PATH ?? sandboxEnvironment.PATH;
+  Object.assign(process.env, sandboxEnvironment, {
+    PATH: `${sandboxEnvironment.PATH.split(":", 1)[0]}:${containerPath}`,
     SANDKING_GITHUB_CREDENTIAL_PATH: githubCredentialPath,
   });
   execFileSync("sh", ["-c", githubSandboxReadyCommands(true).join("; ")], {

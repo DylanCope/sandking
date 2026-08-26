@@ -52,12 +52,14 @@ export const installReadyProbeCommands = async (
 ) => {
   const binPath = join(root, "bin");
   const fakeSandcastlePath = join(root, "fake-sandcastle");
+  const containerHomePath = join(root, "container-home");
   const scenarioPath = bundledMainScenarioPath(root);
   const statePath = bundledMainStatePath(root);
   const originalPath = process.env.PATH;
   const dependencyRoot = join(new URL("../node_modules", import.meta.url).pathname);
   await Promise.all([
     mkdir(binPath, { recursive: true }),
+    mkdir(containerHomePath, { recursive: true }),
     mkdir(join(fakeSandcastlePath, "sandboxes"), { recursive: true }),
     setBundledMainScenario(root, mainScenario),
     writeFile(statePath, `${JSON.stringify({
@@ -332,6 +334,8 @@ for (let index = 0; index < imageIndex; index += 1) {
   const [name, ...value] = args[index + 1].split("=");
   environment[name] = value.join("=");
 }
+if (environment.HOME !== "/home/agent") process.exit(96);
+environment.HOME = ${JSON.stringify(containerHomePath)};
 const child = spawn(process.execPath, args.slice(imageIndex + 1), {
   cwd: args[workdirIndex + 1],
   env: environment,

@@ -7,6 +7,7 @@ import test from "node:test";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import {
   createCodexSandboxSettings,
+  createGitHubSandboxEnvironment,
   createRunSettings,
   createWorkerSandboxSettings,
 } from "./sandbox-settings.mjs";
@@ -69,6 +70,24 @@ test("the Docker sandbox consumes GitHub credentials only through a read-only fi
   assert.equal(JSON.stringify(settings).includes(token), false);
   assert.ok(settings.hooks.sandbox.onSandboxReady.some(({ command }) =>
     command.includes("gh api user")));
+});
+
+test("the GitHub credential wrapper follows the effective sandbox home", () => {
+  const environment = createGitHubSandboxEnvironment("/isolated/container-home");
+
+  assert.equal(
+    environment.PATH,
+    "/isolated/container-home/.sandcastle-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+  );
+  assert.equal(environment.GH_CONFIG_DIR, "/isolated/container-home/.config/gh");
+  for (const name of [
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+  ]) {
+    assert.equal(environment[name], "");
+  }
 });
 
 test("real Claude access is granted only to an explicitly selected Worker issue", () => {

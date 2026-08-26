@@ -4,6 +4,7 @@ const sourceCredentialHelperUrl = new URL(
   import.meta.url,
 );
 const {
+  createGitHubSandboxEnvironment,
   githubSandboxEnvironment,
   githubSandboxReadyCommands,
   materializeGitHubCredential,
@@ -11,6 +12,7 @@ const {
   import(sourceCredentialHelperUrl.href));
 
 export {
+  createGitHubSandboxEnvironment,
   githubSandboxEnvironment,
   githubSandboxReadyCommands,
   materializeGitHubCredential,
