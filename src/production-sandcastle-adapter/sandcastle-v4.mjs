@@ -696,14 +696,10 @@ const runWorker = async (
       });
       activeChild.stdout?.on("data", diagnostic);
       activeChild.stderr?.on("data", diagnostic);
-      activeChild.stdout?.once("error", () => {
-        dependencyFailure = true;
-      });
-      activeChild.stderr?.once("error", () => {
-        dependencyFailure = true;
-      });
+      activeChild.stdout?.once("error", () => undefined);
+      activeChild.stderr?.once("error", () => undefined);
       const installExit = await waitForExit(activeChild);
-      dependencyFailure ||= !cancelled
+      dependencyFailure = !cancelled
         && (installExit.startFailed || installExit.code !== 0);
     }
 
@@ -745,23 +741,15 @@ const runWorker = async (
           activeChild.kill("SIGKILL");
           throw new Error("worker_credential_channel_unavailable");
         }
-        credentialStream.once("error", () => {
-          outputInvalid = true;
-        });
+        credentialStream.once("error", () => undefined);
         credentialStream.end(JSON.stringify(githubCredential));
       }
       activeChild.stderr?.on("data", diagnostic);
-      activeChild.stderr?.once("error", () => {
-        outputInvalid = true;
-      });
-      activeChild.stdout?.once("error", () => {
-        outputInvalid = true;
-      });
+      activeChild.stderr?.once("error", () => undefined);
+      activeChild.stdout?.once("error", () => undefined);
       if (readiness.realProvider) activeChild.stdout?.resume();
       const protocolStream = readiness.realProvider ? activeChild.stdio[3] : activeChild.stdout;
-      protocolStream.once("error", () => {
-        outputInvalid = true;
-      });
+      protocolStream.once("error", () => undefined);
       let outputBytes = 0;
       const lines = createInterface({ input: protocolStream, crlfDelay: Infinity });
       lines.on("line", (line) => {
