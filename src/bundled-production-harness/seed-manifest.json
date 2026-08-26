@@ -23,6 +23,13 @@
       "executable": false
     },
     {
+      "path": ".sandcastle/docker-transport.mjs",
+      "sourcePath": "src/production-sandcastle-adapter/docker-transport.mjs",
+      "source": "sandking-package",
+      "integrity": "sha256:4cd4b93f6742950309e0d4d3fd2d227c935277592e570347b9efa7ab72df5b5d",
+      "executable": false
+    },
+    {
       "path": ".sandcastle/github-credential-v1.mjs",
       "sourcePath": "src/production-sandcastle-adapter/github-credential-v1.mjs",
       "source": "sandking-package",
@@ -33,14 +40,14 @@
       "path": "github-credential-contract.mjs",
       "sourcePath": "src/github-credential-contract.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:c6f68bd5a621e287fae2333a35150714018018ed610fccc4e176f69dbacf5e76",
+      "integrity": "sha256:b536373703628ee813efc73a73fa72daff8e0ff360a9499dd902d7356e2e8c69",
       "executable": false
     },
     {
       "path": "real-delegation-protocol.mjs",
       "sourcePath": "src/real-delegation-protocol.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:39097eaab8b03761fe2853abcb99dcad180c6491696fb3f5cac9400994e71ac5",
+      "integrity": "sha256:f8eed3408d4d6d37f700ec956cd6a2448735f3c3ae587c09aff33c4ed5019ad9",
       "executable": false
     },
     {
@@ -54,7 +61,7 @@
       "path": ".sandcastle/real-worker-v2.mjs",
       "sourcePath": "src/production-sandcastle-adapter/real-worker-v2.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:464a18ee570f1216b3057e5ef237e4b60f95647832e5ecc17b27b00c69b13633",
+      "integrity": "sha256:1c3dd27a811080ac9e9a8cc9d1749f15432484f3af58fbf0ed05a697c586e750",
       "executable": false
     },
     {
@@ -69,6 +76,13 @@
       "sourcePath": "src/common/digest.mjs",
       "source": "sandking-package",
       "integrity": "sha256:301137ae8839b68dd829b471f48ae486f677475064706620a922e872327a7820",
+      "executable": false
+    },
+    {
+      "path": "common/exact-object-keys.mjs",
+      "sourcePath": "src/common/exact-object-keys.mjs",
+      "source": "sandking-package",
+      "integrity": "sha256:78389b5400496c4b7297264178769947959cbfe2ba1e362e452445b7a7e7e26c",
       "executable": false
     },
     {
@@ -92,13 +106,13 @@
     {
       "path": "provenance.json",
       "source": "seed",
-      "integrity": "sha256:b291d2fd57ddd200acb75eead8f94c7d329575da811e8e50f0632fd0531264cb",
+      "integrity": "sha256:fd83f2ac4904a30a01e327a3b2e267364ac5c90268a0675dab5db7a4cf15b8e2",
       "executable": false
     },
     {
       "path": "skills.lock.json",
       "source": "seed",
-      "integrity": "sha256:fba0b3429bd12bdc9ab9bd417c63c51378ae8b372ac4b4445a4cc9e301e99fb1",
+      "integrity": "sha256:e5d94fb4f00276744d973a68e3ae87aeb54b5d8f4712a55bc4e0d6bbb698d31e",
       "executable": false
     },
     {
@@ -146,7 +160,7 @@
     {
       "path": ".sandcastle/main.mts",
       "source": "sandking-package",
-      "integrity": "sha256:b0c9fbd0e6adb69a9693843c5d791b65c7f395c216180054c026f7535cf43a14",
+      "integrity": "sha256:03c7af40276cd3de7da3506cf1441aa4ebf5d50edee4d4769f69bc7162175933",
       "executable": false
     },
     {
@@ -182,7 +196,7 @@
     {
       "path": ".sandcastle/sandbox-settings.mjs",
       "source": "sandking-package",
-      "integrity": "sha256:63af90d8126d80a798df54e04b975da9c855b7a7bb979ddf810237df4fdbcef9",
+      "integrity": "sha256:14742c7cafede0a14cecef8fba2454ebfe4406a271fe09f86cb234b02fb79de0",
       "executable": false
     }
   ]
